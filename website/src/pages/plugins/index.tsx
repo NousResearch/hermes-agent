@@ -24,6 +24,10 @@ interface CatalogPlugin {
   platforms?: string[];
   capabilities?: PluginCapabilities;
   docsUrl?: string;
+  /** Human label for the pin ("1.4.0"); cosmetic, shown beside the sha. */
+  version?: string;
+  /** Card banner image (GitHub-hosted https URL enforced by the extractor). */
+  image?: string;
   installCommand: string;
   /** GitHub stargazers at the last daily probe; null when the repo is not on GitHub or unprobed. */
   stars?: number | null;
@@ -45,8 +49,8 @@ interface CatalogMeta {
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
 
-const CATALOG_README_URL =
-  "https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog";
+// Docs section describing the PR-based submission workflow.
+const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting-a-plugin-to-the-catalog";
 
 const TIER_CONFIG: Record<
   string,
@@ -195,6 +199,18 @@ function PluginCard({
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
 
+      {plugin.image && (
+        <img
+          className={styles.cardImage}
+          src={plugin.image}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
+        />
+      )}
+
       <div className={styles.cardInner}>
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
@@ -210,6 +226,11 @@ function PluginCard({
             >
               {tier.icon} {tier.label}
             </span>
+            {plugin.version && (
+              <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
+                v{plugin.version.replace(/^v/i, "")}
+              </span>
+            )}
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
@@ -306,7 +327,7 @@ function PluginCard({
                   className={styles.shaLink}
                   title={plugin.sha}
                 >
-                  <code>{plugin.shaShort}</code> ↗
+                  <code>{plugin.version ? `${plugin.version} @ ${plugin.shaShort}` : plugin.shaShort}</code> ↗
                 </a>
               </span>
             </div>
@@ -355,14 +376,29 @@ function PluginCard({
   );
 }
 
-function StatCard({ value, label, color }: { value: number; label: string; color: string }) {
+const TRUST_ICONS = {
+  check: "M4 10.5l3.5 3.5L16 5.5",
+  lock: "M6 9V7a4 4 0 118 0v2M5 9h10v8H5z",
+  download: "M10 3v10m0 0l-4-4m4 4l4-4M4 17h12",
+} as const;
+
+function TrustChip({ icon, text }: { icon: keyof typeof TRUST_ICONS; text: string }) {
   return (
-    <div className={styles.stat}>
-      <span className={styles.statValue} style={{ color }}>
-        {value}
-      </span>
-      <span className={styles.statLabel}>{label}</span>
-    </div>
+    <li className={styles.trustChip}>
+      <svg
+        className={styles.trustIcon}
+        viewBox="0 0 20 20"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d={TRUST_ICONS[icon]} />
+      </svg>
+      {text}
+    </li>
   );
 }
 
@@ -536,7 +572,7 @@ export default function PluginCatalogPage() {
   return (
     <Layout
       title="Plugin Catalog"
-      description="Browse reviewed, SHA-pinned plugins for Hermes Agent"
+      description="Give Hermes new powers: reviewed plugins you can install in one click"
     >
       <div className={`${styles.page} ${pickerMode ? styles.pickerMode : ""}`}>
         <header className={styles.hero}>
@@ -553,49 +589,44 @@ export default function PluginCatalogPage() {
               </span>
             </nav>
             <p className={styles.heroSub}>
-              Reviewed, SHA-pinned plugins you can install with one command.
+              Give Hermes new powers. Memory, voice, messaging, browsing, Desktop panes and more,
+              built by the community and reviewed by the Hermes team before it reaches you.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})
                 </span>
               )}
             </p>
+            {!catalogEmpty && (
+              <p className={styles.heroSub} style={{ fontSize: "0.9rem" }}>
+                Built a plugin?{" "}
+                <Link className={styles.heroLink} to={SUBMIT_PLUGIN_URL}>
+                  Submit it to the catalog →
+                </Link>
+              </p>
+            )}
             {meta.generatedAt && !catalogEmpty && (
-              <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
-                Catalog refreshed{" "}
-                <span title={meta.generatedAt}>
+              <p className={styles.heroMeta}>
+                {allPlugins.length} plugins across {Object.keys(categoryCounts).length} categories
+                {" · "}updated{" "}
+                <span
+                  title={
+                    meta.starsFetchedAt
+                      ? `Catalog ${meta.generatedAt}; popularity ranking as of ${meta.starsFetchedAt}`
+                      : meta.generatedAt
+                  }
+                >
                   {formatRelativeTime(meta.generatedAt) || "recently"}
                 </span>
-                {meta.starsFetchedAt && (
-                  <>
-                    {" · "}ranked by GitHub stars as of{" "}
-                    <span title={meta.starsFetchedAt}>
-                      {formatRelativeTime(meta.starsFetchedAt) || "recently"}
-                    </span>
-                  </>
-                )}
               </p>
             )}
 
             {!catalogEmpty && (
-              <div className={styles.statsRow}>
-                <StatCard
-                  value={allPlugins.filter((p) => p.tier === "official").length}
-                  label="Official"
-                  color="#ffd700"
-                />
-                <StatCard
-                  value={allPlugins.filter((p) => p.tier === "community").length}
-                  label="Community"
-                  color="#94a3b8"
-                />
-                <StatCard
-                  value={Object.keys(categoryCounts).length}
-                  label="Categories"
-                  color="#7dd3fc"
-                />
-                <StatCard value={meta.removedCount ?? 0} label="Removed" color="#f87171" />
-              </div>
+              <ul className={styles.trustRow} aria-label="What every listing gets you">
+                <TrustChip icon="check" text="Reviewed by the Hermes team" />
+                <TrustChip icon="lock" text="Installs exactly the version we reviewed" />
+                <TrustChip icon="download" text="One click from Hermes Desktop" />
+              </ul>
             )}
           </div>
         </header>
@@ -619,7 +650,8 @@ export default function PluginCatalogPage() {
               <input
                 ref={searchRef}
                 type="text"
-                placeholder='Search plugins... (press "/" to focus)'
+                placeholder="Search plugins by name or by what you want Hermes to do"
+                title='Tip: press "/" to jump here'
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className={styles.searchInput}
@@ -713,14 +745,9 @@ export default function PluginCatalogPage() {
                 Submissions are open.
               </p>
               <div className={styles.emptyActions}>
-                <a
-                  className={styles.emptyCta}
-                  href={CATALOG_README_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  How to submit a plugin ↗
-                </a>
+                <Link className={styles.emptyCta} to={SUBMIT_PLUGIN_URL}>
+                  How to submit a plugin
+                </Link>
                 <Link className={styles.emptyCtaSecondary} to="/user-guide/features/plugin-catalog">
                   Read the catalog docs
                 </Link>

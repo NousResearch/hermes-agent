@@ -228,6 +228,20 @@ def find_docker() -> Optional[str]:
     return found
 
 
+def docker_runtime_name(executable: str) -> str:
+    """User-facing runtime name (``"Podman"`` / ``"Docker"``) for the CLI at *executable*, so
+    diagnostics and pickers name the runtime actually in use."""
+    return "Podman" if "podman" in os.path.basename(executable).lower() else "Docker"
+
+
+def docker_runtime_start_hint(executable: str) -> str:
+    """How to bring the runtime at *executable* back up, for a "not reachable" message. Docker has
+    a daemon to start; Podman is daemonless (outside Linux it runs inside a VM)."""
+    if docker_runtime_name(executable) != "Podman":
+        return "start Docker and retry"
+    return "run `podman machine start` and retry"
+
+
 # Security flags applied to every container. The container is the security
 # boundary; all caps are dropped and the minimum added back:
 #   DAC_OVERRIDE  - root can write to bind-mounted dirs owned by the host user
@@ -240,7 +254,7 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
-    "--tmpfs", "/tmp:rw,nosuid,size=512m",
+    "--tmpfs", "/tmp:rw,nosuid,size=512m",  # no-tmp: ok — container tmpfs mount spec
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m"]
 
 _DEFAULT_PIDS_LIMIT = "256"  # applied only when the pids cgroup controller is available
@@ -688,6 +702,10 @@ class DockerEnvironment(BaseEnvironment):
             and not workspace_explicitly_mounted)
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
             logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+        # The host directory actually bound at /workspace, if any. Readers that
+        # only hold the env instance (cwd remapping on live envs) use it to
+        # recognize a session workspace registered as a raw host path.
+        self.host_cwd = host_cwd_abs if bind_host_cwd else None
         mount_workspace = not bind_host_cwd and not workspace_explicitly_mounted
 
         writable_args: list[str] = []

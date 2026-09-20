@@ -459,10 +459,22 @@ class SearchMixin:
                 f"an unattended privacy prompt: {skipped}. Search a protected "
                 "folder directly when access is intentional.")
 
+    @staticmethod
+    def _hidden_prune_expr(q_roots: List[str]) -> str:
+        """find clause pruning hidden dirs while keeping an explicitly selected dot-named root
+        (dir or single file) — find echoes each start point as given, so ``! -path`` matches it."""
+        exemptions = "".join(f" ! -path {root}" for root in q_roots)
+        return f"\\( -type d -name '.*'{exemptions} \\) -prune"
+
     def _prune_expr(self, protected_paths: List[str]) -> str:
         """find ``\\( -path A -o -path B \\) -prune`` clause for the protected dirs."""
         terms = " -o ".join(f"-path {self._escape_shell_arg(item)}" for item in protected_paths)
         return f"\\( {terms} \\) -prune"
+
+    def _root_under_hidden_dir(self, path: str) -> bool:
+        """True when the search root or any ancestor is dot-named (``~/.hermes/skills``)."""
+        root = _normalized_filename_search_root(self.env, path or ".", self.cwd)
+        return any(part.startswith(".") and part not in (".", "..") for part in root.replace("\\", "/").split("/"))
 
     def _rg_exclusion_globs(self, path: str) -> List[str]:
         """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
@@ -471,12 +483,13 @@ class SearchMixin:
             out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
         return out
 
-    def _path_exists_probe(self, path: str) -> str:
-        """Stdout of the existence probe: contains "exists" or "not_found"."""
+    def _path_exists_probe(self, path: str) -> ExecuteResult:
+        """Existence probe; stdout contains "exists" or "not_found" (or the probe's
+        ``cwd_error`` when the exec wrapper itself failed)."""
         if self._native_read_enabled():
             full = path if os.path.isabs(path) else os.path.join(getattr(self.env, "cwd", None) or self.cwd, path)
-            return "exists" if os.path.exists(full) else "not_found"
-        return self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found").stdout
+            return ExecuteResult(stdout="exists" if os.path.exists(full) else "not_found")
+        return self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
 
     def _dispatch_search(self, pattern: str, path: str, target: str,
                          file_glob: Optional[str], limit: int, offset: int,
@@ -519,7 +532,7 @@ class SearchMixin:
         existing, missing = [], []
         for p in parts:
             expanded = self._expand_path(p)
-            (existing if "exists" in self._path_exists_probe(expanded) else missing).append(expanded)
+            (existing if "exists" in self._path_exists_probe(expanded).stdout else missing).append(expanded)
         if not existing:
             return None
         if target == "files":
@@ -685,8 +698,7 @@ class SearchMixin:
         # ``./`` so find doesn't parse them as options.
         find_roots = [f"./{root}" if root.startswith("-") else root for root in roots]
         q_roots = [self._escape_shell_arg(root) for root in find_roots]
-        root_exemptions = "".join(f" ! -path {root}" for root in q_roots)
-        hidden_prune = f" \\( -type d -name '.*'{root_exemptions} \\) -prune -o"
+        hidden_prune = f" {self._hidden_prune_expr(q_roots)} -o"
         protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(roots)]
         protected_prune = f" {self._prune_expr(protected_paths)} -o" if protected_paths else ""
         fetch_limit = offset + limit + 1
@@ -898,7 +910,10 @@ class SearchMixin:
         # grep's --exclude-dir matches BASENAMES anywhere, so it can't express "only
         # the home-level Downloads"; route pruning through find's path-scoped -prune.
         protected_paths = self._protected_prune_paths(path)
-        if protected_paths:
+        # grep applies --exclude-dir='.*' to the command-line root too (GNU grep: to
+        # every component of it), so a search rooted under a hidden dir such as
+        # ~/.hermes returns nothing (#18473); find's -prune only sees descendants.
+        if protected_paths or self._root_under_hidden_dir(path):
             return self._search_with_grep_pruned(
                 pattern, path, file_glob, limit, offset, output_mode, context, protected_paths)
         # -H forces filenames; -E matches rg regex behavior; --exclude-dir='.*'
@@ -920,18 +935,16 @@ class SearchMixin:
     def _search_with_grep_pruned(self, pattern: str, path: str, file_glob: Optional[str],
                                  limit: int, offset: int, output_mode: str, context: int,
                                  protected_paths: List[str]) -> SearchResult:
-        """grep fallback with PATH-scoped protected-dir pruning: ``find ... -prune``
-        enumerates files (traversal never enters protected dirs) and hands them to
-        grep via ``-exec {} +``; hidden dirs pruned to mirror ``--exclude-dir='.*'``.
-        Trade-off: find folds grep's exit code, so a hard grep error surfaces as an
-        empty result — acceptable for this darwin-local-broad-search-only branch."""
+        """grep fallback via ``find ... -prune -exec grep {} +``, used when the root needs
+        path-scoped pruning (macOS protected dirs) or is itself under a dot-directory
+        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
+        grep's exit code, so a hard grep error surfaces as an empty result."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
-        find_parts = [
-            "find", self._escape_shell_arg(path or "."),
-            self._prune_expr(protected_paths), "-o",
-            "\\( -type d -name '.*' \\) -prune", "-o",
-            "-type f",
-        ]
+        q_root = self._escape_shell_arg(path or ".")
+        find_parts = ["find", q_root]
+        if protected_paths:
+            find_parts.extend([self._prune_expr(protected_paths), "-o"])
+        find_parts.extend([self._hidden_prune_expr([q_root]), "-o", "-type f"])
         if file_glob:
             find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>/dev/null"])

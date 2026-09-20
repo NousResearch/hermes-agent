@@ -131,9 +131,8 @@ def unregister_gateway_notify(session_key: str) -> None:
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        entry.event.set()
+        for entry in _gateway_queues.pop(session_key, []):
+            entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -162,13 +161,32 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
-
-    for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
-        entry.event.set()
+        # Popping the entry and committing its outcome are ONE critical section: the waiter's
+        # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
+        # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
+        for entry in targets:
+            entry.result = choice
+            if reason:
+                entry.reason = reason
+            entry.event.set()
     return len(targets)
+
+
+def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
+    """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
+    The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
+    idling for the whole approvals.timeout (#112548). False when it is no longer pending."""
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        entry = next((e for e in queue if e.data.get("request_id") == request_id), None)
+        if entry is None:
+            return False
+        queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+        entry.cancelled = cause
+        entry.event.set()
+    return True
 
 
 def list_gateway_approvals(session_key: str) -> list[dict]:
@@ -202,6 +220,12 @@ def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
         return bool(_gateway_queues.get(session_key))
+
+
+def pending_gateway_approval_count() -> int:
+    """Unresolved gateway approvals across every session — a backend blocked on one is not idle."""
+    with _lock:
+        return sum(len(queue) for queue in _gateway_queues.values())
 
 
 def get_pending_gateway_approval(session_key: str) -> dict | None:
@@ -266,12 +290,11 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
-        # the prompt was withdrawn, nobody denied it.
-        entry.cancelled = "the session ended before the prompt was answered"
-        entry.event.set()
+        for entry in _gateway_queues.pop(session_key, []):
+            # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
+            # the prompt was withdrawn, nobody denied it.
+            entry.cancelled = "the session ended before the prompt was answered"
+            entry.event.set()
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
     # finished conversation cannot leak a live interpreter.
@@ -1002,7 +1025,16 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
     if env_type == "docker":
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
+    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+        return True
+    # Plugin backends declare the same classification through the provider ABI (#94400);
+    # fail-soft to False so an unknown or raising backend — or a raising registry
+    # lookup — keeps the guards on rather than propagating out of the approval predicate.
+    try:
+        from agent.terminal_env_registry import provider_flag
+        return bool(provider_flag(env_type, "skip_container_guards", False))
+    except Exception:
+        return False
 
 
 def _user_deny_block(command: str) -> dict | None:
@@ -1136,6 +1168,11 @@ def check_all_command_guards(command: str, env_type: str,
     blocked = _floor_block(command, sudo_guard=True)
     if blocked is not None:
         return blocked
+
+    from agent.terminal_approval_batch import consume_prepared_guard
+    prepared = consume_prepared_guard(command, env_type, has_host_access)
+    if prepared is not None:
+        return prepared
 
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":

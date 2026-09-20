@@ -84,6 +84,21 @@ class TestReasoningOffOneShotOverride:
         agent.reasoning_config = {"enabled": False}
         assert _reasoning_config_for_wire(agent) is None
 
+    def test_mandatory_reasoning_route_steps_a_disable_up_to_the_floor(self):
+        """"Reasoning is mandatory ... cannot be disabled" understands the field: the session's
+        disable becomes the floor effort (closest to what the user asked for), while a config that
+        already reasons still goes out verbatim (cache key preserved)."""
+        from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+        from agent.chat_completion_helpers import _reasoning_config_for_wire
+
+        agent = _AgentStandIn({"enabled": False})
+        agent._reasoning_disable_rejected = True
+        agent._reasoning_floor_required = True
+        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
+
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "high"}
+
 
 @pytest.fixture()
 def loop_agent():

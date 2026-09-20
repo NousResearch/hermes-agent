@@ -36,12 +36,17 @@ _UNUSABLE_JWT_RELOGIN = "Re-authenticate with: hermes auth add nous"
 
 
 def _unusable_invoke_jwt_error(reason: str, *, no_refresh_token: bool = False) -> AuthError:
-    """Shared ``relogin=True`` error for an access token that is not a usable inference JWT."""
+    """Shared ``relogin=True`` error for an access token that is not a usable inference JWT.
+
+    With no refresh token the failure is a state-shape one (nothing to redeem), so it carries the
+    terminal ``nous_auth_missing_refresh_token`` code the pool recognises instead of the JWT
+    ``reason``, which would bench the row as a transient outage (#113718).
+    """
     detail = " and no refresh token is available" if no_refresh_token else ""
     return _nous_err(
         f"Nous Portal access token is not a usable inference JWT ({reason}){detail}. "
         f"{_UNUSABLE_JWT_RELOGIN}",
-        reason, relogin=True)
+        "nous_auth_missing_refresh_token" if no_refresh_token else reason, relogin=True)
 
 
 def _token_fingerprint(token: Any) -> Optional[str]:
@@ -153,19 +158,31 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
     return cleaned.rstrip("/")
 
 
-def _scoped_operator_override(name: str) -> Optional[str]:
-    """An operator routing override (``NOUS_INFERENCE_BASE_URL``, ``HERMES_PORTAL_BASE_URL``)
-    resolved through the profile secret scope, or None.
+def _scoped_operator_override(*names: str) -> Optional[str]:
+    """The first set operator routing override among ``names`` (``NOUS_INFERENCE_BASE_URL``,
+    ``HERMES_PORTAL_BASE_URL`` / its ``NOUS_PORTAL_BASE_URL`` alias), resolved through the profile
+    secret scope, or None.
 
     ``get_secret`` already reads ``os.environ`` for a single-profile process, so the only time it
     raises is a multi-profile call that has lost its profile scope. That call has no authority to
     route on the launch profile's value — returning the ambient env there would send a secondary's
     tokens to the launch profile's Portal or inference host — so the override is simply absent.
+    Absent is not free: default routing then applies, so a non-production deployment's token is
+    spent against the production hosts. One WARNING per lost-scope event names the override; the
+    downstream "ignoring invalid portal_base_url" line never says which caller lost its scope.
     """
     from agent.secret_scope import UnscopedSecretError, get_secret
     try:
-        return get_secret(name)
+        for name in names:
+            value = get_secret(name)
+            if value:
+                return value
+        return None
     except UnscopedSecretError:
+        logger.warning(
+            "nous: %s unreadable — no profile secret scope on a multiplexed call; treating the "
+            "override as absent (default routing applies). The caller needs a profile scope binding.",
+            "/".join(names))
         return None
 
 
@@ -192,8 +209,7 @@ def _nous_portal_env_override() -> Optional[str]:
     secondary's refresh token to the DEFAULT profile's Portal.
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(
-        _scoped_operator_override("HERMES_PORTAL_BASE_URL") or _scoped_operator_override("NOUS_PORTAL_BASE_URL"))
+    return _optional_base_url(_scoped_operator_override("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL"))
 
 
 def _scope_values(raw_scope: Any) -> set[str]:
@@ -775,7 +791,9 @@ def refresh_nous_oauth_from_state(
                 if current_invoke_jwt_status is not None:
                     raise _unusable_invoke_jwt_error(
                         current_invoke_jwt_status, no_refresh_token=True)
-                raise _nous_err("No refresh token is available for Nous Portal.", relogin=True)
+                raise _nous_err(
+                    "No refresh token is available for Nous Portal.", "nous_auth_missing_refresh_token",
+                    relogin=True)
             refreshed = _refresh_access_token(
                 client=client, portal_base_url=state["portal_base_url"],
                 client_id=state["client_id"], refresh_token=refresh_token_value)
@@ -985,7 +1003,8 @@ class _NousRuntimeResolve:
                 if self.merge_shared():
                     self.persist("runtime_shared_merge_missing_access_token")
         if not self.has_access_token():
-            raise _nous_err("No access token found for Nous Portal login.", relogin=True)
+            raise _nous_err(
+                "No access token found for Nous Portal login.", "nous_auth_missing_access_token", relogin=True)
         invoke_jwt_status = self.invoke_jwt_status()
         self.skip_refresh_if_peer_rotated()
         if not (self.force_refresh or invoke_jwt_status is not None):
@@ -1043,7 +1062,7 @@ def _resolve_nous_runtime_credentials(
         _tls_state_from_verify)
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
         if not state:
-            raise _nous_err("Hermes is not logged into Nous Portal.", relogin=True)
+            raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing", relogin=True)
         run = _NousRuntimeResolve(
             auth_store, state, state_source_path, force_refresh=force_refresh,
             stale_access_token=stale_access_token, timeout_seconds=timeout_seconds)
@@ -1261,13 +1280,19 @@ def _pool_first_oauth_status(
 
     Pool first (where `hermes auth` / `hermes model` store device_code tokens), then
     *on_pool_miss* for a pool-derived degraded status, then the legacy state via *resolve*.
+
+    The pool read is an observation (``peek``), not a lease: ``select()`` refreshes an expiring
+    single-use token and, when that speculative POST fails transiently, benches the entry with a
+    persisted cooldown — every credential-gated listing (``/model`` picker, doctor) then shows the
+    provider as unconfigured while the runtime resolver still serves it. Refreshing stays with the
+    runtime resolver reached through *resolve*, whose failures persist nothing.
     """
     from hermes_cli.auth import _auth_file_path
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
-            entry = pool.select()
+            entry = pool.peek()
             if entry is not None:
                 api_key = (
                     getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", ""))

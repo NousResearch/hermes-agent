@@ -736,6 +736,37 @@ class TestValidation:
 
 class TestBackupEdgeCases:
 
+    def test_incomplete_archive_is_kept_but_reported_as_failure(self, tmp_path, monkeypatch, capsys):
+        """A file that cannot be read is skipped, the zip still lands, and the CLI exits 1: a
+        cron/systemd timer must never see a partial archive as success (#101096)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        unreadable = hermes_home / "skills" / "locked.md"
+        unreadable.write_text("secret\n")
+        unreadable.chmod(0)
+        if os.access(unreadable, os.R_OK):
+            pytest.skip("running as root: chmod 0 does not make the file unreadable")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from hermes_cli.backup import _RUN_BACKUP_PREFIX, run_backup
+        from hermes_cli.main import cmd_backup
+
+        out_dir = tmp_path / "b"
+        out_dir.mkdir()
+        good_old = out_dir / f"{_RUN_BACKUP_PREFIX}old.zip"
+        good_old.write_bytes(b"PK")
+        out_zip = out_dir / f"{_RUN_BACKUP_PREFIX}new.zip"
+
+        assert run_backup(Namespace(output=str(out_zip), keep=1)) is False
+        assert out_zip.exists()
+        assert good_old.exists(), "an incomplete run must not rotate the last complete backup out"
+        assert "Backup incomplete" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cmd_backup(Namespace(output=str(tmp_path / "out2.zip"), quick=False))
+        assert exc.value.code == 1
+        unreadable.chmod(0o600)
+        assert run_backup(Namespace(output=str(tmp_path / "out4.zip"))) is True
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """Backup handles empty hermes home (no files to back up)."""

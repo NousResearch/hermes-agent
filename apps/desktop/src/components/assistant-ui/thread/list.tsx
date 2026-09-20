@@ -42,11 +42,13 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
+import { PendingApprovalStack } from '../tool/approval'
 
 import { responseMessageRole, ResponseMessages } from './response-group'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
+import { useTimelineReveal } from './use-timeline-reveal'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -278,11 +280,20 @@ export function buildGroups(signature: string): MessageGroup[] {
 
 // Walk turns newest-first, summing their render weights until the budget is met;
 // everything before the first kept turn is hidden. `minVisible` turns are kept
-// regardless of weight. Returns the index of that first visible group.
-export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: number, minVisible = 0): number {
-  let firstVisible = groups.length
+// regardless of weight (the exempt newest turn counts as one of them). With
+// `exemptNewest` the newest turn is kept AND left out of the sum, so a turn
+// whose weight is still changing cannot move the cut. Returns the index of that
+// first visible group.
+export function firstVisibleGroupIndex(
+  groups: readonly MessageGroup[],
+  budget: number,
+  minVisible = 0,
+  exemptNewest = false
+): number {
+  const budgetedEnd = exemptNewest ? Math.max(0, groups.length - 1) : groups.length
+  let firstVisible = budgetedEnd
 
-  for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
+  for (let i = budgetedEnd - 1, weight = 0; i >= 0; i--) {
     weight += groups[i].weight
     firstVisible = i
 
@@ -460,7 +471,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     targetScrollTop: resolveThreadScrollTarget
   })
 
-  const { olderAvailable, expandWindow } = useTranscriptWindow()
+  const { olderAvailable, expandWindow, isHistorical, returnToLatest } = useTranscriptWindow()
 
   useEffect(() => {
     $mountedTranscriptPanes.set($mountedTranscriptPanes.get() + 1)
@@ -577,15 +588,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }))
   }, [groups, weightSignature])
 
-  // The turn floor applies to a real page only. During the first-paint budget
-  // the point is a small synchronous commit; forcing 8 turns into it would put
-  // back exactly the freeze FIRST_PAINT_BUDGET exists to avoid, and the rAF
-  // backfill a frame later fills them in anyway.
-  const hiddenCount = firstVisibleGroupIndex(
-    weightedGroups,
-    renderBudget,
-    renderBudget >= paneBudget ? MIN_VISIBLE_GROUPS : 0
-  )
+  // The turn floor and the newest-turn exemption apply to a real page only.
+  // During the first-paint budget the point is a small synchronous commit;
+  // forcing 8 turns into it — or a whole extra turn behind an unbudgeted
+  // newest one — would put back exactly the freeze FIRST_PAINT_BUDGET exists
+  // to avoid, and the rAF backfill a frame later fills them in anyway.
+  //
+  // On a real page the newest turn is exempt from the history budget so its
+  // growing — then completed — weight never advances the cut boundary. A
+  // moving cut unmounts older rows, shrinks scrollHeight, and the browser
+  // clamp looks like a user scroll-up to use-stick-to-bottom.
+  const fullPage = renderBudget >= paneBudget
+
+  const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget, fullPage ? MIN_VISIBLE_GROUPS : 0, fullPage)
 
   // Memoized for IDENTITY, not to save the slice: `rows` below keys off this
   // array, and an inline slice handed it a fresh array every render — so the
@@ -668,8 +683,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const surfaceId = useComposerSurfaceId()
   const scrollSessionId = sessionId ?? surfaceId
   useEffect(
-    () => publishThreadAtBottom(isAtBottom, { paneVisible, sessionId: scrollSessionId }),
-    [isAtBottom, paneVisible, scrollSessionId]
+    () => publishThreadAtBottom(isAtBottom && !isHistorical, { paneVisible, sessionId: scrollSessionId }),
+    [isAtBottom, isHistorical, paneVisible, scrollSessionId]
   )
   useEffect(
     () => () => resetPublishedThreadScroll({ paneVisible, sessionId: scrollSessionId }),
@@ -680,13 +695,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(
     () =>
       onScrollToBottomRequest(() => {
+        if (isHistorical) {returnToLatest?.()}
+
         if (jumpRestoreRef.current) {
           jumpRestoreRef.current()
         } else {
           void scrollToBottom()
         }
       }, scrollSessionId),
-    [scrollToBottom, scrollSessionId]
+    [scrollToBottom, scrollSessionId, isHistorical, returnToLatest]
   )
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
@@ -910,8 +927,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     stopScroll()
 
+    // Every scrollTop this effect writes is read back here, so the `scroll`
+    // event it fires is recognised as ours below and cannot cancel the restore.
+    let ownScrollTop: number | null = null
+
+    const applyTarget = (node: HTMLElement) => {
+      node.scrollTop = threadScrollTargetTop(target, node)
+      ownScrollTop = node.scrollTop
+    }
+
     applyRestoreRef.current = () => {
-      el.scrollTop = threadScrollTargetTop(target, el)
+      applyTarget(el)
     }
 
     applyRestoreRef.current()
@@ -945,7 +971,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       stableFrames = height === lastHeight && !clamped ? stableFrames + 1 : 0
       lastHeight = height
-      node.scrollTop = threadScrollTargetTop(target, node)
+      applyTarget(node)
 
       // Most session switches are synchronous and stabilize within 2 frames;
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
@@ -1005,13 +1031,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       // ResizeObserver runs before paint; waiting for the next settle rAF
       // exposes a frame at the old offset when deferred markdown grows.
-      // Reading offsets still ignore composer-only resizes once settled.
-      if (
-        !loadSettledRef.current ||
-        target.kind === 'bottom' ||
-        shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)
-      ) {
-        el.scrollTop = threadScrollTargetTop(target, el)
+      // Once settled, only a transcript-row height change may re-pin — for a
+      // bottom target too: a composer-only resize (every keystroke) used to
+      // yank a view the user had moved away from the bottom back down.
+      if (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)) {
+        applyTarget(el)
         liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       }
     })
@@ -1046,6 +1070,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
     }
 
+    // A position neither this effect nor use-stick-to-bottom produced is the
+    // user's (scrollbar drag, rail jump, find-in-page reveal) and ends the
+    // restore like wheel input does — otherwise the next ResizeObserver tick
+    // would rewrite scrollTop over a genuine scroll.
+    const onScroll = () => {
+      if (el.scrollTop === ownScrollTop || el.scrollTop === threadScrollTargetTop(target, el)) {
+        return
+      }
+
+      cancelRestore()
+    }
+
     jumpRestoreRef.current = () => {
       cancelRestore()
       // A jump replaces reading intent, including an in-flight prepend anchor.
@@ -1055,19 +1091,21 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       liveScrollStateRef.current = target
 
       applyRestoreRef.current = () => {
-        el.scrollTop = threadScrollTargetTop(target, el)
+        applyTarget(el)
       }
 
       loadSettledRef.current = true
-      el.scrollTop = threadScrollTargetTop(target, el)
+      applyTarget(el)
 
       if (contentRef.current) {
         resizeObserver.observe(contentRef.current)
       }
+
       void scrollToBottom('instant')
     }
 
     el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('pointerdown', cancelRestore, { passive: true })
     el.addEventListener('keydown', cancelRestore)
 
@@ -1077,6 +1115,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       resizeObserver.disconnect()
       jumpRestoreRef.current = null
       el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('scroll', onScroll)
       el.removeEventListener('pointerdown', cancelRestore)
       el.removeEventListener('keydown', cancelRestore)
       cancelAnimationFrame(rafId)
@@ -1171,6 +1210,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       setRenderBudget(budget => budget + paneBudget)
     }
   }, [anchorBeforePrepend, growWindow, hiddenCount, olderAvailable, paneBudget])
+
+  useTimelineReveal({
+    viewport: scrollRef,
+    groups: weightedGroups,
+    hiddenCount,
+    renderBudget,
+    olderAvailable,
+    expandWindow,
+    sessionKey,
+    revealBudget: budget => setRenderBudget(current => Math.max(current, budget)),
+    prepare: () => {
+      cancelRestoreRef.current?.()
+      applyRestoreRef.current = null
+      restoreFromBottomRef.current = null
+      loadSettledRef.current = true
+      stopScroll()
+    }
+  })
 
   // Scroll/wheel at the top edge pages older turns through the same showEarlier
   // path as the button. Wheel is required because browsers emit no `scroll`
@@ -1341,40 +1398,41 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         data-slot="aui_thread-viewport"
         ref={scrollRef as React.RefCallback<HTMLDivElement>}
       >
-        {renderEmpty ? (
-          <div
-            className="mx-auto grid h-full w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
-            data-slot="aui_thread-content"
-          >
-            {emptyPlaceholder}
-          </div>
-        ) : (
-          <div
-            className={cn('mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6', threadContentTopPad)}
-            data-slot="aui_thread-content"
-            ref={contentRef as React.RefCallback<HTMLDivElement>}
-          >
-            {(hiddenCount > 0 || olderAvailable) && (
-              <button
-                className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-                onClick={showEarlier}
-                type="button"
-              >
-                {t.assistant.thread.showEarlier}
-              </button>
-            )}
-            {rows}
-            {loadingIndicator}
-            {clampToComposer && (
-              <div
-                aria-hidden="true"
-                className="shrink-0"
-                data-slot="aui_composer-clearance"
-                style={{ height: 'var(--thread-last-message-clearance)' }}
-              />
-            )}
-          </div>
-        )}
+        <div
+          className={cn(
+            'mx-auto flex min-h-full w-full max-w-(--composer-width) min-w-0 flex-col px-6',
+            renderEmpty ? 'py-8' : threadContentTopPad
+          )}
+          data-slot="aui_thread-content"
+          ref={contentRef as React.RefCallback<HTMLDivElement>}
+        >
+          {!renderEmpty && (hiddenCount > 0 || olderAvailable) && (
+            <button
+              className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+              onClick={showEarlier}
+              type="button"
+            >
+              {t.assistant.thread.showEarlier}
+            </button>
+          )}
+          {renderEmpty ? (
+            <div className="grid flex-1 grid-rows-[minmax(0,1fr)_auto] gap-(--conversation-turn-gap)">
+              {emptyPlaceholder}
+            </div>
+          ) : (
+            rows
+          )}
+          <PendingApprovalStack />
+          {!renderEmpty && loadingIndicator}
+          {!renderEmpty && clampToComposer && (
+            <div
+              aria-hidden="true"
+              className="shrink-0"
+              data-slot="aui_composer-clearance"
+              style={{ height: 'var(--thread-last-message-clearance)' }}
+            />
+          )}
+        </div>
       </div>
     </div>
   )

@@ -163,6 +163,43 @@ class TestUsageAccountSection:
         assert "📈 **Account limits**" in result
 
     @pytest.mark.asyncio
+    async def test_usage_command_falls_back_to_configured_provider_without_history(self, monkeypatch):
+        """#15167: no agent, no persisted route, empty transcript -> still fetch account limits
+        for the configured provider instead of the bare "no data" stub."""
+        runner = _make_runner(SK)
+        runner._session_db = AsyncSessionDB(MagicMock())
+        runner._session_db._db.get_session.return_value = {}
+        runner._session_db._db.get_recent_session_model_route.return_value = None
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-fresh"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = []
+
+        calls = []
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls.append({"fn": fn, "args": args, "kwargs": kwargs})
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"provider": "openai-codex"}})
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 **Account limits**", "Provider: openai-codex (Plus)",
+                                              "Weekly: 91% remaining (9% used)"],
+        )
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+
+        result = await runner._handle_usage_command(MagicMock())
+
+        assert any(c["args"] == ("openai-codex",) for c in calls)
+        assert "📈 **Account limits**" in result and "Weekly: 91% remaining" in result
+
+    @pytest.mark.asyncio
     async def test_usage_command_prefers_recent_persisted_route(self, monkeypatch):
         runner = _make_runner(SK)
         runner._session_db = AsyncSessionDB(MagicMock())

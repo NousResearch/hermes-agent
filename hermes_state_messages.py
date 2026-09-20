@@ -9,7 +9,9 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
+from agent.context_compressor import (
+    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, _is_checkpoint_item, _newest_checkpoint_carrier,
+    split_user_originated_turn)
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
@@ -36,12 +38,15 @@ _BUMP_GENERATION_SQL = """
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
-_DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?"
+_DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
 _SET_DISPLAY_META_SQL = "UPDATE messages SET display_metadata = ? WHERE id = ?"
 _ARCHIVE_ACTIVE_SQL = "UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1"
+_SHADOWED_CHECKPOINT_ROWS_SQL = ("SELECT id, codex_reasoning_items FROM messages WHERE session_id = ? AND active = 1 "
+    "AND role = 'assistant' AND id < ? AND codex_reasoning_items LIKE '%\"compaction\"%'")
+_SET_CODEX_REASONING_SQL = "UPDATE messages SET codex_reasoning_items = ? WHERE id = ?"
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
 
 
@@ -314,7 +319,9 @@ class SessionMessagesMixin:
         delegation_id = metadata.get("delegation_id")
         if not delegation_id:
             raise ValueError("Delegation delivery requires a stable delegation_id")
-        msg = {"content": content, "display_kind": "async_delegation_complete", "display_metadata": metadata}
+        msg = {"content": content,
+               "display_kind": "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete",
+               "display_metadata": metadata}
         params = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
 
         def _do(conn):
@@ -324,7 +331,7 @@ class SessionMessagesMixin:
                     SELECT s.parent_session_id FROM sessions s JOIN lineage l ON s.id = l.id
                     JOIN sessions p ON p.id = s.parent_session_id WHERE p.end_reason = 'compression'
                 ) SELECT m.id FROM messages m JOIN lineage l ON m.session_id = l.id
-                WHERE m.display_kind = 'async_delegation_complete'
+                WHERE m.display_kind IN ('async_delegation_complete', 'hidden')
                 AND json_extract(m.display_metadata, '$.delegation_id') = ?
                 AND coalesce(json_extract(m.display_metadata, '$.delivery_notice'), '') = ? LIMIT 1""",
                 (session_id, delegation_id, metadata.get("delivery_notice", ""))).fetchone()
@@ -389,11 +396,12 @@ class SessionMessagesMixin:
                              author: str = "user") -> Optional[List[Dict[str, Any]]]:
         """Set (``emoji=None``: clear) *author*'s reaction. Tapback semantics: one per author per message;
         the same emoji again clears, a different one replaces. Returns the list after the write, or
-        ``None`` for a foreign row."""
+        ``None`` for a row outside the session's visible resume lineage (see ``_reaction_row_query``)."""
         if not session_id or message_row_id is None:
             return None
+        sql, params = self._reaction_row_query(session_id, message_row_id)
         def _do(conn):
-            row = conn.execute(_DISPLAY_META_ROW_SQL, (message_row_id, session_id)).fetchone()
+            row = conn.execute(sql, params).fetchone()
             if row is None:
                 return None
             meta = self._decode_display_metadata(row[0]) or {}
@@ -414,19 +422,32 @@ class SessionMessagesMixin:
         """Reaction list persisted on one message row (never ``None``)."""
         if not session_id or message_row_id is None:
             return []
-        row = self._read_one(_DISPLAY_META_ROW_SQL, (message_row_id, session_id))
+        row = self._read_one(*self._reaction_row_query(session_id, message_row_id))
         return self._reaction_list(self._decode_display_metadata(row[0])) if row is not None else []
+
+    def _reaction_row_query(self, session_id: str, message_row_id: int) -> Tuple[str, tuple]:
+        """A reaction addresses a row the client can SEE, and a display resume materializes the whole
+        compression lineage (active + compacted rows, with row ids) — so a row is "in this session" when
+        its owner is any lineage segment, not only the tip, and a rewound row is not. Explicit ``/branch``
+        copies keep their own rows (``_resume_lineage_ids``)."""
+        lineage = self._resume_lineage_ids(session_id)
+        return _DISPLAY_META_ROW_SQL.format(ids=_placeholders(lineage)), (message_row_id, *lineage)
 
     def take_unseen_reactions(self, session_id: str, *, author: str = "user") -> List[Dict[str, Any]]:
         """Return *author*'s not-yet-surfaced reactions and mark them seen. Reactions are announced on the
-        NEXT user turn (never by rewriting the reacted message: cache-safe); ``seen`` makes it exactly once."""
+        NEXT user turn (never by rewriting the reacted message: cache-safe); ``seen`` makes it exactly once.
+        Include compaction-archived history that remains visible, but exclude rewound/superseded rows."""
         if not session_id:
             return []
+        lineage = self._resume_lineage_ids(session_id)
         def _do(conn):
             pending = []
+            # Only reaction-bearing rows cross into Python: display_metadata also carries delivery /
+            # attachment markers on most rows, and the lineage scan grows with the session's age.
             for row in conn.execute("SELECT id, role, content, display_metadata FROM messages "
-                    "WHERE session_id = ? AND active = 1 AND display_metadata IS NOT NULL ORDER BY id",
-                    (session_id,)).fetchall():
+                    f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
+                    f"AND {_sql_json_extract('display_metadata', '$.' + self.REACTIONS_METADATA_KEY)} IS NOT NULL "
+                    "ORDER BY id", tuple(lineage)).fetchall():
                 meta = self._decode_display_metadata(row["display_metadata"])
                 reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
                 if not isinstance(reactions, list):
@@ -490,7 +511,26 @@ class SessionMessagesMixin:
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
+        carrier = _newest_checkpoint_carrier(messages, "codex_reasoning_items")
+        if carrier >= 0 and isinstance(messages[carrier].get("_row_id"), int):
+            self._drop_shadowed_checkpoint_rows(conn, session_id, messages[carrier]["_row_id"])
         return inserted, tool_calls_total
+
+    def _drop_shadowed_checkpoint_rows(self, conn, session_id: str, carrier_row_id: int) -> int:
+        """Rewrite older active assistant rows so only the row *carrier_row_id* keeps a ``type: "compaction"``
+        checkpoint (durable twin of ``context_compressor.drop_shadowed_checkpoints``). Under native compaction
+        every assistant response re-persists a ~120 KB checkpoint the wire builder will never replay once a
+        newer one lands, and local compaction — the only other prune site — rarely fires (#102374).
+        Non-checkpoint items stay; returns rows rewritten."""
+        rewritten = 0
+        for row_id, raw in conn.execute(_SHADOWED_CHECKPOINT_ROWS_SQL, (session_id, carrier_row_id)).fetchall():
+            items = _json_or(raw, None, "Ignoring malformed codex_reasoning_items on message row")
+            if not isinstance(items, list) or not any(_is_checkpoint_item(item) for item in items):
+                continue
+            kept = [item for item in items if not _is_checkpoint_item(item)]
+            conn.execute(_SET_CODEX_REASONING_SQL, (self._reasoning_json_text(kept), row_id))
+            rewritten += 1
+        return rewritten
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
         archive_dropped: bool = False, reject_active_turn_lease: bool = False) -> None:
@@ -681,6 +721,17 @@ class SessionMessagesMixin:
             "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
             "AND role = 'user' AND active = 1 AND content IS ?",
             (_scrub_surrogates(api_content), row_id, session_id, self._encode_content(content)))
+
+    def set_user_message_content(self, session_id: str, row_id: int, content: Any) -> int:
+        """Rewrite the content of ONE known active user row. Used when a user turn was written at submit
+        time (before the agent ran) and the turn prologue then rewrote the prompt it persists (@-file
+        expansion, native image parts): the early row must show what the transcript will replay, not the
+        raw keystrokes, and the turn must not append a second row for the same input."""
+        if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+            return 0
+        return self._write_rowcount(
+            "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
+            (self._encode_content(content), row_id, session_id))
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
@@ -1281,10 +1332,11 @@ class SessionMessagesMixin:
             "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
             (session_id, platform_message_id)) is not None
 
-    def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
-        """True when *session* is a branch, delegate, or tool child of its parent. Markers only count when they
-        point at ``parent_session_id``: compression copies ``model_config`` onto the continuation, so
-        presence-only matching would misclassify it (same binding as ``_NON_CONTINUATION_CHILD_FILTER_SQL``)."""
+    def _is_explicit_fork_child_row(self, session: Dict[str, Any], *, include_reset: bool = False) -> bool:
+        """True when *session* is a branch, delegate, or tool child of its parent (``include_reset``: also a
+        reset fork). Markers only count when they point at ``parent_session_id``: compression copies
+        ``model_config`` onto the continuation, so presence-only matching would misclassify it (same binding
+        as ``_NON_CONTINUATION_CHILD_FILTER_SQL``)."""
         if session.get("source") == "tool":
             return True
         cfg = session.get("model_config")
@@ -1296,6 +1348,8 @@ class SessionMessagesMixin:
         if not isinstance(cfg, dict):
             return False
         markers = (cfg.get("_branched_from"), cfg.get("_delegate_from"))
+        if include_reset:
+            markers += (cfg.get("_reset_from"),)
         parent_id = session.get("parent_session_id")
         return parent_id in markers if parent_id else any(m is not None for m in markers)
 

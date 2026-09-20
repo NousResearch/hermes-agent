@@ -73,6 +73,7 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2Icon } from '@/lib/icons'
+import { isMacPlatform } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
@@ -844,7 +845,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
             <div
               aria-label={copy.editMessage}
               autoCapitalize="off"
-              autoCorrect="off"
+              // Match the main composer: allow macOS replacements, not spellcheck.
+              autoCorrect={isMacPlatform() ? 'on' : 'off'}
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
                 '**:data-ref-text:cursor-default',
@@ -921,7 +923,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               // the edit silently never sends. The restore button guards the
               // same way.
               onPointerDown={event => event.preventDefault()}
-              title={copy.sendEdited}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

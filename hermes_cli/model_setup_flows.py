@@ -113,14 +113,14 @@ def _model_flow_moa(config, current_model=""):
 
     names = list(presets.keys())
     default_name = moa.get("default_preset") or names[0]
-    # Rows show the aggregator so the picker is informative before drilling in.
+    # Rows show the aggregator as the acting/billed model so the picker is informative before drilling in.
     rows = []
     for n in names:
         agg = presets[n].get("aggregator") or {}
         agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
         ref_count = len(presets[n].get("reference_models") or [])
         suffix = "  ← default" if n == default_name else ""
-        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+        rows.append(f"{n}  (acting: {agg_label}, {ref_count} refs){suffix}")
     default_idx = names.index(default_name) if default_name in names else 0
 
     title = "Select a Mixture of Agents preset:"
@@ -151,11 +151,18 @@ def _model_flow_moa(config, current_model=""):
     _save_model_choice(selected_name)
 
     preset = presets[selected_name]
-    _say("", f"Default model set to: {selected_name} (via Mixture of Agents)", f"  Preset: {selected_name}", "  Reference models:")
+    _say(
+        "",
+        f"Default model set to: {selected_name} (via Mixture of Agents)",
+        f"  Preset: {selected_name}",
+        "  Reference models (advise once per user turn):",
+    )
     for i, slot in enumerate(preset.get("reference_models") or [], start=1):
         print(f"    {i}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
-    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+    print(
+        f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step and carries almost all of the cost)"
+    )
 
 
 def _nous_login_args(args) -> argparse.Namespace:
@@ -836,14 +843,6 @@ def _ollama_cloud_models(pconfig, curated, api_key, base_url):
     return model_list
 
 
-def _opencode_free_models(pconfig, curated, api_key, base_url):
-    """Keyless tier: the curated list is synced against anonymous live probes (models.dev's
-    cost.input==0 filter lags reality)."""
-    if curated:
-        print(f'  Showing {len(curated)} keyless free models — use "Enter custom model name" for others.')
-    return curated
-
-
 def _novita_models(pconfig, curated, api_key, base_url):
     """Novita: live first, then models.dev, then curated."""
     from hermes_cli.models import fetch_api_models
@@ -863,16 +862,17 @@ def _novita_models(pconfig, curated, api_key, base_url):
 _SPECIAL_MODEL_LISTS = {
     "lmstudio": _lmstudio_models,
     "ollama-cloud": _ollama_cloud_models,
-    "opencode-free": _opencode_free_models,
     "novita": _novita_models}
 
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
     """Model list for an API-key provider: models.dev registry (cached, agentic/tool-capable filter)
-    → curated static list (offline insurance) → live /models probe (small providers without
-    models.dev data). Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
+    → curated static list (offline insurance) → provider-owned catalog (``ProviderProfile.fetch_models``
+    merged with ``fallback_models`` exactly like the ``/model`` picker's
+    ``models._profile_live_catalog``; generic /models probe for unregistered providers).
+    Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, merge_profile_catalog
     curated = _PROVIDER_MODELS.get(provider_id, [])
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
@@ -889,6 +889,21 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         # Substantial curated list — use it directly, skip live probe
         _show_curated(curated)
         return curated
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider_id)
+    if profile is not None:
+        # The profile owns endpoint (models_url), headers and response shape; a failing catalog
+        # degrades to fallback_models the same way the picker does.
+        try:
+            live_models = profile.fetch_models(api_key=api_key_for_probe, base_url=effective_base)
+        except Exception:
+            live_models = None
+        model_list = merge_profile_catalog(provider_id, profile, live_models) or []
+        if live_models:
+            _report_live_models(model_list, f"{pconfig.name} API")
+        else:
+            _show_curated(model_list)
+        return model_list
     live_models = fetch_api_models(api_key_for_probe, effective_base)
     if live_models and len(live_models) >= len(curated):
         _report_live_models(live_models, f"{pconfig.name} API")
@@ -905,17 +920,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
-    is_opencode = provider_id in {"opencode-zen", "opencode-go", "opencode-free"}
+    is_opencode = provider_id in {"opencode-zen", "opencode-go"}
 
-    # OpenCode Free is keyless — the tier is served anonymously and any unrecognized
-    # bearer 401s, so there is no key to prompt for.
-    if provider_id == "opencode-free":
-        print("  OpenCode Free is keyless — no API key or account needed.")
-        existing_key = ""
-    else:
-        _, existing_key, abort = _ensure_flow_api_key(provider_id, pconfig)
-        if abort:
-            return
+    _, existing_key, abort = _ensure_flow_api_key(provider_id, pconfig)
+    if abort:
+        return
     if provider_id == "gemini" and existing_key and not _gemini_tier_ok(existing_key, pconfig, base_url_env):
         return
 

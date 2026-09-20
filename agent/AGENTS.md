@@ -39,7 +39,8 @@ Each phase of an iteration is its own sibling, so a change to (say) overflow han
 ~600-line file: `turn_preflight*`, `turn_iteration_prep`, `turn_request_assembly`/`turn_api_request`,
 `turn_api_call`, `turn_api_error`, `turn_response_intake`/`turn_response_check`,
 `turn_empty_response`, `turn_tool_round`/`turn_tool_validation`, `turn_overflow`,
-`turn_truncation`, `turn_context_compaction`, `turn_recovery`, `turn_retry_state`,
+`turn_truncation`, `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
+(post-exhaustion wait-and-retry ladder), `turn_retry_state`,
 `turn_stop_gates`, `turn_liveness`, `turn_usage`, `turn_final_response`, `turn_finalizer`,
 `turn_summary`. Find the phase with `grep -rn "def X" agent/turn_*.py`.
 
@@ -82,7 +83,10 @@ Two layers: gateway session hygiene (85% threshold) and the agent `ContextCompre
 configurable; per-model overrides; failure cooldown after provider-proven overflow). The algorithm
 prunes old tool results first (no LLM call), then picks boundaries, then generates a structured
 summary with the `auxiliary` compression model. In-place compaction keeps a single stable session
-id; native Responses/Codex compaction paths are provider-specific. Compression is the sanctioned
+id; native Responses/Codex compaction paths are provider-specific. A stalled summary stream retries
+once on `auxiliary.compression.fallback_chain`, and a repeated stall (a stall-class failure already on
+the cooldown ladder) ends with the deterministic fallback summary through the same pipeline — never a
+prune committed outside the lease/fence. Compression is the sanctioned
 cache break — keep it the only one. Full detail:
 `website/docs/developer-guide/context-compression-and-caching.md`.
 

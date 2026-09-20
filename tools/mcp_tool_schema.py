@@ -93,15 +93,12 @@ def _repair_object_shape(node):
     if repaired.get("type") == "object":
         if not isinstance(repaired.get("properties"), dict):
             repaired["properties"] = {}
+        # Always a list: a missing/non-list ``required`` reads as ``null`` on strict
+        # OpenAI-compatible backends (#56123); ``[]`` is valid everywhere (Gemini included).
         required = repaired.get("required")
-        if isinstance(required, list):
-            props = repaired.get("properties") or {}
-            valid = [r for r in required if isinstance(r, str) and r in props]
-            if len(valid) != len(required):
-                if valid:
-                    repaired["required"] = valid
-                else:
-                    repaired.pop("required", None)
+        props = repaired.get("properties") or {}
+        repaired["required"] = ([r for r in required if isinstance(r, str) and r in props]
+                                if isinstance(required, list) else [])
     return repaired
 
 

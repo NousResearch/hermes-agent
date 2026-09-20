@@ -250,17 +250,11 @@ def _spawn_detached_gateway(home: Path) -> bool:
 
 
 def _read_multiplex_flag(default_home: Path) -> bool:
-    from gateway.config import _env_multiplex_profiles_override
-    env = _env_multiplex_profiles_override()
-    if env is not None:
-        return env
-    cfg_path = default_home / "config.yaml"
-    if not cfg_path.exists():
-        return False
-    from hermes_cli.config import read_user_config_raw
-    cfg = read_user_config_raw(cfg_path) or {}
-    gateway_section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
-    return bool(cfg.get("multiplex_profiles") or gateway_section.get("multiplex_profiles"))
+    """The operator's EXPLICIT opt-in only. The unset default (on) is settled by the default gateway at
+    boot and refused while a secondary runs its own gateway — exactly the fleet this command folds —
+    so the plan reads it as "not yet multiplexed" and the migration proceeds."""
+    from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+    return explicit_multiplex_flag(default_home) is True
 
 
 def _write_multiplex_flag(default_home: Path, value: bool) -> None:

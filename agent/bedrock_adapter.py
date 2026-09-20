@@ -127,6 +127,7 @@ def reset_client_cache():
     _bedrock_runtime_client_cache.clear()
     _bedrock_control_client_cache.clear()
     _bedrock_clients_by_home.clear()
+    _inference_profile_model_cache.clear()
 
 
 def invalidate_runtime_client(region: str) -> bool:
@@ -438,6 +439,9 @@ def _model_supports_tool_use(model_id: str) -> bool:
 
 
 def _model_supports_prompt_cache(model_id: str) -> bool:
+    # An application-inference-profile ARN names no model: match on the wrapped model (cached lookup).
+    if _APPLICATION_PROFILE_ARN_RE.search(model_id):
+        model_id = _resolve_inference_profile_model_id(model_id)
     return any(pattern in model_id.lower() for pattern in _CACHE_POINT_PATTERNS)
 
 
@@ -813,7 +817,10 @@ def stream_converse_with_callbacks(
     """boto3 ``converse_stream()`` response + callbacks → the ``normalize_converse_response()`` shape.
     ``on_text_delta`` only fires while no toolUse block has been seen (as on the Anthropic/chat_completions
     paths); ``on_interrupt_check`` True stops streaming; ``on_event`` fires for EVERY event before branching
-    and its exceptions are swallowed so a watchdog hook can never abort the stream."""
+    and its exceptions are swallowed so a watchdog hook can never abort the stream.
+
+    Blocks are keyed by the ``contentBlockIndex`` Bedrock stamps on every contentBlockStart/Delta/Stop:
+    text blocks get NO contentBlockStart, so a counter keyed on starts shredded them (#108200)."""
     parts = _ResponseParts()
     stream_blocks: Dict[int, Dict[str, Any]] = {}
     current_block_index: Optional[int] = None
@@ -823,9 +830,13 @@ def stream_converse_with_callbacks(
     stop_reason = "end_turn"
     usage_data: Dict[str, int] = {}
 
-    def current_block(default: Dict[str, Any]) -> Dict[str, Any]:
-        idx = current_block_index if current_block_index is not None else len(stream_blocks)
-        return stream_blocks.setdefault(idx, default)
+    def block_index(payload: Dict[str, Any], *, new_block: bool = False) -> int:
+        """Index of the block a contentBlock* event addresses. Without ``contentBlockIndex`` (test doubles,
+        proxies) a start opens a fresh slot and a delta/stop continues the current one."""
+        idx = payload.get("contentBlockIndex")
+        if isinstance(idx, int):
+            return idx
+        return len(stream_blocks) if new_block or current_block_index is None else current_block_index
 
     def flush_text() -> None:
         if current_text_buffer:
@@ -840,20 +851,22 @@ def stream_converse_with_callbacks(
             break
         if "contentBlockStart" in event:
             start_event = event["contentBlockStart"]
-            current_block_index = start_event.get("contentBlockIndex", len(stream_blocks))
+            idx = current_block_index = block_index(start_event, new_block=True)
             start = start_event.get("start", {})
             if "toolUse" in start:
                 has_tool_use = True
                 flush_text()
                 current_tool = {"toolUseId": start["toolUse"].get("toolUseId", ""), "name": start["toolUse"].get("name", ""), "input_json": ""}
-                stream_blocks[current_block_index] = _tool_use_block(current_tool["toolUseId"], current_tool["name"], {})
+                stream_blocks[idx] = _tool_use_block(current_tool["toolUseId"], current_tool["name"], {})
                 if on_tool_start:
                     on_tool_start(current_tool["name"])
         elif "contentBlockDelta" in event:
-            delta = event["contentBlockDelta"].get("delta", {})
+            delta_event = event["contentBlockDelta"]
+            idx = current_block_index = block_index(delta_event)
+            delta = delta_event.get("delta", {})
             if "text" in delta:
                 text = delta["text"]
-                block = current_block({"text": ""})
+                block = stream_blocks.setdefault(idx, {"text": ""})
                 block["text"] = block.get("text", "") + text
                 current_text_buffer.append(text)
                 if on_text_delta and not has_tool_use:
@@ -863,14 +876,16 @@ def stream_converse_with_callbacks(
             elif "reasoningContent" in delta:
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict) and (reasoning.get("text", "") or _encode_redacted(reasoning.get("redactedContent"))):
-                    block = current_block({"reasoningContent": {}}).setdefault("reasoningContent", {})
+                    block = stream_blocks.setdefault(idx, {"reasoningContent": {}}).setdefault("reasoningContent", {})
                     parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
         elif "contentBlockStop" in event:
+            idx = block_index(event["contentBlockStop"])
+            current_block_index = None  # a following index-less delta opens a fresh slot, not this one
             if current_tool is not None:
                 input_dict = _parse_tool_args(current_tool["input_json"])  # "" → {} via the JSON-error path
                 parts.tool_calls.append(_tool_call_ns(current_tool["toolUseId"], current_tool["name"], input_dict))
-                if current_block_index is not None and current_block_index in stream_blocks:
-                    stream_blocks[current_block_index]["toolUse"]["input"] = input_dict
+                if "toolUse" in stream_blocks.get(idx, {}):
+                    stream_blocks[idx]["toolUse"]["input"] = input_dict
                 current_tool = None
             else:
                 flush_text()
@@ -1049,6 +1064,8 @@ def _extract_provider_from_arn(arn: str) -> str:
 # substring, so versioned entries win over the generic "anthropic.claude-opus-4".
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html
+    "xai.grok-4.6": 500_000,
     # Anthropic Claude: 1M GA vs 200K. The 1M entries must match agent/model_metadata.py
     # DEFAULT_CONTEXT_LENGTHS or context compresses early.
     **dict.fromkeys((
@@ -1110,11 +1127,56 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
 
 def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
     """Context window: live probe (if ``probe`` and ``region``) → static table → default. The table is fallback
-    only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4")."""
+    only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4").
+    An application-inference-profile ARN is first resolved to the model it wraps (#114476)."""
+    profile_arn = model_id if _APPLICATION_PROFILE_ARN_RE.search(model_id) else ""
+    if profile_arn:
+        model_id = _resolve_inference_profile_model_id(profile_arn, region)
     if probe and region and (probed := probe_bedrock_context_length(model_id, region)):
         return probed
     matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
-    return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)] if matches else BEDROCK_DEFAULT_CONTEXT_LENGTH
+    if matches:
+        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+    if profile_arn:
+        logger.warning(
+            "Bedrock inference profile %s resolved no known model window; using the %s default. "
+            "Grant bedrock:GetInferenceProfile or set model.context_length explicitly if the "
+            "wrapped model has a larger window.",
+            profile_arn,
+            f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
+        )
+    return BEDROCK_DEFAULT_CONTEXT_LENGTH
+
+
+# An application-inference-profile ARN (cost-allocation wrapper) carries an opaque id, so the probe
+# error text and the static substring table both miss and the 128k default silently applies
+# (#114476). System-defined `inference-profile/us.anthropic...` ARNs embed the model id and need no
+# lookup. The ARN's own region (field 4) is authoritative for the control-plane call: the runtime
+# region / base_url may differ, and an empty region must not skip the lookup because the
+# production caller (agent/model_metadata.py::_resolve_bedrock_context_length) passes none.
+_APPLICATION_PROFILE_ARN_RE = re.compile(r":application-inference-profile/")
+_ARN_REGION_RE = re.compile(r"^arn:[^:]+:bedrock:([a-z0-9-]+):", re.IGNORECASE)
+_inference_profile_model_cache: Dict[str, str] = {}
+
+
+def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> str:
+    """Application-profile ARN → the wrapped model's ARN (its ``foundation-model/<id>`` tail satisfies the
+    static-table substring match); the profile ARN itself when ``bedrock:GetInferenceProfile`` is not
+    granted or unavailable, so callers keep the default-window behaviour. Both outcomes are cached per
+    process: this runs on every context-length resolution, not once per model."""
+    if profile_arn in _inference_profile_model_cache:
+        return _inference_profile_model_cache[profile_arn]
+    arn_region = _ARN_REGION_RE.match(profile_arn)
+    region = (arn_region.group(1) if arn_region else "") or region or resolve_bedrock_region()
+    resolved = profile_arn
+    try:
+        client = _get_bedrock_control_client(region)
+        models = client.get_inference_profile(inferenceProfileIdentifier=profile_arn).get("models") or []
+        resolved = next((m["modelArn"] for m in models if m.get("modelArn")), profile_arn)
+    except Exception as exc:  # no boto3 / credentials / GetInferenceProfile not granted
+        logger.debug("Inference profile resolution skipped for %s: %s", profile_arn, exc)
+    _inference_profile_model_cache[profile_arn] = resolved
+    return resolved
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

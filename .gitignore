@@ -171,7 +171,11 @@ docs/superpowers/*
 # Flat-install runtime state (checkout root == $HERMES_HOME, e.g. installs made
 # with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): every root-level
 # SQLite store (state.db, kanban.db, response_store.db, ...) with its
-# WAL/SHM/journal sidecars and retired-WAL capture dirs, the legacy transcripts,
+# WAL/SHM/journal sidecars and every dot-suffixed `<db>.db.*` runtime artifact
+# (retired-WAL capture dirs, quarantine/repair/rebuild/maintenance/init/dispatch
+# lock files, the repair-attempts ledger, malformed-backup copies — a swept lock
+# path is re-created on a new inode and a second exclusive flock succeeds while
+# the first holder is still live, #112974), the legacy transcripts,
 # the cron job store (jobs.json), its lock/heartbeat/output files and all three
 # cron SQLite stores (executions/deliveries/notepad, WAL-mode like the root
 # ones), gateway lock/pid/state files and per-launch markers, cache/spill
@@ -187,7 +191,7 @@ docs/superpowers/*
 /*.db-wal
 /*.db-shm
 /*.db-journal
-/*.db.retired-wal-*/
+/*.db.*
 /gateway/discord_message_recovery.db*
 /sessions/
 /browser-profile/
@@ -195,7 +199,7 @@ docs/superpowers/*
 /cron/*.db-wal
 /cron/*.db-shm
 /cron/*.db-journal
-/cron/*.db.retired-wal-*/
+/cron/*.db.*
 /cron/jobs.json
 /cron/.jobs.lock
 /cron/ticker_heartbeat

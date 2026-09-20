@@ -9,7 +9,7 @@ description: "How to build a model provider (inference backend) plugin for Herme
 Model provider plugins declare an inference backend — an OpenAI-compatible endpoint, an Anthropic Messages server, a Codex-style Responses API, or a Bedrock-native surface — that Hermes can route `AIAgent` calls through. Every built-in provider (OpenRouter, Anthropic, GMI, DeepSeek, Nvidia, …) ships as one of these plugins. Third parties can add their own by dropping a directory under `$HERMES_HOME/plugins/model-providers/` with zero changes to the repo.
 
 :::tip
-Model provider plugins are the third kind of **provider plugin**. The others are [Memory Provider Plugins](/developer-guide/memory-provider-plugin) (cross-session knowledge) and [Context Engine Plugins](/developer-guide/context-engine-plugin) (context compression strategies). All three follow the same "drop a directory, declare a profile, no repo edits" pattern.
+Model provider plugins are the third kind of **provider plugin**. The others are [Memory Provider Plugins](./memory-provider-plugin.md) (cross-session knowledge) and [Context Engine Plugins](./context-engine-plugin.md) (context compression strategies). All three follow the same "drop a directory, declare a profile, no repo edits" pattern.
 :::
 
 ## How discovery works
@@ -100,10 +100,14 @@ Full definition in `providers/base.py`. The most useful ones:
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
-| `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
-| `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
+| `auth_handler` | `Callable \| None` | Provider-owned `hermes auth add/status/logout/refresh <name>` — see [Provider-owned auth](#provider-owned-auth-auth_handler-refresh_credential) |
+| `refresh_credential` | `Callable \| None` | Provider-owned rotation of a pooled OAuth row — same section |
+| `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails — in the `/model` picker AND the first-time `hermes setup` / `hermes model` API-key flow, which resolve the catalog the same way (`fetch_models()` merged curated-first with `fallback_models`; `fallback_models` alone when the fetch returns `None` or raises) |
+| `supports_vision` | bool | Declares the provider's API accepts image content inside **tool-result** messages (a provider-wide wire capability). Per-model user-image routing comes from `model_capabilities` / models.dev, not from this flag |
+| `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`); also forwarded by the default `fetch_models()` catalog request |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
+| `unsupported_response_formats` | `tuple` | `response_format` types the API rejects outright; auxiliary requests omit them instead of paying a guaranteed 400 (DeepSeek: `("json_schema",)`) |
 | `default_aux_model` | str | Cheap model for auxiliary tasks (compression, vision, summarization) |
 
 ## Overridable hooks
@@ -143,6 +147,14 @@ class AcmeProfile(ProviderProfile):
         (Bedrock → None), or public/unauthenticated catalogs (OpenRouter)."""
         return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
 
+    def fetch_account_usage(self, *, api_key=None, base_url=None):
+        """Return AccountUsageSnapshot for /usage, or None when unavailable.
+
+        The hook runs only when the provider has no built-in usage fetcher.
+        It may raise: core catches failures and keeps /usage empty for that turn.
+        """
+        return None
+
     def create_client(self, **client_kwargs):
         """Supply your own client object instead of the shared openai.OpenAI.
         Default returns None (= use the standard client). Override when the
@@ -152,6 +164,34 @@ class AcmeProfile(ProviderProfile):
         and pick what you need. A raise is logged and falls back to the
         standard client."""
         return None
+```
+
+## Account usage
+
+Model-provider plugins can provide account or plan usage to `/usage` by
+overriding `ProviderProfile.fetch_account_usage`. Import and return the shared
+`agent.account_usage.AccountUsageSnapshot` (with any `AccountUsageWindow`
+entries); do not format output in the plugin. Returning `None`, or raising an
+exception, leaves `/usage` empty just as it does for providers without usage
+data. Built-in usage fetchers always take precedence, so this hook cannot
+replace the account-usage behavior for a built-in provider.
+
+The bundled `plugins/model-providers/opencode-zen/` profile implements this hook for the
+OpenCode Go plan windows; every `/usage` surface (CLI `hermes usage` and `/usage`, the messaging
+gateway, the TUI/Desktop usage feed) renders the snapshot through the same core formatter.
+
+```python
+from datetime import datetime, timezone
+
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+def fetch_account_usage(self, *, api_key=None, base_url=None):
+    return AccountUsageSnapshot(
+        provider=self.name,
+        source="my_provider_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(AccountUsageWindow(label="Monthly", used_percent=25),),
+    )
 ```
 
 ## External-process (ACP) providers
@@ -166,6 +206,17 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 | `process_args_env_var` | Env var that overrides argv (shlex-split) |
 
 The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
+
+### Picker rows for non-api-key plugins
+
+Every registered profile joins `CANONICAL_PROVIDERS` by slug (a plugin re-declaring a built-in slug such as `bedrock` is deduped, never doubled), so external-process and OAuth plugins appear in `hermes model`, `/model` and the Desktop model selector alongside `copilot-acp`. Visibility is gated by credentials, not by `auth_type`:
+
+| `auth_type` | Row is listed / `authenticated` when | Model list |
+|---|---|---|
+| `external_process` | the binary resolves (`process_command` or one of `process_command_env_vars` is on `PATH`), or `base_url` is `acp+tcp://…` — the same structural gate `hermes auth status` reports | `fetch_models()` (your subprocess probe), else `fallback_models` |
+| `oauth_external` / `oauth_device_code` | `auth.json` or the credential pool holds an entry for the slug | `fallback_models` (declare at least one) |
+
+The catalog cache is keyed on the profile's `process_command_env_vars` / `process_args_env_var` values, so pointing `HERMES_<X>_COMMAND` at a different binary re-discovers models. Executable discovery is not a login check: an unauthenticated CLI still lists, and the subprocess reports the failure at first use.
 
 ## Hook reference examples
 
@@ -218,13 +269,78 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `auth_type` | Meaning | Who uses it |
 |---|---|---|
 | `api_key` | Single env var carries a static API key | Most providers |
-| `oauth_device_code` | Device-code OAuth flow | — |
+| `oauth_device_code` | Device-code OAuth flow | Nous Portal; out-of-tree plugins via `auth_handler` |
 | `oauth_external` | User signs in elsewhere, tokens land in `auth.json` | Anthropic OAuth, MiniMax OAuth, Qwen Portal, Nous Portal |
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
 | `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
 | `external_process` | Auth handled by a subprocess the agent spawns (see [External-process providers](#external-process-acp-providers)) | `copilot-acp` plugin, out-of-tree ACP plugins |
 
-`auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.
+Every profile is mirrored into Hermes' auth registry under the `auth_type` it declares (two exclusions: an `api_key` profile with empty `env_vars`, and the aggregator/user-supplied slugs `openrouter`/`custom` plus the bespoke-refresh built-ins `copilot`/`kimi-coding`/`zai`), so `hermes auth`,
+`--provider <name>` and runtime resolution accept it whatever its shape. What differs is who performs the
+login: `api_key` profiles get the built-in key prompt / env-var resolution; every other `auth_type` is
+**provider-owned** — the plugin ships the two hooks below, and a non-api-key profile without an
+`auth_handler` makes `hermes auth add <name>` fail with a clear "ships no auth_handler" error instead of
+silently doing nothing.
+
+## Provider-owned auth (`auth_handler`, `refresh_credential`)
+
+`auth_type` describes *what kind* of credential a provider needs; `auth_handler` is how the plugin
+**acquires** it — its own device-code / OIDC / IdC flow inside the existing `hermes auth` command family
+(model-provider manifests are skipped by the generic command-plugin loader, so `register(ctx)` is not the
+way to add commands). `refresh_credential` is how the credential pool **rotates** a pooled token the plugin
+stored.
+
+```python
+import uuid
+from providers import register_provider
+from providers.base import ProviderProfile
+
+
+def example_auth(action: str, args) -> bool:
+    """action: "add" | "status" | "logout" | "refresh"; args: parsed CLI namespace."""
+    if action == "add":
+        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        tokens = run_device_code_flow()                      # provider-specific
+        load_pool("example-oauth").add_entry(PooledCredential(
+            provider="example-oauth", id=uuid.uuid4().hex[:6], label=tokens["account"],
+            auth_type=AUTH_TYPE_OAUTH, priority=0, source="manual:example_device",
+            access_token=tokens["access_token"], refresh_token=tokens["refresh_token"],
+            extra={"tenant": tokens["tenant"]}))             # any extra keys round-trip through auth.json
+        print("Signed in to Example.")
+        return True
+    if action == "status":
+        print("example-oauth: " + ("logged in" if load_pool("example-oauth").entries() else "logged out"))
+        return True
+    return False   # decline → this action stays with the built-in credential-pool handling
+
+
+def example_refresh(entry):
+    """Called by the credential pool with the pooled row; return the rotated values, None, or raise."""
+    tokens = post_refresh(entry.refresh_token)          # the raw token-endpoint response is fine as-is
+    return {"access_token": tokens["access_token"], "refresh_token": tokens["refresh_token"],
+            "expires_at_ms": tokens["expires_at_ms"], "expires_in": tokens["expires_in"]}
+
+
+register_provider(ProviderProfile(
+    name="example-oauth", auth_type="oauth_external", base_url="https://api.example.com/v1",
+    auth_handler=example_auth, refresh_credential=example_refresh))
+```
+
+| Contract | |
+|---|---|
+| `auth_handler(action, args)` | `args` is the parsed `hermes auth` namespace for CLI actions; the interactive setup picker passes a minimal namespace carrying only `provider`, so read options with `getattr(args, name, None)`. Truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action**. An exception becomes `SystemExit("<provider> auth handler failed for `&lt;action&gt;`: …")`. |
+| `refresh_credential(entry)` | Receives the `PooledCredential`; returns a mapping of rotated values or `None`. Keys that are `PooledCredential` fields (`access_token`, `refresh_token`, `expires_at_ms`, …) replace the row's fields; every other key (`expires_in`, `token_type`, `scope` — the raw token-endpoint shape) lands in `entry.extra` and round-trips through `auth.json`. `None` = no rotation happened, the row is marked ok. Its presence is what makes the provider *refreshable* — `hermes auth refresh <name>` and the main-loop 401 recovery call it through the pool with no core name list involved; the auxiliary client's 401 recovery reaches it only for pooled rows it already treats as recoverable (api-key rows and the built-in OAuth routes). |
+| Refresh failures | Raise `hermes_cli.auth_constants.AuthError(..., relogin_required=True)` (or with `code` `invalid_grant` / `invalid_token` / `refresh_token_reused`) when the grant is dead: the row goes **DEAD**, leaves rotation and Hermes logs a WARNING naming `hermes auth add <name>`. Any other exception (network, 429, 5xx) is transient — the row is benched for one cooldown and retried. |
+| Concurrency | The hook runs under the shared `auth.json` lock. Before calling it the pool re-reads the row; if another Hermes process (gateway + CLI, two profiles) already rotated the pair, that pair is adopted and your hook is **not** called — safe for single-use refresh tokens. After the hook returns, the rotated row is written through to `auth.json`. |
+| No hooks | `api_key` profiles behave exactly as before. Any other `auth_type` without `auth_handler` fails loud on `hermes auth add`. |
+
+`hermes auth add|status|logout|refresh <provider>` consults the handler **first** — before the built-in
+credential-pool flow. Registering the same name twice is last-writer-wins, so a user plugin can replace a
+bundled provider's flow.
+
+Hermes passes the parsed namespace, not provider-declared flags: ask for provider-specific values
+interactively (or read your own config/env). Rows the plugin stores in the pool are its own — extra keys
+survive `load → save → load`, and Hermes passes no secrets beyond that pooled row to `refresh_credential`.
 
 ## Discovery timing
 
@@ -249,7 +365,7 @@ for p in list_providers():
 Point `HERMES_HOME` at a temp directory so you don't pollute your real config:
 
 ```bash
-export HERMES_HOME=/tmp/hermes-plugin-test
+export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-plugin-test
 mkdir -p $HERMES_HOME/plugins/model-providers/my-provider
 cat > $HERMES_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
 from providers import register_provider
@@ -316,12 +432,12 @@ skipped by the provider scan — they belong to the `PluginManager`. A broken
 entry point is isolated — it is logged at warning level and skipped, and never
 blocks discovery of the other providers.
 
-See [Building a Hermes Plugin](/developer-guide/plugins#distribute-via-pip) for the full entry-points setup.
+See [Building a Hermes Plugin](./plugins/index.md#distribute-via-pip) for the full entry-points setup.
 
 ## Related pages
 
-- [Provider Runtime](/developer-guide/provider-runtime) — resolution precedence + where each layer reads the profile
-- [Adding Providers](/developer-guide/adding-providers) — end-to-end checklist for new inference backends (covers both the fast plugin path and the full CLI/auth integration)
-- [Memory Provider Plugins](/developer-guide/memory-provider-plugin)
-- [Context Engine Plugins](/developer-guide/context-engine-plugin)
-- [Building a Hermes Plugin](/developer-guide/plugins) — general plugin authoring
+- [Provider Runtime](./provider-runtime.md) — resolution precedence + where each layer reads the profile
+- [Adding Providers](./adding-providers.md) — end-to-end checklist for new inference backends (covers both the fast plugin path and the full CLI/auth integration)
+- [Memory Provider Plugins](./memory-provider-plugin.md)
+- [Context Engine Plugins](./context-engine-plugin.md)
+- [Building a Hermes Plugin](./plugins/index.md) — general plugin authoring

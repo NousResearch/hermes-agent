@@ -53,6 +53,40 @@ class OpenCodeGoProfile(ProviderProfile):
         cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
         return self.default_max_tokens if cap is None else cap
 
+    def fetch_account_usage(self, *, base_url: str | None = None, api_key: str | None = None):
+        """Go subscription windows for /usage via ``/zen/go/v1/usage`` (anomalyco/opencode#16513).
+
+        Percent-based payload ``{"usage": {"rolling"|"weekly"|"monthly": {"percent", "resetsAt"}}}``.
+        Literal endpoint, NOT the runtime base_url: that one loses its /v1 suffix in
+        anthropic_messages mode and /usage only exists under /v1.
+        """
+        from datetime import datetime, timezone
+
+        import httpx
+
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=self.name, explicit_base_url=base_url, explicit_api_key=api_key)
+        token = str(runtime.get("api_key", "") or "").strip()
+        if not token:
+            return None
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get("https://opencode.ai/zen/go/v1/usage",
+                                  headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+            response.raise_for_status()
+        usage = (response.json() or {}).get("usage") or {}
+        windows = []
+        for key, label in (("rolling", "Rolling window"), ("weekly", "Weekly"), ("monthly", "Monthly")):
+            window = usage.get(key) or {}
+            if window.get("percent") is None:
+                continue
+            reset_raw = str(window.get("resetsAt") or "").replace("Z", "+00:00")
+            reset_at = datetime.fromisoformat(reset_raw) if reset_raw else None
+            windows.append(AccountUsageWindow(label=label, used_percent=float(window["percent"]), reset_at=reset_at))
+        return AccountUsageSnapshot(provider=self.name, source="go_usage_api",
+                                    fetched_at=datetime.now(timezone.utc), windows=tuple(windows))
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:

@@ -240,8 +240,9 @@ _PARKED_RETRY_INTERVAL = 300
 # Bounded wait for a respawned stdio child when a call finds it dead (gateway restarts kill
 # every MCP child); bounded so a broken server still parks via run()'s rapid-drop budget.
 _STDIO_RESPAWN_WAIT_SEC = 15.0
-# The client MUST ping faster than the server's idle-session TTL (short-TTL servers need a
-# smaller configured ``keepalive_interval``); the floor stops a tiny interval busy-looping.
+# Remote clients MUST ping faster than the server's idle-session TTL (short-TTL servers need a
+# smaller configured ``keepalive_interval``); stdio only opts in explicitly because local pipes
+# have no remote session TTL. The floor stops a tiny interval busy-looping.
 _DEFAULT_KEEPALIVE_INTERVAL, _MIN_KEEPALIVE_INTERVAL = 180, 5
 # One bounded cancellation cycle at final shutdown so resistant tasks cannot hang exit.
 _MCP_LOOP_DRAIN_TIMEOUT = 3.0
@@ -316,7 +317,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected", "_sse_fallback")
+        "_ever_connected", "_sse_fallback", "_park_reason")
 
     def __init__(self, name: str):
         self.name = name
@@ -347,8 +348,15 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._ever_connected: bool = False
         # Latched when the Streamable HTTP -> SSE fallback connects: reconnects reuse SSE directly.
         self._sse_fallback: bool = False
+        # Status/URL/body of the last HTTP rejection the Streamable HTTP client saw; names the real
+        # cause when the SDK reports only ``Server returned an error response``.
+        self._http_rejection: dict = {}
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
+        # Why the server is parked (the revival_reason handed to _park), None once healthy again.
+        # Lets cron preflight tell a network-blip park (recovering) from a permanent-error park
+        # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
+        self._park_reason: Optional[str] = None
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a

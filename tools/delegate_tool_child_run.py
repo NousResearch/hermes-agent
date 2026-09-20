@@ -233,6 +233,12 @@ class _Heartbeat:
         # activity_ts) all froze; thresholds differ idle vs in-tool.
         self.last_seen = {"iter": 0, "tool": None, "ts": None, "stale": 0}
         self.handle = None
+        # Set on the stale verdict; ``await_child`` waits on it (its worker's done-callback
+        # sets it too) so a wedged child ends the wait instead of only ending the heartbeat.
+        self.settled = threading.Event()
+        # Threshold (seconds of frozen activity) the stale verdict fired at; None until it does.
+        # ``await_child`` reads it to name the real cause when a configured cap was still pending.
+        self.stale_threshold_seconds: Optional[float] = None
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
@@ -246,7 +252,7 @@ class _Heartbeat:
 
     def tick(self):
         """Returning False stops the periodic callback."""
-        from tools.delegate_tool import _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
+        from tools.delegate_tool import _HEARTBEAT_INTERVAL, _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
         child, parent_agent, task_index, last_seen = self.child, self.parent_agent, self.task_index, self.last_seen
         touch = getattr(parent_agent, "_touch_activity", None) if parent_agent is not None else None
         if not touch:
@@ -269,12 +275,16 @@ class _Heartbeat:
                     last_seen["ts"] = child_activity_ts
             else:
                 last_seen["stale"] += 1
-            if last_seen["stale"] >= (_HEARTBEAT_STALE_CYCLES_IN_TOOL if child_tool else _HEARTBEAT_STALE_CYCLES_IDLE):
+            stale_cycles = _HEARTBEAT_STALE_CYCLES_IN_TOOL if child_tool else _HEARTBEAT_STALE_CYCLES_IDLE
+            if last_seen["stale"] >= stale_cycles:
                 logger.warning(
-                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — stopping heartbeat",
+                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — abandoning its wait",
                     task_index, last_seen["stale"], child_tool or "<none>",
                 )
-                return False  # stop touching parent, let gateway timeout fire
+                # A finite/-Q turn has no gateway watchdog behind this; the wait itself must end (#109749).
+                self.stale_threshold_seconds = stale_cycles * _HEARTBEAT_INTERVAL
+                self.settled.set()
+                return False
             if child_tool:
                 desc = f"delegate_task: subagent running {child_tool} (iteration {child_iter}/{child_max})"
             elif child_summary.get("last_activity_desc", ""):
@@ -380,14 +390,27 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     _resweep_timer.start()
 
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
-    """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``."""
+    """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
+    serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
+    released and an endpoint-matching entry is leased by id instead (#68237)."""
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
+    from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
+    base_url = getattr(child, "base_url", None)
     leased_cred_id = child_pool.acquire_lease()
     if leased_cred_id is not None:
         with _quiet("Failed to bind child to leased credential: %s"):
-            leased_entry = child_pool.current()
+            # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
+            # mutable cursor that may already point at someone else's pick.
+            leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
+            if not _entry_serves_endpoint(leased_entry, base_url):
+                child_pool.release_lease(leased_cred_id)
+                leased_entry = next(
+                    (e for e in child_pool.entries() if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)),
+                    None,
+                )
+                leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
             if leased_entry is not None and hasattr(child, "_swap_credential"):
                 child._swap_credential(leased_entry)
     return child_pool, leased_cred_id
@@ -493,8 +516,18 @@ def _build_result_entry(
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
+    interrupt_note = ""
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
+        # The loop's final_response is a placeholder here ("Operation interrupted…", also appended as the closing
+        # assistant row); the completion must carry what the child actually had so far — its last real assistant
+        # text — and keep the placeholder as the error.
+        from agent.message_content import flatten_message_text
+        placeholders = {"", summary.strip(), "Operation interrupted."}
+        partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
+                        and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
+        if partial:
+            interrupt_note, summary = summary.strip(), partial
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
@@ -544,6 +577,8 @@ def _build_result_entry(
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason
+    elif interrupt_note:
+        entry["error"] = interrupt_note
 
     # Schema-validation outcome — emitted ONLY when a schema was requested, so
     # legacy (schema-less) payloads keep their exact shape.
@@ -634,6 +669,7 @@ class _ChildRun:
     goal: str
     subagent_id: Optional[str]
     child_progress_cb: Any
+    heartbeat: Any = None
     child_start: float = field(default_factory=time.monotonic)
     worktree_info: Optional[Dict[str, str]] = None
     child_task_id: str = ""
@@ -742,8 +778,20 @@ class _ChildRun:
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.
+        # Without the second, a worker wedged after its final answer holds a finite (-Q / Bot Chat
+        # one-shot) turn — and its session lease — forever, since that runtime has no gateway
+        # inactivity watchdog (#109749).
+        settled = self.heartbeat.settled if self.heartbeat is not None else threading.Event()
+        future.add_done_callback(lambda _f: settled.set())
+        # Set when the stale verdict — not the configured cap — ended the wait; the entry must name that cause.
+        stale_after: Optional[float] = None
         try:
-            return future.result(timeout=child_timeout), None, False
+            settled.wait(timeout=child_timeout)
+            if not future.done():
+                stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
+                raise FuturesTimeoutError()
+            return future.result(), None, False
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block
         finally:
@@ -753,6 +801,8 @@ class _ChildRun:
         _late_pending_steer = self.close_steering()
         _signal_child_stop(child)
         is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
+        # What actually ended the wait: the stale threshold pre-empts a longer configured cap.
+        timeout_cause = stale_after if stale_after is not None else child_timeout
         duration = self.elapsed()
         logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}", duration)
         child_api_calls = 0
@@ -764,15 +814,19 @@ class _ChildRun:
         if before_first_call:
             diagnostic_path = _dump_subagent_timeout_diagnostic(
                 child=child, task_index=task_index,
-                # is_timeout implies a cap was configured (result(timeout=None)
-                # never raises FuturesTimeoutError); guard for the type checker.
-                timeout_seconds=float(child_timeout or 0.0), duration_seconds=float(duration),
+                # A stale verdict or a configured cap; ``or 0.0`` guards the type checker.
+                timeout_seconds=float(timeout_cause or 0.0), duration_seconds=float(duration),
                 worker_thread=worker_thread_holder.get("t"), goal=self.goal,
             )
             if diagnostic_path:
                 logger.warning("Subagent %d 0-API-call timeout — diagnostic written to %s", task_index, diagnostic_path)
         if not is_timeout:
             _err = str(exc)
+        elif stale_after is not None:
+            _err = (
+                f"Subagent stopped making progress after {child_api_calls} API call(s) — no activity for "
+                f"{stale_after:g}s (heartbeat stale threshold); the pending worker was abandoned."
+            )
         elif before_first_call:
             _err = (
                 f"Subagent timed out after {child_timeout}s without making any API call — the child never reached its "
@@ -789,7 +843,7 @@ class _ChildRun:
         _error_entry = {
             "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
             "api_calls": child_api_calls, "duration_seconds": duration,
-            "timeout_seconds": child_timeout if is_timeout else None,
+            "timeout_seconds": timeout_cause if is_timeout else None,
             "timed_out_after_seconds": duration if is_timeout else None,
             "timeout_phase": "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None,
             "_child_role": getattr(child, "_delegate_role", None),

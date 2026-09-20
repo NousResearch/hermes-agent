@@ -16,16 +16,32 @@ import threading
 
 from rich.markup import escape as _escape
 from utils import base_url_host_matches
+from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 # CLI-level fields describing the active model route; snapshotted before a switch / one-turn
-# override and restored wholesale on rollback.
+# override and restored wholesale on rollback. ``reasoning_config`` rides along because it is
+# resolved per model: a failed swap or `/model X --reasoning high --once` must not leave the
+# new model's effort behind with the old route.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode")
+    "api_key", "base_url", "api_mode", "reasoning_config")
 
 
 def _runtime_fields(cli) -> dict:
     return {key: getattr(cli, key, None) for key in _RUNTIME_FIELDS}
+
+
+def _resolve_cli_reasoning(cli) -> None:
+    """Re-resolve the CLI-level ``reasoning_config`` for ``cli.model`` through the shared chokepoint
+    (per-model ``reasoning_overrides`` > global ``agent.reasoning_effort``). Startup resolves it once
+    for the launch model; every path that moves ``cli.model`` must call this BEFORE the agent branch,
+    because a lazily built agent inherits this field — an always-thinking model then goes out with
+    the launch model's effort and 400s (#112921, #96012). ``agent.switch_model`` re-resolves its own
+    copy for the live-agent path."""
+    from cli import CLI_CONFIG
+    from hermes_constants import resolve_reasoning_config
+    # getattr: tests drive /new unbound on a SimpleNamespace without ``model`` (blank -> config default).
+    cli.reasoning_config = resolve_reasoning_config(CLI_CONFIG, getattr(cli, "model", None) or "")
 
 
 def stored_session_route(session_meta, *, current_model, current_provider):
@@ -44,7 +60,18 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
         return None
-    return stored_model, provider, base_url, (runtime.get("api_mode") or None), provider_changed
+    api_mode = runtime.get("api_mode") or None
+    # A row's api_mode/base_url were written for whichever model the session last ran. Providers that
+    # pick the wire per model (OpenCode Zen/Go, Copilot, Nous) re-derive both from the stored model, or a
+    # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
+    # model (#96066) — the CLI/oneshot twin of tui_gateway's _rederive_per_model_route.
+    from hermes_cli.model_switch import model_derived_api_mode
+    derived = model_derived_api_mode(provider or "", stored_model)
+    if derived is not None:
+        from hermes_cli.models import normalize_opencode_base_url
+        api_mode = derived
+        base_url = normalize_opencode_base_url(provider, api_mode, base_url) or None
+    return stored_model, provider, base_url, api_mode, provider_changed
 
 
 def _heal_bare_custom_provider(provider, *, base_url, model):
@@ -101,6 +128,13 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         f"Adjust your self-identification accordingly.]")
     _cprint(f"  ✓ Model switched: {_display_new}")
     _cprint(f"    Provider: {result.provider_label or result.target_provider}")
+    if result.target_provider == "moa":
+        # The preset name hides who pays: the aggregator runs every tool-loop step (#112359).
+        from hermes_cli.moa_config import normalize_moa_config
+        moa_cfg = cli.config.get("moa") if isinstance(cli.config, dict) else {}
+        agg = normalize_moa_config(moa_cfg)["presets"].get(result.new_model, {}).get("aggregator") or {}
+        if agg:
+            _cprint(f"    Acting model (billed for the run): {agg.get('provider')}:{agg.get('model')}")
 
     # Provider-aware context chain: Codex OAuth / Copilot / Nous caps win over the raw
     # models.dev entry (gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
@@ -118,7 +152,9 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             raise
         ctx = None
     if ctx:
-        _cprint(f"    Context: {ctx:,} tokens")
+        from agent.context_pin import context_pin_suffix
+        _cprint(f"    Context: {ctx:,} tokens"
+                f"{context_pin_suffix(ctx, getattr(agent, '_config_context_length', None) if agent else None)}")
     if mi:
         if mi.max_output:
             _cprint(f"    Max output: {mi.max_output:,} tokens")
@@ -333,9 +369,10 @@ class CLIModelSwitchMixin:
 
         # 2. Replace untouched default with a Codex model
         if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
+            from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+
+            fallback_model = DEFAULT_CODEX_MODELS[0]
             try:
-                from hermes_cli.codex_models import get_codex_model_ids
                 available = get_codex_model_ids(access_token=self.api_key if self.api_key else None)
                 if available:
                     fallback_model = available[0]
@@ -398,15 +435,40 @@ class CLIModelSwitchMixin:
         if route is None:
             return
         stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
+        from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+        managed = str(stored_provider or "").strip().lower() in LLAMACPP_ALIASES
         self.model = stored_model
         if stored_provider:
             self.provider = stored_provider
             self.requested_provider = stored_provider
-            if stored_base_url:
+            if stored_base_url and not managed:
                 self.base_url = stored_base_url
             if stored_api_mode:
                 self.api_mode = stored_api_mode
-        if provider_changed:
+        if managed and not (getattr(self, "_explicit_base_url", None) and not provider_changed):
+            # The supervisor owns the live port: last boot's loopback URL (an ephemeral fallback when
+            # 18434 was busy) must not pin the resume onto a dead endpoint. A launch-time --base-url
+            # for this same provider is user intent and keeps winning.
+            self._explicit_api_key = None
+            self._explicit_base_url = None
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
+                if resolved.get("api_key"):
+                    self.api_key = resolved["api_key"]
+                    self._credential_pool = resolved.get("credential_pool")
+                if resolved.get("base_url"):
+                    self.base_url = resolved["base_url"]
+                if not stored_api_mode and resolved.get("api_mode"):
+                    self.api_mode = resolved["api_mode"]
+            except Exception:
+                if stored_base_url:
+                    self.base_url = stored_base_url
+                logger.debug(
+                    "Credential re-resolution for resumed session provider "
+                    "%s failed; keeping ambient credentials",
+                    stored_provider, exc_info=True)
+        elif provider_changed:
             # Launch-time explicit overrides belong to the AMBIENT provider and would poison
             # _ensure_runtime_credentials for the restored one. api_key is never persisted to
             # the session DB — runtime provider resolution owns credentials.
@@ -414,7 +476,7 @@ class CLIModelSwitchMixin:
             self._explicit_base_url = stored_base_url
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider)
+                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
                 if resolved.get("api_key"):
                     self.api_key = resolved["api_key"]
                     self._credential_pool = resolved.get("credential_pool")
@@ -427,8 +489,9 @@ class CLIModelSwitchMixin:
                     "Credential re-resolution for resumed session provider "
                     "%s failed; keeping ambient credentials",
                     stored_provider, exc_info=True)
+        _resolve_cli_reasoning(self)
         # Mid-chat /resume swaps the live agent; on startup --resume _init_agent picks up
-        # self.model / self.provider.
+        # self.model / self.provider / self.reasoning_config.
         if self.agent is not None:
             try:
                 self.agent.switch_model(
@@ -501,6 +564,7 @@ class CLIModelSwitchMixin:
     def _snapshot_model_runtime(self) -> dict:
         """Capture current CLI and agent model runtime for one-turn restore."""
         agent = getattr(self, "agent", None)
+        # ``reasoning_config`` is a mutable dict: deepcopy it so a later in-place edit cannot alias the snapshot.
         return {
             **_runtime_fields(self),
             "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
@@ -516,9 +580,6 @@ class CLIModelSwitchMixin:
         for key in _RUNTIME_FIELDS:
             if key in snapshot:
                 setattr(self, key, snapshot.get(key))
-        # `/model X --reasoning high --once` must not leave the effort behind with the model.
-        if "reasoning_config" in snapshot:
-            self.reasoning_config = snapshot["reasoning_config"]
 
         agent = getattr(self, "agent", None)
         if agent is None:
@@ -602,6 +663,7 @@ class CLIModelSwitchMixin:
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        _resolve_cli_reasoning(self)
 
         if self.agent is not None:
             try:
@@ -647,12 +709,14 @@ class CLIModelSwitchMixin:
                 return
             provider_data = providers[selected]
             # Curated list (same as `hermes model` / gateway pickers); live catalog only when
-            # it is empty (user-defined endpoints).
+            # it is empty (user-defined endpoints, per-resource providers such as azure-foundry).
+            # Disk-cached like the gateway pickers: the live probe can walk several api-version
+            # fallbacks with a 6 s timeout each, which must not block the REPL on every select.
             model_list = provider_data.get("models", [])
             if not model_list:
                 try:
-                    from hermes_cli.models import provider_model_ids
-                    model_list = provider_model_ids(provider_data["slug"]) or model_list
+                    from hermes_cli.models import cached_provider_model_ids
+                    model_list = cached_provider_model_ids(provider_data["slug"]) or model_list
                 except Exception:
                     pass
             state.update(
@@ -861,7 +925,7 @@ class CLIModelSwitchMixin:
         self.api_key = "moa-virtual-provider"
         self.base_url = "moa://local"
         self.api_mode = "chat_completions"
-        self.agent = None
+        _retire_agent(self)
         self._pending_moa_disable_after_turn = True
         self._pending_agent_seed = payload
         _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")

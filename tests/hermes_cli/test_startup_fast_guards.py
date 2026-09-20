@@ -104,3 +104,54 @@ def test_fast_version_reports_install_method_stamp(tmp_path):
     result = _run_version({"HERMES_HOME": str(home), "TERMUX_VERSION": ""})
     assert result.returncode == 0, result.stderr
     assert "Install method: git" in result.stdout
+
+
+def test_literal_tilde_hermes_home_expands_before_any_reader(tmp_path):
+    """A literal ``~`` in HERMES_HOME (fish, or any quoted value) is expanded at process entry.
+
+    Before the fix ``Path("~/.x")`` was relative, so the real CLI resolved it against cwd and
+    scaffolded a full home under ``<cwd>/~/.x``. The negative assertion on cwd is the
+    reporter's own acceptance criterion.
+    """
+    fake_home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    fake_home.mkdir()
+    cwd.mkdir()
+    env = {**os.environ, "HOME": str(fake_home), "USERPROFILE": str(fake_home), "HERMES_HOME": "~/.x"}
+    env.pop("HERMES_DEV", None)
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "config", "path"],
+        capture_output=True, text=True, timeout=120, cwd=cwd, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(fake_home / ".x" / "config.yaml")
+    assert not (cwd / "~").exists(), sorted(p.name for p in cwd.iterdir())
+
+    # Raw-reader observable: the ~30 ``os.environ["HERMES_HOME"]`` readers in hermes_cli/ never
+    # call the resolver, so the entry-point hunk in main.py (not hermes_constants) must have
+    # rewritten the env var by the time the module import finishes.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import hermes_cli.main, os; print(os.environ['HERMES_HOME'])"],
+        capture_output=True, text=True, timeout=120, cwd=cwd, env=env,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == str(fake_home / ".x")
+
+
+def test_normalize_hermes_home_env_rewrites_tilde_and_leaves_absolute_alone(tmp_path, monkeypatch):
+    from hermes_cli import _startup_fast
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", "~/.x")
+    _startup_fast.normalize_hermes_home_env()
+    assert os.environ["HERMES_HOME"] == str(tmp_path / ".x")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "abs"))
+    _startup_fast.normalize_hermes_home_env()
+    assert os.environ["HERMES_HOME"] == str(tmp_path / "abs")
+
+    monkeypatch.delenv("HERMES_HOME")
+    _startup_fast.normalize_hermes_home_env()
+    assert "HERMES_HOME" not in os.environ

@@ -4,6 +4,7 @@ import type { NavigateFunction } from 'react-router'
 
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { defaultNewSessionTarget, prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import {
@@ -26,10 +27,11 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
-import { migrateSessionDraft } from '@/store/composer'
+import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
 import {
+  $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
@@ -47,11 +49,12 @@ import {
   type AgentProfileRoute,
   ensureGatewayAgent,
   ensureGatewayProfile,
+  isLegacyNewChatProfile,
   normalizeProfileKey,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
-import { receiveApprovalRequest } from '@/store/prompts'
+import { receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -291,7 +294,10 @@ function reconcileAuthoritativeMessages(
 // value is a mirror of Settings → Model and must not pin the new chat.
 async function desktopSessionCreateParams(
   cwd: string,
-  capturedRoute = resolveNewChatOwnerRoute()
+  capturedRoute = resolveNewChatOwnerRoute(),
+  requestedProfile?: string,
+  legacyProfileIntent = false,
+  includeComposerSelection = true
 ): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
@@ -310,10 +316,13 @@ async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
-  const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+  const profile =
+    capturedRoute?.profile || requestedProfile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)
+  } else if (legacyProfileIntent) {
+    await ensureGatewayProfile(profile, { forceLegacyRoute: true })
   } else {
     await ensureGatewayProfile(profile)
   }
@@ -323,11 +332,15 @@ async function desktopSessionCreateParams(
     source: 'desktop',
     ...(cwd && { cwd }),
     ...(profile ? { profile: capturedRoute?.targetProfile || profile } : {}),
-    ...(selection.model
-      ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
-      : {}),
-    ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
-    fast: selection.fast
+    ...(includeComposerSelection
+      ? {
+          ...(selection.model
+            ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
+            : {}),
+          ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
+          fast: selection.fast
+        }
+      : {})
   }
 }
 
@@ -365,6 +378,7 @@ function restorePendingApproval(response: SessionResumeResult, sessionId: string
     sessionId,
     smartDenied: pending.smart_denied === true
   })
+  void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
 
   return true
 }
@@ -586,9 +600,11 @@ export function useSessionActions({
         // reduce the owner to a bare profile name that later RPCs dial on a
         // different socket than the one that minted the runtime.
         const capturedRoute = resolveNewChatOwnerRoute()
+        const capturedProfile = $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+        const legacyProfileIntent = isLegacyNewChatProfile(capturedProfile)
 
         const params = {
-          ...(await desktopSessionCreateParams(cwd, capturedRoute)),
+          ...(await desktopSessionCreateParams(cwd, capturedRoute, capturedProfile, legacyProfileIntent)),
           ...sessionCreateOverrideParams(createOverrides, seedMessages)
         }
 
@@ -598,8 +614,15 @@ export function useSessionActions({
         // foreground hold below takes over from that point until the created
         // chat is selected. Between the two, nothing may close the socket
         // that just minted the runtime.
+        //
+        // 'foreground' spawn priority (#102281 primitive): this is the user
+        // hitting send on a fresh chat, so a cold spawn must not queue behind
+        // background roster hydration on a saturated pool. The retain is the
+        // first dial, so it carries the tag as well as the create RPC.
         const releaseCreateLease = capturedRoute
-          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile)
+          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile, {
+              spawnPriority: 'foreground'
+            })
           : () => undefined
 
         let created: SessionCreateResponse
@@ -611,7 +634,10 @@ export function useSessionActions({
                 capturedRoute.connectionId,
                 capturedRoute.profile,
                 'session.create',
-                params
+                params,
+                undefined,
+                undefined,
+                { spawnPriority: 'foreground' }
               )
             : await requestGateway<SessionCreateResponse>('session.create', params)
 
@@ -688,6 +714,9 @@ export function useSessionActions({
           // The row carries the create route's exact owner (backend profile +
           // connection), never the ambient profile — see upsertOptimisticSession.
           upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+          // Anything still parked under the pre-session draft bucket belongs
+          // to this chat now (#114122); the composer moves it on scope swap.
+          announceNewSessionDraftKey(stored)
           navigate(sessionRoute(stored), { replace: true })
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
@@ -735,6 +764,7 @@ export function useSessionActions({
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {
       if (item.action === 'new-session') {
+        prepareDefaultNewSession()
         setWorkspaceScope('sessions')
         startFreshSessionDraft()
 
@@ -780,7 +810,16 @@ export function useSessionActions({
         // `options?.cwd || resolve…` is wrong for Home: null is falsy and used
         // to fall through into the last project folder while main chat was
         // occupied (openTab path for "New session in Home").
-        const capturedRoute = options?.route !== undefined ? options.route : resolveNewChatOwnerRoute(options?.profile)
+        const explicitTarget =
+          options?.profile !== undefined || options?.cwd !== undefined || options?.workspaceScope?.ownerRoute !== undefined
+
+        const defaultTarget = options?.route === undefined && !explicitTarget ? defaultNewSessionTarget() : null
+
+        const capturedRoute =
+          options?.route !== undefined
+            ? options.route
+            : options?.workspaceScope?.ownerRoute ??
+              (defaultTarget ? defaultTarget.route : resolveNewChatOwnerRoute(options?.profile))
 
         // A named local profile uses the legacy profile-only transport (no
         // connectionId). Tab-strip "+" omits `options.profile`; the draft or
@@ -789,7 +828,7 @@ export function useSessionActions({
         const requestedProfile = normalizeProfileKey(
           typeof options?.profile === 'string' && options.profile
             ? options.profile
-            : $newChatProfile.get() || $activeGatewayProfile.get()
+            : defaultTarget?.profile || $newChatProfile.get() || $activeGatewayProfile.get()
         )
 
         const legacyOwnerProfile =
@@ -810,16 +849,32 @@ export function useSessionActions({
         const cwd =
           options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
 
+        // Bot-workspace tabs target an agent profile without switching the
+        // window's ambient composer. Do not leak that unrelated session's
+        // composer selection (manual model/provider, reasoning effort, fast
+        // flag) into the bot's chat; omitting them lets the selected profile
+        // supply its configured defaults. Ordinary Sessions tiles keep the
+        // sticky composer override.
         const params = {
-          ...(await desktopSessionCreateParams(cwd, capturedRoute)),
+          ...(await desktopSessionCreateParams(
+            cwd,
+            capturedRoute,
+            requestedProfile,
+            options?.route === null || defaultTarget?.route === null,
+            workspaceScope.workspaceMode !== 'bots'
+          )),
           ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
         }
 
         // Same lease chain as createBackendSessionForSend: owner socket held
         // across the create, then the foreground hold carries it until the
-        // tile is mounted ($sessionTiles names the owner from then on).
+        // tile is mounted ($sessionTiles names the owner from then on). Same
+        // 'foreground' spawn priority too: "New session" / tab-strip "+" is a
+        // direct user click, not background hydration.
         const releaseCreateLease = capturedRoute
-          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile)
+          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile, {
+              spawnPriority: 'foreground'
+            })
           : () => undefined
 
         let created: SessionCreateResponse
@@ -831,7 +886,10 @@ export function useSessionActions({
                 capturedRoute.connectionId,
                 capturedRoute.profile,
                 'session.create',
-                params
+                params,
+                undefined,
+                undefined,
+                { spawnPriority: 'foreground' }
               )
             : await requestGateway<SessionCreateResponse>('session.create', params)
 
@@ -2113,6 +2171,11 @@ export function useSessionActions({
             return
           }
 
+          // The id is verifiably dead, but the text the user typed into it is
+          // still stashed under that key (#111868). Announce it so the
+          // composer's swap onto the fresh draft carries it over with an
+          // inline, undoable notice instead of leaving it stranded.
+          announceGoneSessionDraft(storedSessionId)
           startFreshSessionDraft(true)
 
           return

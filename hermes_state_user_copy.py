@@ -20,14 +20,15 @@ class StorageFailure:
     action: str     # what to do, one sentence naming the exact command
 
 
-_DOCTOR = "Run `hermes doctor --fix` to diagnose and repair."
+_DOCTOR = "Run `hermes {profile_arg}doctor --fix` to diagnose and repair."
 
 # cause -> (code, gloss, action). "disk" is split by is_disk_full_error at lookup time.
 _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
     "locked": (
         "storage_locked",
         "the session database is locked by another Hermes process",
-        "Wait a moment and try again; if it persists, stop the other Hermes process (`hermes gateway stop`).",
+        "Wait a moment and try again; if it persists, stop the other Hermes process "
+        "(`hermes {profile_arg}gateway stop`).",
     ),
     "disk_full": (
         "disk_full",
@@ -42,22 +43,22 @@ _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
     "corrupt": (
         "storage_corrupt",
         "the session database file is damaged",
-        f"{_DOCTOR} Recovery: `hermes sessions recover --source <state.db> --inspect-only`.",
+        _DOCTOR + " Recovery: `hermes {profile_arg}sessions recover --source <state.db> --inspect-only`.",
     ),
     "fts_index": (
         "storage_index_corrupt",
         "the session search index is damaged (the messages themselves are intact)",
-        "Run `hermes doctor --fix` (or `hermes sessions repair`) to rebuild it.",
+        "Run `hermes {profile_arg}doctor --fix` (or `hermes {profile_arg}sessions repair`) to rebuild it.",
     ),
     "replaced": (
         "storage_replaced",
         "the session database file was replaced while Hermes was running",
-        "Stop Hermes (`hermes gateway stop`), run `hermes doctor`, then start it again.",
+        "Stop Hermes (`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start it again.",
     ),
     "deleted_wal": (
         "storage_replaced",
         "the session database file was changed or replaced while Hermes was running",
-        "Stop Hermes (`hermes gateway stop`), run `hermes doctor`, then start it again.",
+        "Stop Hermes (`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start it again.",
     ),
     "compression": (
         "storage_busy",
@@ -87,7 +88,12 @@ def describe_storage_failure(exc_or_str) -> StorageFailure:
     cause = classify_persistence_error(exc_or_str)
     key = "disk_full" if cause == "disk" and is_disk_full_error(exc_or_str) else cause
     code, gloss, action = _STORAGE_FAILURES.get(key, _STORAGE_FAILURES["unknown"])
-    return StorageFailure(cause=cause, code=code, gloss=gloss, action=action)
+    # Pin the copy-pasteable command to the failing profile — see profile_cli_selector.
+    from hermes_constants import profile_cli_selector
+
+    return StorageFailure(
+        cause=cause, code=code, gloss=gloss, action=action.replace("{profile_arg}", profile_cli_selector())
+    )
 
 
 def storage_failure_details(exc_or_str, limit: int = 200) -> str:

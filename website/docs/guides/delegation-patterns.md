@@ -8,7 +8,7 @@ description: "When and how to use subagent delegation — patterns for parallel 
 
 Hermes can spawn isolated child agents to work on tasks in parallel. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary comes back — intermediate tool calls never enter your context window.
 
-For the full feature reference, see [Subagent Delegation](/user-guide/features/delegation).
+For the full feature reference, see [Subagent Delegation](../user-guide/features/delegation.md).
 
 ---
 
@@ -172,8 +172,8 @@ urls = [r["url"] for r in results[:5]]
 content = web_extract(urls)
 
 # Save for the analysis step
-import json
-with open("/tmp/ai-funding-data.json", "w") as f:
+import json, os
+with open(os.path.expanduser("~/.hermes/cache/scratch/ai-funding-data.json"), "w") as f:
     json.dump({"search_results": results, "extracted": content["results"]}, f)
 print(f"Collected {len(results)} results, extracted {len(content['results'])} pages")
 """)
@@ -181,7 +181,7 @@ print(f"Collected {len(results)} results, extracted {len(content['results'])} pa
 # Step 2: Reasoning-heavy analysis (delegation is better here)
 delegate_task(
     goal="Analyze AI funding data and write a market report",
-    context="""Raw data at /tmp/ai-funding-data.json contains search results and
+    context="""Raw data at ~/.hermes/cache/scratch/ai-funding-data.json contains search results and
     extracted web pages about AI funding, acquisitions, and IPOs in Q1 2026.
     Write a structured market report: key deals, trends, notable players,
     and outlook. Focus on deals over $100M."""
@@ -239,4 +239,4 @@ delegation:
 
 ---
 
-*For the complete delegation reference — all parameters, ACP integration, and advanced configuration — see [Subagent Delegation](/user-guide/features/delegation).*
+*For the complete delegation reference — all parameters, ACP integration, and advanced configuration — see [Subagent Delegation](../user-guide/features/delegation.md).*

@@ -21,7 +21,7 @@ GitHub PR lifecycle: branch, commit, open, CI, merge.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Pull-Requests`, `CI/CD`, `Git`, `Automation`, `Merge` |
-| Related skills | [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) |
+| Related skills | [`github-auth`](./github-github-auth.md), [`github-code-review`](./github-github-code-review.md) |
 
 ## Reference: full SKILL.md
 
@@ -263,8 +263,8 @@ RUN_ID=<run_id>
 curl -s -L \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs \
-  -o /tmp/ci-logs.zip
-cd /tmp && unzip -o ci-logs.zip -d ci-logs && cat ci-logs/*.txt
+  -o ~/.hermes/cache/scratch/ci-logs.zip
+cd ~/.hermes/cache/scratch && unzip -o ci-logs.zip -d ci-logs && cat ci-logs/*.txt
 ```
 
 ### Step 2: Fix and Push

@@ -129,7 +129,7 @@ def test_spent_refresh_token_is_grant_dead_and_marks_the_pool_row_dead(idp, monk
     with pytest.raises(AuthError) as excinfo:
         refresh(SimpleNamespace(provider=PROVIDER, id=rows[0]["id"], refresh_token=spent,
                                 access_token=rows[0]["access_token"], expires_at_ms=None))
-    assert excinfo.value.code == "invalid_grant" and excinfo.value.relogin_required is True
+    assert excinfo.value.code == "invalid_grant"
 
     pool = load_pool(PROVIDER)
     result = pool.try_refresh_matching(credential_id=rows[0]["id"])

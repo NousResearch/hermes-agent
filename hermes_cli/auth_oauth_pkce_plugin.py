@@ -35,9 +35,6 @@ logger = logging.getLogger(__name__)
 
 POOL_SOURCE = "manual:loopback_pkce"  # ``manual:`` prefix = never pruned by load_pool() re-seeding
 _LOOPBACK_LITERALS = frozenset({"127.0.0.1", "::1"})
-# Same grant-dead codes as the pool's plugin recovery (kept local so this module
-# can load while hermes_cli.auth is still importing).
-_GRANT_DEAD_CODES = frozenset({"invalid_grant", "invalid_token", "refresh_token_reused"})
 
 
 @dataclass(frozen=True)
@@ -59,12 +56,10 @@ class OAuthPKCEConfig:
     label: str = ""
 
 
-def _err(provider: str, message: str, code: str, *, relogin_required: bool = False):
+def _err(provider: str, message: str, code: str):
     from hermes_cli.auth_constants import AuthError
 
-    return AuthError(
-        f"{provider}: {message}", provider=provider, code=code, relogin_required=relogin_required,
-    )
+    return AuthError(f"{provider}: {message}", provider=provider, code=code)
 
 
 def _host_allowed(host: str, allowlist: Tuple[str, ...]) -> bool:
@@ -124,8 +119,11 @@ def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, co
 
 
 def _token_http_error(provider: str, response: Any, fallback_code: str):
-    """Map a failed token HTTP response. Grant-dead JSON ``error`` values are terminal.
-    The response body is not logged."""
+    """Map a failed token HTTP response. A grant-dead JSON ``error`` value becomes the
+    error's ``code`` — the pool's plugin recovery treats those codes as terminal. The
+    response body is not logged."""
+    from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
+
     error = ""
     try:
         payload = response.json()
@@ -133,13 +131,8 @@ def _token_http_error(provider: str, response: Any, fallback_code: str):
             error = str(payload.get("error") or "").strip()
     except Exception:
         error = ""
-    if error in _GRANT_DEAD_CODES:
-        return _err(
-            provider,
-            f"OAuth token request failed with HTTP {response.status_code} ({error}).",
-            error,
-            relogin_required=True,
-        )
+    if error in _OAUTH_GRANT_DEAD_CODES:
+        return _err(provider, f"OAuth token request failed with HTTP {response.status_code} ({error}).", error)
     return _err(provider, f"OAuth token request failed with HTTP {response.status_code}.", fallback_code)
 
 

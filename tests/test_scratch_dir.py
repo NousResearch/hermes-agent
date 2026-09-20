@@ -102,6 +102,42 @@ class TestScratchDirPermissionPolicy:
         scratch = get_scratch_dir(tmp_path, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
 
+    def test_empty_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
+        # Legacy NixOS module wrote an empty marker; config.get_managed_system treats it as
+        # managed, so the parity twin must too (not re-enable chmod on managed installs).
+        home = tmp_path / "home"
+        home.mkdir()
+        self._isolate_env(monkeypatch, tmp_path)
+        (home / ".managed").write_text("", encoding="utf-8")
+        pre = tmp_path / "cache" / "scratch"
+        pre.mkdir(parents=True)
+        os.chmod(pre, 0o2770)
+        scratch = get_scratch_dir(tmp_path, prune=False)
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+
+    def test_unreadable_managed_marker_counts_as_managed(self, tmp_path, monkeypatch):
+        # A marker that exists but cannot be read (OSError -> "") still counts as managed.
+        home = tmp_path / "home"
+        home.mkdir()
+        self._isolate_env(monkeypatch, tmp_path)
+        (home / ".managed").mkdir()
+        pre = tmp_path / "cache" / "scratch"
+        pre.mkdir(parents=True)
+        os.chmod(pre, 0o2770)
+        scratch = get_scratch_dir(tmp_path, prune=False)
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o2770
+
+    def test_canonical_container_signal_without_env_override_keeps_operator_mode(self, tmp_path, monkeypatch):
+        # Podman/containerd/K8s runtimes often don't export HERMES_CONTAINER; the canonical
+        # _detect_container breadth (not the narrower legacy signal set) must skip the chmod.
+        self._isolate_env(monkeypatch, tmp_path)
+        monkeypatch.setattr("hermes_constants._detect_container", lambda: True)
+        pre = tmp_path / "cache" / "scratch"
+        pre.mkdir(parents=True)
+        os.chmod(pre, 0o750)
+        scratch = get_scratch_dir(tmp_path, prune=False)
+        assert stat.S_IMODE(os.stat(scratch).st_mode) == 0o750
+
     def test_repeated_calls_do_not_strip_setgid(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
         monkeypatch.setenv("HERMES_HOME_MODE", "2770")

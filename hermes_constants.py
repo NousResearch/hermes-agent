@@ -1020,30 +1020,31 @@ def _is_managed_home() -> bool:
                 marker = marker_file.read_text(encoding="utf-8", errors="replace").strip().lower()
             except OSError:
                 marker = ""
-    if marker is None or marker in ("", "brew", "homebrew", "false", "0", "no", "off"):
+    if marker is None or marker in ("brew", "homebrew", "false", "0", "no", "off"):
         return False
+    # An empty or unreadable marker ("" — including the OSError fallback above) is the legacy
+    # NixOS shape and still counts as managed, matching hermes_cli.config.get_managed_system.
     return True
 
 
 def _container_or_chmod_skipped() -> bool:
-    """Docker/Podman/LXC detection honoring the ``HERMES_CONTAINER``/``HERMES_SKIP_CHMOD``
-    overrides — the same signals as ``hermes_cli.config._is_container``, deliberately not the
-    cached :func:`is_container` (that one ignores these env overrides)."""
-    if (os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD")
-            or os.path.exists("/.dockerenv")):
+    """Container/chmod-skip detection: the ``HERMES_CONTAINER``/``HERMES_SKIP_CHMOD`` operator
+    overrides on top of the canonical :func:`_detect_container` signals (same breadth as
+    :func:`is_container` — Docker/Podman/LXC/Kubernetes, cgroup and root-mountinfo). The cached
+    :func:`is_container` itself is deliberately avoided: it ignores these env overrides and is
+    computed only once per process, so tests could not flip it."""
+    if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
         return True
-    try:
-        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
-            return any(m in f.read() for m in ("docker", "lxc", "kubepods"))
-    except OSError:
-        return False
+    return _detect_container()
 
 
 def _chown_dir_to_hermes_uid(path) -> None:
     """Chown *path* to ``HERMES_UID:HERMES_GID`` when set; EPERM/ENOENT are non-fatal.
 
-    Same contract as ``hermes_cli.config._chown_to_hermes_uid`` — used by
-    :func:`apply_secure_dir_policy` so Docker deployments keep directory ownership consistent.
+    Used by :func:`apply_secure_dir_policy` so Docker deployments keep directory ownership
+    consistent. Unlike ``hermes_cli.config._chown_to_hermes_uid`` there is no ``win32``
+    early return here — on Windows the ``AttributeError`` from the missing ``os.chown``
+    below is what makes this a no-op.
     """
     def env_int(name: str):
         try:

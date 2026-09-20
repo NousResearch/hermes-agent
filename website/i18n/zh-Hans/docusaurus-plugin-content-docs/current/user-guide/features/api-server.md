@@ -115,6 +115,7 @@ curl http://localhost:8642/v1/chat/completions \
 - **Chat Completions**：推理增量以 `choices[0].delta.reasoning_content` 块的形式到达（DeepSeek 风格的字段，Open WebUI、opencode 和 Vercel AI SDK 会将其渲染为思考块）；回答文本仍留在 `delta.content` 中。
 - **Responses**：每一段思考都是一个符合规范的 `reasoning` 输出项——`response.output_item.added`（`item.type: "reasoning"`）、`response.reasoning_summary_part.added`、`response.reasoning_summary_text.delta` … `response.reasoning_summary_text.done`、`response.reasoning_summary_part.done`、`response.output_item.done`——在下一个 message 或 `function_call` 项打开之前关闭，并在 `response.completed` 的 output 中以 `{"id": "rs_…", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "…"}]}` 的形式回显。`sequence_number` 在推理、文本和工具事件之间保持单调递增。
 - **非流式**：`/v1/chat/completions` 在 `choices[0].message.reasoning_content` 上返回本轮的推理内容；`/v1/responses` 在 message（以及该步骤的 `function_call` 项）之前返回同样的 `reasoning` 输出项，`GET /v1/responses/{id}` 回放时亦然。
+- **`/v1/runs/{run_id}/events` 与 `/api/sessions/{id}/chat/stream`**：每个推理 token 都以独立的 `reasoning.delta` 事件到达（`message_id`、`delta`），绝不会混入回答增量（`message.delta` / `assistant.delta`）。这两条流都不再转发完成时的 `reasoning.available` 进度预览：它由已完成的助手内容派生，若当作实时推理处理会误判或重复最终回答。
 - 将上一个响应的 `output` 列表原样作为下一次的 `input` 回传（Responses SDK 客户端的做法）没有问题：输入中的 `reasoning` 项会被忽略，而不会被解析为空的 user 轮次。
 - 支持情况通过 `GET /v1/capabilities` 上的 `features.reasoning_streaming: true` 公布。
 
@@ -276,6 +277,8 @@ Runs 接受简单的 `input` 字符串，以及可选的 `session_id`、`instruc
 ### GET /v1/runs/\{run_id\}/events
 
 run 的工具调用进度、token 增量和生命周期事件的 Server-Sent Events 流。专为需要附加/分离而不丢失状态的仪表板和厚客户端设计。
+
+模型推理以独立的 `reasoning.delta` 事件（`delta`）到达，不会并入 `message.delta`，因此客户端可以渲染实时思考块，并在拼装回答时丢弃它。完成时的 `reasoning.available` 预览不会在这条流上发出。
 
 未消费的事件缓冲区会在五分钟后过期，避免已断开的客户端导致内存无限增长。这里只会过期传输状态：仍在执行的 run 会继续保留在状态轮询、审批、停止控制和并发计数中，直到其 executor 工作真正退出。已连接的 SSE 订阅者会继续正常消费事件。
 

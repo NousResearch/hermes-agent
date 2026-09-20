@@ -78,7 +78,6 @@ import {
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
 import { describeBootstrapFailure, missingInstallPartMessage } from './bootstrap-failure-copy'
-import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
@@ -319,6 +318,7 @@ import {
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
+import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {

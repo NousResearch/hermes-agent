@@ -152,10 +152,12 @@ def build_models_payload(
 
 
 def _user_endpoint_is_local(api_url) -> bool:
-    """True when a user-defined endpoint points at the user's own machine or LAN — the #45954
-    local-proxy shape (litellm-proxy on localhost). A remote endpoint is a deliberate second
-    route, not a more-specific deployment: its catalog must not strip official aggregator rows
-    (#56145 — a custom API exposing 447 models gutted the Kilo row to 12)."""
+    """True when a user-defined endpoint points at the user's own machine — the #45954
+    local-proxy shape (litellm-proxy on loopback/localhost). The automatic inference stops at
+    loopback on purpose: a private-address endpoint can equally be another machine or a routing
+    aggregator reached over LAN/VPN/Tailscale, and treating it as "local" would strip official
+    aggregator rows for what is really a remote deployment — both routes must stay
+    discoverable (#56145 — a custom API exposing 447 models gutted the Kilo row to 12)."""
     try:
         from urllib.parse import urlparse
 
@@ -166,8 +168,7 @@ def _user_endpoint_is_local(api_url) -> bool:
             return True
         import ipaddress
 
-        addr = ipaddress.ip_address(host)
-        return addr.is_loopback or addr.is_private
+        return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False  # a DNS name is a remote host as far as we can tell
     except Exception:

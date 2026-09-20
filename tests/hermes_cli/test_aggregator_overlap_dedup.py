@@ -1,12 +1,13 @@
 """Aggregator-overlap dedup in the model picker (#45954 / #47077 / #56145).
 
-A user's LOCAL endpoint (litellm-proxy on localhost) is the more-specific deployment for the
-models it serves, so official aggregator rows drop those overlapping names (#45954). A REMOTE
-user-defined endpoint is a deliberate second route — two aggregating routes reselling the same
-open-weight model must both stay discoverable, or the official row is gutted to an unrecognizable
-stub (#56145: a custom API's 447-model catalog hid ~370 of Kilo's 382 models). And whatever the
-dedup hides, ``total_models`` keeps reporting the provider's real catalog size — the picker sorts
-rows and labels them with it.
+A user's LOOPBACK endpoint (litellm-proxy on localhost/127.0.0.1) is the more-specific
+deployment for the models it serves, so official aggregator rows drop those overlapping names
+(#45954). Every other user-defined endpoint — public or private-addressed — is a deliberate
+second route: two aggregating routes reselling the same open-weight model must both stay
+discoverable, or the official row is gutted to an unrecognizable stub (#56145: a custom API's
+447-model catalog hid ~370 of Kilo's 382 models; a LAN/VPN/Tailscale endpoint can be another
+machine's aggregator just as well). And whatever the dedup hides, ``total_models`` keeps
+reporting the provider's real catalog size — the picker sorts rows and labels them with it.
 """
 import pytest
 
@@ -62,14 +63,16 @@ def test_strip_keeps_real_total_models():
     assert rows[1]["total_models"] == 382
 
 
-def test_private_lan_endpoint_counts_as_local():
-    """A proxy on the user's LAN is still the user's own deployment."""
+def test_private_lan_endpoint_keeps_both_routes():
+    """Address privacy does not establish deployment ownership: a private-address endpoint can
+    be another machine's aggregator over LAN/VPN/Tailscale, so the official row must keep the
+    overlapping names selectable alongside it."""
     rows = [
         _custom_row(["lan/model"], "http://192.168.1.5:8000/v1"),
         _aggregator_row(["lan/model", "openrouter/other"]),
     ]
     _strip_aggregator_overlaps(rows)
-    assert rows[1]["models"] == ["openrouter/other"]
+    assert rows[1]["models"] == ["lan/model", "openrouter/other"]
 
 
 def test_user_defined_row_never_stripped():
@@ -87,9 +90,10 @@ def test_user_defined_row_never_stripped():
     ("http://localhost:4000/v1", True),
     ("http://127.0.0.1:4000/v1", True),
     ("http://[::1]:4000/v1", True),
-    ("http://10.0.0.5:11434/v1", True),
-    ("http://172.16.0.9/v1", True),
-    ("http://192.168.1.5:8000/v1", True),
+    ("http://proxy.localhost:4000/v1", True),
+    ("http://10.0.0.5:11434/v1", False),
+    ("http://172.16.0.9/v1", False),
+    ("http://192.168.1.5:8000/v1", False),
     ("https://api.cline.example/v1", False),
     ("https://litellm.mycompany.com/v1", False),
     ("", False),

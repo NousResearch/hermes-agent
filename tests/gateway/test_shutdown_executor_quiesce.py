@@ -80,6 +80,7 @@ class _FakeGateway:
 
     # Real hook + counter: 0 while ``adapters`` is empty, the API-server count once a fake adapter is in.
     _api_server_hook = gw_mod.GatewayShutdownMixin._api_server_hook
+    _mark_api_runs_shutdown_requested = gw_mod.GatewayShutdownMixin._mark_api_runs_shutdown_requested
     _active_api_run_count = gw_mod.GatewayShutdownMixin._active_api_run_count
     _active_deferred_agent_worker_count = gw_mod.GatewayShutdownMixin._active_deferred_agent_worker_count
 

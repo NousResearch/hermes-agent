@@ -36,11 +36,16 @@ logger = logging.getLogger(__name__)
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
 # Patterns in schtasks stderr that mean "fall back to the Startup folder".
-_FALLBACK_PATTERNS = re.compile(
-    r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
-    re.IGNORECASE,
+# schtasks' localized "access is denied" (en/es/cs/zh-Hans/zh-Hant/ja/ko): one vocabulary for both
+# the elevated-install offer and the Startup-folder fallback.
+_ACCESS_DENIED_WORDS = (
+    r"access is denied|acceso denegado|přístup byl odepřen|拒绝访问|拒絕存取|アクセスが拒否されました|"
+    r"액세스가 거부되었습니다"
 )
-_ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
+_FALLBACK_PATTERNS = re.compile(
+    rf"({_ACCESS_DENIED_WORDS}|schtasks timed out|schtasks produced no output)", re.IGNORECASE
+)
+_ACCESS_DENIED_PATTERN = re.compile(rf"({_ACCESS_DENIED_WORDS})", re.IGNORECASE)
 
 # Set by _spawn_detached() when the breakaway spawn failed and it retried WITHOUT
 # CREATE_BREAKAWAY_FROM_JOB — the child stays in the parent's Job Object and may be killed when this
@@ -64,6 +69,39 @@ def _schtasks_encoding() -> str:
         return locale.getpreferredencoding(False) or "utf-8"
     except Exception:
         return "utf-8"
+
+
+def _windows_console_encodings() -> list[str]:
+    """Code pages a console tool such as ``schtasks.exe`` writes to a pipe, most likely first: the
+    console output code page (65001 once ``configure_windows_stdio`` ran, else the OEM page), the OEM
+    page, then the ANSI page. Read from kernel32, so Python's UTF-8 mode cannot disguise them."""
+    kernel32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
+    if kernel32 is None:
+        return [_schtasks_encoding()]
+    pages: list[str] = []
+    for getter in ("GetConsoleOutputCP", "GetOEMCP", "GetACP"):
+        try:
+            code_page = int(getattr(kernel32, getter)())
+        except (AttributeError, OSError, ValueError):
+            continue
+        if code_page > 0 and f"cp{code_page}" not in pages:
+            pages.append(f"cp{code_page}")
+    return pages or [_schtasks_encoding()]
+
+
+def _decode_schtasks_output(data: bytes) -> str:
+    """Decode captured ``schtasks.exe`` bytes. schtasks writes the console/OEM code page even when this
+    process runs in UTF-8 mode (the launcher sets ``PYTHONUTF8=1``), so ``locale.getpreferredencoding``
+    is the wrong codec on a non-ASCII account path: ``C:\\Users\\方舟`` came back as ``����`` and the
+    Scheduled-Task drift check could never settle (#116193). Strict UTF-8 first (ASCII and genuine
+    UTF-8 output pass; legacy multi-byte text fails loudly), then the native code pages, then a lossy
+    fallback so a reader thread never raises."""
+    for encoding in ("utf-8", *_windows_console_encodings()):
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 def _assert_windows() -> None:
@@ -152,13 +190,17 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
     if schtasks is None:
         return (1, "", "schtasks.exe not found on PATH")
     try:
-        # Locale encoding + replace: a non-UTF-8 status line must never surface a UnicodeDecodeError
-        # from subprocess' reader threads. CREATE_NO_WINDOW: no flashing console under a TUI.
+        # Bytes, decoded by _decode_schtasks_output: a non-UTF-8 status line must never surface a
+        # UnicodeDecodeError from subprocess' reader threads. CREATE_NO_WINDOW: no flashing console under a TUI.
         proc = subprocess.run(
-            [schtasks, *args], capture_output=True, text=True, encoding=_schtasks_encoding(), errors="replace",
+            [schtasks, *args], capture_output=True, text=False,
             timeout=_SCHTASKS_TIMEOUT_S, creationflags=windows_hide_flags(),
         )
-        return (proc.returncode, proc.stdout or "", proc.stderr or "")
+        return (
+            proc.returncode,
+            _decode_schtasks_output(proc.stdout or b""),
+            _decode_schtasks_output(proc.stderr or b""),
+        )
     except subprocess.TimeoutExpired:
         return (124, "", f"schtasks timed out after {_SCHTASKS_TIMEOUT_S}s")
     except OSError as e:

@@ -6,7 +6,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { botFriendlyNames, botHandle, botMentionTag, mentionNameForms } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   $groupNeedsYou,
@@ -91,6 +91,29 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     for (const form of forms) {
       if (form) {
         handles.set(form, groupMemberKey(member))
+      }
+    }
+
+    // Normalized slug/collapsed variants of a live identity, gap-filled only — an exact live name elsewhere always wins, so an old handle can never squat (#110200).
+    for (const raw of [member.name, handle, title, ...botFriendlyNames(member)]) {
+      for (const form of mentionNameForms(raw)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, groupMemberKey(member))
+        }
+      }
+    }
+  }
+
+  // Renamed members answer to previous handles, gap-fill only — every live identity's variants are claimed first, so a live name always wins (#110200).
+  for (const member of members) {
+    const key = groupMemberKey(member)
+    const previous = Array.isArray(member.previous_names) ? member.previous_names : []
+
+    for (const name of previous) {
+      for (const form of mentionNameForms(name)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, key)
+        }
       }
     }
   }
@@ -867,9 +890,10 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
         updateGroupChat(group, room => ({ ...room, running: true }))
         await runGroupChatRounds(group, nextMembers, nextThread, drive.failedMembers)
       }
-    } catch {
+    } catch (error) {
       if (binding.isLive()) {
-        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread })
+        const reason = groupFailureReason(error)
+        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread, ...(reason ? { reason } : {}) })
         updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
       }
     } finally {

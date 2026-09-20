@@ -277,6 +277,29 @@ def test_turn_report_books_the_delivery_while_the_child_still_lingers(tmp_path):
             proc.wait(timeout=10)
 
 
+@pytest.mark.linux_only
+def test_delivery_child_runs_in_the_target_home_not_the_schedulers_cwd(tmp_path, monkeypatch):
+    """The spawn pins ``cwd`` to the target home: a scheduler left in a reaped kanban scratch
+    workspace must not hand its dead cwd to the child, which then dies before argv (#102941)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    report = tmp_path / "turn.json"
+    gone = tmp_path / "scratch"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    child = textwrap.dedent("""
+        import os, sys
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+        sys.stdout.write(os.getcwd())
+        write_turn_report(os.environ.pop(TURN_REPORT_FILE_ENV), exit_code=0)
+        """)
+    env = {**_child_env(), "HERMES_HOME": str(home), TURN_REPORT_FILE_ENV: str(report)}
+    result = sched_delivery._run_bot_chat_turn([sys.executable, "-c", child], env, str(report), timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == os.path.realpath(home)
+
+
 def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
     """Control: with no turn report the cap stays the guard it always was."""
     started = time.monotonic()

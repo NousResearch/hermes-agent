@@ -64,6 +64,7 @@ import {
   $groupClarify,
   $groupNeedsYou,
   groupThreadOf,
+  rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
   setGroupChatImage,
   updateGroupChat
@@ -72,11 +73,13 @@ import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
+import { compressGroupMemberHistory } from './group-compress'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
   groupChatMemberBots,
   groupDisbandMetadataPlan,
+  groupMemberKey,
   groupWorkspaceOwnerKey,
   liveGroupChatNames
 } from './group-membership'
@@ -152,6 +155,12 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   }
 
   delete all[group]
+
+  // Remember the disband durably BEFORE any remote write can stall: the
+  // pending sync job alone forgets it once the retry ladder gives up or the
+  // window closes, and a gateway mirror that missed the tombstone push would
+  // resurrect the room on every later pull (#105275).
+  await rememberGroupChatTombstone(group, prior.roomId, prior.syncRevision)
 
   // Keep a runtime-only tombstone while a drive may still be mid-turn; it
   // carries no log and is flagged so persistence and name-dedup skip it —
@@ -379,6 +388,7 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
   const current = (rooms[group] || {}).image || null
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [compressing, setCompressing] = useState<null | string>(null)
   useEffect(() => {
     if (open) {
       setName(group)
@@ -386,6 +396,36 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
+
+  // Per-member "Compress history" (#102291): the member's hidden plumbing
+  // session is reachable from nowhere else, so the room that shows the
+  // symptom (empty replies) owns the repair. One member at a time — the
+  // gateway refuses a second compress while one holds the lock.
+  const compressMember = async (member: GroupMember) => {
+    const memberName = displayName(member, botRosterMeta(member, $botMeta.get()))
+    setCompressing(groupMemberKey(member))
+    host.notify({ kind: 'info', message: b.group.compressing(memberName) })
+
+    try {
+      const outcome = await compressGroupMemberHistory(group, member)
+
+      if (outcome.compressed === 0 && outcome.pending === 0) {
+        host.notify({ kind: 'info', message: b.group.compressNothing(memberName) })
+      } else {
+        host.notify({
+          kind: 'success',
+          message: b.group.compressDone(memberName, outcome.compressed + outcome.pending, outcome.lines.join('; '))
+        })
+      }
+    } catch (error) {
+      host.notify({
+        kind: 'error',
+        message: b.group.compressFailed(memberName, error instanceof Error ? error.message : String(error))
+      })
+    } finally {
+      setCompressing(null)
+    }
+  }
 
   const save = async () => {
     const finalName = await renameGroupChat(group, name, members)
@@ -439,6 +479,31 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
             value={name}
           />
         </form>
+        {(members || []).length > 0 ? (
+          <ul className="flex flex-col gap-1" data-testid="group-settings-members">
+            {(members || []).map(member => {
+              const key = groupMemberKey(member)
+
+              return (
+                <li className="flex items-center justify-between gap-2 text-sm" key={key}>
+                  <span className="truncate">{displayName(member, botRosterMeta(member, $botMeta.get()))}</span>
+                  <Tip label={b.group.compressHistoryHint(member.name)}>
+                    <Button
+                      aria-label={`${b.group.compressHistory}: ${member.name}`}
+                      disabled={compressing !== null}
+                      onClick={() => void compressMember(member)}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      <Codicon name={compressing === key ? 'loading' : 'fold'} spinning={compressing === key} />
+                      {b.group.compressHistory}
+                    </Button>
+                  </Tip>
+                </li>
+              )
+            })}
+          </ul>
+        ) : null}
         {onManageMembers ? (
           <Button
             className="w-fit"

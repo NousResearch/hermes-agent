@@ -1,5 +1,5 @@
 import { clearBotAttention, noteBotAttention } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   appendGroupChatEntry,
@@ -10,7 +10,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { groupMemberKey } from './group-membership'
+import { groupMemberAuthor, groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupDeltaLines } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
@@ -161,7 +161,7 @@ export async function runGroupRoundMember(
       return null
     }
 
-    const reason = String(error?.data?.reason || '').trim()
+    const reason = groupFailureReason(error)
     recordGroupActivity(context.group, {
       kind: 'failed',
       member: groupMemberKey(member),
@@ -233,15 +233,7 @@ export async function runGroupRoundMember(
   if (reply !== null && !isGroupPassText(reply)) {
     appendGroupChatEntry(
       context.group,
-      {
-        kind: 'member',
-        name: member.name,
-        ...(member.remoteSource
-          ? {
-              source: member.connectionLabel || member.connectionId
-            }
-          : {})
-      },
+      groupMemberAuthor(member),
       reply,
       thread
     )

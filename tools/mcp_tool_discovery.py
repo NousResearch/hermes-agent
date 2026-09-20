@@ -417,24 +417,32 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
             _set_interrupt(True)
 
 
-def _connected_summary(names, *, lazy_tools: int = 0, lazy_servers: int = 0) -> Tuple[int, int, int]:
-    """(tool count, connected count, failed count) for candidate names, plus lazy servers."""
+def _connected_summary(names, *, lazy_tools: int = 0,
+                       lazy_servers: int = 0) -> Tuple[int, int, List[Tuple[str, str]]]:
+    """(tool count, connected count, ``[(failed name, reason)]``) for candidate names, plus lazy
+    servers. The reason is the recorded connect error; a candidate this pass never attempted (still
+    inside its retry cooldown from an earlier failure) has none."""
     with _core._lock:
         keys = {n: _server_key(n) for n in names}
         connected = [n for n in names
                      if keys[n] in _core._servers and keys[n] not in _core._server_connect_errors]
         tool_count = sum(len(getattr(_core._servers[keys[n]], "_registered_tool_names", [])) for n in connected)
-    failed = len(names) - len(connected)
+        failed = [(n, _core._server_connect_errors.get(keys[n]) or "not attempted (in retry cooldown)")
+                  for n in names if n not in connected]
     return tool_count + lazy_tools, len(connected) + lazy_servers, failed
 
 
 def _log_summary(prefix: str, names, **lazy) -> None:
-    """Log ``<prefix> N tool(s) from M server(s) (K failed)`` when anything happened."""
+    """Log ``<prefix> N tool(s) from M server(s) (K failed: name (reason), ...)`` when anything
+    happened. The failures are named on the summary line itself (#114746): the count alone left
+    the failing server identifiable only by elimination, and a candidate skipped for its retry
+    cooldown never gets a per-server WARNING at all."""
     new_tool_count, connected_count, failed = _connected_summary(names, **lazy)
     if new_tool_count or failed or lazy.get("lazy_servers"):
         summary = f"{prefix} {new_tool_count} tool(s) from {connected_count} server(s)"
         if failed:
-            summary += f" ({failed} failed)"
+            summary += f" ({len(failed)} failed: " + "; ".join(
+                f"{name} ({reason})" for name, reason in failed) + ")"
         if lazy.get("lazy_servers"):
             summary += f" ({lazy['lazy_servers']} lazy, not spawned yet)"
         logger.info(summary)

@@ -110,6 +110,13 @@ B's turns and into every subprocess spawned with `env=dict(os.environ)`.
 - A small allowlist (`HERMES_HOME`, `HERMES_PROFILE`, proxy settings,
   `API_SERVER_*` listener settings — but deliberately not `API_SERVER_KEY`)
   stays global because those describe the process, not a profile.
+- Cloud SDK *default credential chains* are ambient by construction
+  (`google.auth.default()`, `DefaultAzureCredential`, `boto3.Session()` with
+  no keys): every source they walk — process env, CLI caches, instance
+  metadata — is the launch context's identity. Under multiplexing a served
+  profile without a complete credential of its own is **refused** by the
+  Vertex, Entra ID and Bedrock adapters rather than minting that identity
+  against its own `base_url`; standalone runs keep the chain.
 
 Because the per-turn `.env` reload is a no-op under multiplexing, rotated
 credentials are picked up through the profile scope on the next turn — never

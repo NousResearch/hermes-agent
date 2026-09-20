@@ -52,7 +52,9 @@ def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, objec
     # SIGUSR1 is the gateway's drain-aware restart request. launchd owns THIS wrapper's PID,
     # so `hermes update` signals us, not the gateway; an unforwarded SIGUSR1 kills the wrapper
     # (Python's default action), launchd tears the group down with SIGTERM and applies its
-    # ~60 s crash back-off per sibling profile (#101426).
+    # ~60 s crash back-off per sibling profile (#101426). SIGUSR2 is the gateway's
+    # faulthandler stack-dump request (gateway/run_startup.py); unforwarded it terminates
+    # the wrapper the same way instead of dumping stacks.
     forwarded = (
         signal.SIGTERM,
         signal.SIGINT,

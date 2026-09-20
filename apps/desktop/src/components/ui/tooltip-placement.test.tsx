@@ -40,20 +40,22 @@ afterEach(() => {
 const latestContent = () => contentProps.mock.calls.at(-1)?.[0]
 
 describe('tooltip placement', () => {
+  // Rail ticks scroll inside their own strip, flush against its clip box, where
+  // Radix's padding-inset `hide` check misfires on them (#115723).
   it.each([
-    ['control', 'top'],
-    ['toolbar', 'bottom'],
-    ['row', 'right'],
-    ['left-rail', 'right'],
-    ['right-rail', 'left']
-  ] as const)('prefers %s tooltips on the %s', (placement, side) => {
+    ['control', 'top', true],
+    ['toolbar', 'bottom', true],
+    ['row', 'right', true],
+    ['left-rail', 'right', false],
+    ['right-rail', 'left', false]
+  ] as const)('prefers %s tooltips on the %s', (placement, side, hideWhenDetached) => {
     render(
       <Tip label="Details" placement={placement}>
         <button>Trigger</button>
       </Tip>
     )
 
-    expect(latestContent()).toMatchObject({ side, align: 'center', hideWhenDetached: true, collisionPadding: 12 })
+    expect(latestContent()).toMatchObject({ side, align: 'center', hideWhenDetached, collisionPadding: 12 })
     expect(latestContent().avoidCollisions).not.toBe(false)
   })
 

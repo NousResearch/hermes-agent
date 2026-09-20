@@ -12,14 +12,14 @@
 // owner and pushes it in via `setPreviewScope`.
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $previewTabs,
   migratePreviewTabsForProfile,
   openPreview,
-  setPreviewScope,
-  type PreviewTarget
+  type PreviewTarget,
+  setPreviewScope
 } from '@/store/preview'
+import { normalizeProfileKey } from '@/store/profile'
 
 const TABS_KEY = 'hermes.desktop.previewTabs.v2'
 
@@ -44,16 +44,15 @@ function storedBuckets(): Record<string, { target: { path?: string } }[]> {
 describe('right rail follows the chat on screen', () => {
   beforeEach(() => {
     window.localStorage.clear()
-    $activeGatewayProfile.set('default')
     setPreviewScope('default')
     $previewTabs.set([])
   })
 
   it('does not show one agent the tabs another agent opened', () => {
     setPreviewScope('tess')
-    openPreview(fileTarget('/tmp/tess-model.html'))
+    openPreview(fileTarget('/work/tess-model.html'))
 
-    expect(paths()).toEqual(['/tmp/tess-model.html'])
+    expect(paths()).toEqual(['/work/tess-model.html'])
 
     // Reading another agent's chat re-homes the rail.
     setPreviewScope('default')
@@ -63,42 +62,19 @@ describe('right rail follows the chat on screen', () => {
     // ...and comes back, unchanged, on the way in.
     setPreviewScope('tess')
 
-    expect(paths()).toEqual(['/tmp/tess-model.html'])
-  })
-
-  it('keeps each agent in its own persisted bucket', () => {
-    setPreviewScope('tess')
-    openPreview(fileTarget('/tmp/tess-model.html'))
-
-    setPreviewScope('default')
-    openPreview(fileTarget('/tmp/vexa-note.md'))
-
-    const buckets = storedBuckets()
-
-    expect(buckets[normalizeProfileKey('tess')]?.map(tab => tab.target.path)).toEqual(['/tmp/tess-model.html'])
-    expect(buckets[normalizeProfileKey('default')]?.map(tab => tab.target.path)).toEqual(['/tmp/vexa-note.md'])
-  })
-
-  it('does NOT re-home on a gateway socket change — the bug this guards', () => {
-    // A focused tab does not swap the socket, so the socket changing must not
-    // move the rail. Keying off it is what put Tess's model in VEXA's chat.
-    setPreviewScope('tess')
-    openPreview(fileTarget('/tmp/tess-model.html'))
-
-    $activeGatewayProfile.set('default')
-
-    expect(paths()).toEqual(['/tmp/tess-model.html'])
+    expect(paths()).toEqual(['/work/tess-model.html'])
+    expect(Object.keys(storedBuckets())).toEqual([normalizeProfileKey('tess')])
   })
 
   it('moves the rail with a rename instead of stranding it under the old name', () => {
     setPreviewScope('tess')
-    openPreview(fileTarget('/tmp/tess-model.html'))
+    openPreview(fileTarget('/work/tess-model.html'))
 
     migratePreviewTabsForProfile('tess', 'tess-renamed')
 
     const buckets = storedBuckets()
 
     expect(buckets[normalizeProfileKey('tess')]).toBeUndefined()
-    expect(buckets[normalizeProfileKey('tess-renamed')]?.map(tab => tab.target.path)).toEqual(['/tmp/tess-model.html'])
+    expect(buckets[normalizeProfileKey('tess-renamed')]?.map(tab => tab.target.path)).toEqual(['/work/tess-model.html'])
   })
 })

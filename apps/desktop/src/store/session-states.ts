@@ -35,9 +35,9 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
-import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,

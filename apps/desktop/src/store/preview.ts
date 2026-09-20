@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { readKey, readJson, writeKey } from '@/lib/storage'
+import { readJson, readKey, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'

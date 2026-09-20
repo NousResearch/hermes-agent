@@ -142,9 +142,8 @@ class TestEnableDisableNested:
 
 
 class TestEnableToolOverrideConsent:
-    """Enabling a non-bundled plugin must surface a consent decision about the
-    privileged ``allow_tool_override`` capability, and persist the operator's
-    choice under ``plugins.entries.<key>.allow_tool_override``."""
+    """Default enable without declared capabilities must neither prompt for
+    tool override nor write a grant; explicit choices are covered separately."""
 
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
@@ -154,21 +153,21 @@ class TestEnableToolOverrideConsent:
     @patch("hermes_cli.plugins_cmd._save_enabled_set")
     @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
     @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_interactive_eof_defaults_to_deny(
+    def test_no_capabilities_skips_prompt_and_grant_write(
         self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
         mock_user, mock_bundled, nested_plugin_env,
     ):
-        """Non-interactive stdin (EOFError) must fail closed to deny."""
+        """No explicit grant choice means no prompt, even with EOF-only stdin."""
         from hermes_cli.plugins_cmd import cmd_enable
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        with patch("rich.console.Console.input", side_effect=EOFError):
+        with patch("rich.console.Console.input", side_effect=EOFError) as prompt:
             cmd_enable("disk-cleanup")
 
-        mock_set_flag.assert_called_once_with(
-            "disk-cleanup", "allow_tool_override", False
-        )
+        prompt.assert_not_called()
+        mock_set_flag.assert_not_called()
+        assert "disk-cleanup" in mock_save_en.call_args[0][0]
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

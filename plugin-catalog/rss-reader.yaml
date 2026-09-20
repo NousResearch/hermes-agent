@@ -1,14 +1,14 @@
 name: rss-reader
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: 1a5d843a9caad351916e4773f5fd2624c4e1c5fd
+sha: c1f3733795d6c4ee6b214dd2905a93aa47cb7c79
 subdir: public/rss-reader
 description: "Desktop RSS reader with reader-mode capture, drag-reorder subscriptions, mute rules, saved searches, AI summaries, keyboard shortcuts, and an optional headline ticker."
 maintainer: apoapostolov
 tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/rss-reader
-version: "1.0.6"
-image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/1a5d843a9caad351916e4773f5fd2624c4e1c5fd/public/rss-reader/docs/hero.png
+version: "1.0.7"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/c1f3733795d6c4ee6b214dd2905a93aa47cb7c79/public/rss-reader/docs/hero.png
 platforms: []
 capabilities:
   provides_tools: 

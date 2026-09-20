@@ -8,6 +8,8 @@ sibling platform-plugin tests on the same xdist worker.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -184,6 +186,67 @@ async def test_send_group():
 # ---------------------------------------------------------------------------
 # 7b. Channel directory enumeration (list_channels)
 # ---------------------------------------------------------------------------
+
+
+def _decode_thumbnail_data_uri(data_uri: str):
+    """Decode a ``_prepare_image`` data URI into a loaded Pillow image."""
+    from PIL import Image
+
+    prefix = "data:image/jpg;base64,"
+    assert data_uri.startswith(prefix)
+    image = Image.open(io.BytesIO(base64.b64decode(data_uri[len(prefix):])))
+    image.load()
+    return image
+
+
+def test_prepare_image_flattens_rgba_thumbnail(tmp_path):
+    """Alpha PNGs (e.g. KDE/Wayland screenshots) must still produce a JPEG thumb."""
+    from PIL import Image
+
+    path = tmp_path / "screenshot.png"
+    Image.new("RGBA", (400, 300), (255, 0, 0, 128)).save(path)
+
+    png_path, thumb_uri = SimplexAdapter._prepare_image(str(path))
+
+    assert png_path == str(path)
+    thumb = _decode_thumbnail_data_uri(thumb_uri)
+    assert thumb.mode == "RGB"
+    assert thumb.size == (128, 96)
+    # Alpha is composited onto white rather than dropped onto black.
+    red, green, blue = thumb.getpixel((64, 48))
+    assert red == 255
+    assert green > 100 and blue > 100
+
+
+def test_prepare_image_flattens_transparent_palette_thumbnail(tmp_path):
+    """Paletted PNGs with a transparency entry hit the same Pillow restriction."""
+    from PIL import Image
+
+    path = tmp_path / "palette.png"
+    image = Image.new("P", (64, 64))
+    image.putpalette([255, 0, 0] * 256)
+    image.info["transparency"] = 0
+    image.save(path)
+
+    _, thumb_uri = SimplexAdapter._prepare_image(str(path))
+
+    thumb = _decode_thumbnail_data_uri(thumb_uri)
+    assert thumb.mode == "RGB"
+    assert thumb.size == (64, 64)
+
+
+def test_prepare_image_keeps_rgb_thumbnail_readable(tmp_path):
+    """The RGB fast path keeps producing a readable thumbnail."""
+    from PIL import Image
+
+    path = tmp_path / "rgb.png"
+    Image.new("RGB", (64, 64), (0, 128, 255)).save(path)
+
+    _, thumb_uri = SimplexAdapter._prepare_image(str(path))
+
+    thumb = _decode_thumbnail_data_uri(thumb_uri)
+    assert thumb.mode == "RGB"
+    assert thumb.size == (64, 64)
 
 
 def _adapter_with_ws():

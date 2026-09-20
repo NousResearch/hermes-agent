@@ -497,6 +497,15 @@ class SimplexAdapter(BasePlatformAdapter):
                 img.save(png_path, "PNG")
             thumb = img.copy()
             thumb.thumbnail((128, 128))
+            if thumb.mode in ("RGBA", "LA", "P"):
+                # JPEG has no alpha channel: composite transparency onto white
+                # rather than letting Pillow raise "cannot write mode ... as JPEG".
+                background = Image.new("RGB", thumb.size, (255, 255, 255))
+                layer = thumb.convert("RGBA") if thumb.mode == "P" else thumb
+                background.paste(layer, mask=layer.split()[-1])
+                thumb = background
+            elif thumb.mode not in ("RGB", "L"):
+                thumb = thumb.convert("RGB")
             buf = io.BytesIO()
             thumb.save(buf, "JPEG", quality=70)
             thumb_uri = _THUMB_URI_PREFIX + base64.b64encode(buf.getvalue()).decode()

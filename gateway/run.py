@@ -5066,6 +5066,19 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
             root.setLevel(_stderr_level)
 
 
+def _start_gateway_make_restart_signal_handler(runner):
+    """Build the SIGUSR1 handler: log what the signal means, then the drain-aware service restart."""
+    def restart_signal_handler():
+        # systemd's `reload` verb (ExecReload=kill -USR1) lands here too; say so, because operators
+        # expect `reload` to mean an in-process config reload, not a drain-and-relaunch (#117267).
+        logger.info(
+            "SIGUSR1 received (systemctl reload / hermes gateway restart): performing a graceful "
+            "gateway restart — drain active turns, exit, supervisor relaunches. Not an in-process "
+            "config reload.")
+        runner.request_restart(detached=False, via_service=True)
+    return restart_signal_handler
+
+
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     def shutdown_signal_handler(received_signal=None):
@@ -5376,8 +5389,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     shutdown_signal_handler = _start_gateway_make_shutdown_signal_handler(
         runner, _signal_initiated_shutdown)
 
-    def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+    restart_signal_handler = _start_gateway_make_restart_signal_handler(runner)
 
     loop = asyncio.get_running_loop()
 

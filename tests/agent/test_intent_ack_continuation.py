@@ -106,6 +106,16 @@ def test_all_path_drops_workspace_requirement():
     assert looks_like_codex_intermediate_ack(
         a, REPRO_USER, REPRO_ACK, msgs, require_workspace=False
     )
+    # #69778 / ClaySecAI #69779: old tool work must not disable a new turn.
+    history = [{"role": "tool", "content": "old result"},
+               {"role": "assistant", "content": "Earlier task finished."}, *msgs]
+    assert looks_like_codex_intermediate_ack(
+        a, REPRO_USER, REPRO_ACK, history, require_workspace=False
+    )
+    assert not looks_like_codex_intermediate_ack(
+        a, REPRO_USER, "Let me know if you want me to run it again.",
+        history, require_workspace=False,
+    )
 
 
 # ── detector: guardrails that hold regardless of workspace ───────────────────

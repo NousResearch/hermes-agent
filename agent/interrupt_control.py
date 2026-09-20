@@ -74,6 +74,14 @@ def _ic_codex_method(agent, name: str):
     return method if callable(method) else None
 
 
+def _ic_antigravity_method(agent, name: str):
+    """Antigravity owns its external request and exposes the same interruption hook."""
+    if getattr(agent, "api_mode", None) != "antigravity_runtime":
+        return None
+    method = getattr(getattr(agent, "_antigravity_session", None), name, None)
+    return method if callable(method) else None
+
+
 def _ic_abort_active_request(agent, reason: str, failure_log: str) -> None:
     """Shut the registered in-flight request's sockets (cron turns register their client here)."""
     abort = getattr(agent, "_active_request_abort", None)
@@ -173,6 +181,7 @@ class InterruptControlMixin:
 
         # Codex watches a private interrupt event rather than Hermes' per-thread flag.
         _request_interrupt = _ic_codex_method(self, "request_interrupt")
+        _request_interrupt = _request_interrupt or _ic_antigravity_method(self, "request_interrupt")
         if _request_interrupt is not None:
             try:
                 _request_interrupt()

@@ -367,7 +367,7 @@ class CompressionSettings(SimpleNamespace):
 
 _EXPLICIT_API_MODES = {
     "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
+    "codex_app_server", "antigravity_runtime",
 }
 
 
@@ -965,7 +965,13 @@ def _build_client(agent, api_key, base_url, fallback_model):
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
-    if agent.api_mode == "anthropic_messages":
+    if agent.api_mode == "antigravity_runtime":
+        # The delegated CLI owns model/auth/tool execution; no OpenAI-compatible client exists.
+        agent.client = None
+        agent._client_kwargs = {}
+        agent.api_key = api_key or ""
+        agent.base_url = base_url or ""
+    elif agent.api_mode == "anthropic_messages":
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
     elif agent.provider == "moa":
         _init_moa_client(agent, api_key)

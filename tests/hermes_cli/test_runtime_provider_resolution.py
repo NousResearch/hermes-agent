@@ -2200,3 +2200,61 @@ def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(mon
     runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
 
     assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")
+
+
+def test_google_antigravity_runtime_is_explicit_and_uses_profile_config(monkeypatch):
+    """Antigravity is never auto-detected or routed through an OpenAI shim."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {"provider": "google-antigravity", "default": "gemini-3-pro"},
+            "antigravity": {
+                "binary": "/profiles/a/bin/antigravity",
+                "sandbox": False,
+                "startup_timeout_seconds": 12,
+                "request_timeout_seconds": 90,
+                "debug_protocol": True,
+            },
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="google-antigravity")
+
+    assert resolved == {
+        "provider": "google-antigravity",
+        "api_mode": "antigravity_runtime",
+        "base_url": "",
+        "api_key": "no-key-required",
+        "source": "antigravity-runtime",
+        "requested_provider": "google-antigravity",
+        "antigravity": {
+            "binary": "/profiles/a/bin/antigravity",
+            "sandbox": False,
+            "startup_timeout_seconds": 12,
+            "request_timeout_seconds": 90,
+            "shutdown_timeout_seconds": 5,
+            "debug_protocol": True,
+        },
+    }
+
+
+def test_google_antigravity_runtime_is_not_an_auto_provider(monkeypatch):
+    """A configured binary does not change the normal automatic provider ladder."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {"model": {"provider": "auto"}, "antigravity": {"binary": "/bin/antigravity"}},
+    )
+    monkeypatch.setattr(rp, "resolve_provider", lambda *args, **kwargs: "lmstudio")
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda _provider: {"api_key": "lmstudio-noauth", "base_url": "http://127.0.0.1:1234/v1", "source": "default"},
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="auto")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_mode"] == "chat_completions"
+

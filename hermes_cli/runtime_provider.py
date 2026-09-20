@@ -93,7 +93,8 @@ _HOST_MANDATED_API_MODES = {
 
 # codex_app_server is opt-in: hand the whole turn to a `codex app-server` subprocess (Codex's own
 # tool runtime), gated on `model.openai_runtime == "codex_app_server"` AND provider in {openai, openai-codex}.
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server",
+                    "antigravity_runtime"}
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -473,6 +474,48 @@ def _get_model_config() -> Dict[str, Any]:
         if detected:
             cfg["default"] = detected
     return cfg
+
+
+_ANTIGRAVITY_PROVIDER = "google-antigravity"
+_ANTIGRAVITY_DEFAULTS = {
+    "binary": "auto",
+    "sandbox": True,
+    "startup_timeout_seconds": 30,
+    "request_timeout_seconds": 120,
+    "shutdown_timeout_seconds": 5,
+    "debug_protocol": False,
+}
+
+
+def get_antigravity_runtime_config() -> Dict[str, Any]:
+    """Read the selected profile's Antigravity runtime settings at call time."""
+    raw = load_config().get("antigravity")
+    raw = raw if isinstance(raw, dict) else {}
+    binary = str(raw.get("binary") or _ANTIGRAVITY_DEFAULTS["binary"]).strip() or "auto"
+
+    def timeout(key: str) -> int:
+        try:
+            return max(1, int(raw.get(key, _ANTIGRAVITY_DEFAULTS[key])))
+        except (TypeError, ValueError):
+            return _ANTIGRAVITY_DEFAULTS[key]
+
+    return {
+        "binary": binary,
+        "sandbox": bool(raw.get("sandbox", _ANTIGRAVITY_DEFAULTS["sandbox"])),
+        "startup_timeout_seconds": timeout("startup_timeout_seconds"),
+        "request_timeout_seconds": timeout("request_timeout_seconds"),
+        "shutdown_timeout_seconds": timeout("shutdown_timeout_seconds"),
+        "debug_protocol": bool(raw.get("debug_protocol", _ANTIGRAVITY_DEFAULTS["debug_protocol"])),
+    }
+
+
+def _resolve_antigravity_runtime(requested_provider: str) -> Dict[str, Any]:
+    """Explicit local runtime; it never takes the OpenAI-compatible resolver path."""
+    return _runtime(
+        _ANTIGRAVITY_PROVIDER, "antigravity_runtime", "", "no-key-required",
+        source="antigravity-runtime", requested_provider=requested_provider,
+        antigravity=get_antigravity_runtime_config(),
+    )
 
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
@@ -917,6 +960,8 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
     if requested_provider == "moa":
         return _runtime("moa", "chat_completions", "moa://local", "moa-virtual-provider", source="moa-virtual-provider",
                         requested_provider=requested_provider)
+    if requested_provider == _ANTIGRAVITY_PROVIDER:
+        return _resolve_antigravity_runtime(requested_provider)
     # Azure Anthropic short-circuit: an explicit Azure endpoint with provider="anthropic" must
     # bypass _resolve_named_custom_runtime (which would yield custom/chat_completions/no key).
     eff_base = (explicit_base_url or "").strip()

@@ -977,6 +977,7 @@ class AIAgent(
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
         self._close_request_clients("agent_close")
         _quietly(self._close_codex_session)
+        _quietly(self._close_antigravity_session)
         # Free conversation history proactively: callers may still hold the closed agent. The DB-flush
         # settled-prefix snapshot and the streamed-text accumulator are shadow copies of the same transcript;
         # on a closed delegate child they were the only remaining owners, pinning its history in the parent heap.
@@ -1029,6 +1030,13 @@ class AIAgent(
         if codex_session is not None:
             self._codex_session = None
             codex_session.close()
+
+    def _close_antigravity_session(self) -> None:
+        """Close the Antigravity session before discarding its external conversation handle."""
+        antigravity_session = getattr(self, "_antigravity_session", None)
+        if antigravity_session is not None:
+            self._antigravity_session = None
+            antigravity_session.close()
 
     @staticmethod
     def _trim_process_memory() -> None:

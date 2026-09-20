@@ -237,6 +237,47 @@ def build_model_options_payload(
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
         non_blocking_catalogs=not refresh,
     )
+    current_antigravity = ctx.current_provider == "google-antigravity"
+    capabilities = None
+    try:
+        from agent.transports.antigravity_cli import AntigravityClient
+        from hermes_cli.runtime_provider import get_antigravity_runtime_config
+        runtime_config = get_antigravity_runtime_config()
+        binary = runtime_config.get("binary")
+        client = AntigravityClient(None if binary in {None, "", "auto"} else binary)
+        should_probe = current_antigravity or include_unconfigured
+        if not should_probe:
+            try:
+                client.executable
+                should_probe = True
+            except Exception:
+                pass
+        if should_probe:
+            capabilities = client.probe(timeout=2.0)
+    except Exception:
+        capabilities = None
+    if current_antigravity or include_unconfigured or (capabilities is not None and capabilities.available):
+        available = bool(capabilities is not None and capabilities.available)
+        authenticated = bool(capabilities is not None and capabilities.authenticated)
+        version = ".".join(map(str, capabilities.version)) if capabilities and capabilities.version else ""
+        warning = "" if authenticated else (capabilities.message if capabilities else "Antigravity CLI not found")
+        payload["providers"].append({
+            "slug": "google-antigravity",
+            "name": "Google Antigravity",
+            "is_current": current_antigravity,
+            "is_user_defined": False,
+            "models": ["auto"],
+            "total_models": 1,
+            "source": "local-runtime",
+            "authenticated": authenticated,
+            "auth_type": "external_runtime",
+            "key_env": "",
+            "warning": warning,
+            "runtime_status": {"installed": available, "version": version,
+                               "authentication": "authenticated" if authenticated else "authentication_required"},
+            "capabilities": {"auto": {"reasoning": True}},
+            "featured_models": ["auto"],
+        })
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,
                                current_base_url=ctx.current_base_url)

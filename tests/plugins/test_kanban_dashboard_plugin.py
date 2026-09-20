@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import shutil
 import sys
@@ -1324,6 +1325,17 @@ def test_diag_severity_tokens_route_through_host_theme_tokens():
     css = (Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
     block = css[css.index("--hermes-diag-warning"):]
     block = block[: block.index("}")]
-    assert "--hermes-diag-warning:  var(--color-warning, #ff9e3b)" in block
-    assert "--hermes-diag-error:    var(--color-destructive, #ff6b3d)" in block
-    assert "--hermes-diag-critical: var(--color-destructive, #ff4d4d)" in block
+    # Parse the declarations rather than matching whitespace-exact substrings, so a
+    # reformat that keeps the computed value passes and a wrong token/fallback fails.
+    declared = {
+        name: (token, fallback)
+        for name, token, fallback in re.findall(
+            r"--hermes-diag-(warning|error|critical)\s*:\s*var\(\s*(--color-[\w-]+)\s*,\s*(#[0-9a-fA-F]{6})\s*\)\s*;",
+            block,
+        )
+    }
+    assert declared == {
+        "warning": ("--color-warning", "#ff9e3b"),
+        "error": ("--color-destructive", "#ff6b3d"),
+        "critical": ("--color-destructive", "#ff4d4d"),
+    }

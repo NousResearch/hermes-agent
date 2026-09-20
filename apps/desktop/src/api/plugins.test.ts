@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import type { HermesConnection } from '@/global'
+import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 
 import { activeConnection, pluginSocket } from './plugins'
 

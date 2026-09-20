@@ -355,10 +355,6 @@ def run_isolation_diagnostic(
     from hermes_cli.config_effective import _effective
     source_config_raw = read_user_config_raw(source / "config.yaml")
     source_config = _effective(source_config_raw)
-    runtime = runtime_override if runtime_override is not None else _resolve_source_runtime(source_config)
-    runtime = dict(runtime)
-    # A diagnostic request must not bench/rotate/persist a source credential pool.
-    runtime["credential_pool"] = None
     safe_effective = _config_without_secrets(source_config, keep_references=False)
     safe_raw = _config_without_secrets(source_config_raw, keep_references=True)
     minimal = _minimal_config(safe_effective)
@@ -378,6 +374,25 @@ def run_isolation_diagnostic(
     state_snapshot: Path | None = None
     state_ready = True
     try:
+        try:
+            runtime = (
+                runtime_override
+                if runtime_override is not None
+                else _resolve_source_runtime(source_config)
+            )
+        except Exception as exc:
+            runtime_failure = {
+                "status": "fail",
+                "failed_phase": "provider_resolution",
+                "error_class": type(exc).__name__,
+                "timings": {},
+            }
+            report.control = {"status": "fail", "runtime": runtime_failure}
+            report.classification = "below_profile_layer"
+            return report
+        runtime = dict(runtime)
+        # A diagnostic request must not bench/rotate/persist a source credential pool.
+        runtime["credential_pool"] = None
         candidate, _ = _prepare_candidate(
             candidate_parent, source, "00-control", disk_effective, included_slices,
             state_snapshot, state_ready,

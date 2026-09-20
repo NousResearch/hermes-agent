@@ -268,9 +268,33 @@ def test_isolate_stops_after_failed_sterile_control_and_parser_modes_are_exclusi
     subparsers = parser.add_subparsers(dest="command")
     build_doctor_parser(subparsers, cmd_doctor=lambda args: None)
     assert parser.parse_args(["doctor", "--isolate", "--json"]).isolate is True
+    assert "up to seven minimal inference requests" in parser.format_help()
     try:
         parser.parse_args(["doctor", "--isolate", "--runtime"])
     except SystemExit as exc:
         assert exc.code == 2
     else:
         raise AssertionError("diagnostic modes must be mutually exclusive")
+
+
+def test_isolate_reports_source_runtime_resolution_failure(tmp_path, monkeypatch):
+    source = _source_profile(tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.doctor_isolate._resolve_source_runtime",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("credential details")),
+    )
+
+    report = run_isolation_diagnostic(source=source)
+
+    assert report.classification == "below_profile_layer"
+    assert report.control == {
+        "status": "fail",
+        "runtime": {
+            "status": "fail",
+            "failed_phase": "provider_resolution",
+            "error_class": "RuntimeError",
+            "timings": {},
+        },
+    }
+    assert report.cleanup_status == "removed"
+    assert "credential details" not in repr(report.to_dict())

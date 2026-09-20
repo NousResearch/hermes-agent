@@ -25,7 +25,8 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
     diagnostic_mode.add_argument(
         "--isolate", action="store_true",
         help="Opt-in: compare a sterile temporary profile with cumulative source-state "
-            "slices without mutating the source profile.")
+            "slices without mutating the source profile. Makes up to seven minimal "
+            "inference requests and stops after the first regression.")
     doctor_parser.add_argument(
         "--json", action="store_true",
         help="Emit the --runtime or --isolate report as machine-readable JSON.")

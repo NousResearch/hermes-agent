@@ -168,6 +168,14 @@
       "pattern_regex": "\\bbuild_session_key\\(|\\bSessionSource\\(",
       "scope_hint": "Inside an adapter derive every key through self._source_session_key(source) / self._event_session_key(event) (owner-profile namespace, runner-seeded isolation flags) and build sources with self.build_source(...) so the transport provenance is kept; only platforms/base.py owns the free calls.",
       "why": "Yuanbao keyed its per-group queue and RecallGuard with the free build_session_key() (no profile) while handle_message keyed under agent:<owner>: - two derivations of one identity, one lane shared across bots (#88715)."
+    },
+    {
+      "id": "P33",
+      "class": "C1",
+      "path_regex": "^(gateway|hermes_cli|agent|tools|cron|tui_gateway)/.+\\.py$",
+      "pattern_regex": "^_?[A-Z][A-Z0-9_]*\\s*(?::[^=\\n]+)?=\\s*(?:_float_env|_int_env|_bool_env|_env_float|_env_int|_env_bool)\\(|^_?[A-Z][A-Z0-9_]*\\s*(?::[^=\\n]+)?=\\s*(?:float|int|str|bool)?\\(?\\s*os\\.(?:environ\\.get|getenv)\\(\\s*[\"']HERMES_",
+      "scope_hint": "A module-level CONSTANT = <env read> of a HERMES_* var that gateway/run.py bridges from config.yaml (_AGENT_ENV_BRIDGE, _SESSIONS_ENV_BRIDGE, _DISPLAY_ENV_BRIDGE, HERMES_REDACT_SECRETS, HERMES_TIMEZONE) freezes the LAUNCH profile's value for the process. Resolve at call time from load_config_readonly() under the bound scope (gateway/run.py::_reconnect_attention_after_secs), or key a cache by hermes_home_key() (agent/redact.py::_REDACT_ENABLED_BY_HOME).",
+      "why": "_RECONNECT_ATTENTION_AFTER_SECONDS captured the bridged env once at import: a multiplexed secondary escalated at the launch profile's threshold and `hermes config set agent.reconnect_attention_after` was ignored until restart (#115635)."
     }
   ]
 }

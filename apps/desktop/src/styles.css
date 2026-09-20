@@ -3650,3 +3650,73 @@ html[data-hud-window] [data-slot='popover-content'] {
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
 }
+
+/* Optional GNOME integration -------------------------------------------------
+   The Appearance setting publishes narrow attributes on <html>. Hermes' own
+   styling stays the default; each part can be enabled independently and all
+   selectors are additive, so the treatment never removes controls. */
+
+html[data-hermes-interface-typography] {
+  --dt-font-sans:
+    'Adwaita Sans', system-ui, 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji !important;
+}
+
+html[data-hermes-interface-controls] {
+  --radius-scalar: 0.55 !important;
+}
+
+html[data-hermes-interface-controls] [data-slot='button'] {
+  border-radius: 7px !important;
+}
+
+html[data-hermes-interface-controls] [data-slot='button']:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+html[data-hermes-interface-controls] .titlebar-icon-button:active:not(:disabled) {
+  background: var(--ui-control-active-background);
+}
+
+html[data-hermes-interface-controls] .hermes-titlebar-header {
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ui-base) 4%, transparent);
+}
+
+html[data-hermes-interface-controls] [data-hermes-sidebar-row],
+html[data-hermes-interface-controls] [data-hermes-sidebar-nav] {
+  border-radius: 7px !important;
+}
+
+html[data-hermes-interface-controls] [data-hermes-sidebar-nav][data-active='true'] {
+  border-color: transparent !important;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ui-base) 9%, transparent);
+}
+
+html[data-hermes-interface-surfaces] [data-slot='dropdown-menu-content'],
+html[data-hermes-interface-surfaces] [data-slot='dropdown-menu-sub-content'],
+html[data-hermes-interface-surfaces] [data-slot='context-menu-content'],
+html[data-hermes-interface-surfaces] [data-slot='context-menu-sub-content'] {
+  border-color: var(--ui-stroke-tertiary) !important;
+  border-radius: 10px !important;
+  box-shadow: var(--shadow-lg) !important;
+  padding: 0.375rem !important;
+}
+
+html[data-hermes-interface-surfaces] [data-slot='dropdown-menu-item'],
+html[data-hermes-interface-surfaces] [data-slot='dropdown-menu-checkbox-item'],
+html[data-hermes-interface-surfaces] [data-slot='dropdown-menu-radio-item'],
+html[data-hermes-interface-surfaces] [data-slot='dropdown-menu-sub-trigger'],
+html[data-hermes-interface-surfaces] [data-slot='context-menu-item'],
+html[data-hermes-interface-surfaces] [data-slot='context-menu-checkbox-item'],
+html[data-hermes-interface-surfaces] [data-slot='context-menu-sub-trigger'] {
+  border-radius: 7px !important;
+  padding-top: 0.375rem !important;
+  padding-bottom: 0.375rem !important;
+}
+
+html[data-hermes-interface-surfaces] [data-slot='popover-content'] {
+  --popover-surface: color-mix(in srgb, var(--ui-bg-elevated) 94%, transparent) !important;
+  border-color: var(--ui-stroke-tertiary) !important;
+  border-radius: 12px !important;
+  box-shadow: var(--shadow-lg) !important;
+}

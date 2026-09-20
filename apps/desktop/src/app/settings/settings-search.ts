@@ -17,6 +17,7 @@ export const APPEARANCE_SETTING_IDS = {
   hideCodeDiffs: 'appearance.hide-code-diffs',
   hideThreadTimeline: 'appearance.hide-thread-timeline',
   introSplash: 'appearance.intro-splash',
+  interfaceStyle: 'appearance.interface-style',
   language: 'appearance.language',
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',

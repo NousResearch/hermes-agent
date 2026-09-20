@@ -26,6 +26,26 @@
       // `secondary` (a session window) and `browser` are opaque and DO want the
       // pre-paint.
       try {
+        let interfaceStyle = null
+        try {
+          interfaceStyle = JSON.parse(localStorage.getItem('hermes.desktop.interface-style.v1') || 'null')
+        } catch {
+          // A malformed optional preference must not prevent theme pre-paint.
+        }
+
+        if (interfaceStyle && interfaceStyle.enabled === true) {
+          document.documentElement.setAttribute('data-hermes-interface-style', '')
+          if (interfaceStyle.typography !== false) {
+            document.documentElement.setAttribute('data-hermes-interface-typography', '')
+          }
+          if (interfaceStyle.controls !== false) {
+            document.documentElement.setAttribute('data-hermes-interface-controls', '')
+          }
+          if (interfaceStyle.surfaces !== false) {
+            document.documentElement.setAttribute('data-hermes-interface-surfaces', '')
+          }
+        }
+
         const win = new URLSearchParams(window.location.search).get('win')
         if (!win || ['hud', 'overlay', 'quick', 'wake', 'intro'].indexOf(win) === -1) {
           let bg = localStorage.getItem('hermes-boot-background')

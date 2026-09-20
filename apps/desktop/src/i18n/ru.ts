@@ -567,6 +567,15 @@ export const ru = defineLocale({
       uiScaleTitle: 'Масштаб интерфейса',
       uiScaleDesc: percent =>
         `Масштабирует текст и элементы управления во всём приложении. Также работает Cmd/Ctrl с +, − и 0. Сейчас: ${percent}%.`,
+      interfaceStyleTitle: 'Стиль интерфейса GNOME',
+      interfaceStyleDesc: 'Сдержанное оформление в духе Adwaita без изменения функций и компоновки Hermes.',
+      interfaceStyleTypographyTitle: 'Шрифты Adwaita',
+      interfaceStyleTypographyDesc:
+        'Предпочитать Adwaita Sans, если он установлен, иначе использовать системные шрифты.',
+      interfaceStyleControlsTitle: 'Мягкие элементы управления',
+      interfaceStyleControlsDesc: 'Слегка скруглить кнопки, заголовки и выбранные элементы боковой панели.',
+      interfaceStyleSurfacesTitle: 'Всплывающие поверхности',
+      interfaceStyleSurfacesDesc: 'Добавить меню и всплывающим окнам отступы, скругления и тени в стиле GNOME.',
       sessionDensityTitle: 'Плотность списка сеансов',
       sessionDensityDesc: 'Выберите, сколько контекста показывать под заголовками сеансов в боковой панели.',
       sessionDensityCompact: 'Компактно',

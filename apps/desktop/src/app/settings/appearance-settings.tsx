@@ -6,6 +6,7 @@ import { useDebounced } from '@/app/hooks/use-debounced'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -17,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
+import { $interfaceStyle, setInterfaceStyleEnabled, setInterfaceStylePart } from '@/store/interface-style'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -423,6 +425,7 @@ export function AppearanceSettings() {
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
+  const interfaceStyle = useStore($interfaceStyle)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
@@ -646,6 +649,57 @@ export function AppearanceSettings() {
           />
 
           <ChatFontSetting />
+
+          <ListRow
+            below={
+              interfaceStyle.enabled ? (
+                <div className="mt-3 grid max-w-3xl gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2">
+                  {(
+                    [
+                      ['typography', a.interfaceStyleTypographyTitle, a.interfaceStyleTypographyDesc],
+                      ['controls', a.interfaceStyleControlsTitle, a.interfaceStyleControlsDesc],
+                      ['surfaces', a.interfaceStyleSurfacesTitle, a.interfaceStyleSurfacesDesc]
+                    ] as const
+                  ).map(([part, label, description]) => (
+                    <div className="flex items-center gap-3 rounded-md px-2 py-1.5" key={part}>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-foreground">
+                          {label}
+                        </div>
+                        <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                          {description}
+                        </div>
+                      </div>
+                      <Switch
+                        aria-label={label}
+                        checked={interfaceStyle[part]}
+                        onCheckedChange={enabled => {
+                          triggerHaptic('selection')
+                          setInterfaceStylePart(part, enabled)
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : undefined
+            }
+            description={a.interfaceStyleDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.interfaceStyle)}
+            title={
+              <div className="flex max-w-3xl items-center justify-between gap-3">
+                <span>{a.interfaceStyleTitle}</span>
+                <Switch
+                  aria-label={a.interfaceStyleTitle}
+                  checked={interfaceStyle.enabled}
+                  onCheckedChange={enabled => {
+                    triggerHaptic('selection')
+                    setInterfaceStyleEnabled(enabled)
+                  }}
+                />
+              </div>
+            }
+            wide
+          />
 
           <TerminalFontSetting />
 

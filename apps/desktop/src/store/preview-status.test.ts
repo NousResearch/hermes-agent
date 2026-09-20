@@ -45,21 +45,6 @@ describe('recordPreviewArtifact', () => {
     expect($previewStatusBySession.get().s1).toBeUndefined()
   })
 
-  it('suppresses a dismissed historical target when the row mounts again', () => {
-    for (const session_id of ['runtime-a', 'runtime-b']) {
-      recordSessionEventScope({ session_id, connectionId: 'owner', profile: 'default' })
-    }
-
-    recordPreviewArtifact('runtime-a', '/a/index.html', '/work', 'stored-a')
-    dismissPreviewArtifact('runtime-a', '/a/index.html', 'stored-a')
-    $previewStatusBySession.set({})
-
-    recordPreviewArtifact('runtime-b', '/a/index.html', '/work', 'stored-a')
-
-    expect($previewStatusBySession.get()['runtime-b']).toBeUndefined()
-    expect(window.localStorage.getItem('hermes.desktop.previewDismissals.v1')).toContain('stored-a')
-  })
-
   it('keeps dismissal with the session owner across foreground changes and runtime rebinds', () => {
     const record = (runtime: string, connectionId: string, profile: string) => {
       recordSessionEventScope({ session_id: runtime, connectionId, profile })

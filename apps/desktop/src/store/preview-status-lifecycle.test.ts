@@ -37,7 +37,7 @@ it('moves local dismissals on rename and removes only the deleted owner', () => 
   expect($previewStatusBySession.get()['rename-remote']).toBeUndefined()
 })
 
-it('honors memory-only closes on storage failure and durable closes after module reload', async () => {
+it('keeps a close effective in memory when storage writes fail', () => {
   recordSessionEventScope({ session_id: 'quota', connectionId: 'local', profile: 'quota' })
   recordPreviewArtifact('quota', '/work/quota.html', '/work', 'quota-stored')
 
@@ -50,7 +50,9 @@ it('honors memory-only closes on storage failure and durable closes after module
   recordPreviewArtifact('quota', '/work/quota.html', '/work', 'quota-stored')
   expect($previewStatusBySession.get().quota).toBeUndefined()
   write.mockRestore()
+})
 
+it('honors a durable close after module reload', async () => {
   recordSessionEventScope({ session_id: 'before-reload', connectionId: 'local', profile: 'persist' })
   recordPreviewArtifact('before-reload', '/work/saved.html', '/work', 'persist-stored')
   dismissPreviewArtifact('before-reload', '/work/saved.html', 'persist-stored')

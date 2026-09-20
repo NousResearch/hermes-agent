@@ -42,6 +42,7 @@ export async function activeConnection(): Promise<HermesConnection> {
 async function freshPluginSocketUrl(connection: HermesConnection, pluginId: string, suffix: string): Promise<string> {
   const desktop = window.hermesDesktop
   const connectionId = connection.registryScoped ? connection.connectionId : null
+
   const mint =
     connectionId && desktop.getGatewayWsUrlFor
       ? () => desktop.getGatewayWsUrlFor!({ connectionId, profile: connection.profile ?? null })
@@ -190,10 +191,12 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
 
   return () => {
     disposed = true
+
     if (reconnectTimer != null) {
       window.clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+
     socket?.close()
   }
 }

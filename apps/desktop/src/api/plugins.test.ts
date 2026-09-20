@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
+import type { HermesConnection } from '@/global'
 
 import { activeConnection, pluginSocket } from './plugins'
 
@@ -57,7 +58,8 @@ describe('pluginSocket authenticated reconnects', () => {
     connectionId: 'cloud',
     token: '',
     wsUrl: 'wss://gateway.example/hermes/api/ws?ticket=stale'
-  } as never
+  } as HermesConnection
+
   let opened: string[]
 
   beforeEach(() => {
@@ -91,6 +93,7 @@ describe('pluginSocket authenticated reconnects', () => {
       ok: true,
       wsUrl: 'wss://gateway.example/hermes/api/ws?ticket=fresh'
     })
+
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
       value: {
@@ -113,6 +116,7 @@ describe('pluginSocket authenticated reconnects', () => {
 
   it('retries when the active connection is temporarily unavailable', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0)
+
     const getConnection = vi.fn().mockResolvedValueOnce(null).mockResolvedValue({
       ...connection,
       authMode: 'token',
@@ -122,6 +126,7 @@ describe('pluginSocket authenticated reconnects', () => {
       token: 'long-lived',
       wsUrl: 'wss://gateway.example/hermes/api/ws?token=long-lived'
     })
+
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
       value: {

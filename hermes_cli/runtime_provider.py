@@ -270,7 +270,8 @@ def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model
     runtime ``resolve_runtime_provider`` picked — never inside an individual ladder rung."""
     if not model_cfg or str(model_cfg.get("openai_runtime") or "").strip().lower() != "codex_app_server":
         return api_mode
-    if provider in {"openai", "openai-codex"} or (provider == "custom" and codex_model_provider_id(requested_provider)):
+    if provider in {"openai", "openai-codex"} or requested_provider in {"openai", "openai-codex"} \
+            or (provider == "custom" and codex_model_provider_id(requested_provider)):
         return "codex_app_server"
     return api_mode
 
@@ -941,6 +942,9 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     _raise_if_provider_disabled(requested_provider)
     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
     # every path (background review, curator, MoA slots, delegation) instead of "Unknown provider".
+    # The pre-expansion name is what the codex_app_server overlay judges: ``openai`` is eligible,
+    # the anonymous ``custom`` it expands to is not.
+    requested_alias = requested_provider
     requested_provider, explicit_base_url = expand_direct_api_alias(requested_provider, explicit_base_url)
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
@@ -950,7 +954,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     # so applying the opt-in inside one rung left the others on codex_responses (#115169).
     api_mode = _maybe_apply_codex_app_server_runtime(
         provider=runtime.get("provider", ""), api_mode=runtime.get("api_mode", ""), model_cfg=_get_model_config(),
-        requested_provider=requested_provider)
+        requested_provider=requested_alias)
     if api_mode != runtime.get("api_mode"):
         logger.info("model.openai_runtime=codex_app_server overrides the %s runtime (source=%s); its credential/endpoint "
                     "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))

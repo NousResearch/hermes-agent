@@ -974,7 +974,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV
         report_file = f"{query_file}.turn.json"
         env[TURN_REPORT_FILE_ENV] = report_file
-        result = _run_bot_chat_turn(argv, env, report_file, _get_bot_chat_delivery_timeout())
+        timeout_s = _get_bot_chat_delivery_timeout()
+        result = _run_bot_chat_turn(argv, env, report_file, timeout_s)
         if result.returncode != 0:
             tail = _format_failure_streams(result)
             logger.warning(
@@ -1002,7 +1003,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             marker = (
                 f"[Cronjob \"{job.get('name', job_id)}\" — DELIVERY DEGRADED, scheduled job, "
                 f"not the user. This alert's bot-chat turn timed out after "
-                f"{_get_bot_chat_delivery_timeout()}s, so the full output could NOT be posted "
+                f"{timeout_s}s, so the full output could NOT be posted "
                 f"here. Read the complete saved output with `hermes cron runs` "
                 f"(job '{job_id}'). Excerpt: {content.strip()[:280]}]"
             )
@@ -1027,7 +1028,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "if this keeps happening")
         return _fail(
             f"bot-chat delivery to profile '{profile_label}' timed out "
-            f"after {_get_bot_chat_delivery_timeout()}s ({tail}; raise "
+            f"after {timeout_s}s ({tail}; raise "
             "cron.bot_chat_delivery_timeout_seconds if this recurs)")
     except Exception as e:
         logger.warning(

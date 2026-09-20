@@ -1160,6 +1160,28 @@ describe('in-flight marker', () => {
 // still working; the next round harvests whatever landed instead of throwing
 // the finished work away.
 describe('stranded harvest', () => {
+  // #100274: the hard cap is a runaway guard, not a work budget. A member the
+  // gateway still reports busy keeps its turn well past the old 20-minute
+  // clamp; only a member that goes quiet expires on the idle timeout.
+  it('keeps a visibly working member past twenty minutes instead of stranding it', async () => {
+    // Every clock read jumps a minute (two reads per poll): twelve busy polls
+    // put the turn past 24 minutes while the member is still reporting work.
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
+    const room = await loadRoom({ pollsBusy: 12, turn: () => 'long deploy done' })
+    const activity = await import('./group-activity')
+
+    try {
+      expect(await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'deploy', 't1', [])).toBe(
+        'long deploy done'
+      )
+      expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
+      expect(activity.$groupActivity.get().Room?.events.map(event => event.kind)).not.toContain('timed-out')
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   const seedSession = (room: Room, stored: string, profile: string, title: string, messages: string[][]) => {
     room.gateway.sessions.set(stored, {
       messages: messages.map(([role, content]) => ({ content, role })),

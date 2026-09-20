@@ -138,7 +138,7 @@ export function retainedGroupTurnError(state: GroupSessionSnapshot | null | unde
 
 /** Is the member's session still doing work this turn should wait for?
  *  Reading a retained failure as busy kept a dead turn's deadline sliding to
- *  the 20-minute hard cap and left its stranded marker harvestable forever
+ *  the hard cap and left its stranded marker harvestable forever
  *  (#92760 silent stall, diagnosed in #95103). */
 export function groupSessionBusy(state: GroupSessionSnapshot | null | undefined): boolean {
   if (state?.running) {
@@ -498,8 +498,14 @@ async function submitGroupTurnPrompt(
 // inflight/running) keeps its slot alive up to this hard cap. The base
 // timeout alone silently dropped long real turns: a 7-minute research run
 // timed out at 3 minutes, read as a pass, and its finished result never
-// reached the room (db's Aug 2026 report).
-export const GROUP_TURN_HARD_CAP_MS = 20 * 60000
+// reached the room (db's Aug 2026 report). The cap is a runaway guard, not a
+// budget: a member that stops reporting work still expires on the idle
+// timeout, so the cap only ever truncates a member that is demonstrably
+// producing. At 20 minutes it cut off 44% of the turns in a working
+// local-model room (#100274: mean 33 min, longest 154 min, none past 3 h) —
+// the downstream members were then handed a turn on work that did not exist
+// yet and the room settled while the worker was mid-deploy.
+export const GROUP_TURN_HARD_CAP_MS = 180 * 60000
 
 /** Mirror a member's pending prompt — clarify question OR command approval —
  *  from its resume snapshot into the room store, keyed

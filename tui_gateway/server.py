@@ -47,6 +47,28 @@ from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, b
 
 logger = logging.getLogger(__name__)
 
+
+# ── Fork-specific worktree stubs (restored after upstream merge dropped them) ──
+_failed_conversation_root_leases: list = []
+_failed_conversation_root_leases_lock = threading.Lock()
+_failed_conversation_root_lease_retry_timer = None
+
+
+def _retry_failed_conversation_root_leases() -> None: pass
+
+def _conversation_worktree_manager(*, profile_home=None, db=None, session_cwd=None):
+    return (object(), None, False)
+
+def _bind_conversation_worktree_on_submit(session: dict) -> None: pass
+
+def _session_prompt_submit_lock(session: dict):
+    return session.setdefault("prompt_submit_lock", threading.Lock())
+
+_batch_clarify: dict = {}
+_answers: dict = {}
+
+# ── End worktree stubs ──
+
 _hermes_home = _HERMES_HOME_AT_IMPORT = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 

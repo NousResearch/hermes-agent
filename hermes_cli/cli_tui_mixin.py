@@ -1492,6 +1492,16 @@ class CLITuiMixin:
             return
         buf = event.app.current_buffer
         raw_text = buf.text
+        # Win32's console input can expose an emoji as two UTF-16 surrogate code units. Repair
+        # valid pairs (and replace malformed loners) before prompt_toolkit's FileHistory encodes
+        # the buffer as UTF-8 in ``reset(append_to_history=True)``.
+        from agent.message_sanitization import _sanitize_surrogates
+        safe_text = _sanitize_surrogates(raw_text)
+        if safe_text != raw_text:
+            old_cursor = buf.cursor_position
+            buf.text = safe_text
+            buf.cursor_position = len(_sanitize_surrogates(raw_text[:old_cursor]))
+            raw_text = safe_text
         # Explicit `\` + Enter continuation runs first so its backslash is consumed identically
         # whether the Enter was typed or arrived inside a paste.
         if (

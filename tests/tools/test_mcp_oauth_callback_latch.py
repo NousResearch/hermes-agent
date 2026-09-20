@@ -1,73 +1,89 @@
-"""Regression tests for the loopback OAuth callback handler (#116278).
+"""The loopback OAuth callback latches the first terminal result (#116278).
 
-A real browser follows the /callback redirect with speculative queryless
-fetches (/favicon.ico), and the CLI waiter polls the result dict only every
-500ms — so a handler that updates the result unconditionally loses the stored
-code between polls and the login times out despite the success page the user
-saw. These tests pin the two invariants that prevent that: a request without
-``code``/``error`` never mutates the result, and the first terminal result
-wins over later callbacks.
+A browser follows the ``/callback`` redirect with queryless fetches (``/favicon.ico``), and the CLI waiter
+samples the result only every 500 ms. A handler that wrote every GET into the result lost the stored code
+between two polls, so the user saw "Authorization Successful" while ``hermes mcp login`` timed out. These
+tests drive the production entry (``_make_callback_waiter`` → ``_start_callback_server`` → handler) with a
+browser stand-in that sends its requests back-to-back, well inside one poll interval.
 """
+import asyncio
+import io
+import socket
 import threading
 from http.client import HTTPConnection
-from http.server import HTTPServer
 
 import pytest
 
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
-from tools.mcp_oauth import _make_callback_handler
+import tools.mcp_oauth as mo
 
 
-@pytest.fixture()
-def callback_server():
-    handler_cls, result = _make_callback_handler()
-    server = HTTPServer(("127.0.0.1", 0), handler_cls)
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
-    thread.start()
-    yield server.server_address[1], result
-    server.shutdown()
-    server.server_close()
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _get(port: int, path: str) -> int:
     conn = HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         conn.request("GET", path)
-        return conn.getresponse().status
+        resp = conn.getresponse()
+        resp.read()
+        return resp.status
     finally:
         conn.close()
 
 
-def test_favicon_after_callback_keeps_stored_code(callback_server):
-    port, result = callback_server
-    assert _get(port, "/callback?code=synthetic-code&state=synthetic-state&iss=synthetic-iss") == 200
-    assert _get(port, "/favicon.ico") == 404
-    assert result["auth_code"] is not None
-    assert result["state"] == "synthetic-state"
-    assert result["iss"] == "synthetic-iss"
+def _wait_listening(port: int) -> None:
+    for _ in range(200):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return
+        except OSError:
+            threading.Event().wait(0.02)
+    raise AssertionError("callback listener never bound")
 
 
-def test_favicon_before_callback_is_inert(callback_server):
-    port, result = callback_server
-    assert _get(port, "/favicon.ico") == 404
-    assert result["auth_code"] is None
-    assert result["error"] is None
-    assert _get(port, "/callback?code=synthetic-code&state=synthetic-state") == 200
-    assert result["auth_code"] is not None
+def _drive_waiter(monkeypatch, paths: list[str]):
+    """Run the real waiter on its own loop; send *paths* back-to-back once the listener is bound."""
+    monkeypatch.setattr(mo.sys, "stdin", io.StringIO())  # paste reader sees EOF; the HTTP listener is under test
+    port = _free_port()
+    out: dict = {}
+
+    def run():
+        async def main():
+            with mo.force_interactive_oauth():
+                return await mo._make_callback_waiter(port, timeout=4)()
+        try:
+            out["result"] = asyncio.run(main())
+        except Exception as exc:  # noqa: BLE001 — the timeout is the failure under test
+            out["exc"] = exc
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    _wait_listening(port)
+    statuses = [_get(port, p) for p in paths]
+    thread.join(timeout=15)
+    assert not thread.is_alive(), "waiter did not finish"
+    assert "exc" not in out, f"waiter raised {type(out.get('exc')).__name__}"
+    return statuses, out["result"]
 
 
-def test_duplicate_callback_keeps_first_result(callback_server):
-    port, result = callback_server
-    assert _get(port, "/callback?code=first-code&state=first-state") == 200
-    assert _get(port, "/callback?code=second-code&state=second-state") == 200
-    assert result["auth_code"] == "first-code"
-    assert result["state"] == "first-state"
+def test_favicon_right_after_callback_does_not_clobber_the_code(monkeypatch):
+    statuses, result = _drive_waiter(
+        monkeypatch, ["/callback?code=synthetic&state=s1&iss=https://as.example", "/favicon.ico"])
+    assert statuses == [200, 404]
+    assert (result.code, result.state, result.iss) == ("synthetic", "s1", "https://as.example")
 
 
-def test_favicon_after_error_callback_keeps_error(callback_server):
-    port, result = callback_server
-    assert _get(port, "/callback?error=access_denied&state=synthetic-state") == 200
-    assert _get(port, "/favicon.ico") == 404
-    assert result["error"] == "access_denied"
-    assert result["auth_code"] is None
+def test_first_terminal_callback_wins_over_later_ones(monkeypatch):
+    statuses, result = _drive_waiter(monkeypatch, [
+        "/favicon.ico",
+        "/callback?code=first&state=s1",
+        "/callback?code=second&state=s2",
+        "/callback?error=access_denied&state=s1",
+    ])
+    assert statuses == [404, 200, 200, 200]
+    assert (result.code, result.state) == ("first", "s1")

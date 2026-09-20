@@ -35,11 +35,20 @@ def _event(text):
 
 def test_batch_delays_overridden_via_config_extra():
     adapter = _make_adapter(
+        text_batch_delay_seconds="1.5",
+        text_batch_split_delay_seconds=3,
+    )
+    assert adapter._text_batch_delay_seconds == 1.5
+    assert adapter._text_batch_split_delay_seconds == 3.0
+
+
+def test_batch_delays_clamped_to_telegram_ceilings():
+    adapter = _make_adapter(
         text_batch_delay_seconds="2.5",
         text_batch_split_delay_seconds=7,
     )
-    assert adapter._text_batch_delay_seconds == 2.5
-    assert adapter._text_batch_split_delay_seconds == 7.0
+    assert adapter._text_batch_delay_seconds == 2.0
+    assert adapter._text_batch_split_delay_seconds == 4.0
 
 
 def test_invalid_config_value_falls_back_to_default():
@@ -47,7 +56,7 @@ def test_invalid_config_value_falls_back_to_default():
         text_batch_delay_seconds="garbage",
         text_batch_split_delay_seconds=-3,
     )
-    assert adapter._text_batch_delay_seconds == 5.0
-    assert adapter._text_batch_split_delay_seconds == 10.0
+    assert adapter._text_batch_delay_seconds == 0.3
+    assert adapter._text_batch_split_delay_seconds == 1.0
 
 

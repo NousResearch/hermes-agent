@@ -71,6 +71,22 @@ function settled(animation: Animation): Promise<void> {
 }
 
 /**
+ * Two painted frames, which is one more than it takes for a state change to
+ * reach the screen. Waiting for it lets the side that was just swapped in build
+ * itself — React renders, the editor mounts — before the second half starts.
+ *
+ * Measured in a real turn: with the return starting straight after the swap,
+ * the incoming side's mount lands inside it, and because an animated blur is
+ * drawn on the main thread rather than by the compositor, the whole half goes
+ * with it. Frames arrived 6-57 ms apart on the way out and 97-164 ms apart on
+ * the way back. The surface is edge-on at that moment and showing nobody
+ * anything, so the wait costs a glance at nothing and buys back the half.
+ */
+function painted(): Promise<void> {
+  return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+}
+
+/**
  * Turn `element` edge-on, run `swap` while nothing is visible, then turn it
  * back to face the user. The transform exists only while the flip runs, so at
  * rest fixed-position chrome and portals behave exactly as without it.
@@ -79,10 +95,12 @@ export async function flipSurface(element: HTMLElement, swap: () => void, option
   const { enter, exit } = flipFrames(options)
   const leaving = element.animate(exit, { duration: FLIP_HALF_MS, easing: EASE_OUT_OF_VIEW, fill: 'forwards' })
 
+  // The first half holds its last frame (`fill: 'forwards'`), so the surface
+  // stays edge-on through the swap and the wait after it.
   await settled(leaving)
   swap()
-  // Start the second half before dropping the first half's held frame, so
-  // the surface never shows one unrotated frame at the midpoint.
+  await painted()
+
   const arriving = element.animate(enter, { duration: FLIP_HALF_MS, easing: EASE_INTO_VIEW })
 
   leaving.cancel()

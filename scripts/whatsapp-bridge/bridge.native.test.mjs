@@ -23,6 +23,8 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  resolveDeviceName,
+  DEFAULT_DEVICE_NAME,
 } from './bridge_helpers.js';
 
 // -- inbound read receipts ------------------------------------------------
@@ -641,6 +643,17 @@ import {
   assert.equal(event.hasQuotedMessage, true);
   assert.equal(event.quotedText, 'Example appointment at 11:40');
   console.log('  ✓ nested envelopes: quote text resolves through both layers');
+}
+
+// -- linked-device name (WHATSAPP_DEVICE_NAME) ---------------------------
+{
+  assert.equal(DEFAULT_DEVICE_NAME, 'Hermes Agent');
+  assert.equal(resolveDeviceName(undefined), 'Hermes Agent');
+  assert.equal(resolveDeviceName(''), 'Hermes Agent');
+  assert.equal(resolveDeviceName('   '), 'Hermes Agent');
+  assert.equal(resolveDeviceName('Front Desk Bot'), 'Front Desk Bot');
+  assert.equal(resolveDeviceName('  Front Desk Bot \n'), 'Front Desk Bot');
+  console.log('  ✓ WHATSAPP_DEVICE_NAME overrides the linked-device name; blank keeps the default');
 }
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

@@ -1,8 +1,9 @@
-import { act, render, renderHook } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 import { Suspense } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
+import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
 import { $cronJobs, setCronJobs } from '@/store/cron'
 import {
   beginGatewaySwitch,
@@ -31,6 +32,7 @@ import {
 
 import { deferred } from '../../../test/deferred'
 
+import { useBackgroundQueueDrain } from './use-background-queue-drain'
 import { useSessionListActions } from './use-session-list-actions'
 
 // Sidebar refresh hygiene: a content-identical refresh (turn complete,
@@ -315,6 +317,58 @@ describe('refreshSessions identity + loading hygiene', () => {
 
     off()
     expect(loadingStates).toEqual([false, true, false])
+  })
+
+  it('releases discovery and drains a queued prompt after a populated-list refresh supersedes boot', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValueOnce(pending.promise)
+    const submitText = vi.fn(async () => true)
+    const runtimeMap = { current: new Map([['queued-session', 'queued-runtime']]) }
+
+    const { result, unmount } = renderHook(() => {
+      useBackgroundQueueDrain({
+        enabled: true,
+        runtimeIdByStoredSessionIdRef: runtimeMap,
+        selectedStoredSessionId: 'foreground-session',
+        submitText
+      })
+
+      return useSessionListActions({ profileScope: 'default' })
+    })
+
+    try {
+      let boot!: Promise<void>
+
+      act(() => {
+        boot = result.current.refreshSessions()
+        enqueueQueuedPrompt('queued-session', { attachments: [], text: 'continue' })
+        // Another publisher (e.g. new-session creation) fills the cache while
+        // boot is pending. The next refresh does not raise its own spinner.
+        setSessions([row('queued-session')])
+      })
+
+      expect($sessionsLoading.get()).toBe(true)
+      expect(submitText).not.toHaveBeenCalled()
+      listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('queued-session')] }))
+
+      await act(async () => {
+        await result.current.refreshSessions()
+        pending.resolve(sidebar({ sessions: [row('queued-session')] }))
+        await boot
+      })
+
+      expect($sessionsLoading.get()).toBe(false)
+      await waitFor(() => expect(getQueuedPrompts('queued-session')).toHaveLength(0))
+      expect(submitText).toHaveBeenCalledExactlyOnceWith('continue', {
+        attachments: [],
+        fromQueue: true,
+        sessionId: 'queued-runtime',
+        storedSessionId: 'queued-session'
+      })
+    } finally {
+      unmount()
+      $queuedPromptsBySession.set({})
+    }
   })
 
   it('does not let a superseded owner publish or release a newer switch loading barrier', async () => {

@@ -375,7 +375,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // Request identity preserves the zero-argument refresh contract across a
         // failed activation epoch; an explicit owner predicate is stronger and
         // must never release a newer switch's loading barrier.
-        if (showLoading && shouldPublish() && refreshSessionsRequestRef.current === requestId) {
+        // A populated-list refresh can supersede the request that raised the
+        // barrier. The newest owner must release it even if it did not raise it;
+        // otherwise both composer queue drainers stay blocked after discovery.
+        if (shouldPublish() && refreshSessionsRequestRef.current === requestId) {
           setSessionsLoading(false)
         }
       }

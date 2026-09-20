@@ -195,3 +195,49 @@ def test_interrupted_turn_with_diagnostic_text_is_not_completed():
     assert result["interrupted"] is True
     assert result["completed"] is False
     assert result["failed"] is False
+
+
+def test_interrupted_turn_still_applies_output_transform_hook():
+    agent = _StubAgent()
+    placeholder = "Operation interrupted: waiting for model response (0.1s elapsed)."
+
+    def transform_hook(**kwargs):
+        assert kwargs["response_text"] == placeholder
+        return ["[SILENT]"]
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "agent.turn_finalizer._invoke_hook_safely",
+            lambda name, _logger, **kwargs: transform_hook(**kwargs)
+            if name == "transform_llm_output"
+            else [],
+        )
+        result = _finalize(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            interrupted=True,
+            final_response=placeholder,
+        )
+
+    assert result["final_response"] == "[SILENT]"
+    assert result["response_transformed"] is True
+
+
+def test_interrupted_turn_without_hook_keeps_diagnostic_text():
+    agent = _StubAgent()
+    placeholder = "Operation interrupted: waiting for model response (0.1s elapsed)."
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "agent.turn_finalizer._invoke_hook_safely",
+            lambda *_args, **_kwargs: [],
+        )
+        result = _finalize(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            interrupted=True,
+            final_response=placeholder,
+        )
+
+    assert result["final_response"] == placeholder
+    assert result["response_transformed"] is False

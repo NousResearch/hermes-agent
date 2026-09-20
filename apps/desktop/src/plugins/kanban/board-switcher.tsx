@@ -368,7 +368,7 @@ export function BoardSwitcher() {
               {typeof meta.total === 'number' && (
                 <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{meta.total}</span>
               )}
-              {meta.slug === currentSlug && <Codicon className="ml-auto" name="check" size="0.8rem" />}
+              {meta.slug === currentSlug && <Codicon className="ms-auto" name="check" size="0.8rem" />}
             </DropdownMenuItem>
           ))}
           <DropdownMenuSeparator />

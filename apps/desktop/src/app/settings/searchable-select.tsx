@@ -114,14 +114,24 @@ export function SearchableSelect({
             <CommandGroup>
               {clearLabel && (
                 <CommandItem onSelect={() => handleSelect('')} value={clearLabel}>
+<<<<<<< HEAD
                   <span className="truncate">{clearLabel}</span>
                   <CommandItemCheck checked={value === ''} />
+=======
+                  <Codicon className={cn('me-2 size-4', value === '' ? 'opacity-100' : 'opacity-0')} name="check" />
+                  {clearLabel}
+>>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
                 </CommandItem>
               )}
               {options.map(option => (
                 <CommandItem key={option} onSelect={() => handleSelect(option)} value={option}>
+<<<<<<< HEAD
                   <span className="truncate">{option}</span>
                   <CommandItemCheck checked={option === value} />
+=======
+                  <Codicon className={cn('me-2 size-4', option === value ? 'opacity-100' : 'opacity-0')} name="check" />
+                  {option}
+>>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
                 </CommandItem>
               ))}
             </CommandGroup>

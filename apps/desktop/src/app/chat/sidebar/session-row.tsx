@@ -439,8 +439,8 @@ function SidebarSessionRowImpl({
           // would pull the header in past every line below it.
           className={cn(
             'z-0',
-            card && 'pr-0',
-            branchStem && 'pl-3.5',
+            card && 'pe-0',
+            branchStem && 'ps-3.5',
             // The card is a grid with ONE spacing knob: --card-gap. Every row
             // gap is gap-y-(--card-gap); the title/preview group opts out
             // with its own tighter internal flex gap.
@@ -617,7 +617,7 @@ function SidebarSessionRowImpl({
                     {model ? <span className="min-w-0 truncate">{model}</span> : null}
                     {size ? <span className="shrink-0 tabular-nums">{size}</span> : null}
                     {todoProgress ? (
-                      <span className="ml-auto shrink-0 tabular-nums" title={r.todoProgress}>
+                      <span className="ms-auto shrink-0 tabular-nums" title={r.todoProgress}>
                         {todoProgress}
                       </span>
                     ) : null}

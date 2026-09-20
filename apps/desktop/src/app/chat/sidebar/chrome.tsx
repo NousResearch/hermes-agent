@@ -110,7 +110,7 @@ export function SidebarRowStack({ className, ...props }: React.ComponentProps<'d
 
 /** Nested rows (session previews, worktree bodies). */
 export function SidebarRowNest({ className, ...props }: React.ComponentProps<'div'>) {
-  return <SidebarRowStack className={cn('pb-1 pl-2', className)} {...props} />
+  return <SidebarRowStack className={cn('pb-1 ps-2', className)} {...props} />
 }
 
 /**

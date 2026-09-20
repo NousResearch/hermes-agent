@@ -303,7 +303,7 @@ function RepoFlatSection({
         open={open}
         title={repo.path ? displayPath(repo.path) : undefined}
       />
-      {open && <SidebarRowStack className="pl-2.5">{body}</SidebarRowStack>}
+      {open && <SidebarRowStack className="ps-2.5">{body}</SidebarRowStack>}
       {removeDialog}
     </SidebarRowStack>
   )

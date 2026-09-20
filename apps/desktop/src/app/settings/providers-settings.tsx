@@ -278,7 +278,8 @@ function ConnectedProviderRow({
           </p>
         )}
       </RowButton>
-      <div className="flex items-center gap-1 pr-2">
+<<<<<<< HEAD
+      <div className="flex items-center gap-1 pe-2">
         {terminalDisconnect ? (
           <Button
             aria-label={`${copy.disconnect} ${title} in terminal`}
@@ -292,6 +293,10 @@ function ConnectedProviderRow({
         ) : (
           <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
         )}
+=======
+      <div className="flex items-center gap-1 pe-2">
+        <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+>>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
         {canDisconnect && (
           <Button
             aria-label={`${t.common.remove} ${title}`}

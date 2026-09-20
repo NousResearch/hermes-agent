@@ -1661,7 +1661,7 @@ export function ChatSidebar({
                         land at the end of the WORD, not out at the sidebar's
                         edge. Still truncates — `min-w-0` lets it shrink past
                         its content when the rail is narrow — and the trailing
-                        chip's `ml-auto` was already doing the pushing that
+                        chip's `ms-auto` was already doing the pushing that
                         `flex-1` looked like it was for.
                         Its own `sidebar-nav-` namespace: the overlay nav owns
                         `nav-<id>`, and both are on screen with Settings open. */}
@@ -1670,7 +1670,7 @@ export function ChatSidebar({
                     </span>
                     {isNewSession && (
                       <KbdGroup
-                        className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
+                        className={cn('ms-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
                         keys={newSessionKbd}
                         size="sm"
                       />

@@ -82,7 +82,7 @@ export function ReviewShipBar() {
           fills the right edge on one row, then sticks to the top as it grows. */}
       <div className="relative">
         <Textarea
-          className="field-sizing-content max-h-40 min-h-0 resize-none pr-9"
+          className="field-sizing-content max-h-40 min-h-0 resize-none pe-9"
           disabled={generating}
           onChange={event => setMessage(event.target.value)}
           onKeyDown={event => {

@@ -149,6 +149,7 @@ export function BaseBranchPicker({
                     }}
                     value={branch.name}
                   >
+<<<<<<< HEAD
                     <Codicon
                       className="shrink-0 text-(--ui-text-tertiary)"
                       name={branch.isRemote ? 'repo' : 'git-branch'}
@@ -157,6 +158,22 @@ export function BaseBranchPicker({
                     <span className="truncate">{branch.name}</span>
                     {branch.isDefault && <span className="shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">★</span>}
                     <CommandItemCheck checked={value === branch.name} />
+=======
+                    <div className="flex items-center justify-start gap-1.5">
+                      <Codicon
+                        className="shrink-0 text-(--ui-text-tertiary)"
+                        name={branch.isRemote ? 'repo' : 'git-branch'}
+                        size="0.8rem"
+                      />
+                      {branch.isDefault && (
+                        <span className="ms-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">★</span>
+                      )}
+                      <span className="truncate">{branch.name}</span>
+                      {value === branch.name && (
+                        <Codicon className="ms-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
+                      )}
+                    </div>
+>>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
                   </CommandItem>
                 ))}
               </CommandGroup>

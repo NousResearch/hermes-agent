@@ -126,10 +126,10 @@ function TopCenterStack({
       <NotificationDeck expanded={expanded} notifications={notifications} />
       {older.length > 0 && (
         <div className="pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
-          <Button className="-ml-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
+          <Button className="-ms-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(older.length)}
           </Button>
-          <Button className="-mr-2" onClick={clearNotifications} size="xs" type="button" variant="text">
+          <Button className="-me-2" onClick={clearNotifications} size="xs" type="button" variant="text">
             {copy.clearAll}
           </Button>
         </div>
@@ -256,7 +256,7 @@ function NotificationItem({ notification, stack }: { notification: AppNotificati
   return (
     <Alert
       aria-live={!stack.active ? 'off' : notification.kind === 'error' ? 'assertive' : 'polite'}
-      className="grid-cols-[auto_minmax(0,1fr)_auto] border-0 bg-transparent pr-2.5 shadow-none"
+      className="grid-cols-[auto_minmax(0,1fr)_auto] border-0 bg-transparent pe-2.5 shadow-none"
       role={notification.kind === 'error' ? 'alert' : 'status'}
       variant={styles.variant}
     >
@@ -315,7 +315,7 @@ function NotificationItem({ notification, stack }: { notification: AppNotificati
       </div>
       <Button
         aria-label={copy.dismiss}
-        className="col-start-3 -mr-1 text-muted-foreground"
+        className="col-start-3 -me-1 text-muted-foreground"
         disabled={stack.busy || !stack.active}
         onClick={() => {
           void stack.depart(() => dismissNotification(notification.id))

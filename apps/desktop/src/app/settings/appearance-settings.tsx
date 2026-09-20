@@ -594,7 +594,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
                   {/* The dedicated theme page uses the page scroller rather
                       than clipping its gallery inside another scroll area. */}
-                  <div className={cn('mt-3', subpage === undefined && 'max-h-96 overflow-y-auto pr-1')}>
+                  <div className={cn('mt-3', subpage === undefined && 'max-h-96 overflow-y-auto pe-1')}>
                     {filteredThemes.length === 0 ? (
                       needle ? (
                         <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">

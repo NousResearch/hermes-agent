@@ -113,7 +113,7 @@ export function ModelSelect({
         suffix={
           <Button
             aria-label={m.chooseFromList}
-            className="pointer-events-auto -my-1.5 -mr-1.5 text-muted-foreground"
+            className="pointer-events-auto -my-1.5 -me-1.5 text-muted-foreground"
             onClick={() => setTyping(false)}
             size="icon-xs"
             type="button"

@@ -340,7 +340,7 @@ const PaletteRow = memo(function PaletteRow({
 }) {
   const Icon = item.icon
   // The row's live keybind, else a static modifier-variant hint (⌘↵). One slot,
-  // so every downstream `ml-auto` fallback below keeps working unchanged.
+  // so every downstream `ms-auto` fallback below keeps working unchanged.
   // `bindingsFor`, not a raw lookup: a plugin's action is contributed after
   // $bindings was seeded, so its combo only resolves through the fallback chain.
   const combo = (item.action ? bindingsFor(item.action, bindings)[0] : undefined) ?? item.comboHint
@@ -370,10 +370,10 @@ const PaletteRow = memo(function PaletteRow({
         <span className={cn(HUD_NOTE, HUD_NOTE_VARIANT[item.detailVariant ?? 'muted'])}>{item.detail}</span>
       )}
       {combo && (
-        <KbdCombo className={cn('ml-auto', modPreview ? 'opacity-90' : 'opacity-55')} combo={combo} size="sm" />
+        <KbdCombo className={cn('ms-auto', modPreview ? 'opacity-90' : 'opacity-55')} combo={combo} size="sm" />
       )}
-      {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />}
-      {item.active && <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />}
+      {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ms-auto')} />}
+      {item.active && <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ms-auto')} />}
     </CommandItem>
   )
 })

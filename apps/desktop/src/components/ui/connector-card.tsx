@@ -87,6 +87,7 @@ export function ConnectorRow({ action, connector, cue, mark, markLabel }: Connec
           ) : null}
         </span>
       </div>
+>>>>>>> d1b0ae7a0e7 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
     </div>
   )
 }

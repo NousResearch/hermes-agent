@@ -159,7 +159,7 @@ export function ModelOptionsContent({
           {copy.thinking}
           <Switch
             checked={thinkingOn}
-            className="ml-auto"
+            className="ms-auto"
             onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
             size="xs"
           />
@@ -168,7 +168,7 @@ export function ModelOptionsContent({
       {hasFast ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.fast}
-          <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
+          <Switch checked={fastOn} className="ms-auto" onCheckedChange={setFast} size="xs" />
         </DropdownMenuItem>
       ) : null}
       {reasoning ? (

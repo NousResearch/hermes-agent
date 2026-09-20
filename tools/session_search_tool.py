@@ -312,7 +312,11 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
 
 def _discover_payload(db, query: str, detail: str, results: list, **extra) -> str:
     """Discovery response; notes FTS backfill progress so the agent can explain thin
-    results instead of treating them as ground truth."""
+    results instead of treating them as ground truth.
+
+    Coverage metrics are ``lineages_matched`` / ``raw_rows_scanned`` / ``scan_window_truncated``.
+    The retired ``sessions_searched`` counted distinct lineage roots in the RETURNED slice, so it
+    could never exceed ``limit`` while reading as "how many sessions were searched". """
     status = _quiet(db.fts_rebuild_status, None, "fts_rebuild_status failed")
     rebuild = {} if status is None else {"index_rebuild": {"percent": status["percent"], "note": (
         f"The search index is rebuilding in the background ({status['percent']}% done, "
@@ -377,23 +381,39 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
     # See #19434.
     if not raw_results and not title_result:
-        return _discover_payload(db, query, detail, [], message=(
+        return _discover_payload(db, query, detail, [], lineages_matched=0, raw_rows_scanned=0,
+                                 scan_window_truncated=False, message=(
             "No matching sessions found. FTS5 ANDs all terms by default — "
             "broaden with OR (`alpha OR beta`), exact-match with quoted "
             "phrases, exclude with NOT, or prefix-match with `deploy*`."))
     seen_sessions: Dict[str, Dict[str, Any]] = {}
     results = [title_result] if title_result else []
+    # Every distinct lineage that matched anywhere in the scan window — deliberately NOT capped by
+    # `limit`. The old `sessions_searched` was len(seen_sessions), and the loop broke at `limit`, so
+    # it could never exceed `limit` (default 3): readers took it as "how many sessions were searched"
+    # when it only ever described the returned slice.
+    matched_lineages: set = set()
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
         seen_sessions[title_lineage] = {"_title_only": True}
+        matched_lineages.add(title_lineage)
     # Dedupe by lineage (lineage_root -> first surviving FTS row) up to `limit`. The raw
     # owning session_id stays on the row — only it pairs validly with the FTS match id.
     # Current-lineage hits are skipped UNLESS the transcript left live context
     # (compression-ended, /new-reset predecessor, or an in-place compacted row on the
     # SAME session); a live delegation child (end_reason=None) stays excluded.
+    # The window is walked in FULL (no break at `limit`) so the returned metrics describe the match
+    # set rather than the returned slice; lineage resolution is memoised per session_id — the raw
+    # window is dominated by a few high-volume sessions, so re-walking each parent chain per row is
+    # the only real cost (measured 1.6s unmemoised vs 24ms memoised on a 300-row window).
+    lineage_cache: Dict[str, str] = {}
+
+    def _lineage_of(session_id: str) -> str:
+        if session_id not in lineage_cache:
+            lineage_cache[session_id] = _resolve_lineage(db, session_id)
+        return lineage_cache[session_id]
+
     for r in raw_results:
-        if len(seen_sessions) >= limit:
-            break
-        raw_sid, resolved_sid = r["session_id"], _resolve_lineage(db, r["session_id"])
+        raw_sid, resolved_sid = r["session_id"], _lineage_of(r["session_id"])
         if raw_sid in excluded_roots or resolved_sid in excluded_roots:
             continue
         # Skip the current session lineage — UNLESS the hit's transcript has left live context. Three
@@ -412,7 +432,9 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
             continue
-        seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
+        matched_lineages.add(resolved_sid)
+        if len(seen_sessions) < limit:
+            seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
             continue
@@ -422,7 +444,18 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
-    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
+    # Real coverage metrics: how many distinct
+    # lineages the query matched inside the scan window, how many raw rows that took, and whether the
+    # window itself was saturated — the last one is the only signal that the match set was cut off.
+    window_full = len(raw_results) >= _DISCOVER_SCAN_LIMIT
+    extra = {} if not window_full else {"coverage_note": (
+        f"This query matched at least {_DISCOVER_SCAN_LIMIT} raw message rows ({_DISCOVER_SCAN_LIMIT}-row "
+        "scan window is full) — only the top-ranked slice of the match set is represented here and "
+        "lineages_matched counts within that window. Narrow the query, name fewer / more specific "
+        "terms, or search keywords one at a time to see the rest.")}
+    return _discover_payload(
+        db, query, detail, results, lineages_matched=len(matched_lineages),
+        raw_rows_scanned=len(raw_results), scan_window_truncated=window_full, **extra, link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "

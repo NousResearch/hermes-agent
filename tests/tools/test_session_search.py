@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import pytest
 
 from hermes_state import SessionDB
+from tools import session_search_tool
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _format_timestamp,
@@ -329,6 +330,38 @@ class TestDiscoveryShape:
         result = json.loads(session_search(query="modpack", db=db, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
+
+
+class TestCoverageMetrics:
+    """Discovery reports the matched set, not the returned slice.
+
+    The retired ``sessions_searched`` was len(distinct lineage roots) of the RETURNED results and
+    the dedup loop broke at ``limit``, so it could never exceed ``limit`` — readers took it for
+    "how many sessions were searched". ``lineages_matched`` counts the whole scan window while
+    ``raw_rows_scanned`` / ``scan_window_truncated`` say whether that window was cut off.
+    """
+
+    def test_lineages_matched_counts_past_the_returned_limit(self, db):
+        _seed_modpack_sessions(db)  # three distinct sessions match "modpack"
+
+        result = json.loads(session_search(query="modpack", limit=1, db=db))
+
+        assert result["count"] == 1
+        assert result["lineages_matched"] >= 3
+        assert result["raw_rows_scanned"] >= result["lineages_matched"]
+        assert result["scan_window_truncated"] is False
+        assert "sessions_searched" not in result
+
+    def test_saturated_scan_window_is_flagged(self, db, monkeypatch):
+        _seed_modpack_sessions(db)
+        monkeypatch.setattr(session_search_tool, "_DISCOVER_SCAN_LIMIT", 2)
+
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+
+        assert result["raw_rows_scanned"] == 2
+        assert result["scan_window_truncated"] is True
+        assert "coverage_note" in result
+        assert result["lineages_matched"] >= 1
 
 
 class TestDiscoverySort:

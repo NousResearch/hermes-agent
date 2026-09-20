@@ -183,6 +183,23 @@ class TestShouldExclude:
         assert not _should_exclude(Path("profiles/sage/cache/citations/ledger.json"))
         assert not _should_exclude(Path("skills/example/cache/notes.md"))
 
+    def test_excludes_browser_use_cli_profiles(self):
+        """Browser Use CLI writes HERMES_HOME/browser_profiles/ (underscore).
+        Hyphen spellings are already excluded; the underscore dir holds Login Data
+        and Cookies and must not enter the archive."""
+        from hermes_cli.backup import _EXCLUDED_DIRS, _should_exclude
+        assert "browser_profiles" in _EXCLUDED_DIRS
+        assert _should_exclude(Path("browser_profiles/browser-use-default/Default/Login Data"))
+        assert _should_exclude(
+            Path("browser_profiles/browser-use-default/Default/Network/Cookies")
+        )
+        assert _should_exclude(
+            Path("profiles/coder/browser_profiles/browser-use-default/Default/Cookies")
+        )
+        # Hyphen forms stay excluded.
+        assert _should_exclude(Path("browser-profile/chrome/Default/Cookies"))
+        assert _should_exclude(Path("browser-profiles/Default/Cookies"))
+
     def test_keeps_nested_dirs_named_like_runtime_trees(self):
         """A deeper directory that happens to be called models/ or node/ is
         user data (a skill's assets, project files) and must survive."""

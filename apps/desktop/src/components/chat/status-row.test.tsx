@@ -9,11 +9,14 @@ import { I18nProvider } from '@/i18n'
 
 import { StatusRow } from './status-row'
 
-vi.stubGlobal('ResizeObserver', class {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-})
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+)
 
 afterEach(cleanup)
 
@@ -28,7 +31,16 @@ it('keeps dismiss and nested controls independent from row activation', () => {
         dismiss={{ label: 'Dismiss task', onDismiss: dismiss }}
         leading={<Codicon name="comment" />}
         onActivate={activate}
-        trailing={<button onClick={event => { event.stopPropagation(); action() }}>Edit task</button>}
+        trailing={
+          <button
+            onClick={event => {
+              event.stopPropagation()
+              action()
+            }}
+          >
+            Edit task
+          </button>
+        }
       >
         <span>Task title</span>
       </StatusRow>

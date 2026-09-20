@@ -157,7 +157,8 @@ export function describeUpdateCheckFailure(error: UpdateCheckFailure | null | un
   if ((status === 403 || status === 429) && error?.rateLimitRemaining === 0) {
     const resetMs = typeof error.rateLimitReset === 'number' ? error.rateLimitReset * 1000 - now : NaN
     const minutes = Number.isFinite(resetMs) && resetMs > 0 ? Math.ceil(resetMs / 60_000) : null
-    const when = minutes === null ? 'within an hour' : minutes === 1 ? 'in about a minute' : `in about ${minutes} minutes`
+    const when =
+      minutes === null ? 'within an hour' : minutes === 1 ? 'in about a minute' : `in about ${minutes} minutes`
 
     return error.authenticated
       ? `GitHub API rate limit reached for your GITHUB_TOKEN (HTTP ${status}) — it resets ${when}.`
@@ -194,7 +195,10 @@ export function describeUpdateCheckFailure(error: UpdateCheckFailure | null | un
 }
 
 /** A git command runner — main.ts injects its runGit; tests inject a fake. */
-export type GitRunner = (args: string[], options?: { cwd?: string }) => Promise<{
+export type GitRunner = (
+  args: string[],
+  options?: { cwd?: string }
+) => Promise<{
   code: number
   stdout: string
   stderr: string

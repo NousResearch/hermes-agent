@@ -735,11 +735,7 @@ export function carryForwardFailedProfileSessions(
   for (const session of previous) {
     // A hidden row (canonical Bot Chat) is LISTED-NEVER by design: the
     // failed-slice carry must not ride it back into the sidebar (#113273).
-    if (
-      session.hidden ||
-      !failed.has(sidebarProfileKey(session)) ||
-      incomingIds.has(sessionListIdentity(session))
-    ) {
+    if (session.hidden || !failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
       continue
     }
 

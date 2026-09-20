@@ -265,14 +265,16 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       label: pageLabels[view],
       icon: Settings2
     }))
-  ].flatMap(parent => settingsSubpages(parent.view).map(page => ({
-    context: parent.label,
-    icon: parent.icon,
-    id: `settings-page:${parent.view}:${page.id}`,
-    keywords: [parent.label, page.id],
-    label: t.settings.subpages[page.labelKey],
-    target: { view: parent.view, subpage: page.id }
-  })))
+  ].flatMap(parent =>
+    settingsSubpages(parent.view).map(page => ({
+      context: parent.label,
+      icon: parent.icon,
+      id: `settings-page:${parent.view}:${page.id}`,
+      keywords: [parent.label, page.id],
+      label: t.settings.subpages[page.labelKey],
+      target: { view: parent.view, subpage: page.id }
+    }))
+  )
 
   return {
     subpageEntries,

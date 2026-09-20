@@ -17,7 +17,7 @@ from utils import atomic_json_write
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["missing", "degraded", "disconnected", "refused", "exhausted", "ambiguous", "timeout", "cancelled"])
+@pytest.mark.parametrize("outcome", ["missing", "degraded", "disconnected", "refused", "exhausted", "ambiguous", "timeout", "cancelled", "cancelled_before_dispatch"])
 async def test_restart_notice_retries_only_known_unsent_and_keeps_exhausted_work(tmp_path, monkeypatch, outcome):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(notices, "_RESTART_NOTICE_TIMEOUT", 2.0, raising=False)
@@ -64,17 +64,33 @@ async def test_restart_notice_retries_only_known_unsent_and_keeps_exhausted_work
         def __getattr__(self, name):
             return sleep if name == "sleep" else getattr(asyncio, name)
     monkeypatch.setattr(notices, "asyncio", AsyncioProxy(), raising=False)
+    pending_metadata = runner._pending_marker_metadata
+    if outcome == "cancelled_before_dispatch":
+        def cancel_before_dispatch(*args, **kwargs):
+            owner = asyncio.current_task()
+            assert owner is not None
+            asyncio.get_running_loop().call_soon(owner.cancel)
+            return pending_metadata(*args, **kwargs)
+
+        monkeypatch.setattr(runner, "_pending_marker_metadata", cancel_before_dispatch)
     task = asyncio.create_task(runner._send_restart_notification())
     try:
-        if outcome == "cancelled":
-            await asyncio.wait_for(entered.wait(), 3)
-            task.cancel()
+        if outcome in {"cancelled", "cancelled_before_dispatch"}:
+            if outcome == "cancelled":
+                await asyncio.wait_for(entered.wait(), 3)
+                task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 3)
             target = None
         else:
             target = await asyncio.wait_for(task, 5)
-        if outcome == "exhausted":
+        if outcome == "cancelled_before_dispatch":
+            assert calls == []
+            assert path.read_text(encoding="utf-8") == payload
+            monkeypatch.setattr(runner, "_pending_marker_metadata", pending_metadata)
+            assert await runner._send_restart_notification() == ("telegram", "42", "77")
+            assert len(calls) == 1
+        elif outcome == "exhausted":
             assert path.read_text(encoding="utf-8") == payload
             assert len(calls) == 1  # retry_after exceeds the budget: never retry early
             fresh, fresh_adapter = make_restart_runner()

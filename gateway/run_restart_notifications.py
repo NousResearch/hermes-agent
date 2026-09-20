@@ -204,6 +204,7 @@ class GatewayRestartNotificationsMixin:
         from gateway.run import _hermes_home, _non_conversational_metadata
 
         runner = cast("GatewayRunner", self)
+        owner = asyncio.current_task()
 
         if self._restart_notice_lock is None:
             self._restart_notice_lock = asyncio.Lock()
@@ -257,8 +258,9 @@ class GatewayRestartNotificationsMixin:
 
                         async def dispatch():
                             nonlocal consume
-                            # create_task yields: a /restart may replace the marker before we run.
-                            if (not runner._running or runner._restart_requested
+                            # create_task yields: cancellation or /restart may precede dispatch.
+                            if ((owner is not None and owner.cancelling())
+                                    or not runner._running or runner._restart_requested
                                     or loop.time() >= deadline or not owns_marker()):
                                 return SendResult(success=False, retryable=True, known_unsent=True)
                             consume = True  # From this point a cancellation/exception is ambiguous.

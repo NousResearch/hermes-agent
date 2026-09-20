@@ -236,6 +236,22 @@ class TestOptInSessionTakeover:
         assert resolve_session_takeover(
             {"allow_session_takeover": False, "session": {"allow_takeover": True}}) is False
 
+    def test_reads_object_config_attributes(self):
+        class ObjConfigFlat:
+            allow_session_takeover = True
+
+        class ObjConfigNested:
+            session = {"allow_takeover": True}
+
+        class ObjConfigNestedObj:
+            class Session:
+                allow_takeover = True
+            session = Session()
+
+        assert resolve_session_takeover(ObjConfigFlat()) is True
+        assert resolve_session_takeover(ObjConfigNested()) is True
+        assert resolve_session_takeover(ObjConfigNestedObj()) is True
+
     def test_second_surface_takes_the_session_over_instead_of_being_refused(self):
         config = {"allow_session_takeover": True}
         first, refused = acquire("S", config, surface="desktop")
@@ -279,3 +295,36 @@ class TestOptInSessionTakeover:
         lease, refusal = acquire("S", config)
         assert lease is None
         assert refusal.reason == SESSION_NOT_OWNED
+
+    def test_gateway_config_carries_allow_session_takeover(self):
+        from gateway.config import GatewayConfig
+        gw = GatewayConfig(allow_session_takeover=True)
+        assert gw.allow_session_takeover is True
+        assert gw.to_dict().get("allow_session_takeover") is True
+
+    def test_evict_other_session_leases_clears_sibling(self, monkeypatch):
+        from tui_gateway.session_lifecycle import _evict_other_session_leases
+        from tui_gateway.server import _sessions, _sessions_lock
+        with _sessions_lock:
+            _sessions.clear()
+            _sessions["s1"] = {
+                "session_key": "chat-42",
+                "active_session_lease": object(),
+            }
+            _sessions["s2"] = {
+                "session_key": "chat-42",
+                "active_session_lease": None,
+            }
+            _sessions["s3"] = {
+                "session_key": "chat-unrelated",
+                "active_session_lease": object(),
+            }
+
+        _evict_other_session_leases("s2", "chat-42")
+
+        with _sessions_lock:
+            assert "active_session_lease" not in _sessions["s1"]
+            assert _sessions["s1"].get("_lease_taken_over") is True
+            assert _sessions["s3"].get("active_session_lease") is not None
+            _sessions.clear()
+

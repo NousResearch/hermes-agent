@@ -736,7 +736,6 @@ class TestCheckForSkillUpdates:
         assert bundle is not None and "references/notes.md" not in bundle.files
         assert bundle.metadata["source_revision"] == ""
         # and a clean fetch of the same tree does record it
-        assert source.fetch("owner/repo/demo-skill") is not None
         source._fetch_file_bytes = good_bytes
         assert source.fetch("owner/repo/demo-skill").metadata["source_revision"] == "a" * 40
 

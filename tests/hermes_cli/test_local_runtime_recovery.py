@@ -56,9 +56,12 @@ def test_startup_preserves_trees_and_explicit_stop_checks_owner(tmp_path, monkey
     child_script.write_text(
         "import json,os,sys,time,subprocess,psutil\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-        "with open(sys.argv[1], 'w') as f:\n"
+        # Publish atomically: the parent polls for the file, so a truncate-then-write would let it read
+        # an empty record.
+        "with open(sys.argv[1] + '.tmp', 'w') as f:\n"
         " json.dump({'router': os.getpid(), 'child': child.pid, "
         "'create_time': psutil.Process().create_time()}, f)\n"
+        "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
         "time.sleep(60)\n", encoding="utf-8")
     owner = subprocess.Popen([
         sys.executable, "-c",

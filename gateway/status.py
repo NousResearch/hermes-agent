@@ -80,6 +80,7 @@ class _RuntimeStatusWriter:
             return generation
 
     def wait(self, generation: int, timeout: Optional[float] = None) -> bool:
+        """Block until ``generation`` (or a later snapshot) is persisted; ``False`` on timeout/failure."""
         deadline = None if timeout is None else time.monotonic() + max(timeout, 0.0)
         with self._condition:
             while self._successful_generation < generation:
@@ -105,6 +106,24 @@ class _RuntimeStatusWriter:
         with self._condition:
             generation = self._submitted_generation
         return generation == 0 or self.wait(generation, timeout=timeout)
+
+    def settled(self, generation: int) -> Optional[bool]:
+        """``True`` once ``generation`` persisted, ``False`` once it can no longer, else ``None``."""
+        with self._condition:
+            if self._successful_generation >= generation:
+                return True
+            no_more_work = (
+                self._completed_generation >= generation
+                and self._writing_generation == 0
+                and self._pending is None
+            )
+            return False if no_more_work else None
+
+    def _wait_forever_for(self, generation: int) -> bool:
+        with self._condition:
+            while (state := self.settled(generation)) is None:
+                self._condition.wait()
+            return state
 
     def _run(self) -> None:
         while True:
@@ -172,15 +191,27 @@ async def flush_runtime_status_async(timeout: float = 2.0) -> bool:
         generation = writer._submitted_generation
     if generation == 0:
         return True
+    if (state := writer.settled(generation)) is not None:
+        return state
+    # Park a daemon thread on the writer's Condition and hand the outcome back through a
+    # future: the writer thread notifies it the moment the generation lands, so the loop is
+    # woken by the event rather than polling. A daemon thread (not the default executor)
+    # so a write wedged past the timeout never blocks interpreter exit.
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + max(timeout, 0.0)
-    while True:
-        if writer.wait(generation, timeout=0.0):
-            return True
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            return False
-        await asyncio.sleep(min(0.02, remaining))
+    landed: asyncio.Future[bool] = loop.create_future()
+
+    def _relay() -> None:
+        state = writer._wait_forever_for(generation)
+        try:
+            loop.call_soon_threadsafe(lambda: landed.done() or landed.set_result(state))
+        except RuntimeError:  # loop closed while we waited
+            pass
+
+    threading.Thread(target=_relay, daemon=True, name="gateway-runtime-status-waiter").start()
+    try:
+        return await asyncio.wait_for(asyncio.shield(landed), timeout=max(timeout, 0.0))
+    except asyncio.TimeoutError:
+        return False
 
 
 class StormInfo(NamedTuple):
@@ -1045,12 +1076,12 @@ def write_runtime_status(
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
     multiplex_standalone_reason: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
-    drop_profile_platforms: Optional[str] = None, _reload_existing: bool = False,
-    _wait_timeout: Optional[float] = None,
+    drop_profile_platforms: Optional[str] = None, reload_existing: bool = False,
+    wait_timeout: Optional[float] = None,
 ) -> bool:
     """Synchronously persist status for CLI callers and off-loop startup.
 
-    ``_wait_timeout`` bounds how long the caller waits for durable persistence.
+    ``wait_timeout`` bounds how long the caller waits for durable persistence.
     A timed-out update remains queued for the single background writer.
     """
     with _runtime_status_state_lock:
@@ -1063,10 +1094,10 @@ def write_runtime_status(
             session_store=session_store, multiplex_standalone_reason=multiplex_standalone_reason,
             ingress_url=ingress_url, listener_base=listener_base,
             clear_profile_platforms=clear_profile_platforms, drop_profile_platforms=drop_profile_platforms,
-            reload_existing=_reload_existing)
+            reload_existing=reload_existing)
         writer = _get_runtime_status_writer()
         generation = writer.submit(path, payload)
-    persisted = writer.wait(generation, timeout=_wait_timeout)
+    persisted = writer.wait(generation, timeout=wait_timeout)
     if persisted:
         _emit_runtime_status_transition(previous_payload, payload)
     return persisted

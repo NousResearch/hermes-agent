@@ -838,8 +838,8 @@ class GatewayStartupMixin:
                 gateway_state="starting",
                 exit_reason=None,
                 clear_profile_platforms=True,
-                _reload_existing=True,
-                _wait_timeout=2.0,
+                reload_existing=True,
+                wait_timeout=2.0,
             )
             if not persisted:
                 logger.warning("Timed out persisting initial gateway runtime status")

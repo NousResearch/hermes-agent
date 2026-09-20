@@ -516,7 +516,7 @@ class TestRuntimeStatusBackgroundWriter:
         monkeypatch.setattr(status, "_runtime_status_writer", writer)
         try:
             persisted = status.write_runtime_status(
-                gateway_state="starting", _wait_timeout=0.05
+                gateway_state="starting", wait_timeout=0.05
             )
             assert write_started.is_set()
             assert persisted is False

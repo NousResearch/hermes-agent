@@ -246,6 +246,56 @@ def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_
     assert executions.latest_execution("still-live")["status"] == "running"
 
 
+def _drifted_owner_row(executions, monkeypatch, tmp_path, *, drift):
+    """One in-flight row owned by another process, whose live fingerprint is ``recorded+drift``."""
+    import gateway.status as gateway_status
+
+    monkeypatch.setattr(executions, "_process_start_time", lambda _pid: 178940554282)
+    record = executions.create_execution("drifted-owner", source="builtin")
+    executions.mark_execution_running(record["id"])
+    assert executions.get_execution(record["id"])["process_started_at"] == 178940554282
+
+    monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-gateway")
+    monkeypatch.setattr(gateway_status, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(executions, "_process_start_time", lambda _pid: 178940554282 + drift)
+    return record
+
+
+def test_recovery_keeps_live_owner_whose_start_time_drifted(monkeypatch, tmp_path):
+    """A ~1s start-time drift is a clock artifact, not PID reuse (macOS sleep/wake).
+
+    Observed 2026-09-14: the live gateway's fingerprint read +100 centiseconds for 2h21m and
+    every row still in flight during a recovery pass was flipped to ``unknown``, which also
+    dropped the run's real terminal state.
+    """
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = _drifted_owner_row(executions, monkeypatch, tmp_path, drift=100)
+
+    assert executions.recover_interrupted_executions() == 0
+    assert executions.get_execution(record["id"])["status"] == "running"
+
+
+def test_recovery_still_marks_a_recycled_pid_dead(monkeypatch, tmp_path):
+    """A grossly different fingerprint IS reuse: the recorded owner must still be reclaimed."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = _drifted_owner_row(executions, monkeypatch, tmp_path, drift=60001)
+
+    assert executions.recover_interrupted_executions() == 1
+    recovered = executions.get_execution(record["id"])
+    assert recovered["status"] == "unknown"
+    assert "owner exited" in recovered["error"]
+
+
+def test_recovery_leaves_an_unreadable_fingerprint_alone(monkeypatch, tmp_path):
+    """Unreadable start time is unknown, never proof of death."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = _drifted_owner_row(executions, monkeypatch, tmp_path, drift=0)
+    monkeypatch.setattr(executions, "_process_start_time", lambda _pid: None)
+
+    assert executions.recover_interrupted_executions() == 0
+    assert executions.get_execution(record["id"])["status"] == "running"
+
+
 def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
     """Real temp-HERMES_HOME subprocess restart: in-flight is audit-only unknown."""
     home = tmp_path / "home"

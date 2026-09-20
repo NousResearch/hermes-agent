@@ -738,10 +738,14 @@ def test_review_dispatch_validates_forced_skill_before_claim_without_residue(
         "load_config",
         lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
     )
-    validated: list[list[str]] = []
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles: [reviewer, unsuitable, reviewer, also-unsuitable]\n",
+        encoding="utf-8",
+    )
+    validated: list[tuple[str, list[str]]] = []
 
-    def unavailable(_assignee, skills):
-        validated.append(list(skills))
+    def unavailable(assignee, skills):
+        validated.append((assignee, list(skills)))
         return ["sdlc-review"]
 
     monkeypatch.setattr(
@@ -774,7 +778,11 @@ def test_review_dispatch_validates_forced_skill_before_claim_without_residue(
         runs = kb.list_runs(conn, task_id)
         events = kb.list_events(conn, task_id)
 
-    assert validated == [["domain-specific-review", "sdlc-review"]]
+    assert validated == [
+        ("reviewer", ["domain-specific-review", "sdlc-review"]),
+        ("unsuitable", ["domain-specific-review", "sdlc-review"]),
+        ("also-unsuitable", ["domain-specific-review", "sdlc-review"]),
+    ]
     assert spawned == [] and result.spawned == []
     assert task is not None and task.status == "needs_user_action"
     assert task.current_run_id is None and task.claim_lock is None and task.worker_pid is None
@@ -789,6 +797,73 @@ def test_review_dispatch_validates_forced_skill_before_claim_without_residue(
     assert events[-1].kind == "needs_user_action"
     assert events[-1].payload["source"] == "preclaim_capability"
     assert events[-1].payload["effective_skills"] == ["domain-specific-review", "sdlc-review"]
+
+
+def test_review_dispatch_routes_to_declared_suitable_profile_before_escalation(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles: [reviewer, alternate-reviewer, reviewer, unused]\n",
+        encoding="utf-8",
+    )
+    validated: list[tuple[str, list[str]]] = []
+
+    def unavailable(assignee, skills):
+        validated.append((assignee, list(skills)))
+        return ["sdlc-review"] if assignee == "reviewer" else []
+
+    monkeypatch.setattr(
+        "hermes_cli.kanban_skill_validation.unavailable_profile_skills",
+        unavailable,
+    )
+    spawned: list[tuple[str, list[str]]] = []
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="route capable reviewer", assignee="reviewer")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn, task_id, reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+
+        result = kbd.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _workspace: spawned.append(
+                (task.assignee, list(task.skills or []))
+            ) or os.getpid(),
+        )
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+        user_action = conn.execute(
+            "SELECT 1 FROM kanban_user_actions WHERE task_id = ?", (task_id,),
+        ).fetchone()
+
+    expected_skills = ["sdlc-review"]
+    assert validated == [
+        ("reviewer", expected_skills),
+        ("alternate-reviewer", expected_skills),
+    ]
+    assert spawned == [("alternate-reviewer", expected_skills)]
+    assert result.spawned[0][:2] == (task_id, "alternate-reviewer")
+    assert task is not None and task.status == "running" and task.assignee == "alternate-reviewer"
+    assert user_action is None
+    assert not [event for event in events if event.kind == "needs_user_action"]
+    assigned = [event for event in events if event.kind == "assigned"][-1]
+    assert assigned.payload == {
+        "assignee": "alternate-reviewer",
+        "from": "reviewer",
+        "source": "preclaim_skill_routing",
+    }
 
 
 def test_review_dispatch_does_not_claim_assignee_changed_during_validation(

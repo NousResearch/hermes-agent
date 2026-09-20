@@ -1554,7 +1554,7 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     return _gated
 
 
-def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
+def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[tuple[str, ...]]:
     """Per-home claim allowlist ``kanban.dispatch_profiles`` (#110995).
 
     On a shared board (one ``kanban.db`` mounted across several Hermes homes),
@@ -1583,7 +1583,7 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
             "this home claims no cards until the config is readable",
             type(exc).__name__, exc,
         )
-        return frozenset()
+        return ()
     if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
         return None
     raw = kanban["dispatch_profiles"]
@@ -1592,15 +1592,17 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
             "kanban: kanban.dispatch_profiles is present but empty — this home "
             "claims no cards; omit the key to allow any existing profile"
         )
-        return frozenset()
+        return ()
     names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
-    allowed = set()
+    allowed = []
     for n in names:
         try:
-            allowed.add(normalize_profile_name(n))
+            canonical = normalize_profile_name(n)
         except ValueError:
             continue
-    return frozenset(allowed)
+        if canonical not in allowed:
+            allowed.append(canonical)
+    return tuple(allowed)
 
 
 def dispatch_profile_allowlist_summary() -> str:
@@ -1925,7 +1927,47 @@ def _dispatch_lane_task(
     effective_skills = effective_worker_skills(task_skills, lane=lane)
     if not dry_run:
         from hermes_cli.kanban_skill_validation import unavailable_profile_skills
+        attempted_profiles = {assignee}
         missing_skills = unavailable_profile_skills(assignee, effective_skills)
+        if missing_skills:
+            try:
+                from hermes_cli.profiles import normalize_profile_name
+                declared_profiles = _dispatch_profile_allowlist(normalize_profile_name) or ()
+            except Exception:
+                declared_profiles = ()
+            alternative = None
+            for candidate in declared_profiles:
+                if candidate in attempted_profiles:
+                    continue
+                attempted_profiles.add(candidate)
+                if profile_exists is not None and not profile_exists(candidate):
+                    continue
+                if not unavailable_profile_skills(candidate, effective_skills):
+                    alternative = candidate
+                    break
+            if alternative is not None:
+                with _kb.write_txn(conn):
+                    updated = conn.execute(
+                        "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+                        "last_failure_error = NULL WHERE id = ? AND status = ? "
+                        "AND assignee = ? AND claim_lock IS NULL AND skills IS ?",
+                        (alternative, task_id, lane, assignee, row["skills"]),
+                    )
+                    if updated.rowcount:
+                        _kb._append_event(
+                            conn,
+                            task_id,
+                            "assigned",
+                            {
+                                "assignee": alternative,
+                                "from": assignee,
+                                "source": "preclaim_skill_routing",
+                            },
+                        )
+                if not updated.rowcount:
+                    return False
+                assignee = alternative
+                missing_skills = []
         if missing_skills:
             error = f"profile {assignee!r} cannot load effective skill(s): {', '.join(missing_skills)}"
             metadata = {

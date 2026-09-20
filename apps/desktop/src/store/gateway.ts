@@ -642,6 +642,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
   const desktop = window.hermesDesktop
 
   const reauthError = g.reauthFailures.get(entry.scope)?.error
+
   if (reauthError) {
     throw reauthError
   }
@@ -790,6 +791,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
       entry.wantOpen = false
       clearTimer(entry)
     }
+
     throw error
   } finally {
     if (entry.connectPromise === pending) {
@@ -822,9 +824,11 @@ function isStalledDialError(error: unknown): boolean {
 
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
   const reauthError = g.reauthFailures.get(entry.scope)?.error
+
   if (reauthError && priority !== 'foreground') {
     throw reauthError
   }
+
   g.reauthFailures.delete(entry.scope)
 
   if (entry.retiredByPool && priority !== 'foreground') {
@@ -864,6 +868,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   } catch (error) {
     if (isGatewayReauthRequired(error)) {
       notifyError(error, translateNow('boot.errors.gatewaySignInRequired'), { action: RECOVERY_ACTIONS.openGateways() })
+
       return
     }
 
@@ -969,8 +974,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
   })
-  entry.offRequest =
-    gateway.onRequest?.(request => dispatchServerRequest(request, profile, connectionId)) ?? (() => {})
+  entry.offRequest = gateway.onRequest?.(request => dispatchServerRequest(request, profile, connectionId)) ?? (() => {})
   entry.offState = gateway.onState(state => {
     reportGatewayState(scope, state)
 
@@ -1344,6 +1348,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
   }
 
   entry.relayRetainCount += 1
+
   if (!g.reauthFailures.has(entry.scope)) {
     rearmSecondary(entry)
   }
@@ -1882,7 +1887,9 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 // reconnects are owned by use-gateway-boot, so we only drive secondaries here.
 // A scope parked on a rejected session stays parked for automatic request
 // retries; only a user gesture (`explicit`: the Reconnect action) may redial it.
-export async function ensureActiveGatewayOpen({ explicit = false }: { explicit?: boolean } = {}): Promise<HermesGateway | null> {
+export async function ensureActiveGatewayOpen({
+  explicit = false
+}: { explicit?: boolean } = {}): Promise<HermesGateway | null> {
   if (g.activeKey === g.primaryProfile) {
     return g.primaryGateway
   }
@@ -1983,6 +1990,7 @@ function probeSecondaryLiveness(entry: Secondary): void {
       // before the turn ends, so a foreground turn mid tool call shows
       // activeRequests 0. The registry's live-scope hook supplies the turn.
       const liveScopes = g.config?.liveScopes?.()
+
       const turnInFlight =
         liveScopes && (liveScopes.has(entry.scope) || (!entry.connectionId && liveScopes.has(entry.profile))) ? 1 : 0
 
@@ -2286,6 +2294,7 @@ export function closeLegacySecondaryGateways(): void {
       g.reauthFailures.delete(scope)
     }
   }
+
   closeSecondariesWhere(isLegacySecondary)
 }
 

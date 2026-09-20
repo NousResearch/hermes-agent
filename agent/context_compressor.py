@@ -2132,12 +2132,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def _read_compression_frequency_state(
         self, *, session_db: Any = None, session_id: Optional[str] = None,
+        read_failure_default: tuple[float, int] = (0.0, 0),
     ) -> tuple[float, int]:
         session_db = getattr(self, "_session_db", None) if session_db is None else session_db
         session_id = getattr(self, "_session_id", "") if session_id is None else session_id
         getter = getattr(session_db, "get_session_model_config_value", None)
         if not session_id or not callable(getter):
-            return 0.0, 0
+            return read_failure_default
         try:
             state = getter(session_id, COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {})
             if not isinstance(state, dict):
@@ -2145,7 +2146,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return max(0.0, float(state.get("started_at", 0.0))), max(0, int(state.get("count", 0)))
         except (TypeError, ValueError, sqlite3.Error) as exc:
             logger.debug("compression frequency state lookup failed: %s", exc)
-            return 0.0, 0
+            return read_failure_default
 
     def _load_compression_frequency_state(self) -> None:
         self._compression_frequency_window_started_at, self._compression_frequency_window_count = (
@@ -2164,6 +2165,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         )
 
     def _record_completed_compaction_frequency(self) -> None:
+        # Forced compaction bypasses the automatic gate, so its compressor may
+        # still hold an older snapshot than another process wrote. Refresh the
+        # shared history before advancing it; a failed read preserves the local
+        # state rather than disarming the guard.
+        current_state = self._compression_frequency_state()
+        self._compression_frequency_window_started_at, self._compression_frequency_window_count = (
+            self._read_compression_frequency_state(read_failure_default=current_state)
+        )
         now = time.time()
         started_at, count = self._compression_frequency_state()
         if started_at <= 0.0 or now < started_at or now - started_at >= self._FREQUENT_COMPACTION_WINDOW_SECONDS:

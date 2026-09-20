@@ -129,6 +129,9 @@ describe('pluginSocket authenticated reconnects', () => {
 
     const dispose = pluginSocket('kanban', '/events', () => {})
     await vi.advanceTimersByTimeAsync(0)
+    for (let pending = 0; pending < 10 && opened.length === 0; pending += 1) {
+      await Promise.resolve()
+    }
 
     expect(getConnection).toHaveBeenCalledTimes(2)
     expect(opened).toHaveLength(1)

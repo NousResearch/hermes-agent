@@ -118,7 +118,9 @@ def test_fresh_hosted_loop_keeps_live_platform_verdict(client):
 
 
 def test_api_status_reports_hosted_loop_running(client):
-    """>/api/status keeps the hosted loop's real state, platform map, and host PID (#116416)."""
+    """>/api/status keeps the hosted loop's real state and platform map, with the host's PID
+    in the display-only ``hosted_pid`` field — ``gateway_pid`` stays lifecycle-manageable
+    only (#116416, #116445 review)."""
     from hermes_constants import get_hermes_home
 
     _write_hosted_running_state(get_hermes_home())
@@ -127,7 +129,10 @@ def test_api_status_reports_hosted_loop_running(client):
 
     assert payload["gateway_running"] is False
     assert payload["gateway_state"] == "running"
-    assert payload["gateway_pid"] == os.getpid()
+    # No ``gateway run`` process exists, so the lifecycle PID stays null and the live host
+    # is reported separately — an API consumer must not mistake it for a stoppable PID.
+    assert payload["gateway_pid"] is None
+    assert payload["hosted_pid"] == os.getpid()
     telegram = payload["gateway_platforms"].get("telegram")
     assert isinstance(telegram, dict) and telegram["state"] == "connected"
 

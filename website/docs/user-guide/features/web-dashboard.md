@@ -442,6 +442,13 @@ a chat under the selected profile.
 
 Returns agent version, gateway status, platform states, and active session count.
 
+Two PID fields with different contracts: `gateway_pid` is the lifecycle-manageable
+`gateway run` process (the one stop/restart/drain act on), while `hosted_pid` is
+display-only — the live non-`gateway run` host (e.g. a dashboard process) carrying
+the messaging loop in-process, reported when `gateway_running` is `false` but a
+fresh-heartbeat snapshot proves the loop is served. Treat `gateway_running`, not
+either PID, as the action signal.
+
 The response also carries two advisory resource blocks (they never affect the
 `components`/`overall` health verdict):
 

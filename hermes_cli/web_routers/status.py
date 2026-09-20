@@ -338,7 +338,11 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     served = (liveness.runtime or {}).get("served_profiles")
     return {
         "runtime": runtime, "gateway_running": gateway_running,
-        "gateway_pid": liveness.pid if liveness.pid is not None else hosted_pid,
+        # Contract split (#116445 review): ``gateway_pid`` stays the lifecycle-manageable
+        # ``gateway run`` process only; the display-only host that carries the loop in-process
+        # (dashboard/wrapper) is reported separately so API consumers never mistake it for a
+        # PID that stop/restart/drain act on.
+        "gateway_pid": liveness.pid, "hosted_pid": hosted_pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
         "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
@@ -523,13 +527,15 @@ async def get_status(profile: Optional[str] = None):
         status["profiles"] = topology["profiles"]
         status["gateway_mode"] = topology["gateway_mode"]
 
-        # Host paths, gateway PID, internal health URL and per-gateway ports are deployment
-        # recon a liveness probe never needs, and on a gated bind *any* unauthenticated caller
-        # reaches this endpoint — surface them only on a loopback / ``--insecure`` bind.
+        # Host paths, gateway PIDs (lifecycle and hosted), internal health URL and per-gateway
+        # ports are deployment recon a liveness probe never needs, and on a gated bind *any*
+        # unauthenticated caller reaches this endpoint — surface them only on a loopback /
+        # ``--insecure`` bind.
         if not auth["auth_required"]:
             status.update({
                 "hermes_home": str(get_hermes_home()), "config_path": str(get_config_path()),
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
+                "hosted_pid": gateway["hosted_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
 
         return status

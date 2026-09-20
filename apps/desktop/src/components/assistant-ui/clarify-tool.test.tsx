@@ -239,6 +239,47 @@ describe('ClarifyTool choice selection', () => {
     })
   })
 
+  it('keeps a typed multi-select custom answer when picking a choice or moving the cursor afterward', async () => {
+    const { respond } = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+    const other = screen.getByPlaceholderText(/Other/) as HTMLTextAreaElement
+
+    fireEvent.focus(other)
+    fireEvent.change(other, { target: { value: 'something else' } })
+    fireEvent.click(staging)
+
+    // Picking a choice after typing must not silently drop the typed text.
+    expect(other.value).toBe('something else')
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+
+    // Moving the cursor after typing must not silently drop the typed text.
+    expect(other.value).toBe('something else')
+
+    fireEvent.click(production)
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: JSON.stringify(['staging', 'production', 'something else']) })
+    })
+  })
+
+  it('does not duplicate a typed multi-select answer that matches an already-picked choice', async () => {
+    const { respond } = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.click(staging)
+    fireEvent.focus(other)
+    fireEvent.change(other, { target: { value: 'staging' } })
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: JSON.stringify(['staging']) })
+    })
+  })
+
   it('keeps single-select replacement and plain-string submission', async () => {
     const { respond } = renderLiveClarify()
     const staging = screen.getByRole('button', { name: /staging/ })
@@ -805,6 +846,29 @@ describe('ClarifyTool batch card', () => {
 
     // Typing in "Other" must not silently drop the pick already made.
     expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: JSON.stringify(['red', 'green']),
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('keeps a typed multi-select batch custom answer when picking a choice afterward', async () => {
+    const { request } = renderLiveBatch(undefined, true)
+    const other = screen.getByPlaceholderText(/Other/) as HTMLTextAreaElement
+
+    fireEvent.change(other, { target: { value: 'green' } })
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+
+    // Picking a choice after typing must not silently drop the typed text.
+    expect(other.value).toBe('green')
 
     fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)

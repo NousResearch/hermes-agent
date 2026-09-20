@@ -497,11 +497,15 @@ function ClarifyToolSinglePending({
   )
 
   const trimmedDraft = draft.trim()
+
   // The answer is whichever input is active: a picked choice, or typed text.
   // Picking a choice no longer fires immediately — it selects, then the user
   // confirms with Continue (or Enter from the field). Multi-select treats the
   // typed text as one more answer alongside whatever is already picked.
-  const multiSelectAnswers = multiSelect && trimmedDraft ? [...selectedChoices, trimmedDraft] : selectedChoices
+  const multiSelectAnswers =
+    multiSelect && trimmedDraft && !selectedChoices.includes(trimmedDraft)
+      ? [...selectedChoices, trimmedDraft]
+      : selectedChoices
 
   const selectedAnswer = multiSelect
     ? multiSelectAnswers.length > 0
@@ -513,8 +517,12 @@ function ClarifyToolSinglePending({
 
   const selectChoice = useCallback(
     (choice: string, index: number) => {
-      // Picking a choice and typing are mutually exclusive answers.
-      setDraft('')
+      // Picking a choice and typing are mutually exclusive answers for
+      // single-select. Multi-select keeps the typed text alongside picks.
+      if (!multiSelect) {
+        setDraft('')
+      }
+
       setSelectedChoices(selected => {
         if (!multiSelect) {
           return [choice]
@@ -536,12 +544,12 @@ function ClarifyToolSinglePending({
     (delta: number) => {
       const itemCount = choices.length + 1
 
-      // Arrow navigation is a move, not a pick. Multi-select keeps staged
-      // choices while the cursor moves so the user can build a set; the
-      // single-select path retains its existing clear-on-navigation behaviour.
-      setDraft('')
-
+      // Arrow navigation is a move, not a pick. Multi-select keeps both the
+      // staged choices and the typed draft while the cursor moves so the
+      // user can build a set; the single-select path retains its existing
+      // clear-on-navigation behaviour for both.
       if (!multiSelect) {
+        setDraft('')
         setSelectedChoices([])
       }
 
@@ -1110,7 +1118,9 @@ function ClarifyToolBatchPending({
           : [...stage.choices, choice]
         : [choice]
 
-      return { ...current, [question.qid]: { choices: next, draft: '' } }
+      // Multi-select keeps the typed draft while a choice is toggled; single
+      // select stays mutually exclusive.
+      return { ...current, [question.qid]: { choices: next, draft: question.multiSelect ? stage.draft : '' } }
     })
   }, [])
 

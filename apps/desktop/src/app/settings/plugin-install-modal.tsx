@@ -2,8 +2,8 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
-import { NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '@/app/routes'
+import { captureOwner, type OwnerScope, sameOwner } from '@/api/client'
+import { MEMORY_PLUGINS_ROUTE, NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -22,33 +22,72 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { COMMIT_SHA_RE, discoverInstalledMemoryProvider, installAgentPlugin } from '@/store/agent-plugins'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
+  type CapturedPluginInstallRequest,
   closePluginInstallRequest,
   openPluginInstallRequest,
   type PluginInstallRequest
 } from '@/store/plugin-install-request'
-import { $activeGatewayProfile, $profileScope } from '@/store/profile'
 import { $connection } from '@/store/session'
-import { runGatewayRestart } from '@/store/system-actions'
+import { $settingsScopeProfile } from '@/store/settings-scope'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
 
+// Per install origin: a memory install has its own toast and returns to Memory settings, not the plugins page.
+const FLOWS = {
+  plugins: {
+    staysOnSettings: false,
+    toastsAgentResult: true,
+    doneRoute: (request: CapturedPluginInstallRequest) =>
+      request.catalogName ? MEMORY_PLUGINS_ROUTE : '/settings?tab=plugins'
+  },
+  memory: { staysOnSettings: true, toastsAgentResult: false, doneRoute: () => null }
+}
+
 export function PluginInstallModal() {
   const request = useStore($pluginInstallRequest)
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
-  const { requestGateway } = useGatewayRequest()
   const navigate = useNavigate()
   const location = useLocation()
   const onSettings = location.pathname.startsWith(SETTINGS_ROUTE)
   const connection = useStore($connection)
-  const activeProfile = useStore($activeGatewayProfile)
-  const profileScope = useStore($profileScope)
+  const settingsProfile = useStore($settingsScopeProfile)
+  const flow = FLOWS[request?.origin?.kind ?? 'plugins']
+  // Bumped when the page, connection or settings scope changes, so a finished install only navigates its own view.
+  const viewRevision = useRef(0)
+
+  const nextRevision = () => {
+    viewRevision.current++
+  }
+
+  useEffect(() => {
+    nextRevision()
+
+    return nextRevision
+  }, [location.key, connection, settingsProfile])
+
+  // A memory install returns to its provider only on the view it started from; elsewhere the toast is the whole result.
+  const announceMemoryInstall = async (target: OwnerScope, providerId: string, returnHere: () => boolean) => {
+    const listed = await discoverInstalledMemoryProvider(target, providerId).catch(() => false)
+
+    if (!listed) {
+      notify({ kind: 'warning', message: m.memoryNotListed(providerId, targetLabel) })
+
+      return
+    }
+
+    notify({ kind: 'success', message: `${m.agentSuccess(providerId)} · ${targetLabel}` })
+
+    if (returnHere()) {
+      navigate(`${SETTINGS_ROUTE}?tab=config:memory&provider=${encodeURIComponent(providerId)}`, { replace: true })
+    }
+  }
 
   const [repoInput, setRepoInput] = useState('')
   const [phase, setPhase] = useState<ProbePhase>('idle')
@@ -139,10 +178,10 @@ export function PluginInstallModal() {
   )
 
   useEffect(() => {
-    if (request && onSettings) {
+    if (request && onSettings && !flow.staysOnSettings) {
       navigate(NEW_CHAT_ROUTE)
     }
-  }, [request, onSettings, navigate])
+  }, [request, onSettings, navigate, flow])
 
   useEffect(() => {
     if (!request) {
@@ -156,23 +195,26 @@ export function PluginInstallModal() {
     }
   }, [request, resetState, runProbe])
 
-  const profileLabel = request?.profile || activeProfile || profileScope || 'default'
+  const profileLabel = request?.target.profile ?? 'default'
 
-  const agentTargetHint =
-    connection?.mode === 'remote'
-      ? m.agentTargetRemote(profileLabel)
-      : m.agentTargetLocal(
-          profileLabel,
-          request?.profile && request.profile !== 'default'
-            ? `~/.hermes/profiles/${request.profile}/plugins/`
-            : '~/.hermes/plugins/'
-        )
+  const targetIsRemote = request?.target.connectionId
+    ? request.target.connectionId !== 'local'
+    : connection?.mode === 'remote'
+
+  const targetLabel = `${request?.target.connectionId ?? 'primary'} / ${profileLabel}`
+
+  const agentTargetHint = targetIsRemote
+    ? m.agentTargetRemote(profileLabel)
+    : m.agentTargetLocal(
+        profileLabel,
+        profileLabel !== 'default' ? `~/.hermes/profiles/${profileLabel}/plugins/` : '~/.hermes/plugins/'
+      )
 
   // A unified package installed into a local backend carries its own desktop
   // half; the app copies that half out of the package folder. Only a remote
   // backend (whose plugins/ folder this machine cannot read) or a desktop-only
   // repo needs a separate desktop clone.
-  const desktopHalfFromPackage = Boolean(probe?.agent && installAgent && connection?.mode !== 'remote')
+  const desktopHalfFromPackage = Boolean(probe?.agent && installAgent && !targetIsRemote)
 
   const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
 
@@ -199,26 +241,37 @@ export function PluginInstallModal() {
     setInstalling(true)
     setInstallError(null)
 
+    const revision = viewRevision.current
+    const stillOpen = () => $pluginInstallRequest.get() === request
+
+    const startedOnMemorySettings =
+      onSettings &&
+      new URLSearchParams(location.search).get('tab') === 'config:memory' &&
+      sameOwner(captureOwner(settingsProfile), request.target)
+
     const errors: string[] = []
     const successes: string[] = []
     let agentInstalled = false
 
     try {
       if (installAgent && probe.agent) {
-        const result = await installAgentPlugin(requestGateway, {
+        const result = await installAgentPlugin({
           identifier: request.repo,
           force: forceReinstall,
           enable: enableAgent,
           catalogName: request.catalogName,
           ref: pinRefTrimmed || undefined,
-          profile: request.profile
+          profile: request.target
         })
 
         if (result.ok) {
-          successes.push(m.agentSuccess(result.pluginName ?? request.repo))
+          if (flow.toastsAgentResult) {
+            successes.push(`${m.agentSuccess(result.pluginName ?? request.repo)} · ${targetLabel}`)
+          }
+
           agentInstalled = true
 
-          if (result.missingEnv?.length) {
+          if (result.missingEnv?.length && flow.toastsAgentResult) {
             const firstVar = result.missingEnv[0]
 
             notify({
@@ -272,43 +325,44 @@ export function PluginInstallModal() {
         }
       }
 
-      await loadAgentPlugins(requestGateway)
+      if (agentInstalled && request.origin) {
+        await announceMemoryInstall(
+          request.target,
+          request.origin.providerId,
+          () => startedOnMemorySettings && viewRevision.current === revision && stillOpen()
+        )
+      }
 
-      if (errors.length === 0) {
-        for (const message of successes) {
-          notify({ kind: 'success', message })
+      for (const message of successes) {
+        notify({ kind: 'success', message })
+      }
+
+      if (errors.length > 0) {
+        if (stillOpen()) {
+          setInstallError(errors.join('\n'))
         }
-
-        // An enabled agent plugin only takes effect after a gateway restart —
-        // offer the restart right here instead of a dim hint to run later.
-        if (agentInstalled && enableAgent) {
-          notify({
-            kind: 'success',
-            message: m.restartToApply,
-            action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
-          })
-        }
-
-        closePluginInstallRequest()
-        // Catalog picks come from Capabilities → Plugins; land back there.
-        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
 
         return
       }
 
-      if (successes.length > 0) {
-        for (const message of successes) {
-          notify({ kind: 'success', message })
+      // A request opened meanwhile is someone else's intent; leave it alone.
+      if (stillOpen()) {
+        closePluginInstallRequest()
+        const route = flow.doneRoute(request)
+
+        if (route) {
+          // Capabilities reads its profile from router state; a bare route opens it on the foreground profile.
+          navigate(route, route === MEMORY_PLUGINS_ROUTE ? { state: { capabilityScope: request.target } } : undefined)
         }
       }
-
-      setInstallError(errors.join('\n'))
     } finally {
-      setInstalling(false)
+      if (stillOpen()) {
+        setInstalling(false)
+      }
     }
   }
 
-  const open = request !== null && !onSettings
+  const open = request !== null && (!onSettings || flow.staysOnSettings)
   const busy = phase === 'probing' || installing
   const pinRefTrimmed = pinRef.trim().toLowerCase()
   const pinRefInvalid = pinRefTrimmed !== '' && !COMMIT_SHA_RE.test(pinRefTrimmed)
@@ -337,7 +391,8 @@ export function PluginInstallModal() {
               const repo = repoInput.trim()
 
               if (repo) {
-                openPluginInstallRequest({ ...request, repo })
+                // Without `profile` the opener captures the foreground owner, not the one this request was opened for.
+                openPluginInstallRequest({ ...request, repo, profile: request.target })
               }
             }}
           >

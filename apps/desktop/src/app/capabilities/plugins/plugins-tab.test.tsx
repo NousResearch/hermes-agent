@@ -1,15 +1,32 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $pluginRecords } from '@/contrib/plugins-store'
-import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
+import type * as GatewayStore from '@/store/gateway'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
 import { PluginsTab } from './plugins-tab'
 
-const requestGateway = vi.fn(async () => ({ plugins: [] }))
+// The store re-homes its cache per owner, so seeded rows must come back from the backend read.
+let backendPlugins: AgentPluginRow[] = []
+const requestGateway = vi.fn(async (_method?: string, _params?: unknown) => ({ plugins: backendPlugins }))
+
+function seedAgentPlugins(rows: AgentPluginRow[]) {
+  backendPlugins = rows
+}
+
+async function renderTab(ui: ReactElement) {
+  let result!: ReturnType<typeof render>
+  await act(async () => {
+    result = render(ui)
+  })
+
+  return result
+}
 
 const connectionFixture = {
   baseUrl: 'http://localhost',
@@ -25,13 +42,21 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
 
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<typeof GatewayStore>()),
+  requestGatewayForAgent: (_connection: unknown, _profile: unknown, method: string, params: unknown) =>
+    requestGateway(method, params)
+}))
+
 describe('PluginsTab', () => {
   beforeEach(() => {
     $pluginRecords.set({})
+    backendPlugins = []
     $agentPlugins.set([])
-    $agentPluginsStatus.set('ready')
+    $agentPluginsStatus.set('idle')
     closePluginInstallRequest()
-    requestGateway.mockClear()
+    requestGateway.mockReset()
+    requestGateway.mockImplementation(async () => ({ plugins: backendPlugins }))
   })
 
   afterEach(() => {
@@ -39,8 +64,8 @@ describe('PluginsTab', () => {
     $connection.set(null)
   })
 
-  it('lists the scoped profile agent plugins with toggles', () => {
-    $agentPlugins.set([
+  it('lists the scoped profile agent plugins with toggles', async () => {
+    seedAgentPlugins([
       {
         description: 'A test plugin',
         key: 'demo-plugin',
@@ -51,14 +76,14 @@ describe('PluginsTab', () => {
       }
     ])
 
-    render(<PluginsTab profile="workbot" />)
+    await renderTab(<PluginsTab profile="workbot" />)
 
     expect(screen.getByText('demo-plugin')).toBeTruthy()
     expect(screen.getByRole('switch', { name: 'Agent: demo-plugin' }).getAttribute('aria-checked')).toBe('true')
   })
 
-  it('hides bundled plugins (managed from their own surfaces)', () => {
-    $agentPlugins.set([
+  it('hides bundled plugins (managed from their own surfaces)', async () => {
+    seedAgentPlugins([
       {
         description: '',
         key: 'image_gen/fal',
@@ -69,7 +94,7 @@ describe('PluginsTab', () => {
       }
     ])
 
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
 
     expect(screen.queryByText('fal')).toBeNull()
     expect(screen.getByText(/No plugins yet/)).toBeTruthy()
@@ -78,9 +103,9 @@ describe('PluginsTab', () => {
   // A desktop half can only be copied out of a backend that runs on THIS
   // machine; against a remote one the reconcile is a structural no-op, so the
   // row must say so instead of pending forever (#114079).
-  it('marks a remote-backend desktop half unavailable instead of forever copying', () => {
+  it('marks a remote-backend desktop half unavailable instead of forever copying', async () => {
     $connection.set({ ...connectionFixture, mode: 'remote' })
-    $agentPlugins.set([
+    seedAgentPlugins([
       {
         description: '',
         has_desktop_half: true,
@@ -92,15 +117,15 @@ describe('PluginsTab', () => {
       }
     ])
 
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
 
     const detail = within(screen.getByRole('row', { name: /^nous-prices/ }))
     expect(detail.getByText('unavailable (remote backend)')).toBeTruthy()
     expect(detail.queryByText('copying…')).toBeNull()
   })
 
-  it('keeps the pending desktop-half state on a local backend', () => {
-    $agentPlugins.set([
+  it('keeps the pending desktop-half state on a local backend', async () => {
+    seedAgentPlugins([
       {
         description: '',
         has_desktop_half: true,
@@ -112,18 +137,18 @@ describe('PluginsTab', () => {
       }
     ])
 
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
 
     const detail = within(screen.getByRole('row', { name: /^nous-prices/ }))
     expect(detail.getByText('copying…')).toBeTruthy()
     expect(detail.queryByText('unavailable (remote backend)')).toBeNull()
   })
 
-  it('renders a unified package as ONE row with a Desktop switch and an Agent switch', () => {
+  it('renders a unified package as ONE row with a Desktop switch and an Agent switch', async () => {
     $pluginRecords.set({
       media: { id: 'media', name: 'Media Studio', kind: 'disk', status: 'loaded', packageName: 'hermes-media-studio' }
     })
-    $agentPlugins.set([
+    seedAgentPlugins([
       {
         description: '',
         key: 'hermes-media-studio',
@@ -134,7 +159,7 @@ describe('PluginsTab', () => {
       }
     ])
 
-    render(<PluginsTab profile="workbot" scopeLabel="workbot" />)
+    await renderTab(<PluginsTab profile="workbot" scopeLabel="workbot" />)
 
     expect(screen.getAllByTestId(/^plugin-row-/)).toHaveLength(1)
     expect(screen.getByText('Agent + Desktop')).toBeTruthy()
@@ -155,33 +180,33 @@ describe('PluginsTab', () => {
       }
     })
 
-    render(<PluginsTab profile="workbot" scopeLabel="workbot" />)
+    await renderTab(<PluginsTab profile={{ connectionId: 'homelab', profile: 'workbot' }} scopeLabel="workbot" />)
 
     expect(screen.queryByRole('switch', { name: /^Agent:/ })).toBeNull()
     screen.getByRole('button', { name: 'Install here' }).click()
-    // Pre-filled from the package marker: repo + pinned sha, agent half only.
+    // Pre-filled from the package marker: repo + pinned sha, agent half only, pinned to the tab's owner.
     await waitFor(() => {
       expect($pluginInstallRequest.get()).toMatchObject({
         legacyHint: 'agent',
-        profile: 'workbot',
+        target: { connectionId: 'homelab', profile: 'workbot' },
         repo: 'https://github.com/NousResearch/hermes-media-studio.git',
         sha: 'abc'
       })
     })
   })
 
-  it('disables "Install here" when the package has no known origin (hand-copied folder)', () => {
+  it('disables "Install here" when the package has no known origin (hand-copied folder)', async () => {
     $pluginRecords.set({
       media: { id: 'media', name: 'Media Studio', kind: 'disk', status: 'loaded', packageName: 'hermes-media-studio' }
     })
 
-    render(<PluginsTab profile="workbot" scopeLabel="workbot" />)
+    await renderTab(<PluginsTab profile="workbot" scopeLabel="workbot" />)
 
     expect((screen.getByRole('button', { name: 'Install here' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('loads the plugin list scoped to the selected profile', () => {
-    render(<PluginsTab profile="workbot" />)
+  it('loads the plugin list scoped to the selected profile', async () => {
+    await renderTab(<PluginsTab profile="workbot" />)
 
     expect(requestGateway).toHaveBeenCalledWith(
       'plugins.manage',
@@ -190,7 +215,7 @@ describe('PluginsTab', () => {
   })
 
   it('opens the dual-target install modal from a catalog pick message', async () => {
-    render(<PluginsTab profile="workbot" />)
+    await renderTab(<PluginsTab profile="workbot" />)
 
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -212,13 +237,13 @@ describe('PluginsTab', () => {
       expect(request).not.toBeNull()
       expect(request?.catalogName).toBe('weather-plugin')
       expect(request?.repo).toBe('https://github.com/example/weather-plugin')
-      expect(request?.profile).toBe('workbot')
+      expect(request?.target.profile).toBe('workbot')
       expect(request?.sha).toBe('a'.repeat(40))
     })
   })
 
-  it('ignores pick messages from foreign origins', () => {
-    render(<PluginsTab profile={null} />)
+  it('ignores pick messages from foreign origins', async () => {
+    await renderTab(<PluginsTab profile={null} />)
 
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -235,7 +260,7 @@ describe('PluginsTab', () => {
   })
 
   it('toggles by canonical key through plugins.manage', async () => {
-    $agentPlugins.set([
+    seedAgentPlugins([
       {
         description: '',
         key: 'image_gen/legacy',
@@ -245,12 +270,17 @@ describe('PluginsTab', () => {
         version: '0.20.0'
       }
     ])
-    requestGateway.mockResolvedValueOnce({
-      ok: true,
-      plugin: { key: 'image_gen/legacy', name: 'Legacy plugin', status: 'enabled' }
-    } as never)
+    requestGateway.mockImplementation(async (_method, params) => {
+      if ((params as { action: string }).action === 'toggle') {
+        backendPlugins = backendPlugins.map(row => ({ ...row, status: 'enabled' }))
 
-    render(<PluginsTab profile={null} />)
+        return { ok: true, plugin: backendPlugins[0] } as never
+      }
+
+      return { plugins: backendPlugins }
+    })
+
+    await renderTab(<PluginsTab profile={null} />)
 
     screen.getByRole('switch', { name: 'Agent: Legacy plugin' }).click()
 
@@ -262,10 +292,10 @@ describe('PluginsTab', () => {
     )
   })
 
-  it('renders keyless rows read-only (no name-addressed toggle RPC)', () => {
+  it('renders keyless rows read-only (no name-addressed toggle RPC)', async () => {
     // Name-addressed toggles flip every same-named plugin across category
     // dirs — pre-contract-v6 rows must never reach the RPC.
-    $agentPlugins.set([
+    seedAgentPlugins([
       {
         description: 'Returned by a pre-key backend',
         name: 'Legacy plugin',
@@ -275,7 +305,7 @@ describe('PluginsTab', () => {
       }
     ])
 
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
 
     const toggle = screen.getByRole('switch', { name: 'Agent: Legacy plugin' })
 
@@ -287,7 +317,7 @@ describe('PluginsTab', () => {
   })
 
   it('appends the subdir fragment for multi-plugin repos', async () => {
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
 
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -309,21 +339,23 @@ describe('PluginsTab', () => {
 
 describe('PluginsTab catalog UX', () => {
   beforeEach(() => {
+    backendPlugins = []
     $agentPlugins.set([])
-    $agentPluginsStatus.set('ready')
+    $agentPluginsStatus.set('idle')
     closePluginInstallRequest()
-    requestGateway.mockClear()
+    requestGateway.mockReset()
+    requestGateway.mockImplementation(async () => ({ plugins: backendPlugins }))
     setPaneHeightOverride('capabilities-plugin-catalog', undefined)
   })
 
   afterEach(cleanup)
 
-  it('grows the catalog when its top-edge sash is dragged up, and resets on double-click', () => {
+  it('grows the catalog when its top-edge sash is dragged up, and resets on double-click', async () => {
     // jsdom has no layout: give the Capabilities column a real height so the
     // "never crush the lists above" clamp has something to clamp against.
     const clientHeight = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(900)
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 1000 })
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
     const sash = screen.getByTestId('plugin-catalog-sash')
 
     fireEvent.pointerDown(sash, { button: 0, clientY: 600 })
@@ -338,8 +370,8 @@ describe('PluginsTab catalog UX', () => {
     clientHeight.mockRestore()
   })
 
-  it('shows an Update chip when the catalog pin moved past the installed SHA', () => {
-    $agentPlugins.set([
+  it('shows an Update chip when the catalog pin moved past the installed SHA', async () => {
+    seedAgentPlugins([
       {
         catalog_name: 'demo-weather',
         catalog_sha: 'b'.repeat(40),
@@ -355,13 +387,13 @@ describe('PluginsTab catalog UX', () => {
       }
     ])
 
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
 
     expect(screen.getByRole('button', { name: `Update to ${'b'.repeat(8)}` })).toBeTruthy()
   })
 
   it('re-pins through plugins.manage update when the chip is clicked', async () => {
-    $agentPlugins.set([
+    seedAgentPlugins([
       {
         catalog_name: 'demo-weather',
         catalog_sha: 'b'.repeat(40),
@@ -376,9 +408,13 @@ describe('PluginsTab catalog UX', () => {
         version: '1.0.0'
       }
     ])
-    requestGateway.mockResolvedValue({ ok: true, unchanged: false, plugins: [] } as never)
+    requestGateway.mockImplementation(async (_method, params) =>
+      (params as { action: string }).action === 'update'
+        ? ({ ok: true, unchanged: false } as never)
+        : { plugins: backendPlugins }
+    )
 
-    render(<PluginsTab profile="workbot" />)
+    await renderTab(<PluginsTab profile="workbot" />)
 
     screen.getByRole('button', { name: `Update to ${'b'.repeat(8)}` }).click()
 
@@ -391,7 +427,7 @@ describe('PluginsTab catalog UX', () => {
   })
 
   it('refuses a catalog pick that is already installed and current', async () => {
-    $agentPlugins.set([
+    seedAgentPlugins([
       {
         catalog_name: 'demo-weather',
         description: '',
@@ -405,7 +441,7 @@ describe('PluginsTab catalog UX', () => {
       }
     ])
 
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
 
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -424,7 +460,7 @@ describe('PluginsTab catalog UX', () => {
   })
 
   it('still opens the modal for an installed pick when an update is available', async () => {
-    $agentPlugins.set([
+    seedAgentPlugins([
       {
         catalog_name: 'demo-weather',
         description: '',
@@ -438,7 +474,7 @@ describe('PluginsTab catalog UX', () => {
       }
     ])
 
-    render(<PluginsTab profile={null} />)
+    await renderTab(<PluginsTab profile={null} />)
 
     window.dispatchEvent(
       new MessageEvent('message', {

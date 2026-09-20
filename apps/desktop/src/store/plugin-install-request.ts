@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { captureOwner, type OwnerScope, type ProfileScope } from '@/api/client'
+
 /** Which plugin component(s) a legacy deeplink pre-selects after probe. */
 export type PluginInstallLegacyHint = 'agent' | 'desktop' | null
 
@@ -15,15 +17,20 @@ export interface PluginInstallRequest {
   catalogName?: string
   /** The catalog pin (display only — the backend resolves it itself). */
   sha?: string
-  /** Capabilities profile scope the pick was made under; the agent half
-   *  installs into THIS profile (null/undefined = active profile). */
-  profile?: string | null
+  /** Scope the pick was made under; resolved to an owner when the request opens, not when it completes. */
+  profile?: ProfileScope
+  /** Where the install was started from, so a finished install can return there. */
+  origin?: { kind: 'memory'; providerId: string }
 }
 
-export const $pluginInstallRequest = atom<PluginInstallRequest | null>(null)
+export interface CapturedPluginInstallRequest extends Omit<PluginInstallRequest, 'profile'> {
+  target: OwnerScope
+}
 
-export function openPluginInstallRequest(request: PluginInstallRequest): void {
-  $pluginInstallRequest.set(request)
+export const $pluginInstallRequest = atom<CapturedPluginInstallRequest | null>(null)
+
+export function openPluginInstallRequest({ profile, ...request }: PluginInstallRequest): void {
+  $pluginInstallRequest.set({ ...request, target: captureOwner(profile) })
 }
 
 export function closePluginInstallRequest(): void {

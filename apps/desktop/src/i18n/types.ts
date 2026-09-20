@@ -59,6 +59,57 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  memoryProviders: {
+    oauth: {
+      connect: string
+      reconnect: string
+      viaOAuth: string
+      apiKeySet: string
+      connected: string
+      checking: string
+      waiting: string
+      stopWaiting: string
+      retryCheck: string
+      checkFailed: string
+      failed: string
+      timeout: string
+    }
+    title: string
+    newSessions: string
+    active: string
+    inspect: string
+    use: string
+    ready: string
+    needsConfig: string
+    missing: string
+    unavailable: string
+    unknown: string
+    builtin: string
+    builtinDescription: string
+    loadFailed: string
+    configLoadFailed: string
+    retry: string
+    loading: string
+    configLoading: string
+    noSettings: string
+    upgrade: string
+    partialUpdatesUnsupported: string
+    fullFormRequired: string
+    nativeSetup: string
+    save: string
+    saveFailed: string
+    saved: string
+    fullConfig: string
+    other: string
+    configDescription: string
+    reference: string
+    selectionFailed: string
+    explore: string
+    repair: string
+    keepSecret: string
+    secretSet: string
+    about: string
+  }
   connectors: {
     title: string
     connect: string
@@ -513,6 +564,7 @@ export interface Translations {
         probeUnavailable: string
         desktopUnavailable: string
         selectComponent: string
+        memoryNotListed: (providerId: string, targetLabel: string) => string
         agentSuccess: (name: string) => string
         desktopSuccess: (name: string) => string
         agentFailed: string

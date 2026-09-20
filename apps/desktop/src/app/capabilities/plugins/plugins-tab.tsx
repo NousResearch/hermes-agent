@@ -9,7 +9,6 @@ import {
   useState
 } from 'react'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
@@ -27,7 +26,6 @@ import {
   $agentPluginsError,
   $agentPluginsStatus,
   type AgentPluginRow,
-  type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   toggleAgentPlugin,
@@ -79,7 +77,7 @@ interface PluginPickMessage {
  *  Accepts the agent key, the agent name, or the desktop record id. */
 export const pluginElementId = (target: string) => `plugin-${target}`
 
-/** Derive the bare profile name a `plugins.manage` call should target. */
+/** Bare profile name for display; requests keep the full scope and its connection pin. */
 function profileParam(scope: ProfileScope): null | string {
   if (!scope) {
     return null
@@ -116,17 +114,17 @@ async function revealPluginsDir() {
 
 /** Copy any changed unified desktop halves into the app root FIRST, then
  *  rescan the root — a concurrent scan would read the pre-copy state. */
-async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
+async function rescanAll(scope: ProfileScope) {
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
-  await loadAgentPlugins(requestGateway, scope)
+  await loadAgentPlugins(scope)
 }
 
 /** Open the dual-target install modal pre-filled to install ONLY the agent
  *  half of a unified package into the scoped profile (the desktop half is
  *  already here). Provenance comes from the package marker Electron stamped
  *  when it copied the half out (catalog sidecar or git remote). */
-function installAgentHalfHere(record: PluginRecord, profile: null | string) {
+function installAgentHalfHere(record: PluginRecord, profile: ProfileScope) {
   const origin = record.packageOrigin
 
   if (!origin?.repo) {
@@ -224,7 +222,7 @@ function PackageRow({
   onAgentUpdate
 }: {
   pkg: PluginPackage
-  scope: null | string
+  scope: ProfileScope
   scopeLabel: string
   busy: boolean
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
@@ -379,7 +377,6 @@ export const PluginsTab = memo(function PluginsTab({
   const { t } = useI18n()
   const p = t.skills.plugins
   const d = t.settings.plugins
-  const { requestGateway } = useGatewayRequest()
 
   const desktopRecords = useStore($pluginRecords)
   const agentRows = useStore($agentPlugins)
@@ -391,8 +388,8 @@ export const PluginsTab = memo(function PluginsTab({
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
-    void loadAgentPlugins(requestGateway, scope)
-  }, [requestGateway, scope])
+    void loadAgentPlugins(profile)
+  }, [profile])
 
   const packages = useMemo(
     () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
@@ -468,7 +465,7 @@ export const PluginsTab = memo(function PluginsTab({
 
       openPluginInstallRequest({
         catalogName: String(data.name),
-        profile: scope,
+        profile,
         repo: data.subdir ? `${String(data.repo)}#${String(data.subdir)}` : String(data.repo),
         sha: data.sha ? String(data.sha) : undefined
       })
@@ -477,7 +474,7 @@ export const PluginsTab = memo(function PluginsTab({
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [open, p, scope])
+  }, [open, p, profile])
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
 
@@ -492,7 +489,7 @@ export const PluginsTab = memo(function PluginsTab({
           </p>
           <div className="flex shrink-0 items-center gap-1">
             <Button
-              onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
+              onClick={() => openPluginInstallRequest({ profile, repo: '' })}
               size="sm"
               type="button"
               variant="secondary"
@@ -515,7 +512,7 @@ export const PluginsTab = memo(function PluginsTab({
                 aria-label={d.rescan}
                 onClick={() => {
                   triggerHaptic('selection')
-                  void rescanAll(requestGateway, scope)
+                  void rescanAll(profile)
                 }}
                 size="icon"
                 type="button"
@@ -530,7 +527,7 @@ export const PluginsTab = memo(function PluginsTab({
         {status === 'error' ? (
           <PanelEmpty
             action={
-              <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
+              <Button onClick={() => void loadAgentPlugins(profile)} size="sm">
                 {t.skills.refresh}
               </Button>
             }
@@ -572,18 +569,18 @@ export const PluginsTab = memo(function PluginsTab({
                     return
                   }
 
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+                  void toggleAgentPlugin(row.key, enable, p.toggleFailed(row.name), profile)
                 }}
                 onAgentUpdate={row => {
-                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
+                  void updateAgentPlugin(row.name, p.updateFailed(row.name), profile).then(applied => {
                     if (applied) {
                       notify({ kind: 'success', message: p.updated(row.name) })
-                      void rescanAll(requestGateway, scope)
+                      void rescanAll(profile)
                     }
                   })
                 }}
                 pkg={pkg}
-                scope={scope}
+                scope={profile}
                 scopeLabel={label}
               />
             ))}

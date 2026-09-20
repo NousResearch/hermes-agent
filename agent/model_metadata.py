@@ -367,10 +367,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
     # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
+    # 5.3-flashx 1,048,576 (2026-09-20; its own key, else the shorter 5.3-flash entry wins by substring);
     # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
     # The OpenRouter :free variant is capped; the longer key wins.
     "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
-    "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576,
+    "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576, "glm-5.3-flashx": 1_048_576,
     "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
     "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
     "glm-4.7-flash": 202752, "glm-4.7": 204_800, "glm-4.6v": 131072, "glm-4.6": 204_800, "glm": 202752,

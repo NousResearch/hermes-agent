@@ -277,6 +277,7 @@ class EventBridge:
         self._pending_approvals: Dict[str, dict] = {}  # populated from events
         self._state_db_mtime: float = 0.0  # skip polling work when state.db is unchanged
         self._cached_sessions_index: dict = {}
+        self._baseline_established = False
 
     def start(self):
         """Start the background polling thread."""
@@ -287,6 +288,7 @@ class EventBridge:
         # in _poll_once, so new-conversation delivery is preserved.
         # Unit tests that drive _poll_once directly bypass start() and still observe first-poll delivery.
         # See #13414.
+        self._baseline_established = False
         self._establish_baseline()
         self._running = True
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
@@ -350,12 +352,19 @@ class EventBridge:
                 self._queue.pop(0)
         self._new_event.set()
 
-    def _establish_baseline(self) -> None:
+    def _establish_baseline(self, db=None) -> None:
         """Record per-session latest timestamps and the state.db mtime WITHOUT
         emitting events. Only sessions existing now are baselined; later ones
-        default to last_seen=0.0 in _poll_once, so their first message is delivered."""
-        db = _get_session_db()
-        if not db:
+        default to last_seen=0.0 in _poll_once, so their first message is delivered.
+
+        When a handle is supplied, it remains owned by the polling loop. This
+        lets late SessionDB recovery baseline against the handle that just
+        became available without opening and closing a second handle.
+        """
+        owns_db = db is None
+        if owns_db:
+            db = _get_session_db()
+        if db is None:
             return
         try:
             self._state_db_mtime = _read_state_db_mtime()
@@ -373,8 +382,10 @@ class EventBridge:
                     continue
                 if latest > 0.0:
                     self._last_poll_timestamps[session_key] = latest
+            self._baseline_established = True
         finally:
-            _close_quietly(db, "baseline")
+            if owns_db:
+                _close_quietly(db, "baseline")
 
     def _poll_loop(self):
         """Background loop: poll SessionDB for new messages.
@@ -393,12 +404,14 @@ class EventBridge:
                         now = time.monotonic()
                         if last_warning_at is None or now - last_warning_at >= 30.0:
                             logger.warning(
-                                "EventBridge: SessionDB unavailable, retrying every %.1fs",
+                                "EventBridge: SessionDB unavailable, retrying at the %.1fs poll interval",
                                 POLL_INTERVAL,
                             )
                             last_warning_at = now
                         time.sleep(POLL_INTERVAL)
                         continue
+                    if not self._baseline_established:
+                        self._establish_baseline(db)
                 try:
                     self._poll_once(db)
                 except Exception as e:

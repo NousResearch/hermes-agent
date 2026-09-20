@@ -92,7 +92,7 @@ def read(f, item, **overrides):
         "event_id": "share-1", "purpose": "viewer", **overrides})
 
 
-def test_installed_methods_and_metadata_do_not_advertise_receiver(legacy_files, monkeypatch):
+def test_local_delivery_capability_does_not_advertise_http_receiver(legacy_files, monkeypatch):
     from tui_gateway import methods_groups
 
     f = legacy_files
@@ -100,11 +100,13 @@ def test_installed_methods_and_metadata_do_not_advertise_receiver(legacy_files, 
     assert names <= f.server._methods.keys()
     assert names <= methods_groups.LONG_HANDLERS <= f.server._LONG_HANDLERS
     monkeypatch.setattr(f.server, "_room_link_run_storage_durable", lambda: True)
+    monkeypatch.setattr('gateway.hosted_room_peer.gateway_room_grant_secret', lambda: b'fixture-secret' * 3)
     result = f.server._methods["groups.capabilities"](1, {})["result"]
     assert names <= set(result["methods"])
     assert {"attachment_ids", "attachment_metadata_catalog"} <= set(result["features"])
-    assert "attachment_same_gateway_delivery" not in result["features"]
-    assert not result.get("room_link", {}).get("catalog", {}).get("attachments", False)
+    assert "attachment_same_gateway_delivery" in result["features"]
+    assert result['room_link']['catalog']['attachments'] is False
+    assert result['driver'] is False
 
 
 @pytest.mark.parametrize("method", ["put", "read", "list"])

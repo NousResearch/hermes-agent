@@ -243,7 +243,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
             "log_replication", "authority_takeover",
-            "attachment_ids", "attachment_metadata_catalog"],
+            "attachment_ids", "attachment_metadata_catalog", "attachment_same_gateway_delivery"],
         "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
 
 
@@ -422,7 +422,8 @@ def _(rid, params: dict, service) -> dict:
         execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id=str(
             params.get("cancellation_scope_id") or f"cancel-{params.get('room_id') or ''}"),
-        trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"), grant=grant)
+        trace_id=str(params.get("trace_id") or f"trace-{os.urandom(16).hex()}"), grant=grant,
+        attachments=catalog.attachments)
     service.register_peer_route(
         room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
         catalog=catalog)

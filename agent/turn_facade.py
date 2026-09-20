@@ -218,3 +218,4 @@ class TurnFacadeMixin:
         return self.run_conversation(message, stream_callback=stream_callback)["final_response"]
 
     _run_codex_app_server_turn = _forward("agent.codex_runtime", "run_codex_app_server_turn")
+    _run_antigravity_turn = _forward("agent.antigravity_runtime", "run_antigravity_turn")

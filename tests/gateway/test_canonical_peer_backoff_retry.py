@@ -22,7 +22,7 @@ from hermes_state_runtime import begin_runtime_epoch
 from tui_gateway.hosted_room_driver import HostedRoomRuntime
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
-from tests.tui_gateway.test_hosted_room_peer_backoff_progress import LocalRPC, Peer
+from tests.gateway.peer_retry_fixtures import LocalRPC, Peer
 
 
 class Target(Peer):

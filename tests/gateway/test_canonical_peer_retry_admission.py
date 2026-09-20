@@ -18,7 +18,7 @@ from gateway.session_hosted_service import CanonicalHostedRoomService
 from tests.gateway.test_canonical_peer_backoff_retry import (
     case, current, healthy, rpc, selector, tick,
 )
-from tests.tui_gateway.test_hosted_room_peer_backoff_progress import LocalRPC
+from tests.gateway.peer_retry_fixtures import LocalRPC
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 
 

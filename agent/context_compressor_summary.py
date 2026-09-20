@@ -31,7 +31,19 @@ class SummaryDispatchMixin:
         self, messages: List[Dict[str, Any]], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",
         focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,
     ) -> Optional[str]:
-        """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first."""
+        """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first.
+        A deterministic pin (repeated stall, #112420) skips the LLM: ``None`` lets Phase 3 insert the static
+        fallback summary, or abort under ``abort_on_summary_failure`` exactly like a failed summary call."""
+        from agent.context_compressor import take_deterministic_summary_pin
+        if take_deterministic_summary_pin():
+            # Surfaces through the fallback summary's reason line and the host's one-shot user warning.
+            self._last_summary_error = (
+                "summary model stalled on every route; deterministic fallback summary inserted"
+            )
+            telemetry = getattr(self, "_active_compression_telemetry", None)
+            if isinstance(telemetry, dict):
+                telemetry["failure_class"] = "stall_deterministic_fallback"
+            return None
         # Focus-topic derivation scans user turns; only pay when a summary is generated.
         summary_kwargs: Dict[str, Any] = {
             "focus_topic": focus_topic or self._derive_auto_focus_topic(messages),

@@ -152,6 +152,16 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
         lines.append(f"Context usage: {mark}{context_used:,} tokens")
     if usage.get("compressions"):
         lines.append(f"Compressions: {int(usage.get('compressions') or 0):,}")
+    if (agent := session.get("agent")) is not None:
+        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        # RPC thread: bind the session cwd or the discovery walk keys on the backend's cwd, not the workspace.
+        tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
+        try:
+            file_lines = render_context_file_lines(context_file_sources_for_agent(agent))
+        finally:
+            _clear_session_context(tokens)
+        if file_lines:
+            lines += [""] + file_lines
     return "\n".join(lines)
 
 
@@ -245,11 +255,18 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
     ``here [N]`` / ``--keep N``). CompressionLockHeld is a clean no-op (skip note returned);
     other errors propagate to the caller, which finalizes the context-engine notification."""
     from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.conversation_compression_manual import (
+        AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
     with session["history_lock"]:
         before_messages = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
+    request = parse_compress_args(arg)
+    if request.aggressive:
+        return AGGRESSIVE_UNSUPPORTED
+    if request.preview:  # report only — history, agent and session key untouched
+        return "\n".join(render_compress_result(compress_now(agent, before_messages, request)))
     sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
     tools = getattr(agent, "tools", None) or None
 
@@ -369,7 +386,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if _session_uses_compute_host(session):
             return _compute_host_slash(sid, session, name, command)[1]
         if session.get("running"):
-            return f"session busy — /interrupt the current turn before running /{name}"
+            return busy_message(name)
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:

@@ -1,7 +1,10 @@
 """URL safety checks — blocks requests to private/internal network addresses (SSRF).
 
 ``security.allow_private_urls: true`` disables private-IP blocking (DNS that resolves public
-names to private ranges); cloud metadata hostnames/IPs are **always** blocked. DNS rebinding
+names to private ranges); cloud metadata hostnames/IPs are **always** blocked. A local TUN proxy
+that answers DNS with a fake-ip block (Mihomo/Clash fake-ip, Surge enhanced) declares that block
+in ``security.fake_ip_ranges`` so its sentinel answers are dialable instead of looking private;
+the list is empty by default, so the sentinel stays blocked for everyone else. DNS rebinding
 (TOCTOU) is closed for Hermes-owned httpx paths by ``create_ssrf_safe_[async_]client()``, which
 re-apply the policy at TCP connect and dial the validated IP while preserving Host/SNI. Redirect
 bypass is mitigated by response hooks re-validating each target (``redirect_target_from_response``).
@@ -118,8 +121,19 @@ _MAX_SSRF_CONNECT_IPS = 8
 # ipaddress — must be blocked explicitly (Tailscale/WireGuard, cloud internal nets).
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
+# none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
+# so an entry overlapping one of these (including 0.0.0.0/0 and ::/0) would make real internal
+# hosts dialable. Such entries are dropped with a warning instead.
+_FAKE_IP_UNDECLARABLE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/32", "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",  # unspecified/loopback/RFC 1918
+    "169.254.0.0/16", "100.64.0.0/10",  # link-local, CGNAT
+    "::/128", "::1/128", "fc00::/7", "fe80::/10",  # unspecified, loopback, ULA, link-local
+))
+
 # Global toggle cache (process lifetime; see _global_allow_private_urls).
 _allow_private_resolved, _cached_allow_private = False, False
+_fake_ip_resolved, _cached_fake_ip_ranges = False, ()
 
 
 def _global_allow_private_urls() -> bool:
@@ -155,9 +169,52 @@ def _resolve_allow_private_urls() -> bool:
 
 
 def _reset_allow_private_cache() -> None:
-    """Reset the cached toggle — only for tests."""
-    global _allow_private_resolved, _cached_allow_private
-    _allow_private_resolved = _cached_allow_private = False
+    """Reset the cached toggle and the cached fake-ip ranges — only for tests."""
+    global _allow_private_resolved, _cached_allow_private, _fake_ip_resolved, _cached_fake_ip_ranges
+    _allow_private_resolved = _cached_allow_private = _fake_ip_resolved = False
+    _cached_fake_ip_ranges = ()
+
+
+def _resolve_fake_ip_ranges() -> tuple:
+    """CIDR blocks this host's local proxy answers DNS with (``security.fake_ip_ranges``).
+
+    A TUN proxy in fake-ip mode answers every non-filtered name with an address from its own
+    block; that answer is the proxy's sentinel, not an internal host's, so treating it as a
+    private target blocks every outbound fetch on such a host (web_extract, platform attachment
+    downloads, the browser relay). Empty by default: no host gets the exemption unless it
+    declares one, and the sentinel range keeps the ordinary private-address verdict otherwise.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        block = read_raw_config().get("security", {})
+        raw = block.get("fake_ip_ranges") if isinstance(block, dict) else None
+    except Exception:
+        return ()  # config unavailable (tests, early import) — keep the secure default
+    entries = [raw] if isinstance(raw, str) else raw if isinstance(raw, (list, tuple)) else ()
+    networks = []
+    for entry in entries:
+        try:
+            net = ipaddress.ip_network(str(entry).strip(), strict=False)
+        except ValueError:
+            logger.warning("Ignoring unparseable security.fake_ip_ranges entry: %r", entry)
+            continue
+        clash = next((r for r in _FAKE_IP_UNDECLARABLE_NETWORKS if r.version == net.version and net.overlaps(r)), None)
+        if clash is not None:
+            logger.warning("Ignoring security.fake_ip_ranges entry %r: it overlaps %s, which stays blocked", entry, clash)
+            continue
+        networks.append(net)
+    return tuple(networks)
+
+
+def _global_fake_ip_ranges() -> tuple:
+    """Process-lifetime cache with the same profile-scope bypass as ``_global_allow_private_urls``:
+    a multiplex gateway must not apply the first profile's declaration to later ones."""
+    global _fake_ip_resolved, _cached_fake_ip_ranges
+    if get_hermes_home_override() is not None:
+        return _resolve_fake_ip_ranges()
+    if not _fake_ip_resolved:
+        _fake_ip_resolved, _cached_fake_ip_ranges = True, _resolve_fake_ip_ranges()
+    return _cached_fake_ip_ranges
 
 
 def _normalize_hostname(host: Optional[str]) -> str:
@@ -187,6 +244,15 @@ def _getaddrinfo(hostname: str, port: Optional[int] = None):
 
 def _is_always_blocked_ip(ip: _IPAddress) -> bool:
     return ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS)
+
+
+def _is_declared_fake_ip(ip: _IPAddress) -> bool:
+    """True when *ip* falls in a block declared in ``security.fake_ip_ranges``. The dial still goes
+    to the local proxy, which resolves and connects to the real target, so a declared block grants
+    no reach an attacker lacks through the proxy's own DNS; undeclared ranges keep the private verdict."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in _global_fake_ip_ranges())
 
 
 def _is_blocked_ip(ip: _IPAddress) -> bool:
@@ -247,7 +313,7 @@ def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[s
     ignores ``allow_private``; ordinary private/internal classes are blocked only when it is False."""
     if _is_always_blocked_ip(ip):
         return "cloud metadata address"
-    if not allow_private and _is_blocked_ip(ip):
+    if not allow_private and _is_blocked_ip(ip) and not _is_declared_fake_ip(ip):
         return "private/internal address"
     return None
 

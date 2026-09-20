@@ -23,7 +23,7 @@ def _tool(name: str, parameters: dict) -> dict:
 def test_object_without_properties_gets_empty_properties():
     tools = [_tool("t", {"type": "object"})]
     out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}, "required": []}
 
 
 def test_nested_object_without_properties_gets_empty_properties():
@@ -130,20 +130,20 @@ def test_anyof_nested_objects_sanitized():
     })]
     out = sanitize_tool_schemas(tools)
     variants = out[0]["function"]["parameters"]["properties"]["opt"]["anyOf"]
-    assert variants[0] == {"type": "object", "properties": {}}
+    assert variants[0] == {"type": "object", "properties": {}, "required": []}
     assert variants[1] == {"type": "string"}
 
 
 def test_missing_parameters_gets_default_object_schema():
     tools = [{"type": "function", "function": {"name": "t"}}]
     out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}, "required": []}
 
 
 def test_non_dict_parameters_gets_default_object_schema():
     tools = [_tool("t", "object")]  # pathological
     out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}, "required": []}
 
 
 def test_required_pruned_to_existing_properties():
@@ -154,6 +154,20 @@ def test_required_pruned_to_existing_properties():
     })]
     out = sanitize_tool_schemas(tools)
     assert out[0]["function"]["parameters"]["required"] == ["name"]
+
+
+def test_empty_required_key_survives_sanitization():
+    """A ``required`` list that is empty (or emptied by pruning) is kept as ``[]`` — strict
+    OpenAI-compatible proxies read a missing key as ``null`` and 400 the whole request."""
+    declared_empty = _tool("t", {"type": "object", "properties": {}, "required": []})
+    all_pruned = _tool("u", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["missing_field"],
+    })
+    out = sanitize_tool_schemas([declared_empty, all_pruned])
+    assert out[0]["function"]["parameters"]["required"] == []
+    assert out[1]["function"]["parameters"]["required"] == []
 
 
 def test_well_formed_schema_unchanged():
@@ -182,7 +196,7 @@ def test_additional_properties_schema_sanitized():
     })]
     out = sanitize_tool_schemas(tools)
     field = out[0]["function"]["parameters"]["properties"]["dict_field"]
-    assert field["additionalProperties"] == {"type": "object", "properties": {}}
+    assert field["additionalProperties"] == {"type": "object", "properties": {}, "required": []}
 
 
 def test_items_sanitized_in_array_schema():
@@ -197,7 +211,7 @@ def test_items_sanitized_in_array_schema():
     })]
     out = sanitize_tool_schemas(tools)
     items = out[0]["function"]["parameters"]["properties"]["bag"]["items"]
-    assert items == {"type": "object", "properties": {}}
+    assert items == {"type": "object", "properties": {}, "required": []}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -343,7 +357,7 @@ def test_dependent_schemas_still_recursively_sanitized():
     tools = [_tool("t", copy.deepcopy(schema))]
     out = sanitize_tool_schemas(tools)
     dep_schemas = out[0]["function"]["parameters"]["dependentSchemas"]
-    assert dep_schemas["owner"] == {"type": "object", "properties": {}}, (
+    assert dep_schemas["owner"] == {"type": "object", "properties": {}, "required": []}, (
         f"dependentSchemas['owner'] was not fully sanitized: {dep_schemas['owner']!r}"
     )
 
@@ -517,3 +531,18 @@ def test_collapse_is_deterministic():
     first = collapse_const_unions(copy.deepcopy(schema))
     second = collapse_const_unions(copy.deepcopy(schema))
     assert first == second == {"type": "string", "enum": ["b", "a"]}
+
+
+def test_builtin_tool_without_required_gets_empty_required_list():
+    """Object nodes that never had ``required`` are coerced to ``required: []`` (#56123):
+    strict OpenAI-compatible backends read a missing key as ``null`` and 400 the request."""
+    from tools.read_window_tool import READ_WINDOW_BELOW_SCHEMA
+
+    tools = [{"type": "function", "function": copy.deepcopy(READ_WINDOW_BELOW_SCHEMA)}]
+    params = sanitize_tool_schemas(tools)[0]["function"]["parameters"]
+    assert params["required"] == []
+    nested = sanitize_tool_schemas([_tool("t", {
+        "type": "object",
+        "properties": {"opts": {"type": "object", "properties": {"k": {"type": "string"}}}},
+    })])[0]["function"]["parameters"]
+    assert nested["properties"]["opts"]["required"] == []

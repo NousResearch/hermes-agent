@@ -4,7 +4,7 @@
  * the roster UI both read.
  */
 
-import { $botMeta, botFriendlyNames, botMetaKey, botRosterKey } from './data'
+import { $botMeta, botFriendlyNames, botHandle, botMetaKey, botRosterKey } from './data'
 import { $groupChats, groupChatRoomKey } from './group-chat'
 import { botConnectionRoute, botRosterMeta, resolveBotConnectionRoute } from './routing'
 import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
@@ -55,6 +55,42 @@ export function groupWorkspaceOwnerKey(group: string) {
  *  local `dixie` never share watermarks or sessions. */
 export function groupMemberKey(member: GroupMember): string {
   return member?.sourceScoped || member?.remoteSource ? botRosterKey(member) : member?.name
+}
+
+/** Marks a session key as thread-scoped. Pre-thread rooms stored ONE session
+ *  per member under the bare `groupMemberKey`, and a source-qualified member
+ *  key is itself `<connectionId>::<name>` — so the thread segment needs its
+ *  own literal prefix to stay distinguishable from both. */
+const GROUP_SESSION_THREAD_PREFIX = 'thread:'
+
+/** Identity of a member's hidden plumbing session INSIDE one thread. Threads
+ *  are separate conversations (own log slice, own watermarks — see
+ *  `${thread}::${memberKey}` in group-round-members), so they must not share
+ *  one backend transcript: thread B resuming thread A's session is how a
+ *  member answered B carrying A's context (#90420, #106460). */
+export function groupSessionKey(thread: string, member: GroupMember): string {
+  return `${GROUP_SESSION_THREAD_PREFIX}${thread || 'legacy'}::${groupMemberKey(member)}`
+}
+
+/** The member half of a session key. Bare keys are pre-thread rooms and are
+ *  their own member key; the sweep reads owners by member, not by thread. */
+export function groupSessionMemberKey(key: string): string {
+  if (!key.startsWith(GROUP_SESSION_THREAD_PREFIX)) {
+    return key
+  }
+
+  const rest = key.slice(GROUP_SESSION_THREAD_PREFIX.length)
+  const boundary = rest.indexOf('::')
+
+  return boundary === -1 ? rest : rest.slice(boundary + 2)
+}
+
+/** Whether this member already owns a thread-scoped session anywhere in the
+ *  room — i.e. the room has been through the pre-thread migration. */
+export function hasThreadScopedGroupSession(sessions: Record<string, unknown>, memberKey: string): boolean {
+  return Object.keys(sessions || {}).some(
+    key => key.startsWith(GROUP_SESSION_THREAD_PREFIX) && groupSessionMemberKey(key) === memberKey
+  )
 }
 
 /** Serializable immutable owner captured beside every group plumbing session. */
@@ -352,7 +388,7 @@ export function durableGroupChatMembers(bots: RosterRow[]): GroupMember[] {
 
     return {
       name: bot.name,
-      handle: bot.handle || bot.name,
+      handle: botHandle(bot.name, bot) || bot.handle || bot.name,
       ...(title
         ? {
             title

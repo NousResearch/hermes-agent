@@ -45,7 +45,7 @@ def _models_dev_supports_vision(provider: str, model: str, cfg: Optional[Dict[st
     """Raw models.dev capability lookup — fallback when ``agent.image_routing`` is unavailable."""
     from agent.models_dev import get_model_capabilities
     caps = get_model_capabilities(provider, model)
-    return None if caps is None else bool(getattr(caps, "supports_vision", False))
+    return None if caps is None else caps.supports_vision
 
 def _lookup_supports_vision(provider: str, model: str, cfg: Optional[Dict[str, Any]] = None) -> Optional[bool]:
     """Config/models.dev ``supports_vision`` for *(provider, model)*; prefers

@@ -268,7 +268,8 @@ def test_isolate_stops_after_failed_sterile_control_and_parser_modes_are_exclusi
     subparsers = parser.add_subparsers(dest="command")
     build_doctor_parser(subparsers, cmd_doctor=lambda args: None)
     assert parser.parse_args(["doctor", "--isolate", "--json"]).isolate is True
-    assert "up to seven minimal inference requests" in subparsers.choices["doctor"].format_help()
+    help_text = " ".join(subparsers.choices["doctor"].format_help().split())
+    assert "up to seven minimal inference requests" in help_text
     try:
         parser.parse_args(["doctor", "--isolate", "--runtime"])
     except SystemExit as exc:

@@ -2376,13 +2376,27 @@ def _probe_result(
         "used_fallback": used_fallback}
 
 
+def _normalize_model_catalog(data: Any) -> list[str]:
+    """Extract non-empty model IDs from OpenAI envelopes or bare model arrays."""
+    entries = data if isinstance(data, list) else data.get("data", []) if isinstance(data, dict) else []
+    if not isinstance(entries, list):
+        return []
+
+    model_ids: list[str] = []
+    for entry in entries:
+        model_id = entry if isinstance(entry, str) else entry.get("id") if isinstance(entry, dict) else None
+        if isinstance(model_id, str) and model_id.strip():
+            model_ids.append(model_id)
+    return model_ids
+
+
 def probe_api_models(
     api_key: Optional[str], base_url: Optional[str], timeout: float = 5.0,
     api_mode: Optional[str] = None, request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics (``base`` then ``base±/v1``).
     ``anthropic_messages`` mode sends ``x-api-key`` + ``anthropic-version`` instead of a bearer; the
-    ``data[].id`` response shape is identical. ``models`` is None when no candidate answered."""
+    ``data[].id`` and bare-array response shapes are accepted. ``models`` is None when no candidate answered."""
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")
@@ -2440,9 +2454,8 @@ def probe_api_models(
             continue
         if _neg_key is not None:
             _probe_neg_cache.pop(_neg_key, None)
-        model_entries = data if isinstance(data, list) else data.get("data", [])
         return _probe_result(
-            [m.get("id", "") for m in model_entries], url, candidate_base.rstrip("/"),
+            _normalize_model_catalog(data), url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
     if _neg_key is not None and not reachable:

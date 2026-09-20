@@ -184,6 +184,31 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "https://api.example.com/v1"
         assert probe["used_fallback"] is False
 
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            (b'["string-model", {"id": "object-model"}, null, {"id": ""}]', ["string-model", "object-model"]),
+            (b'{"data": null}', []),
+            (b'{"data": "not-a-list"}', []),
+            (b'{"unexpected": []}', []),
+        ],
+    )
+    def test_probe_api_models_normalizes_malformed_catalog_entries(self, payload, expected):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return payload
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+            probe = probe_api_models("key", "https://api.example.com/v1")
+
+        assert probe["models"] == expected
+
 
     def test_probe_api_models_tries_v1_fallback(self):
         class _Resp:

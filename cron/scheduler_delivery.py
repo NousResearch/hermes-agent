@@ -1665,10 +1665,14 @@ def _standalone_send(
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
-    def _send():
-        return _send_to_platform(
+    send_timeout = _get_standalone_send_timeout()
+
+    async def _send():
+        # The bound lives inside the coroutine: the running-loop fallback below closes ``coro``
+        # unstarted, and a wait_for wrapper created out here would be left never awaited.
+        return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+            media_files=media_files), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1688,9 +1692,8 @@ def _standalone_send(
     if not content.strip() and not media_files:
         return _warned(f"standalone send skipped (empty text and no media) for {t.where}")
     coro = _send()
-    send_timeout = _get_standalone_send_timeout()
     try:
-        return asyncio.run(asyncio.wait_for(coro, timeout=send_timeout)), None
+        return asyncio.run(coro), None
     except TimeoutError:
         # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
         # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).

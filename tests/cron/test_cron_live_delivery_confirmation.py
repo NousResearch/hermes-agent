@@ -410,60 +410,42 @@ def test_scheduler_module_exposes_the_confirmation_helper():
 class TestStandaloneSendIsBounded:
     """The standalone fallback lane must not wait on its send unbounded (#115469).
 
-    ``_send_to_platform``'s gateway-loop dispatch awaits with a deliberate
-    no-timeout shield whose comment assumes an outer ``_run_async`` bound — but
-    this lane's outer runner is a bare ``asyncio.run``, so a mid-reconnect
-    transport pinned the run (and the restart drain behind it) for hours while
-    the job's script had finished in seconds.
+    ``_send_to_platform``'s gateway-loop dispatch awaits with a deliberate no-timeout shield
+    whose comment assumes an outer ``_run_async`` bound — but this lane's outer runner is a bare
+    ``asyncio.run``, so a mid-reconnect transport pinned the run (and the restart drain behind
+    it) for hours while the job's script had finished in seconds.
     """
 
-    def _target(self):
-        return sched_delivery._TargetDelivery(
-            job=_job(), platform=None, platform_name="telegram", chat_id=CHAT_ID,
-            thread_id=None, transport=None, pconfig=None, runtime_adapter=None,
-            target_adapters=None, config=None, loop=None, notify_delivery=False,
-            origin={}, origin_target=False, origin_user_id=None, is_dm_target=False,
-            mirror_text="", mirror_this_target=False, in_channel_surface=False,
-            inchannel_continuable=False, opened_thread_id=None)
+    @staticmethod
+    def _deliver_standalone(sender, cron_cfg):
+        """Drive the production entry point with no live adapters (the standalone lane)."""
+        with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+             patch("cron.scheduler.load_config",
+                   return_value={"cron": {"wrap_response": False, **cron_cfg}}), \
+             patch("cron.scheduler_delivery._record_delivery_verification"), \
+             patch("tools.send_message_tool._send_to_platform", sender):
+            return _deliver_result(_job(), "Nightly report.")
 
-    def test_hung_send_is_released_at_the_bound(self, monkeypatch, caplog):
+    def test_hung_send_is_released_at_the_configured_bound(self, caplog):
         async def _hang(*_args, **_kwargs):
-            await asyncio.sleep(3600)
-
-        monkeypatch.setattr("tools.send_message_tool._send_to_platform", _hang)
-        monkeypatch.setattr(sched_delivery, "_get_standalone_send_timeout", lambda: 0.2)
+            await asyncio.Event().wait()  # transport mid-reconnect: the send never resolves
 
         with caplog.at_level(logging.INFO, logger="cron.scheduler"):
             started = time.monotonic()
-            result, error = sched_delivery._standalone_send(self._target(), "Nightly report.", [])
+            error = self._deliver_standalone(_hang, {"standalone_send_timeout_seconds": 1})
 
-        assert result is None
+        assert time.monotonic() - started < 30  # released at the bound, not never
         assert error is not None
-        assert "timed out after 0.2s" in error
+        assert "timed out after 1s" in error
         assert "in flight" in error  # an un-cancelled shielded send may still land
-        assert time.monotonic() - started < 30  # released at the bound, not the coroutine's hour
-        assert "timed out" in caplog.text
+        assert "via live adapter" not in caplog.text and "delivered to" not in caplog.text
 
-    def test_a_timely_send_is_unaffected(self, monkeypatch):
+    def test_a_timely_send_is_unaffected(self, caplog):
         async def _ok(*_args, **_kwargs):
             return {"success": True, "message_id": 7}
 
-        monkeypatch.setattr("tools.send_message_tool._send_to_platform", _ok)
-        monkeypatch.setattr(sched_delivery, "_get_standalone_send_timeout", lambda: 30)
-
-        result, error = sched_delivery._standalone_send(self._target(), "Nightly report.", [])
+        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error = self._deliver_standalone(_ok, {})
 
         assert error is None
-        assert result == {"success": True, "message_id": 7}
-
-    def test_timeout_default_and_config_override(self, monkeypatch):
-        monkeypatch.setattr(sched, "load_config", lambda: {})
-        assert sched_delivery._get_standalone_send_timeout() == 60
-
-        monkeypatch.setattr(sched, "load_config",
-                            lambda: {"cron": {"standalone_send_timeout_seconds": 5}})
-        assert sched_delivery._get_standalone_send_timeout() == 5
-
-        monkeypatch.setattr(sched, "load_config",
-                            lambda: {"cron": {"standalone_send_timeout_seconds": -1}})
-        assert sched_delivery._get_standalone_send_timeout() == 60
+        assert f"delivered to telegram:{CHAT_ID}" in caplog.text

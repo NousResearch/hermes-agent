@@ -176,10 +176,50 @@ _READ_OPEN_RETRY_SECONDS = 60.0
 _READ_ONLY_IOERR_RETRY_ATTEMPTS, _READ_ONLY_IOERR_RETRY_BACKOFF_S = 3, 0.05
 
 
+# Relocates state.db ALONE, leaving the rest of HERMES_HOME where it is. Same shape as
+# HERMES_OPTIONAL_SKILLS / HERMES_OPTIONAL_MCPS (hermes_constants._packaged_dir): an env var
+# that moves one relocatable thing off the home root. state.db is the member of the tree that
+# actually grows without bound — multi-GB on a long-lived install — so it is the one operators
+# want on a different volume from config, plugins and logs. Without this the only lever is a
+# filesystem symlink at <home>/state.db, which is invisible to every inventory and reads as
+# zero bytes to anything that stats the link instead of the target.
+_STATE_DB_PATH_ENV = "HERMES_STATE_DB"
+
+
+def _env_db_path_override() -> Optional[Path]:
+    """``HERMES_STATE_DB`` as a path, or None when unset/blank.
+
+    A value naming an existing directory, or ending in a separator, is treated as a CONTAINER and
+    gets ``state.db`` appended — so both ``/mnt/fast`` and ``/mnt/fast/state.db`` do the obvious
+    thing. Deliberately total: a malformed value yields None and the HERMES_HOME default applies,
+    because this resolves on the import path and must never be the reason a process cannot start.
+    """
+    raw = os.environ.get(_STATE_DB_PATH_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        candidate = Path(raw).expanduser()
+        if raw.endswith(("/", "\\")) or candidate.is_dir():
+            candidate = candidate / "state.db"
+        return candidate
+    except Exception:  # pragma: no cover - defensive; a bad env var must not break startup
+        logger.warning("%s is set but unusable (%r); falling back to HERMES_HOME", _STATE_DB_PATH_ENV, raw)
+        return None
+
+
 def _default_db_path() -> Path:
-    """Default state DB path at CALL time: a re-pointed ``DEFAULT_DB_PATH`` wins, else
-    ``get_hermes_home()`` is resolved fresh (a runtime HERMES_HOME redirect works regardless of import)."""
-    return DEFAULT_DB_PATH if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH else get_hermes_home() / "state.db"
+    """Default state DB path at CALL time: a re-pointed ``DEFAULT_DB_PATH`` wins, then
+    ``HERMES_STATE_DB``, else ``get_hermes_home()`` is resolved fresh (a runtime HERMES_HOME
+    redirect works regardless of import).
+
+    ``DEFAULT_DB_PATH`` stays ahead of the env var on purpose: tests monkeypatch that constant to
+    redirect the DB, and an inherited ``HERMES_STATE_DB`` in the environment must not silently
+    win over an explicit in-process redirect.
+    """
+    if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH:
+        return DEFAULT_DB_PATH
+    override = _env_db_path_override()
+    return override if override is not None else get_hermes_home() / "state.db"
 
 
 # Live-DB guard knobs live HERE (not in hermes_state_guard): the hermetic conftest monkeypatches

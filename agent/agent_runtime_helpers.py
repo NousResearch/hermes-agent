@@ -199,6 +199,9 @@ def _prepend_corruption_marker(tool_msg: dict, marker: str) -> None:
         except TypeError:
             existing = str(existing)
     tool_msg["content"] = f"{marker}\n{existing}" if existing else marker
+    # The tool result was rewritten in place; a stamped dict's persisted row is now stale.
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    tool_msg.pop(_DB_PERSISTED_MARKER, None)
 
 
 def _find_tool_result(messages: list, start: int, tool_call: dict) -> Optional[dict]:
@@ -240,6 +243,7 @@ def sanitize_tool_call_arguments(
     log = logger or logging.getLogger(__name__)
     if not isinstance(messages, list):
         return 0
+    from agent.context_compressor import _DB_PERSISTED_MARKER
     repaired = 0
     marker = _ra().AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
     message_index = _cursor_skip_prefix(messages, cursor)
@@ -257,6 +261,7 @@ def sanitize_tool_call_arguments(
             arguments = function.get("arguments")
             if arguments is None or (isinstance(arguments, str) and not arguments.strip()):
                 function["arguments"] = "{}"
+                msg.pop(_DB_PERSISTED_MARKER, None)
                 continue
             if not isinstance(arguments, str):
                 continue
@@ -278,6 +283,9 @@ def sanitize_tool_call_arguments(
                 function_name, arguments[:_FULL_ARGS_LOG_BOUND],
             )
             function["arguments"] = "{}"
+            # The persisted row for a stamped dict still holds the corrupted args; pop the
+            # marker so the flush rewrites it (the repaired args are what the wire saw).
+            msg.pop(_DB_PERSISTED_MARKER, None)
             existing_tool_msg = _find_tool_result(messages, message_index + 1, tool_call)
             if existing_tool_msg is None:
                 messages.insert(
@@ -371,10 +379,14 @@ def _is_codex_interim(m: Dict) -> bool:
 
 def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
     prev_calls = list(prev.get("tool_calls") or [])
     new_calls = list(msg.get("tool_calls") or [])
+    calls_changed = False
     if new_calls:
         prev["tool_calls"] = prev_calls + new_calls
+        calls_changed = True
     elif prev_calls:
         prev["tool_calls"] = prev_calls
     else:
@@ -389,6 +401,7 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
         # resume, subagents, cron) and is replayed on the next turn — which is how #58755 kept reproducing
         # after the chokepoint fix (#77921). Popping is non-destructive: an empty array carries no
         # information.
+        calls_changed = "tool_calls" in prev
         prev.pop("tool_calls", None)
     # Concatenate plain-text content only; leave multimodal (list) content alone.
     prev_content = prev.get("content")
@@ -406,8 +419,10 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
         content_rewritten = new_content != prev_content
     # Carry reasoning_content from the later turn only if the earlier lacks it (strict thinking
     # providers need one on the merged tool-call turn).
+    reasoning_carried = False
     if not prev.get("reasoning_content") and msg.get("reasoning_content"):
         prev["reasoning_content"] = msg["reasoning_content"]
+        reasoning_carried = True
     # A stale ``api_content`` sidecar overrides ``content`` at API-build time and would replay
     # pre-merge bytes; drop it only when content actually changed.
     # ``prev`` may carry an ``api_content`` sidecar (the exact bytes previously sent to the API, e.g. a
@@ -424,6 +439,11 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     # invariant for no reason (wz-heng, #78063 review).
     if content_rewritten:
         drop_stale_api_content(prev)
+    # The persist marker asserts the whole row is durable (content, tool_calls, reasoning sidecar), so
+    # any merged field stales it; pop it or the flush scan identity-skips the merged dict and the DB
+    # keeps the pre-merge row. The caller recomputes the flush cursor for the surviving sequence.
+    if content_rewritten or calls_changed or reasoning_carried:
+        prev.pop(_DB_PERSISTED_MARKER, None)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -494,6 +514,8 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
     """Pass 2: prune tool_calls not answered in the IMMEDIATELY following tool run (a displaced
     result masks the per-call stub pass and strict providers 400). Payload-empty turns are
     dropped; codex interims exempt."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
     repairs = 0
     pruned: List[Dict] = []
     for i, msg in enumerate(messages):
@@ -520,13 +542,16 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
                 msg["tool_calls"] = kept_calls
             else:
                 msg.pop("tool_calls", None)
+            # tool_calls is part of the persisted row; rewriting it on a stamped dict stales the
+            # marker, so pop it or the flush scan skips the dict and the DB keeps the old calls.
+            msg.pop(_DB_PERSISTED_MARKER, None)
         pruned.append(msg)
     return pruned, repairs
 
 
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
-    from agent.context_compressor import split_user_originated_turn
+    from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
 
     repairs = 0
     merged: List[Dict] = []
@@ -545,11 +570,17 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
-            prev["content"] = (
+            merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )
+            had_api_sidecar = "api_content" in prev
+            prev["content"] = merged_content
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
+            # Pop the persist marker only when the durable row actually changed: a merge that
+            # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
+            if merged_content != prev_content or had_api_sidecar:
+                prev.pop(_DB_PERSISTED_MARKER, None)
             repairs += 1
             continue
         merged.append(msg)
@@ -587,14 +618,25 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
     """Run :func:`repair_message_sequence` and keep ``_last_flushed_db_idx`` consistent. Repair
     shrinks the list in place; counting identity-preserved survivors of the flushed prefix gives
     the exact new cursor, whereas a ``min()`` clamp would skip unflushed rows (used only without a snapshot)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
     flush_cursor = getattr(agent, "_last_flushed_db_idx", None)
     flushed_ids = {id(m) for m in messages[:flush_cursor]} if isinstance(flush_cursor, int) and flush_cursor > 0 else None
+    stamped_ids = {id(m) for m in messages if isinstance(m, dict) and m.get(_DB_PERSISTED_MARKER)}
     repairs = repair_message_sequence(agent, messages)
-    if repairs > 0 and hasattr(agent, "_last_flushed_db_idx"):
-        if flushed_ids is not None:
-            agent._last_flushed_db_idx = sum(1 for m in messages if id(m) in flushed_ids)
-        else:
-            agent._last_flushed_db_idx = min(agent._last_flushed_db_idx, len(messages))
+    if repairs > 0:
+        # A stamped survivor that lost its marker was mutated in place by a merge/prune pass; the
+        # bounded flush scan would skip past it inside the identity-matched prefix, so force a
+        # full re-scan (same contract as the compressor's _flush_scan_cursor_invalidated).
+        if stamped_ids and any(
+            id(m) in stamped_ids and not m.get(_DB_PERSISTED_MARKER) for m in messages
+        ):
+            agent._db_flush_scan_prefix = None
+        if hasattr(agent, "_last_flushed_db_idx"):
+            if flushed_ids is not None:
+                agent._last_flushed_db_idx = sum(1 for m in messages if id(m) in flushed_ids)
+            else:
+                agent._last_flushed_db_idx = min(agent._last_flushed_db_idx, len(messages))
     return repairs
 
 

@@ -290,3 +290,32 @@ class TestApiMessagesAndApiKwargsSanitized:
         assert _sanitize_messages_non_ascii(messages) is True
         assert "\xab" not in messages[1]["reasoning"]
         assert "\xbb" not in messages[1]["reasoning"]
+
+
+class TestSanitizeMessagesPersistMarker:
+    """In-place surrogate/non-ASCII repair of a stamped live dict must pop
+    _DB_PERSISTED_MARKER, or the flush scan skips it and session.db keeps the
+    corrupt bytes while the live transcript holds the repaired ones."""
+
+    def test_surrogate_repair_pops_marker(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        msg = {"role": "user", "content": "test \ud800 end", _DB_PERSISTED_MARKER: True}
+        assert _sanitize_messages_surrogates([msg]) is True
+        assert "\ud800" not in msg["content"]
+        assert _DB_PERSISTED_MARKER not in msg
+
+    def test_non_ascii_repair_pops_marker(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        msg = {"role": "user", "content": "café", _DB_PERSISTED_MARKER: True}
+        assert _sanitize_messages_non_ascii([msg]) is True
+        assert msg["content"] != "café"
+        assert _DB_PERSISTED_MARKER not in msg
+
+    def test_unchanged_dict_keeps_marker(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        msg = {"role": "user", "content": "clean ascii", _DB_PERSISTED_MARKER: True}
+        assert _sanitize_messages_non_ascii([msg]) is False
+        assert msg[_DB_PERSISTED_MARKER] is True

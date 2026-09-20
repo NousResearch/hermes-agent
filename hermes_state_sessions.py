@@ -1639,6 +1639,18 @@ class SessionSessionsMixin:
             self.set_session_archived(row["id"], True)
         return len(rows)
 
+    def unarchive_sessions(
+        self, older_than_days: Optional[float] = None, source: str = None, **filters,
+    ) -> int:
+        """Exact inverse of :meth:`archive_sessions`: unhide the archived sessions matching the same
+        filter surface, via set_session_archived so each lineage flips as a unit; idempotent (only
+        already-archived rows are candidates, so a repeat run is a no-op). Unlike archive's, this
+        candidate set is not restricted to ended sessions — see :meth:`list_archived_candidates`."""
+        rows = self.list_archived_candidates(older_than_days=older_than_days, source=source, **filters)
+        for row in rows:
+            self.set_session_archived(row["id"], False)
+        return len(rows)
+
     def maybe_auto_archive(
         self, idle_days: float = 3, min_interval_hours: int = 24, exclude_pinned: bool = True,
     ) -> Dict[str, Any]:

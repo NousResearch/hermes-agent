@@ -699,6 +699,55 @@ def _cmd_prune_or_archive(db, args, action):
               "but fully recoverable (nothing was deleted).")
 
 
+_ARCHIVED_NO_FILTERS = "no filters (all archived sessions)"
+
+
+def _cmd_unarchive(db, args):
+    """Inverse of ``archive``: unhide the archived sessions matching the same filter surface.
+
+    Unlike ``archive`` this may run with no filters at all — un-hiding is non-destructive and
+    recovering everything an auto-archive sweep retired is the point of the command; the preview +
+    confirmation is the safety net. The candidate path is also not ended-only (auto-archive can
+    retire an open session) and includes pinned rows, so nothing can be hidden with no way back.
+    """
+    from hermes_cli.session_filters import build_prune_filters, describe_filters, format_epoch
+    try:
+        filters = build_prune_filters(args)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return 1
+    filters["archived"] = True
+    filters["include_pinned"] = True
+    described = describe_filters(filters, fallback=_ARCHIVED_NO_FILTERS)
+    candidates = db.list_archived_candidates(**filters)
+    if not candidates:
+        print(f"No archived sessions match ({described}).")
+        return
+    # Candidates are oldest-activity-first; show the span so a long-lived but recently used
+    # conversation cannot look old merely by creation date.
+    _span = (
+        f"oldest activity {format_epoch(candidates[0].get('last_active'))}, "
+        f"newest activity {format_epoch(candidates[-1].get('last_active'))}"
+    )
+    if args.dry_run or not args.yes:
+        shown = candidates if args.dry_run else candidates[:15]
+        print(f"{len(candidates)} archived session(s) match ({described}; {_span}):")
+        for s in shown:
+            model = (s.get("model") or "-").split("/")[-1][:24]
+            print(f"  {s['id']}  {format_epoch(s.get('last_active')):<17} {s['source']:<10} {model:<24} "
+                  f"{s['message_count']:>4} msgs  {(s.get('title') or '')[:36]}")
+        if len(candidates) > len(shown):
+            print(f"  … and {len(candidates) - len(shown)} more")
+        if args.dry_run:
+            print("Dry run — nothing unarchived.")
+            return
+    if not args.yes and not _confirm_prompt(f"Unarchive these {len(candidates)} session(s) ({_span})? [y/N] "):
+        print("Cancelled.")
+        return
+    print(f"Unarchived {db.unarchive_sessions(**filters)} session(s). They're visible in listings "
+          "again — only the hidden flag changed, nothing was deleted.")
+
+
 # -- titles / pins -----------------------------------------------------------
 
 def _cmd_rename(db, args):
@@ -976,7 +1025,8 @@ _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
-    "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
+    "archive": partial(_cmd_prune_or_archive, action="archive"), "unarchive": _cmd_unarchive,
+    "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "stats": _cmd_stats,

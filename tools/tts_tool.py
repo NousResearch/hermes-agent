@@ -43,7 +43,8 @@ from tools.tts_tool_delivery import (
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
-from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
+from tools.tts_tool_local import (
+    _generate_kittentts, _generate_kokoro, _generate_neutts, _generate_piper_tts)
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
@@ -75,6 +76,7 @@ _import_mistral_client = _sdk_importer("mistralai.client", "Mistral", feature="t
 _import_sounddevice = _sdk_importer("sounddevice")
 _import_kittentts = _sdk_importer("kittentts", "KittenTTS")
 _import_piper = _sdk_importer("piper", "PiperVoice")  # piper-tts wheels embed espeak-ng
+_import_kokoro = _sdk_importer("kokoro", "KPipeline", feature="tts.kokoro")  # pulls misaki phonemizer + torch
 
 
 def _importable(importer: Callable[[], Any]) -> bool:
@@ -158,7 +160,7 @@ _MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[`'\"]|[a-z]:[/\\]|~?/)"
 
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
-_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
+_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper", "kokoro"})
 
 
 # --- Built-in provider dispatch ---
@@ -187,7 +189,11 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
     "piper": (lambda: _importable(_import_piper), "Piper (local)", "_generate_piper_tts",
               "Piper provider selected but 'piper-tts' package not installed. "
               "Run 'hermes tools' and select Piper under TTS, or install manually: "
-              "pip install piper-tts")}
+              "pip install piper-tts"),
+    "kokoro": (lambda: _importable(_import_kokoro), "Kokoro (local, ~82M)", "_generate_kokoro",
+               "Kokoro provider selected but 'kokoro' package not installed. "
+               "Run 'hermes tools' and select Kokoro under TTS, or install manually: "
+               "pip install kokoro")}
 
 
 def _error_json(message: str) -> str:

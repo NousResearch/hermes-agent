@@ -55,6 +55,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "kokoro": 5000,       # local 82M model; G2P degrades on very long sentences
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -238,7 +239,10 @@ def _finalize_wav_output(wav_path: str, output_path: str) -> str:
     if not ffmpeg:
         os.rename(wav_path, output_path)
         return output_path
-    _ffmpeg_run(ffmpeg, ["-i", wav_path, "-y", "-loglevel", "error", output_path],
+    # Explicit 128k MP3: without -b:a, ffmpeg's MP3 default is 32k CBR, which lands as
+    # mechanical-IVR audio (root cause of the 2026-08-25 "robotic" report).
+    _ffmpeg_run(ffmpeg, ["-i", wav_path, "-y", "-loglevel", "error",
+                         "-codec:a", "libmp3lame", "-b:a", "128k", output_path],
                 check=True, capture=False)
     _remove_quietly(wav_path)
     return output_path

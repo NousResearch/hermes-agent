@@ -70,6 +70,13 @@ def _install_kittentts_deps() -> bool:
         "kittentts", ["-U", wheel_url, "soundfile", "--quiet"], f"uv pip install -U '{wheel_url}' soundfile")
 
 
+def _install_kokoro_deps() -> bool:
+    """Install Kokoro TTS dependencies with user approval. Returns True on success."""
+    _setup._info(None, "Installing kokoro Python package (82M model + voices downloaded on first use)...", None)
+    return _pip_install_tts_package("kokoro", ["-U", "kokoro", "soundfile", "--quiet"],
+                                    "uv pip install -U kokoro soundfile")
+
+
 def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are stored locally, so TTS/STT setup can skip the
     API-key prompt for users who logged in via ``hermes model`` -> xAI Grok OAuth."""
@@ -115,7 +122,8 @@ _TTS_PROVIDER_CHOICES = [
     ("mistral", "Mistral Voxtral TTS (multilingual, native Opus, needs API key)"),
     ("gemini", "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)"),
     ("neutts", "NeuTTS (local on-device, free, ~300MB model download)"),
-    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)")]
+    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)"),
+    ("kokoro", "Kokoro (local on-device, free, 82M model, 54 voices, 8 languages)")]
 # Short label = menu label minus its parenthetical ("Edge TTS", "Mistral Voxtral TTS", ...).
 _TTS_PROVIDER_LABELS = {key: label.split(" (")[0] for key, label in _TTS_PROVIDER_CHOICES}
 # provider -> (env vars that satisfy it, env var to save, prompt, success line, pre-prompt hint)
@@ -140,7 +148,12 @@ _TTS_LOCAL_PROVIDERS = {
     "kittentts": ("kittentts", "KittenTTS",
                   ("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).",
                    "Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo"),
-                  "Install KittenTTS now?", _install_kittentts_deps)}
+                  "Install KittenTTS now?", _install_kittentts_deps),
+    "kokoro": ("kokoro", "Kokoro",
+               ("Kokoro is a local 82M-parameter neural TTS (Apache-2.0, no API key required).",
+                "Runs on GPU when available; 54 voices across 8 languages (model ~82MB + voices ~1MB each, downloaded on first use).",
+                "Voices: af_heart, am_michael (US), bf_emma, bm_daniel (British), ff_siwis (French), jf_alpha (Japanese), ..."),
+               "Install Kokoro now?", _install_kokoro_deps)}
 
 
 def _tts_api_key_step(selected: str) -> str:

@@ -1092,6 +1092,13 @@ DEFAULT_CONFIG = {
             "model": "KittenML/kitten-tts-nano-0.8-int8",  # nano 25MB; micro 41MB; mini 80MB
             "voice": "Jasper",
         },
+        "kokoro": {
+            "model": "hexgrad/Kokoro-82M",  # 82M params, Apache-2.0; first use downloads from HF
+            "voice": "af_heart",  # voice = <lang><gender>_<name>: af_*/am_* American, bf_*/bm_* British,
+                                  # ef_*/em_* Spanish, ff_* French, if_* Italian, hf_*/hm_* Hindi,
+                                  # jf_*/jm_* Japanese, pf_*/pm_* Portuguese, zf_*/zm_* Chinese
+            "speed": 1.0,  # 0.5 - 2.0
+        },
         "neutts": {
             "ref_audio": "",  # path to reference voice audio (empty = bundled default)
             "ref_text": "",   # path to reference voice transcript (empty = bundled default)

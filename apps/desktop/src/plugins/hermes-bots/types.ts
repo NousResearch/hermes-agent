@@ -203,6 +203,11 @@ export interface GroupChat {
   /** A member turn this Desktop is not (or no longer) polling: the message-count baseline to
    *  harvest its late reply from. `turn` names the poll that owns it while that poll runs. */
   stranded?: Record<string, number | { before: number; thread?: string; turn?: string }>
+  /** #93813: how far each member's external-write reconcile sweep has read
+   *  into that member's per-group session transcript (absolute row index of
+   *  the last mirrored row + 1). Persisted so external posts aren't rescanned
+   *  (or re-mirrored) after a window restart. */
+  externalCursors?: Record<string, number>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean

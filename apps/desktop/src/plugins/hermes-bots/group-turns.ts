@@ -12,6 +12,7 @@ import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import { mirrorExternalGroupWrites } from './group-external-writes'
 import {
   followGroupChat,
   groupMemberAuthor,
@@ -1042,6 +1043,7 @@ async function prepareGroupTurnBaseline(
   // turn the gateway still retains from before it.
   let before = 0
   let leftover: null | string = null
+  let snapshot: GroupSessionSnapshot | null = null
   // Every runtime id this turn has seen for the member's session. Terminal
   // frames are keyed by runtime id, and a resume can hand back a fresh one.
   const runtimeIds = new Set<string>([runtime])
@@ -1052,6 +1054,7 @@ async function prepareGroupTurnBaseline(
       profile: member.name
     })) as GroupSessionSnapshot
 
+    snapshot = pre
     before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
     leftover = retainedGroupTurnError(pre) === null ? null : JSON.stringify(pre.inflight)
 
@@ -1062,7 +1065,7 @@ async function prepareGroupTurnBaseline(
     /* lazy session — zero messages */
   }
 
-  return { before, leftover, runtimeIds }
+  return { before, leftover, runtimeIds, snapshot }
 }
 
 async function runGroupChatMemberTurnLeased(
@@ -1092,7 +1095,16 @@ async function runGroupChatMemberTurnLeased(
       thread
     })
 
-    const { before, leftover, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
+    const { before, leftover, runtimeIds, snapshot } = await prepareGroupTurnBaseline(member, runtime, stored)
+
+    if (!binding.isLive()) {
+      return null
+    }
+
+    // #93813: rows other writers put in this session since the last look
+    // (CLI resume, cron, tools) join the room log before this turn's own
+    // prompt lands after them.
+    mirrorExternalGroupWrites(group, member, thread, snapshot?.messages)
 
     const { failed, fileRefs } = await stageGroupTurnAttachments(member, runtime, images)
 
@@ -1277,6 +1289,10 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         return r
       })
     }
+
+    // #93813: whatever else reached the session while the turn was stranded
+    // follows the late reply into the room.
+    mirrorExternalGroupWrites(group, member, strandedThread, messages)
   } finally {
     binding.dispose()
   }

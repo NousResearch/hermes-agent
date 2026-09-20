@@ -54,6 +54,9 @@ const ROUTED_MEMBER: GroupMember = { connectionId: 'mini', name: 'helper', remot
 const IMG: Attachment = { data: 'data:image/png;base64,iVBORw0KGgo=', kind: 'image', name: 'shot.png' }
 
 const log = (room: Room, group: string) => room.chat.$groupChats.get()[group]?.log || []
+// The room engine opens every turn prompt with this header (group-round-prompt.ts);
+// a user row without it is an outside write and gets mirrored into the room log.
+const roomPrompt = (group: string) => `[Group chat: "${group}"] You are @member, one participant in a group chat.`
 
 beforeEach(() => {
   runTimersInline()
@@ -1137,7 +1140,7 @@ describe('in-flight marker', () => {
     })
     room.gateway.sessions.set('sid-mini-helper', {
       messages: [
-        { content: 'the turn prompt', role: 'user' },
+        { content: roomPrompt('Fleet'), role: 'user' },
         { content: 'Finished on the mini after the Desktop went away.', role: 'assistant' }
       ],
       profile: 'helper',
@@ -1203,7 +1206,7 @@ describe('stranded harvest', () => {
     })
     // The member's session finished after we stopped waiting.
     seedSession(room, 'sid-research', 'research', 'Group: Late', [
-      ['user', 'the turn prompt'],
+      ['user', roomPrompt('Late')],
       ['assistant', 'Here is the full research result, delivered late.']
     ])
 
@@ -1228,7 +1231,7 @@ describe('stranded harvest', () => {
       return current
     })
     seedSession(room, 'sid-research', 'research', 'Group: Rescue', [
-      ['user', 'the turn prompt'],
+      ['user', roomPrompt('Rescue')],
       ['assistant', 'Here is the full research result, delivered late.'],
       [
         'user',
@@ -1287,8 +1290,8 @@ describe('stranded harvest', () => {
       return current
     })
     seedSession(room, 'sid-builder', 'builder', 'Group: Quiet2', [
-      ['user', 'p1'],
-      ['user', 'prompt'],
+      ['user', roomPrompt('Quiet2')],
+      ['user', roomPrompt('Quiet2')],
       ['assistant', '(pass)']
     ])
 
@@ -1314,7 +1317,7 @@ describe('stranded harvest', () => {
 
       return current
     })
-    seedSession(room, 'sid-builder', 'builder', 'Group: Dead', [['user', 'p1']])
+    seedSession(room, 'sid-builder', 'builder', 'Group: Dead', [['user', roomPrompt('Dead')]])
     const requestProfile = host.requestProfile as (...args: unknown[]) => Promise<Record<string, unknown>>
 
     host.requestProfile = async (...args: unknown[]) => ({

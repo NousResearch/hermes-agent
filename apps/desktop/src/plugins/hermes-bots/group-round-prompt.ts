@@ -141,6 +141,10 @@ interface GroupChatTurnPromptInput {
   viewer: GroupMember
 }
 
+/** Opens every room-fed turn prompt; group-external-writes.ts tells the room's
+ *  own prompts apart from outside writes by it. */
+export const GROUP_PROMPT_HEADER_PREFIX = '[Group chat: "'
+
 /** The full per-turn payload for one member: participation rules + the room
  *  delta. Rules travel in the turn payload (not SOUL) so every existing bot
  *  can join a group chat without a profile migration. */
@@ -157,7 +161,7 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
     .join(', ')
 
   return [
-    `[Group chat: "${groupName}"] You are @${botMentionTag(viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
+    `${GROUP_PROMPT_HEADER_PREFIX}${groupName}"] You are @${botMentionTag(viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
     '',
     'New messages in the room since your last turn (oldest first):',
     ...deltaLines.map(line => `  ${line}`),

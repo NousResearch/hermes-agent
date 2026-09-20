@@ -76,6 +76,15 @@ async def test_room_scan_resumes_interruption_and_revisits_late_terminal(tmp_pat
         assert first['highwater'] < final['highwater']
         assert not final['pending']
         assert max(sizes) <= scan_module.BUDGET and len(sizes) > 1
+        # Inventory-only terminal states: isolate the scan refusal from the
+        # existing active-task/output guards (not execution settlement evidence).
+        authority.db._execute_write(lambda c: c.execute("UPDATE hosted_room_driver_tasks SET status='settled'"))
+        with authority.db._read_ctx() as conn, pytest.raises(RuntimeStoreError, match='output_cleanup_pending'):
+            require_room_retired(conn, 'room')
+        for _ in range(3):
+            service._prepare_terminal_tasks(room)
+        with authority.db._read_ctx() as conn:
+            require_room_retired(conn, 'room')
         authority.db._execute_write(lambda c: c.execute('DROP TRIGGER hosted_task_scan_update'))
         changes = authority.db._conn.total_changes
         with authority.db._read_ctx() as conn, pytest.raises(RuntimeStoreError, match='storage_unavailable'):

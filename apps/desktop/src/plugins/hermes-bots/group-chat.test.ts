@@ -1043,6 +1043,54 @@ describe('room identity', () => {
     expect(merged.New.sessions?.research).toBe('sid-9')
     expect(merged.Old).toBeUndefined()
   })
+
+  it('keeps a same-name recreate that landed inside the disband sync window', async () => {
+    const { chat } = await loadRoom()
+
+    // Disband Core, recreate Core with a fresh roomId before the disband's
+    // job flushes. The read-back merge still carries deletedRooms:['Core']:
+    // it must hide the remote copy of the OLD room without dropping the
+    // live recreate, while a runtime-only tombstone under that name is gone.
+    const remote = {
+      rooms: {
+        'id:old-room': {
+          log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'old question', thread: 'thread-old' }],
+          name: 'Core',
+          revision: 2,
+          roomId: 'old-room'
+        }
+      },
+      version: 3
+    }
+
+    const recreate = {
+      log: [{ at: 5, from: { kind: 'member', name: 'research' }, text: '@user replacement needs you', thread: 'legacy' }],
+      roomId: 'new-room',
+      sessions: {},
+      tombstone: false,
+      watermarks: {}
+    }
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      remote as never,
+      { Core: recreate } as unknown as Record<string, GroupChat>,
+      { deletedRooms: ['Core'] }
+    )
+
+    expect(merged.Core).toEqual(recreate)
+
+    const swept = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      remote as never,
+      { Core: { epoch: 2, log: [], running: false, sessions: {}, tombstone: true, watermarks: {} } } as unknown as Record<
+        string,
+        GroupChat
+      >,
+      { deletedRooms: ['Core'] }
+    )
+
+    expect(swept.Core).toBeUndefined()
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(remote as never, {}, { deletedRooms: ['Core'] }).Core).toBeUndefined()
+  })
 })
 
 describe('sync worker', () => {

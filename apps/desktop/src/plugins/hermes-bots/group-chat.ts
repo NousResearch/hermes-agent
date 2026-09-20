@@ -681,6 +681,19 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   const preserved = new Set(preserveRooms)
   const locallyDeleted = new Set(deletedRooms)
 
+  // deletedRooms names a pending local disband. It must hide the REMOTE copy
+  // of that room, but a live local record under the same name is newer than
+  // the disband (the disband itself leaves nothing, or only the flagged
+  // runtime tombstone, under that name): a same-name recreate that landed
+  // inside the sync window. Only the disbanded record itself may be dropped.
+  const dropLocallyDeleted = (name: null | string | undefined) => {
+    if (!name || (rooms[name] && !rooms[name].tombstone)) {
+      return
+    }
+
+    delete rooms[name]
+  }
+
   // Local rooms indexed by durable identity so an id-keyed projection room
   // finds its local twin even when the display name changed remotely.
   const localByRoomId = new Map<string, string>()
@@ -716,11 +729,8 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
         continue
       }
 
-      delete rooms[displayName]
-
-      if (localName) {
-        delete rooms[localName]
-      }
+      dropLocallyDeleted(displayName)
+      dropLocallyDeleted(localName)
 
       continue
     }
@@ -848,7 +858,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   }
 
   for (const name of locallyDeleted) {
-    delete rooms[name]
+    dropLocallyDeleted(name)
   }
 
   return rooms

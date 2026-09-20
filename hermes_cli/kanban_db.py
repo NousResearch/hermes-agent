@@ -322,8 +322,8 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
 
 
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
-_CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
-_CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
+_CTX_MAX_PRIOR_ATTEMPTS = 1       # most recent N prior runs shown (first line each)
+_CTX_MAX_COMMENTS       = 12      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
@@ -3947,7 +3947,10 @@ def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
 
 def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
     """Closed runs on this task (the active run is this worker), newest
-    ``_CTX_MAX_PRIOR_ATTEMPTS`` in full, older ones as a one-line marker."""
+    ``_CTX_MAX_PRIOR_ATTEMPTS`` as a one-line marker each (first line of the
+    summary), older ones omitted. Keeps the essential signal (that prior runs
+    happened and their outcome) without re-sending full summaries the worker
+    rarely reads."""
     all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
     shown, omitted_note = _ctx_tail(all_prior, _CTX_MAX_PRIOR_ATTEMPTS, "attempt")
     if not shown:
@@ -3959,16 +3962,12 @@ def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str
     for offset, run in enumerate(shown):
         profile = run.profile or "(unknown)"
         outcome = run.outcome or run.status
+        first = _first_line(run.summary, 200) or "(no summary)"
         lines.append(
-            f"### Attempt {first_shown_idx + offset} — {outcome} ({profile}, {_ctx_stamp(run.started_at, now)})"
+            f"### Attempt {first_shown_idx + offset} — {outcome} ({profile}, {_ctx_stamp(run.started_at, now)}): {first}"
         )
-        if run.summary and run.summary.strip():
-            lines.append(_ctx_cap(run.summary))
         if run.error and run.error.strip():
             lines.append(f"_error_: {_ctx_cap(run.error)}")
-        meta_line = _ctx_metadata_line(run.metadata)
-        if meta_line:
-            lines.append(meta_line)
         lines.append("")
 
 

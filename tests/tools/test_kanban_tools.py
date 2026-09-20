@@ -78,7 +78,11 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert d["task"]["id"] == worker_env
     assert d["task"]["status"] == "running"
     assert "worker_context" in d
-    assert "runs" in d
+    # Body/comments/runs are delivered once, in worker_context (the single
+    # source), not duplicated as structured fields.
+    assert "runs" not in d
+    assert "comments" not in d
+    assert d["worker_context"].startswith("# Kanban task")
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

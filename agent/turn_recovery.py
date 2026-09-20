@@ -1600,7 +1600,7 @@ def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bo
         return False
     agent._buffer_diagnostic_status(
         _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))
-    return bool(agent._try_activate_fallback(reason=classified.reason))
+    return bool(agent._try_activate_fallback(reason=classified.reason, error_context=classified.error_context))
 
 
 def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context: Any, classified: Any = None) -> bool:
@@ -1778,7 +1778,7 @@ def route_classified_error(
         )
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
-            if agent._try_activate_fallback(reason=classified.reason):
+            if agent._try_activate_fallback(reason=classified.reason, error_context=classified.error_context):
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:

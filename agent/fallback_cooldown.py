@@ -1,7 +1,9 @@
 """Primary rate-limit cooldown arming and per-session model rejection markers, shared by the
 fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
 import logging
+import math
 import time
+from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
 
@@ -10,10 +12,17 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
 
 
-def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | None:
+def _arm_rate_limit_cooldown(
+    agent, reason: "FailoverReason | None",
+    reset_at: Any = None, error_context: Optional[Dict[str, Any]] = None,
+) -> int | None:
     """Arm the primary's exponential cooldown (60s → 2m → ... → 4h cap) on CONSECUTIVE rate-limits;
     restore_primary_runtime resets the counter. Only when leaving the primary: chain-switching from
     an active fallback means the primary was not the 429 source, so its cooldown is left alone.
+    When the provider states its own reset window — ``reset_at`` (epoch seconds/milliseconds or
+    ISO-8601, from ``error_context["reset_at"]`` / ``extract_api_error_context``, #117484) — that
+    measured window is benched instead of the exponential guess; the ramp stays the fallback for
+    providers that say nothing. Never shortens an already-armed longer window.
     Return the armed cooldown in seconds, or None when no cooldown was armed."""
     if reason not in _RATE_LIMIT_FAILOVER_REASONS:
         return None
@@ -21,11 +30,26 @@ def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | No
     primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
     if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
         return None
-    backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
-    agent._rate_limit_backoff_count = backoff_count + 1
-    backoff_seconds = min(60 * (2 ** backoff_count), 14400)
-    agent._rate_limited_until = time.monotonic() + backoff_seconds
-    logging.info("Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)", backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1)
+    now = time.monotonic()
+    raw_reset = reset_at if reset_at is not None else (error_context or {}).get("reset_at")
+    reset_epoch = None
+    if raw_reset is not None:
+        from agent.credential_pool import _parse_absolute_timestamp
+        reset_epoch = _parse_absolute_timestamp(raw_reset)
+    backoff_seconds: int | None = None
+    if reset_epoch is not None:
+        stated = reset_epoch - time.time()
+        if stated > 0:
+            backoff_seconds = min(int(math.ceil(stated)), 14400)
+    if backoff_seconds is None:
+        backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
+        backoff_seconds = min(60 * (2 ** backoff_count), 14400)
+        agent._rate_limit_backoff_count = backoff_count + 1
+    armed_until = now + backoff_seconds
+    if armed_until <= getattr(agent, "_rate_limited_until", 0) or 0:
+        return int(getattr(agent, "_rate_limited_until", 0) - now) or backoff_seconds
+    agent._rate_limited_until = armed_until
+    logging.info("Rate-limit backoff: cooldown %d s (%.1f min)", backoff_seconds, backoff_seconds / 60)
     return backoff_seconds
 
 

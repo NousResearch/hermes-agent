@@ -1992,12 +1992,17 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+def try_activate_fallback(
+    agent, reason: "FailoverReason | None" = None, error_context: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
-    construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    construction goes through resolve_provider_client (no duplicated provider→key mappings).
+    ``error_context`` (the turn's ``extract_api_error_context``) carries the provider's own
+    rate-limit ``reset_at`` when it states one — benched verbatim instead of the exponential
+    guess (#117484)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
-    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
+    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, error_context=error_context)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)

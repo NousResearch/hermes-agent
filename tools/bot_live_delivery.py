@@ -17,7 +17,7 @@ from contextlib import contextmanager
 
 from utils import atomic_json_write, atomic_write_text, fsync_directory
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from hermes_cli.active_sessions import _FileLock
 
@@ -295,3 +295,52 @@ def complete_delivery(
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
     return _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
+
+
+_PENDING = ("queued", "claimed")
+_POLL_SECONDS = 0.5
+
+
+def await_delivery(
+    profile_home: Path | str, delivery_id: str, timeout: float | None,
+    *, should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any] | None:
+    """Poll a receipt until the owner settles it, ``timeout`` lapses, or ``should_stop`` says so.
+
+    Every transport that hands a turn to a live Bot Chat owner (local ``message_agent``, the
+    Desktop relay, ``hermes peer dm`` and ``hermes peer run``) waits on the same receipt; keeping
+    the loop here is what stops the lanes drifting (one lane returned a receipt sentence instead
+    of the reply, two never waited at all). Returns the last record read — still pending when the
+    budget lapsed, None when the receipt was never readable.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        record = read_delivery_result(profile_home, delivery_id)
+        if record is None or record["status"] not in _PENDING:
+            return record
+        if should_stop is not None and should_stop():
+            return record
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            return record
+        time.sleep(_POLL_SECONDS if remaining is None else min(_POLL_SECONDS, remaining))
+
+
+async def await_delivery_async(
+    profile_home: Path | str, delivery_id: str, timeout: float | None,
+    *, should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any] | None:
+    """``await_delivery`` for an event loop: never blocks a worker thread for the whole budget."""
+    import asyncio
+
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        record = await asyncio.to_thread(read_delivery_result, profile_home, delivery_id)
+        if record is None or record["status"] not in _PENDING:
+            return record
+        if should_stop is not None and should_stop():
+            return record
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            return record
+        await asyncio.sleep(_POLL_SECONDS if remaining is None else min(_POLL_SECONDS, remaining))

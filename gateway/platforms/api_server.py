@@ -3249,19 +3249,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                                code=record.get("reason") or record["status"], headers=headers)
 
     async def _await_live_bot_chat_receipt(self, home: Path, record: Dict[str, Any], *, keepalive=None) -> Dict[str, Any]:
-        """Poll the owner's mailbox record until it settles or the local DM budget runs out; ``keepalive``
-        (async) is called every SSE keepalive interval so a streaming caller's proxy keeps the socket."""
-        from tools.bot_live_delivery import read_delivery_result
+        """Wait on the owner's mailbox record through the shared ``await_delivery_async`` primitive until it
+        settles or the local DM budget runs out; ``keepalive`` (async) is called every SSE keepalive interval
+        so a streaming caller's proxy keeps the socket."""
+        from tools.bot_live_delivery import await_delivery_async
         from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
         delivery_id = record["delivery_id"]
         deadline = time.monotonic() + _LIVE_WAIT_SECONDS
-        next_keepalive = time.monotonic() + CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS
-        while record["status"] in ("queued", "claimed") and time.monotonic() < deadline:
-            await asyncio.sleep(0.5)
-            record = await asyncio.to_thread(read_delivery_result, home, delivery_id) or record
-            if keepalive is not None and time.monotonic() >= next_keepalive:
+        while record["status"] in ("queued", "claimed"):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            budget = remaining if keepalive is None else min(remaining, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
+            record = await await_delivery_async(home, delivery_id, budget) or record
+            if keepalive is not None and record["status"] in ("queued", "claimed"):
                 await keepalive()
-                next_keepalive = time.monotonic() + CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS
         return record
 
     async def _stream_through_live_bot_chat(self, request: "web.Request", ctx: Dict[str, Any]) -> Optional["web.StreamResponse"]:

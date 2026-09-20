@@ -2,17 +2,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const focusOpenSession = vi.fn()
 const openSessionTile = vi.fn()
+const replaceSessionTile = vi.fn()
 const reuseBlankDraftTile = vi.fn()
 const setSessionTileWorkspaceScope = vi.fn()
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
+const focusedSessionIsTileGet = vi.fn(() => false)
+const focusedStoredSessionIdGet = vi.fn<() => string | null>(() => null)
 
 vi.mock('@/store/session-states', () => ({
+  $focusedSessionIsTile: { get: () => focusedSessionIsTileGet() },
+  $focusedStoredSessionId: { get: () => focusedStoredSessionIdGet() },
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
     !focused || (focused === 'main' && workspaceIsPage),
   focusOpenSession: (...args: unknown[]) => focusOpenSession(...args),
   openSessionTile: (...args: unknown[]) => openSessionTile(...args),
+  replaceSessionTile: (...args: unknown[]) => replaceSessionTile(...args),
   reuseBlankDraftTile: (...args: unknown[]) => reuseBlankDraftTile(...args),
   setSessionTileWorkspaceScope: (...args: unknown[]) => setSessionTileWorkspaceScope(...args)
 }))
@@ -87,9 +93,12 @@ describe('openSession', () => {
     navigate.mockClear()
     focusOpenSession.mockReset()
     openSessionTile.mockReset()
+    replaceSessionTile.mockReset()
     openSessionInNewWindow.mockReset()
     canOpenSessionWindow.mockReturnValue(true)
     workspaceIsPageGet.mockReturnValue(false)
+    focusedSessionIsTileGet.mockReturnValue(false)
+    focusedStoredSessionIdGet.mockReturnValue(null)
     reuseBlankDraftTile.mockReset()
     setSessionTileWorkspaceScope.mockReset()
     $activeSessionId.set(null)
@@ -235,5 +244,49 @@ describe('openSession', () => {
     openSession('', navigate)
     expect(navigate).not.toHaveBeenCalled()
     expect(focusOpenSession).not.toHaveBeenCalled()
+  })
+
+  describe('active-tab intent', () => {
+    it('focuses an existing open session instead of replacing', () => {
+      focusOpenSession.mockReturnValue('tile')
+      openSession('s1', navigate, 'active-tab')
+      expect(focusOpenSession).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
+      expect(replaceSessionTile).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('replaces the focused session tile when a tile is focused', () => {
+      focusOpenSession.mockReturnValue(null)
+      focusedSessionIsTileGet.mockReturnValue(true)
+      focusedStoredSessionIdGet.mockReturnValue('tile-1')
+      replaceSessionTile.mockReturnValue(true)
+
+      openSession('s1', navigate, 'active-tab')
+
+      expect(replaceSessionTile).toHaveBeenCalledWith('tile-1', 's1', { workspaceMode: 'sessions' })
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('replaces an explicitly specified target tile id', () => {
+      focusOpenSession.mockReturnValue(null)
+      focusedSessionIsTileGet.mockReturnValue(false)
+      replaceSessionTile.mockReturnValue(true)
+
+      openSession('s1', navigate, 'active-tab', undefined, 'explicit-tile')
+
+      expect(replaceSessionTile).toHaveBeenCalledWith('explicit-tile', 's1', { workspaceMode: 'sessions' })
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('routes into main when no tile is focused', () => {
+      focusOpenSession.mockReturnValue(null)
+      focusedSessionIsTileGet.mockReturnValue(false)
+      focusedStoredSessionIdGet.mockReturnValue(null)
+
+      openSession('s1', navigate, 'active-tab')
+
+      expect(replaceSessionTile).not.toHaveBeenCalled()
+      expect(navigate).toHaveBeenCalledWith('/c/s1')
+    })
   })
 })

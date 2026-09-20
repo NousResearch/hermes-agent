@@ -21,6 +21,7 @@ import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
+import { $readingWidth, type ReadingWidth, setReadingWidth } from '@/store/reading-width'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
@@ -414,6 +415,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
+  const readingWidth = useStore($readingWidth)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
@@ -707,6 +709,59 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               title={a.tabStripTitle}
             />
           )}
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setReadingWidth(id as ReadingWidth)
+                }}
+                options={[
+                  { id: 'comfortable', label: 'Comfortable' },
+                  { id: 'wide', label: 'Wide' }
+                ]}
+                value={readingWidth}
+              />
+            }
+            description="Choose a comfortable reading column or use the full available width."
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.readingWidth)}
+            title="Reading width"
+          />
+
+          <ChatFontSetting />
+
+          <TerminalFontSetting />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setSessionListDensity(id)
+                }}
+                options={sessionDensityOptions}
+                value={sessionListDensity}
+              />
+            }
+            description={a.sessionDensityDesc}
+            title={a.sessionDensityTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTabStripDefault(id)
+                }}
+                options={tabStripOptions}
+                value={tabStripDefault}
+              />
+            }
+            description={a.tabStripDesc}
+            title={a.tabStripTitle}
+          />
 
           {show('window-layout') && (
             <ListRow

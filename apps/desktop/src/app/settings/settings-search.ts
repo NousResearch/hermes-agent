@@ -22,6 +22,7 @@ export const APPEARANCE_SETTING_IDS = {
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',
   translucency: 'appearance.translucency',
+  readingWidth: 'appearance.reading-width',
   uiScale: 'appearance.ui-scale',
   userBubble: 'appearance.user-bubble'
 } as const

@@ -33,17 +33,26 @@ class RateLimitCreditsMixin:
     """Rate-limit + credits header capture and notices (see module docstring)."""
 
     def _capture_rate_limits(self, http_response: Any) -> None:
-        """Parse x-ratelimit-* headers from an HTTP response and cache the state (never raises)."""
+        """Parse provider rate-limit headers and cache the state (never raises)."""
         headers = _response_headers(http_response)
         if not headers:
             return
         try:
-            from agent.rate_limit_tracker import parse_rate_limit_headers
-            state = parse_rate_limit_headers(headers, provider=self.provider)
-            if state is not None:
-                self._rate_limit_state = state
+            from agent.rate_limit_tracker import parse_rate_limit_headers, parse_codex_headers
+            if str(getattr(self, "provider", "") or "").strip().lower() == "openai-codex":
+                state = parse_codex_headers(headers)
+                if state is not None:
+                    self._codex_rate_limit_state = state
+            else:
+                state = parse_rate_limit_headers(headers, provider=self.provider)
+                if state is not None:
+                    self._rate_limit_state = state
         except Exception:
             pass  # Never let header parsing break the agent loop
+
+    def get_codex_rate_limit_state(self):
+        """Return the last captured Codex plan-limit state, or None."""
+        return getattr(self, "_codex_rate_limit_state", None)
 
     def get_rate_limit_state(self):
         """Return the last captured RateLimitState, or None."""

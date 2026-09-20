@@ -196,6 +196,12 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     """/usage session block for a live agent: rate limits, token breakdown (matches the CLI),
     context window and compression count."""
     lines: list[str] = []
+    codex_state = None
+    if str(getattr(agent, "provider", "") or "").strip().lower() == "openai-codex":
+        codex_state = getattr(agent, "get_codex_rate_limit_state", lambda: None)()
+    if codex_state and codex_state.has_data:
+        from agent.rate_limit_tracker import format_codex_rate_limit_display
+        lines += [format_codex_rate_limit_display(codex_state), ""]
     rl_state = agent.get_rate_limit_state()
     if rl_state and rl_state.has_data:
         from agent.rate_limit_tracker import format_rate_limit_compact

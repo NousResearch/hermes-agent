@@ -1102,6 +1102,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 base_url=getattr(active_client, "base_url", None) or getattr(agent, "base_url", ""))
 
     def _codex_stream_created(_raw_stream: Any) -> None:
+        # Capture Codex plan-limit headers; the SDK may expose only its private response slot.
+        response = getattr(_raw_stream, "response", None) or getattr(_raw_stream, "_response", None)
+        agent._capture_rate_limits(response)
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
         writer_token["raw_stream"] = _raw_stream

@@ -57,6 +57,56 @@ class TestParseHeaders:
         state = parse_rate_limit_headers({})
         assert state is None
 
+    def test_codex_headers_parse_plan_windows_and_credits(self):
+        from agent.rate_limit_tracker import parse_codex_headers
+
+        state = parse_codex_headers({
+            "X-Codex-Active-Limit": "premium",
+            "X-Codex-Plan-Type": "plus",
+            "X-Codex-Credits-Balance": "unlimited",
+            "X-Codex-Credits-Has-Credits": "true",
+            "X-Codex-Credits-Unlimited": "true",
+            "X-Codex-Primary-Used-Percent": "40",
+            "X-Codex-Primary-Window-Minutes": "300",
+            "X-Codex-Primary-Reset-After-Seconds": "6000",
+            "X-Codex-Secondary-Used-Percent": "21",
+            "X-Codex-Secondary-Window-Minutes": "10080",
+            "X-Codex-Secondary-Reset-After-Seconds": "500000",
+        })
+
+        assert state is not None
+        assert state.plan_type == "plus"
+        assert state.active_limit == "premium"
+        assert state.credits_balance == "unlimited"
+        assert state.credits_has_credits is True
+        assert state.credits_unlimited is True
+        assert state.primary.used_percent == pytest.approx(40)
+        assert state.primary.window_minutes == 300
+        assert state.primary.reset_after_seconds == 6000
+        assert state.secondary.used_percent == pytest.approx(21)
+        assert state.secondary.window_minutes == 10080
+
+    def test_codex_headers_absent(self):
+        from agent.rate_limit_tracker import parse_codex_headers
+
+        assert parse_codex_headers({}) is None
+
+    def test_codex_display(self):
+        from agent.rate_limit_tracker import format_codex_rate_limit_display, parse_codex_headers
+
+        state = parse_codex_headers({
+            "x-codex-plan-type": "plus",
+            "x-codex-active-limit": "premium",
+            "x-codex-primary-used-percent": "40",
+            "x-codex-primary-reset-after-seconds": "6000",
+            "x-codex-secondary-used-percent": "21",
+            "x-codex-secondary-reset-after-seconds": "500000",
+        })
+        result = format_codex_rate_limit_display(state)
+        assert "Plan: plus (limit: premium)" in result
+        assert "5h window" in result and "7d window" in result
+        assert "40.0% used" in result and "resets in 1h 40m" in result
+
 
 
 

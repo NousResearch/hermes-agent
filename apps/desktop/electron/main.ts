@@ -265,6 +265,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
+import { isAuthWallBody, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
@@ -5933,13 +5934,11 @@ const TITLE_MAX_REDIRECTS = 3
 const TITLE_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 
-const TITLE_ERROR_RE =
-  /\b(access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
-
 const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" }
 
-// Tier-2 renderer fallback config. Only invoked when curl came back empty or
-// matched TITLE_ERROR_RE — keeps cold/CDN-cached pages on the cheap path.
+// Tier-2 renderer fallback config. Only invoked when curl came back with no
+// usable title and no sign-in wall (electron/link-title-wall.ts) — keeps
+// cold/CDN-cached pages on the cheap path.
 const RENDER_TITLE_MAX_CONCURRENT = 2
 const RENDER_TITLE_TIMEOUT_MS = 8000
 const RENDER_TITLE_GRACE_MS = 700
@@ -6000,12 +5999,12 @@ function parseHtmlTitle(html) {
   return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
 }
 
-function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
+function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
   return new Promise(resolve => {
     const url = String(rawUrl || '').trim()
 
     if (!url) {
-      return resolve('')
+      return resolve({ authWall: false, title: '' })
     }
 
     const args = [
@@ -6031,7 +6030,7 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
     ]
 
     const child = spawn('curl', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'ignore'] }))
-    const chunks = []
+    const chunks: Buffer[] = []
     let bytes = 0
 
     child.stdout.on('data', chunk => {
@@ -6046,13 +6045,17 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
       bytes += next.length
     })
 
-    child.on('error', () => resolve(''))
+    child.on('error', () => resolve({ authWall: false, title: '' }))
     child.on('close', () => {
       if (!chunks.length) {
-        return resolve('')
+        return resolve({ authWall: false, title: '' })
       }
 
-      resolve(parseHtmlTitle(Buffer.concat(chunks).toString('utf8')))
+      const html = Buffer.concat(chunks).toString('utf8')
+
+      // A sign-in wall answers the cookieless title partition, and tier 2 must
+      // never load it: the wall asks the OS for a passkey.
+      resolve({ authWall: isAuthWallBody(html), title: parseHtmlTitle(html) })
     })
   })
 }
@@ -6171,12 +6174,8 @@ function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
   })
 }
 
-// Strips known error/captcha titles (e.g. "GetYourGuide – Error", "Just a
-// moment...") so they don't get cached as the resolved title.
-function usableTitle(value: string): string {
-  return value && !TITLE_ERROR_RE.test(value) ? value : ''
-}
-
+// Tier ladder (curl → hidden renderer) and its sign-in-wall rule live in
+// electron/link-title-wall.ts; main.ts only supplies the two tiers' I/O.
 function fetchLinkTitle(rawUrl) {
   const url = String(rawUrl || '').trim()
   const key = canonicalTitleCacheKey(url)
@@ -6190,15 +6189,14 @@ function fetchLinkTitle(rawUrl) {
   }
 
   if (titleInflight.has(key)) {
-    return titleInflight.get(key)
+    return Promise.resolve(titleInflight.get(key))
   }
 
-  const pending = fetchHtmlTitleWithCurl(url)
-    .catch(() => '')
-    .then(value => usableTitle((value || '').slice(0, 240)))
-    .then(
-      async value => value || usableTitle(((await fetchHtmlTitleWithRenderer(url).catch(() => '')) || '').slice(0, 240))
-    )
+  const pending = resolveLinkTitle({
+    curl: () => fetchHtmlTitleWithCurl(url),
+    renderer: () => fetchHtmlTitleWithRenderer(url),
+    url
+  })
     .then(clean => {
       cacheTitle(key, clean)
       titleInflight.delete(key)

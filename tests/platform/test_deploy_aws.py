@@ -319,3 +319,57 @@ def test_no_rendered_tfvars_is_committed():
     and the two disagree exactly when it matters."""
     assert not (MODULE / "nova.auto.tfvars.json").exists()
     assert "nova.auto.tfvars.json" in (MODULE / ".gitignore").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Host bootstrap — two properties the first real deployment depends on
+#
+# Both were found by running the image against a mounted volume rather than by
+# reading the template, and both fail the deployment outright rather than
+# degrading, so they are pinned here.
+# ---------------------------------------------------------------------------
+
+
+def test_the_state_volume_is_chowned_to_the_container_user():
+    """A freshly formatted volume is root:root; the image runs as uid 10001.
+
+    Without the chown the container exits on first boot with "not writable by uid 10001"
+    and systemd restarts it forever. Reproduced in a container before this test existed.
+    The chown has to come AFTER `mount -a`: applied to the mountpoint beforehand it
+    changes the underlying directory, which the mount then hides. It is recursive because
+    a bundle copied in over SSM later arrives owned by root, and a non-recursive chown
+    leaves that unreadable — a failure that surfaces at step 23 rather than at boot.
+    """
+    script = (MODULE / "user_data.sh.tftpl").read_text(encoding="utf-8")
+    assert 'chown -R 10001:10001 "$STATE_MOUNT"' in script, (
+        "user_data no longer chowns the state volume to the container user; the first "
+        "boot will exit with 'not writable by uid 10001'"
+    )
+    assert script.index("mount -a") < script.index('chown -R 10001:10001 "$STATE_MOUNT"'), (
+        "the chown must follow the mount, or it changes the directory under it"
+    )
+
+
+def test_the_container_runs_with_host_networking():
+    """Otherwise the Control Center cannot be opened at all.
+
+    The dashboard is a browser and cannot send a bearer token, so it relies on the
+    control plane trusting loopback callers. Under Docker's default bridge network a
+    published port is NAT'd and the container sees the bridge gateway as the client, not
+    127.0.0.1 — so loopback trust never applies and every request, including `GET /`,
+    answers 401. Verified for both the `--publish` and the TLS-certificate variants.
+
+    Host networking makes a connection from the host's own loopback arrive as 127.0.0.1.
+    Nothing is exposed by it: the process binds 127.0.0.1 by default, the security group
+    has no ingress, and reaching it still means an SSM port-forward.
+    """
+    script = (MODULE / "user_data.sh.tftpl").read_text(encoding="utf-8")
+    assert "--network host" in script, (
+        "the unit no longer uses host networking; the dashboard will answer 401 to every "
+        "request because loopback trust cannot apply behind Docker's bridge NAT"
+    )
+    # A published port alongside host networking is a contradiction Docker warns about,
+    # and it would mean someone reintroduced the bridge-network assumption.
+    assert "--publish" not in script, (
+        "--publish is meaningless with --network host; remove one of them deliberately"
+    )

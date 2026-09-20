@@ -20,6 +20,16 @@ grep -q "$STATE_MOUNT" /etc/fstab || \
   echo "$STATE_DEVICE $STATE_MOUNT xfs defaults,nofail 0 2" >> /etc/fstab
 mount -a
 
+# The image runs as uid 10001 and a freshly formatted volume is root:root, so without this
+# the first boot exits immediately with "not writable by uid 10001". Applied after the
+# mount, because chowning the mountpoint before mounting changes the wrong directory.
+#
+# Recursive, not just the mountpoint: on a blank volume there is nothing under it and the
+# two are identical, but anything an operator later copies in over SSM arrives owned by
+# root, and a non-recursive chown here would leave that unreadable to the container. It
+# costs nothing on an empty volume and removes a failure that only appears at step 23.
+chown -R 10001:10001 "$STATE_MOUNT"
+
 aws ecr get-login-password --region "${region}" \
   | docker login --username AWS --password-stdin "$(echo "${image_uri}" | cut -d/ -f1)"
 docker pull "${image_uri}"
@@ -45,6 +55,7 @@ EnvironmentFile=/etc/nova.env
 ExecStartPre=-/usr/bin/docker rm -f nova
 ExecStart=/usr/bin/docker run --rm --name nova \
   --env-file /etc/nova.env \
+  --network host \
   --volume ${state_mount}:/var/lib/nova \
   --log-driver awslogs \
   --log-opt awslogs-region=${region} \

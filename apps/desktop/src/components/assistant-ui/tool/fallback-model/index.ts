@@ -751,6 +751,11 @@ function durationLabel(resultRecord: Record<string, unknown>): string | undefine
 }
 
 function toolPreviewTarget(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  // Reading an existing file is not producing a deliverable.
+  if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'list_files') {
+    return ''
+  }
+
   const direct =
     firstStringField(result, ['preview', 'url', 'target']) ||
     firstStringField(args, ['preview', 'url', 'target', 'path', 'file', 'filepath']) ||

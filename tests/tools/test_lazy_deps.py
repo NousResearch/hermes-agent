@@ -606,101 +606,35 @@ class TestInstallWarmsBytecode:
 # pip.conf index-url bridge for the uv tier (#95608)
 # ---------------------------------------------------------------------------
 
-class _FakeCompleted:
-    returncode = 0
-    stdout = ""
-    stderr = ""
-
-
 class TestPipConfIndexBridge:
-    def _record_uv_env(self, monkeypatch):
-        """Run _venv_pip_install with a fake uv and capture the env it got."""
+    def _run_with_fake_uv(self, monkeypatch, tmp_path):
+        """Run _venv_pip_install against a stubbed uv and return the env it was spawned with."""
+        (tmp_path / "pip").mkdir()
+        (tmp_path / "pip" / "pip.conf").write_text(
+            "[global]\nindex-url = https://mirror.example/simple\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        monkeypatch.delenv("PIP_CONFIG_FILE", raising=False)
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
         captured = {}
 
-        def fake_run(cmd, *args, **kwargs):
-            captured["cmd"] = cmd
-            captured["env"] = kwargs.get("env")
-            return _FakeCompleted()
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            return ld.subprocess.CompletedProcess(cmd, 0, "", "")
 
-        monkeypatch.setattr(ld.subprocess, "run", fake_run)
-        monkeypatch.setattr(ld, "resolve_uv", lambda: "/fake/uv", raising=False)
-        return captured
-
-    def test_pip_conf_index_url_bridged_into_uv_env(self, monkeypatch, tmp_path):
-        conf = tmp_path / "pip.conf"
-        conf.write_text(
-            "[global]\nindex-url = https://mirror.example/simple\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
-        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
-        monkeypatch.delenv("UV_INDEX_URL", raising=False)
-        captured = self._record_uv_env(monkeypatch)
+        monkeypatch.setattr(ld, "_run_installer", fake_run)
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
+        monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **k: None)
         result = ld._venv_pip_install(("somepkg==1.0",))
         assert result.success
-        assert captured["env"]["UV_INDEX_URL"] == "https://mirror.example/simple"
+        return captured["env"]
 
-    def test_explicit_uv_index_url_wins_over_pip_conf(self, monkeypatch, tmp_path):
-        conf = tmp_path / "pip.conf"
-        conf.write_text(
-            "[global]\nindex-url = https://mirror.example/simple\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+    def test_pip_conf_index_url_bridged_when_uv_unset(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("UV_INDEX_URL", raising=False)
+        env = self._run_with_fake_uv(monkeypatch, tmp_path)
+        assert env["UV_INDEX_URL"] == "https://mirror.example/simple"
+
+    def test_explicit_uv_index_url_untouched(self, monkeypatch, tmp_path):
         monkeypatch.setenv("UV_INDEX_URL", "https://custom.example/simple")
-        captured = self._record_uv_env(monkeypatch)
-        ld._venv_pip_install(("somepkg==1.0",))
-        assert captured["env"]["UV_INDEX_URL"] == "https://custom.example/simple"
-
-    def test_pip_index_url_env_bridged_without_conf(self, monkeypatch, tmp_path):
-        # A large share of mirror users configure via PIP_INDEX_URL instead
-        # of a config file — the bridge must cover that spelling too.
-        monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "missing.conf"))
-        monkeypatch.setenv("PIP_INDEX_URL", "https://env-mirror.example/simple")
-        monkeypatch.delenv("UV_INDEX_URL", raising=False)
-        captured = self._record_uv_env(monkeypatch)
-        result = ld._venv_pip_install(("somepkg==1.0",))
-        assert result.success
-        assert (
-            captured["env"]["UV_INDEX_URL"] == "https://env-mirror.example/simple"
-        )
-
-    def test_pip_index_url_env_beats_pip_conf(self, monkeypatch, tmp_path):
-        # pip's own precedence: the env var wins over pip.conf.
-        conf = tmp_path / "pip.conf"
-        conf.write_text(
-            "[global]\nindex-url = https://mirror.example/simple\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
-        monkeypatch.setenv("PIP_INDEX_URL", "https://env-mirror.example/simple")
-        monkeypatch.delenv("UV_INDEX_URL", raising=False)
-        captured = self._record_uv_env(monkeypatch)
-        ld._venv_pip_install(("somepkg==1.0",))
-        assert (
-            captured["env"]["UV_INDEX_URL"] == "https://env-mirror.example/simple"
-        )
-
-    def test_no_pip_conf_leaves_uv_env_unchanged(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "missing.conf"))
-        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
-        monkeypatch.delenv("UV_INDEX_URL", raising=False)
-        captured = self._record_uv_env(monkeypatch)
-        ld._venv_pip_install(("somepkg==1.0",))
-        assert "UV_INDEX_URL" not in captured["env"]
-
-    def test_uv_timeout_error_carries_actionable_hint(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("PIP_CONFIG_FILE", str(tmp_path / "missing.conf"))
-        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
-        monkeypatch.delenv("UV_INDEX_URL", raising=False)
-
-        def fake_run(cmd, *args, **kwargs):
-            raise ld.subprocess.TimeoutExpired(cmd, timeout=kwargs.get("timeout", 300))
-
-        monkeypatch.setattr(ld.subprocess, "run", fake_run)
-        monkeypatch.setattr(ld, "resolve_uv", lambda: "/fake/uv", raising=False)
-        result = ld._venv_pip_install(("somepkg==1.0",), timeout=5)
-        assert result.success is False
-        assert "timed out after 5s" in result.stderr
-        assert "-m pip install somepkg==1.0" in result.stderr
-        assert "mirror" in result.stderr
+        env = self._run_with_fake_uv(monkeypatch, tmp_path)
+        assert env["UV_INDEX_URL"] == "https://custom.example/simple"

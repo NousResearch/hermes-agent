@@ -423,19 +423,13 @@ def _core_constraints_file() -> Optional[Path]:
 
 
 def _pip_config_candidates(env: dict[str, str]) -> list[Path]:
-    """Return pip config files in the same precedence order pip documents.
-
-    Mirrors the twin helper in ``hermes_cli.main`` (#17761); kept local
-    because this module deliberately has no CLI dependency.
-    """
-    explicit = env.get("PIP_CONFIG_FILE")
-    if explicit:
+    """pip config files in pip's own precedence order: ``PIP_CONFIG_FILE`` alone when set, else
+    site, then user (``$XDG_CONFIG_HOME``/pip, defaulting to ``~/.config/pip``), then legacy
+    ``~/.pip``. Later files override earlier ones in :class:`configparser`, matching pip."""
+    if explicit := env.get("PIP_CONFIG_FILE"):
         return [Path(explicit)]
-    return [
-        Path("/etc/pip.conf"),
-        Path.home() / ".config" / "pip" / "pip.conf",
-        Path.home() / ".pip" / "pip.conf",
-    ]
+    xdg = Path(env.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return [Path("/etc/pip.conf"), xdg / "pip" / "pip.conf", Path.home() / ".pip" / "pip.conf"]
 
 
 def _pip_conf_index_url(env: dict[str, str]) -> Optional[str]:

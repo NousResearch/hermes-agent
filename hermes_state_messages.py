@@ -40,6 +40,8 @@ _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id =
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
+_LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls FROM messages "
+                      "WHERE session_id = ? AND active = 1 ORDER BY id")
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
 _SET_DISPLAY_META_SQL = "UPDATE messages SET display_metadata = ? WHERE id = ?"
@@ -545,9 +547,12 @@ class SessionMessagesMixin:
         ``include_inactive=True``. This is the mode a rewind/edit/regenerate must use: those flows overwrite
         a transcript the user may not have meant to drop, and a plain DELETE also evicts the rows from the
         FTS index, leaving nothing to recover from (#82756). It implies active-only handling —
-        already-archived rows are never touched — so ``active_only`` is redundant with it. The rewritten set
-        is inserted as fresh active rows exactly as in the destructive path, so the live view is identical
-        either way; only the durability of the dropped turns differs.
+        already-archived rows are never touched — so ``active_only`` is redundant with it. Live rows that
+        *messages* keeps in place (the common in-order prefix, matched on role/content/tool identity) are
+        left untouched with their ids; only the divergent live suffix is archived and only the new suffix
+        of *messages* is inserted (#82956: archiving and re-inserting the kept prefix grew the archive by
+        the whole transcript on every rewind). The live view is identical either way; only the durability
+        of the dropped turns differs.
         """
         from hermes_state_errors import CompressionSessionClosedError
         def _do(conn):
@@ -556,15 +561,35 @@ class SessionMessagesMixin:
                     conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
+            kept = 0
             if archive_dropped:
-                # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
-                conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1", (session_id,))
+                live = conn.execute(_LIVE_IDENTITY_SQL, (session_id,)).fetchall()
+                kept = self._kept_live_prefix(live, messages)
+                if kept < len(live):
+                    # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
+                    conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id >= ?",
+                                 (session_id, live[kept][0]))
             else:
                 conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
-            conn.execute(_RESET_COUNTERS_SQL, (session_id,))
-            total_messages, total_tool_calls = self._insert_message_rows(conn, session_id, messages)
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (total_messages, total_tool_calls, session_id))
+            self._insert_message_rows(conn, session_id, messages[kept:])
+            message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
+            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
         self._execute_write(_do)
+
+    def _kept_live_prefix(self, live: list, messages: List[Dict[str, Any]]) -> int:
+        """Length of the in-order prefix of *messages* already present as the leading live rows (matched on
+        the role/content/tool_call_id/tool_calls identity ``_insert_message_rows`` would write). Matched
+        messages get their existing ``_row_id`` stamped, mirroring what a fresh insert would set."""
+        kept = 0
+        for row, msg in zip(live, messages):
+            tool_calls = _parse_tool_calls(msg.get("tool_calls"))
+            identity = (msg.get("role", "unknown"), self._encode_content(msg.get("content")),
+                        msg.get("tool_call_id"), json.dumps(tool_calls) if tool_calls else None)
+            if identity != (row[1], row[2], row[3], row[4]):
+                break
+            msg["_row_id"] = row[0]
+            kept += 1
+        return kept
 
     def has_archived_messages(self, session_id: str) -> bool:
         """True if the session has any soft-archived (``active = 0``) rows (tests/diagnostics).

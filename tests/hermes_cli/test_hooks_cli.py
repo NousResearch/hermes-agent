@@ -203,3 +203,51 @@ class TestHooksDoctor:
         )
         assert "not allowlisted" in out.lower()
         assert "skipped JSON smoke test" in out
+
+
+    def test_mtime_precision_tolerance(self, tmp_path):
+        """Regression for #107513: `hermes hooks doctor` compared ISO timestamps
+        as strings, flagging scripts as modified when only sub-second precision
+        differed (e.g. `2026-09-10T15:00:15.089146Z` vs `2026-09-10T15:00:15Z`).
+        
+        Without the fix, string comparison sees `Z` > `.` in ASCII, so the whole-second
+        version (which comes *from* the current filesystem mtime) would be treated as
+        "newer" than the microsecond-precision approval time, triggering a false positive.
+        """
+        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+        
+        # Real scenario: script was approved with microsecond-precision mtime,
+        # then restored via tar/copy that truncates to whole seconds.
+        # The *actual* mtime is the same (or earlier), but string comparison breaks.
+        allowlist = tmp_path / "home" / "state" / "shell_hooks_allowlist.json"
+        allowlist.parent.mkdir(parents=True, exist_ok=True)
+        
+        # We'll use a timestamp that, when truncated, sorts lexicographically AFTER
+        # the full precision one — proving string comparison is broken.
+        # Approval: 2026-09-10T15:00:15.5Z (with sub-second)
+        # Current:  2026-09-10T15:00:15Z   (truncated; Z > . in ASCII → "newer" via string)
+        allowlist.write_text(json.dumps({
+            "allowlist": [
+                {
+                    "event": "on_session_start",
+                    "command": str(script),
+                    "approved_at": "2026-09-10T14:00:00Z",
+                    "script_mtime_at_approval": "2026-09-10T15:00:15.5Z",
+                }
+            ]
+        }))
+        
+        # Manually set script mtime to exactly 15:00:15 (whole seconds)
+        import time
+        target_ts = 1789166415.0  # 2026-09-10 15:00:15 UTC
+        import os
+        os.utime(script, (target_ts, target_ts))
+        
+        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="doctor"))
+        
+        # Should NOT flag as modified (same timestamp, different precision)
+        assert "modified since approval" not in out
+
+

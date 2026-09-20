@@ -4112,13 +4112,17 @@ def generate_launchd_plist() -> str:
          collisions forever (#89477). Exit 75 and crashes still relaunch.
          ThrottleInterval raises launchd's default 10s minimum respawn interval
          to 30s so a crash-looping gateway can't hammer launchd into a rapid
-         respawn storm; ExitTimeOut gives the gateway 25s of graceful-drain
-         headroom before launchd escalates from SIGTERM to SIGKILL on stop. -->
+         respawn storm; ExitTimeOut is the graceful-drain headroom before
+         launchd escalates from SIGTERM to SIGKILL on stop. The per-user
+         (gui) launchd domain clamps it to 60s regardless of what is written
+         here, so 60 is the most a LaunchAgent can get; the gateway reads
+         the live value at boot and fits its signal-driven drain inside it
+         (gateway.restart.read_launchd_exit_timeout_s). -->
     <key>ThrottleInterval</key>
     <integer>30</integer>
 
     <key>ExitTimeOut</key>
-    <integer>25</integer>
+    <integer>60</integer>
 {nofile_block}
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>

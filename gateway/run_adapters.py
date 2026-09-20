@@ -846,12 +846,12 @@ class GatewayAdapterLifecycleMixin:
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
         from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
-            # ``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+            # Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
             # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
             # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
             with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
-                from gateway.status import write_runtime_status
-                write_runtime_status(served_profiles=[])
+                from gateway.status import publish_runtime_status
+                publish_runtime_status(served_profiles=[])
             return 0
         try:
             from hermes_cli.profiles import get_active_profile_name
@@ -897,7 +897,7 @@ class GatewayAdapterLifecycleMixin:
         """Record the served set (eligible for routing/HTTP prefixes/cron/runtime scope — broader
         than "has a connected adapter") for `hermes status`; seed per-profile PairingStores."""
         with _log_suppressed(logging.DEBUG, "could not record served_profiles", exc_info=True):
-            from gateway.status import write_runtime_status
+            from gateway.status import publish_runtime_status
             from gateway.pairing import PairingStore
             served = [active] + sorted(name for name, _home in profile_homes if name != active)
             self._note_served_profiles(profile_homes)
@@ -906,7 +906,7 @@ class GatewayAdapterLifecycleMixin:
                     self.pairing_stores[name] = (
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
-            write_runtime_status(served_profiles=served)
+            publish_runtime_status(served_profiles=served)
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises

@@ -2098,14 +2098,13 @@ class BasePlatformAdapter(ABC):
         self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
 
     def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
-        """Write runtime status; log first failure per context at warning, rest at debug
-        (failures — permissions, ENOSPC — must neither be silent nor spam reconnect loops)."""
+        """Publish runtime status; log preparation failures without disrupting the adapter."""
         try:
-            from gateway.status import write_runtime_status
+            from gateway.status import publish_runtime_status
             # Multiplexed adapters share the status file; the runner stamps
             # ``<profile>:<platform>``.
             platform_key = getattr(self, "_runtime_status_platform_key", None) or self.platform.value
-            write_runtime_status(platform=platform_key, **kwargs)
+            publish_runtime_status(platform=platform_key, **kwargs)
         except Exception as exc:
             logged = _lazy_attr(self, "_status_write_logged", set)  # object.__new__ in tests
             first = (self.platform.value, context) not in logged

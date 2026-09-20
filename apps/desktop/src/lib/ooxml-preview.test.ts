@@ -298,6 +298,40 @@ describe('parseOfficePreview xlsx', () => {
     expect(preview.sheets[0]?.rows[0]?.[2]).toMatchObject({ bold: true, color: '#FF0000', value: 'Ada' })
   })
 
+  it('keeps the fractional digits of a percent format', async () => {
+    const preview = await parseOfficePreview(
+      zipFiles({
+        ...xlsxFiles({
+          'xl/worksheets/sheet1.xml': `<?xml version="1.0"?>
+<worksheet xmlns="${NS_MAIN}">
+  <sheetData>
+    <row r="1">
+      <c r="A1" s="1"><v>0.1234</v></c>
+    </row>
+  </sheetData>
+</worksheet>`
+        }),
+        'xl/styles.xml': `<?xml version="1.0"?>
+<styleSheet xmlns="${NS_MAIN}">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="0.00%"/></numFmts>
+  <cellXfs count="2">
+    <xf numFmtId="0" fontId="0" fillId="0"/>
+    <xf numFmtId="164" fontId="0" fillId="0" applyNumberFormat="1"/>
+  </cellXfs>
+</styleSheet>`
+      }),
+      '.xlsx'
+    )
+
+    expect(preview?.kind).toBe('spreadsheet')
+
+    if (preview?.kind !== 'spreadsheet') {
+      return
+    }
+
+    expect(preview.sheets[0]?.rows[0]?.[0]).toMatchObject({ value: '12.34%' })
+  })
+
   it('applies font, fill, currency, and dates when apply* flags are omitted', async () => {
     const preview = await parseOfficePreview(
       zipFiles({

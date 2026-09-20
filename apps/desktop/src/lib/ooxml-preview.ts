@@ -1037,7 +1037,9 @@ function formatExcelValue(raw: string, numFmt: string | undefined, date1904: boo
   }
 
   if (code.includes('%')) {
-    const decimals = /\.0+/.exec(code)?.[0].length - 1 || 0
+    const fraction = /\.0+/.exec(code)?.[0]
+
+    const decimals = fraction ? fraction.length - 1 : 0
 
     return `${(number * 100).toFixed(decimals)}%`
   }

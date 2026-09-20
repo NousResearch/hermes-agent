@@ -473,3 +473,17 @@ plugins/memory/my-provider/
 ## Single Provider Rule
 
 Only **one** external memory provider can be active at a time. If a user tries to register a second, the MemoryManager rejects it with a warning. This prevents tool schema bloat and conflicting backends.
+
+### Per-turn input origin
+
+`agent.turn_origin.is_user_input_turn()` exposes the host's input-origin signal during
+`AIAgent.run_conversation()`. It is false for typed runtime notifications, explicitly
+bot-authored input, and cron/subagent surfaces. It does not inspect prompt text and does
+not change tool permissions or other providers' policy. Hindsight uses it only in its
+automatic `prefetch`, `queue_prefetch`, and `sync_turn` paths, not its explicit tools.
+
+The signal is a `ContextVar`: use `ctx_bound` / `spawn_context_thread` for deferred work
+so a later turn cannot reclassify a queued job. It is reset on all turn exits. Direct
+provider calls outside a bound agent turn keep the legacy user-input default. Hosts
+must label runtime notifications through `persist_user_display_kind`; the classic CLI's
+matching staged message carries the same metadata.

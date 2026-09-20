@@ -44,6 +44,24 @@ hindsight-embed -p hermes ui start
 
 Points the plugin at an existing Hindsight instance you're already running (Docker, self-hosted, etc.). No daemon management — just a URL and an optional API key.
 
+## Automatic memory and turn origin
+
+Automatic recall (including reflect-prefetch), queued prefetch, and automatic retain
+skip Hermes' typed runtime notifications: process completions, asynchronous delegation
+completions, and internal gateway notices such as a session handoff. Bot-authored turns
+and cron/subagent surfaces also skip these automatic operations. Ordinary human input,
+including pasted logs, voice transcripts, steering, and user-triggered hidden widget
+messages, keeps the configured memory behavior.
+
+A skipped turn does not consume a buffered recall or cancel already queued work from a
+human turn. The origin travels with background work instead of being stored in a mutable
+per-agent flag. Explicit `hindsight_recall`, `hindsight_reflect`, and `hindsight_retain`
+tools remain available. Existing memories are not deleted or reclassified.
+
+This uses host-supplied metadata, not matching words in prompt text. A custom caller that
+delivers an internal notification without origin metadata retains the legacy behavior;
+it should pass the appropriate `persist_user_display_kind` to `run_conversation`.
+
 ## Config
 
 Config file: `~/.hermes/hindsight/config.json`

@@ -51,6 +51,7 @@ class TurnFacadeMixin:
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
         from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
+        from agent.turn_origin import turn_input_scope
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -130,7 +131,15 @@ class TurnFacadeMixin:
 
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
+            with (
+                bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self),
+                turn_input_scope(
+                    display_kind=persist_user_display_kind, turn_author=turn_author,
+                    platform=getattr(self, "platform", None),
+                    staged_message=getattr(self, "_pending_cli_user_message", None),
+                    user_message=persist_user_message if persist_user_message is not None else user_message,
+                ),
+            ):
                 try:
                     if lease is not None:
                         lease.start()

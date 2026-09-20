@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
 from agent.secret_scope import UnscopedSecretError, get_secret
+from agent.turn_origin import is_user_input_turn
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
@@ -879,7 +880,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _recall_disabled(self) -> bool:
         """Guards shared by the async and synchronous recall paths."""
-        why = ("tools-only mode" if self._memory_mode == "tools" else "auto_recall disabled" if not self._auto_recall
+        why = ("non-user turn" if not is_user_input_turn() else
+               "tools-only mode" if self._memory_mode == "tools" else "auto_recall disabled" if not self._auto_recall
                else "shutting down" if self._shutting_down.is_set() else None)
         if why:
             logger.debug("Prefetch: skipped (%s)", why)
@@ -940,6 +942,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread.join(timeout=timeout)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        # Do not consume a previous human turn's cached recall on a runtime wake.
+        # Only clear the current indicator; queued human work keeps its own scope.
+        if not is_user_input_turn():
+            return self._finish_prefetch("", 0)
         # Opt-in: recall synchronously against the *current* message so the
         # injected memories match this turn's query, not the previous turn's.
         # See NousResearch/hermes-agent#5820.
@@ -1047,7 +1053,8 @@ class HindsightMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn (non-blocking; writer thread). Dropped
         once shutdown() fired so post-exit retains never reach aiohttp during teardown."""
-        why = "auto_retain disabled" if not self._auto_retain else "shutting down" if self._shutting_down.is_set() else None
+        why = ("non-user turn" if not is_user_input_turn() else "auto_retain disabled" if not self._auto_retain
+               else "shutting down" if self._shutting_down.is_set() else None)
         if why:
             logger.debug("sync_turn: skipped (%s)", why)
             return

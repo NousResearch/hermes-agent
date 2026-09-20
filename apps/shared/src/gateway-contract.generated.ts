@@ -1456,6 +1456,7 @@ export interface ProfileRow {
   description?: string
   display_name?: string
   skill_count?: number
+  previous_names?: string[]
   last_session?: ProfileSessionPreview | null
   worker_session?: ProfileWorkerSession | null
   canonical_session?: ProfileCanonicalSession | null

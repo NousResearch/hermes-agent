@@ -389,8 +389,15 @@ _remove_role = _mutation(
 
 
 # ── channel/role/server management actions ──────────────────────────────────
-_CHANNEL_TYPES = {"text": 0, "voice": 2, "category": 4, "announcement": 5, "forum": 15}
+# _CHANNEL_TYPES maps human-readable channel type names (used in action parameters)
+# to their integer IDs in the Discord API (channel object channel-types field).
+_CHANNEL_TYPES = {
+    "text": 0, "voice": 2, "category": 4, "announcement": 5, "forum": 15,
+}
 
+# _PERMISSION_FLAGS maps Discord permission name strings (uppercase, e.g. "SEND_MESSAGES")
+# to their bitfield integer values. Used by _parse_permission_flags to convert
+# comma-separated permission strings into the integer the API expects.
 _PERMISSION_FLAGS = {
     "CREATE_INSTANT_INVITE": 0x1, "KICK_MEMBERS": 0x2, "BAN_MEMBERS": 0x4,
     "ADMINISTRATOR": 0x8, "MANAGE_CHANNELS": 0x10, "MANAGE_GUILD": 0x20,
@@ -421,13 +428,21 @@ def _parse_permission_flags(raw: str) -> int:
         name = name.strip().upper()
         if name in _PERMISSION_FLAGS:
             value |= _PERMISSION_FLAGS[name]
+        else:
+            logger.warning("Unknown permission name: %s", name)
     return value
 
 
 def _create_channel(
     token: str, guild_id: str, name: str,
     channel_type: str = "text", topic: str = "", parent_id: str = "", **_kw: Any) -> str:
-    """Create a channel in a guild."""
+    """Create a channel in a guild.
+
+    Parameters:
+        channel_type: One of "text", "voice", "category", "announcement", "forum" (default: "text").
+        topic: Channel topic string (optional, shown in channel header for text channels).
+        parent_id: Category channel ID to nest this channel under (optional).
+    """
     type_id = _CHANNEL_TYPES.get(channel_type.lower(), 0)
     body: Dict[str, Any] = {"name": name, "type": type_id}
     if topic:
@@ -441,7 +456,12 @@ def _create_channel(
 def _edit_channel(
     token: str, channel_id: str, name: str = "", topic: str = "",
     parent_id: str = "", **_kw: Any) -> str:
-    """Edit a channel's properties (only non-empty fields are sent)."""
+    """Edit a channel's properties (only non-empty fields are sent).
+
+    Only fields with non-empty values are included in the API request, so existing
+    fields that are not provided remain unchanged. Passing all empty values returns
+    an error with no fields to update.
+    """
     body: Dict[str, Any] = {}
     if name:
         body["name"] = name
@@ -456,7 +476,8 @@ def _edit_channel(
 
 
 def _delete_channel(token: str, channel_id: str, **_kw: Any) -> str:
-    """Delete a channel."""
+    """Delete a channel. This action is irreversible — all messages and data in the
+    channel are permanently removed."""
     _discord_request("DELETE", f"/channels/{channel_id}", token)
     return json.dumps({"success": True, "message": f"Channel {channel_id} deleted."})
 
@@ -464,7 +485,13 @@ def _delete_channel(token: str, channel_id: str, **_kw: Any) -> str:
 def _create_role(
     token: str, guild_id: str, name: str, color: str = "",
     hoist: bool = False, mentionable: bool = False, **_kw: Any) -> str:
-    """Create a role in a guild."""
+    """Create a role in a guild.
+
+    Parameters:
+        color: Role color as a hex string, e.g. "#FF5733" or "FF5733" (optional).
+        hoist: If True, the role is displayed separately in the member list.
+        mentionable: If True, the role can be @mentioned by anyone.
+    """
     body: Dict[str, Any] = {"name": name, "hoist": hoist, "mentionable": mentionable}
     if color:
         body["color"] = int(color.lstrip("#"), 16)
@@ -476,7 +503,12 @@ def _edit_role(
     token: str, guild_id: str, role_id: str, name: str = "",
     color: str = "", hoist: Optional[bool] = None,
     mentionable: Optional[bool] = None, **_kw: Any) -> str:
-    """Edit a role's properties (only provided fields are sent)."""
+    """Edit a role's properties (only provided fields are sent).
+
+    Partial update: only fields that are explicitly provided (non-empty for strings,
+    non-None for booleans) are included in the request. Omitted fields are left
+    unchanged. Passing all empty/None values returns an error.
+    """
     body: Dict[str, Any] = {}
     if name:
         body["name"] = name
@@ -495,7 +527,11 @@ def _edit_role(
 def _edit_server(
     token: str, guild_id: str, name: str = "",
     verification_level: Optional[int] = None, **_kw: Any) -> str:
-    """Edit server properties (only non-empty fields are sent)."""
+    """Edit server properties (only non-empty fields are sent).
+
+    Parameters:
+        verification_level: 0=None, 1=Email, 2=5min, 3=10min, 4=Bot verification.
+    """
     body: Dict[str, Any] = {}
     if name:
         body["name"] = name
@@ -511,7 +547,13 @@ def _edit_channel_permissions(
     token: str, channel_id: str, overwrite_id: str,
     overwrite_type: str = "role", allow: str = "0", deny: str = "0",
     **_kw: Any) -> str:
-    """Edit permission overwrites for a channel."""
+    """Edit permission overwrites for a channel.
+
+    Parameters:
+        allow: Comma-separated permission names to allow (e.g. "VIEW_CHANNEL,SEND_MESSAGES").
+        deny: Comma-separated permission names to deny.
+        Use "0" for no permissions in a category (allow/deny).
+    """
     type_int = 0 if overwrite_type.lower() == "role" else 1
     body = {"allow": str(_parse_permission_flags(allow)), "deny": str(_parse_permission_flags(deny)), "type": type_int}
     _discord_request("PUT", f"/channels/{channel_id}/permissions/{overwrite_id}", token, body=body)

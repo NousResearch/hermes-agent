@@ -100,10 +100,16 @@ Full definition in `providers/base.py`. The most useful ones:
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
+<<<<<<< HEAD
 | `auth_handler` | `Callable \| None` | Provider-owned `hermes auth add/status/logout/refresh <name>` — see [Provider-owned auth](#provider-owned-auth-auth_handler-refresh_credential) |
 | `refresh_credential` | `Callable \| None` | Provider-owned rotation of a pooled OAuth row — same section |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
+=======
+| `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails — in the `/model` picker AND the first-time `hermes setup` / `hermes model` API-key flow, which resolve the catalog the same way (`fetch_models()` merged curated-first with `fallback_models`; `fallback_models` alone when the fetch returns `None` or raises) |
+| `supports_vision` | bool | Declares the endpoint accepts image input. Consumed by the tool-result media path and by the per-turn image-routing probe (`agent/image_routing.decide_image_input_mode`): an image attached to a model of a `supports_vision=True` plugin goes native instead of through `vision_analyze` text, unless a config override or a models.dev per-model entry says otherwise |
+| `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`); also forwarded by the default `fetch_models()` catalog request |
+>>>>>>> cac616e8159 (fix(vision): image routing honours ProviderProfile.supports_vision)
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
 | `unsupported_response_formats` | `tuple` | `response_format` types the API rejects outright; auxiliary requests omit them instead of paying a guaranteed 400 (DeepSeek: `("json_schema",)`) |

@@ -41,7 +41,8 @@ def test_timeout_queues_degraded_marker(cli_lane, monkeypatch):
     key, marker, kw = calls[0]["key"], calls[0]["content"], calls[0]["kw"]
     assert len(key) == 64 and int(key, 16) >= 0  # a fresh hex delivery id, not "<key>-degraded"
     assert kw.get("degraded") is True
-    assert "DELIVERY DEGRADED" in marker and "docgen deadman" in marker and "job-1" in marker
+    assert "DELIVERY DEGRADED" in marker and "job-1" in marker
+    assert not marker.startswith("[")  # a plain body: the standard cronjob header wraps it
     assert "hermes cron runs" in marker
     assert "P1 findings: everything on fire" in marker  # short excerpt only...
     assert payload.strip() not in marker  # ...never the full payload
@@ -52,10 +53,24 @@ def test_timeout_queues_degraded_marker(cli_lane, monkeypatch):
     from hermes_state import SessionDB
     SessionDB(db_path=cli_lane / "state.db").close()  # a deferred target must have a state.db
     record = {"id": key, "home": str(cli_lane), "profile": "", "degraded": True}
+    posted = []
+
+    def capture_then_timeout(argv, env, report_file, timeout_s):
+        with open(argv[argv.index("--query-file") + 1], encoding="utf-8") as fh:
+            posted.append(fh.read())
+        raise subprocess.TimeoutExpired(argv, timeout_s)
+
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", capture_then_timeout)
     result = delivery._deliver_to_bot_chat(job, marker, "", deferred=record)
     assert len(calls) == 1
     assert result is not None and "the result is saved" in result
     assert "degraded-delivery notice was queued" not in result
+    # The drained marker is delivered like any other output: one standard header (naming
+    # the job) and the plain marker body — no second, marker-specific framing.
+    assert len(posted) == 1
+    assert posted[0].startswith('[Cronjob "docgen deadman" output — ')
+    assert posted[0].count("[Cronjob") == 1
+    assert posted[0].endswith("\n\n" + marker)
 
 
 class _FakeProc:

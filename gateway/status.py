@@ -450,11 +450,22 @@ def get_process_start_time(pid: int) -> Optional[int]:
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Process command line as one string: /proc, then ``ps``, then psutil (Windows)."""
+    """Process command line as one string: /proc, then psutil, then ``ps``.
+
+    Order is by cost, and this runs per live gateway on every roster/status poll. ``psutil`` reads
+    the process table in-process (a ``sysctl`` on macOS) where ``ps`` costs a fork+exec — measured
+    0.02ms against 4.2ms on macOS for the same string. It cannot always answer: on macOS it raises
+    ``AccessDenied`` for a process owned by another user, which ``ps`` still reports, so ``ps``
+    stays as the fallback rather than being replaced."""
     with contextlib.suppress(OSError):
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+    with contextlib.suppress(Exception):
+        import psutil  # type: ignore
+        cmdline_parts = psutil.Process(pid).cmdline()
+        if cmdline_parts:
+            return " ".join(cmdline_parts)
     if not _IS_WINDOWS:
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             result = subprocess.run(
@@ -463,11 +474,6 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
-    with contextlib.suppress(Exception):
-        import psutil  # type: ignore
-        cmdline_parts = psutil.Process(pid).cmdline()
-        if cmdline_parts:
-            return " ".join(cmdline_parts)
     return None
 
 

@@ -16,6 +16,7 @@ import {
   $worktreeRefreshToken,
   addProjectFolder,
   ALL_PROJECTS,
+  assignSessionToProject,
   createProject,
   deleteProject,
   enterProject,
@@ -185,6 +186,72 @@ describe('projects RPC profile forwarding', () => {
 
     expect(request).not.toHaveBeenCalled()
     setShowAllProfiles(false)
+  })
+
+  it('assigns or unfiles explicit membership, reconciles the same profile tree, and surfaces write failures', async () => {
+    $activeGatewayProfile.set('coder')
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.session.assign' || method === 'projects.session.unfile') {
+        return { explicit: true, lineage_root_id: 'root-1', project_id: method.endsWith('assign') ? 'p_123' : null }
+      }
+
+      return { active_id: null, projects: [], scoped_session_ids: [] }
+    })
+
+    const gateway = { connectionState: 'open', request }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    await assignSessionToProject('session-1', 'p_123', 'coder')
+    await assignSessionToProject('session-1', null, 'coder')
+
+    expect(request.mock.calls).toEqual([
+      ['projects.session.assign', { profile: 'coder', project: 'p_123', session_id: 'session-1' }],
+      ['projects.tree', { preview_limit: 3, profile: 'coder' }],
+      ['projects.session.unfile', { profile: 'coder', session_id: 'session-1' }],
+      ['projects.tree', { preview_limit: 3, profile: 'coder' }]
+    ])
+
+    const failure = new Error('membership write failed')
+    request.mockRejectedValueOnce(failure)
+
+    await expect(assignSessionToProject('session-1', 'p_456', 'coder')).rejects.toBe(failure)
+    expect(request).toHaveBeenCalledTimes(5)
+  })
+
+  it('rejects membership writes for a non-active profile instead of using the visible project tree', async () => {
+    const request = vi.fn()
+    const gateway = { connectionState: 'open', request }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $activeGatewayProfile.set('default')
+
+    await expect(assignSessionToProject('session-1', 'p_coder', 'coder')).rejects.toThrow(
+      'Active Hermes profile changed'
+    )
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('does not report a durable membership write as failed when tree reconciliation fails', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ explicit: true, lineage_root_id: 'root-1', project_id: 'p_123' })
+      .mockRejectedValueOnce(new Error('tree refresh failed'))
+
+    const gateway = { connectionState: 'open', request }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $activeGatewayProfile.set('coder')
+
+    await expect(assignSessionToProject('session-1', 'p_123', 'coder')).resolves.toBeUndefined()
+    expect(request.mock.calls).toEqual([
+      ['projects.session.assign', { profile: 'coder', project: 'p_123', session_id: 'session-1' }],
+      ['projects.tree', { preview_limit: 3, profile: 'coder' }]
+    ])
   })
 })
 

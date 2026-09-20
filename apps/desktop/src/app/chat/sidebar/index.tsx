@@ -182,6 +182,7 @@ import {
   SidebarPinnedEmptyState,
   SidebarSessionSkeletons
 } from './section-states'
+import { SessionGroupingToggle } from './session-grouping-toggle'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
@@ -1893,11 +1894,14 @@ export function ChatSidebar({
                             }
                           }}
                         />
-                        <div className="grid size-6 place-items-center">
-                          <SidebarFilterMenu className={HEADER_NAV_BTN} />
-                        </div>
                       </>
                     )}
+                    <div className="grid size-6 place-items-center">
+                      <SessionGroupingToggle className={HEADER_NAV_BTN} />
+                    </div>
+                    <div className="grid size-6 place-items-center">
+                      <SidebarFilterMenu className={HEADER_NAV_BTN} />
+                    </div>
                   </div>
                 }
                 label={sessionsLabel}

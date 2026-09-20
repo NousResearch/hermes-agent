@@ -146,6 +146,28 @@ method("projects.set_active", params=ProjectsSetActiveParams, result=ActiveIdRes
        doc="Switch (or clear) the active project for the profile.")
 
 
+class ProjectSessionParams(ProfileParams):
+    session_id: str
+
+
+class ProjectSessionAssignParams(ProjectSessionParams):
+    project: str
+
+
+class ProjectSessionHomeResult(Result):
+    lineage_root_id: str
+    project_id: str | None = None
+    explicit: bool
+
+
+method("projects.session.assign", params=ProjectSessionAssignParams, result=ProjectSessionHomeResult,
+       doc="Assign a session's compression lineage to one project.")
+method("projects.session.unfile", params=ProjectSessionParams, result=ProjectSessionHomeResult,
+       doc="Explicitly place a session's compression lineage in Home (Unfiled).")
+method("projects.session.release", params=ProjectSessionParams, result=ProjectSessionHomeResult,
+       doc="Remove explicit membership so cwd inference applies again.")
+
+
 class ProjectsForCwdParams(ProfileParams):
     """Absent ``cwd`` resolves the gateway's default completion cwd."""
 

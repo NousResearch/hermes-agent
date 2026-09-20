@@ -36,6 +36,7 @@ vi.mock('@/i18n', () => ({
       errors: { genericFailure: 'Something went wrong' },
       sidebar: {
         projects: {
+          home: 'Unfiled',
           menuAppearance: 'Appearance',
           moveFailed: 'Could not move session',
           moveNoProjects: 'No other projects',
@@ -77,8 +78,10 @@ vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
+  assignSessionToProject: vi.fn(() => Promise.resolve()),
   moveSessionToProject: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
+  projectProfile: vi.fn(() => 'coder'),
   projectRootCwd: vi.fn(() => '')
 }))
 vi.mock('@/store/session', () => ({
@@ -112,6 +115,23 @@ vi.mock('@/store/windows', () => ({
   openSessionInTerminal: vi.fn()
 }))
 
+const projectsStore = await import('@/store/projects')
+const assignSessionToProject = vi.mocked(projectsStore.assignSessionToProject)
+const moveSessionToProject = vi.mocked(projectsStore.moveSessionToProject)
+const projectProfile = vi.mocked(projectsStore.projectProfile)
+
+async function openMoveToProjectSubmenu() {
+  const trigger = screen.getByRole('button', { name: 'Session actions' })
+  fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+  fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+  fireEvent.click(trigger)
+
+  const move = await screen.findByRole('menuitem', { name: 'Move to project' })
+  fireEvent.pointerMove(move, { pointerType: 'mouse' })
+
+  return move
+}
+
 function renderMenu() {
   return render(
     <SessionActionsMenu sessionId="s1" title="My session">
@@ -123,6 +143,52 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
+  it('assigns folderless explicit projects and Unfiled without moving cwd', async () => {
+    projectsStore.$projectTree.set([
+      { id: 'p_folderless', isAuto: false, label: 'Folderless', path: null, repos: [], sessionCount: 0 },
+      { id: '/repo/auto', isAuto: true, label: 'Auto repo', path: '/repo/auto', repos: [], sessionCount: 0 },
+      { id: '__no_project__', isNoProject: true, label: 'Home', path: null, repos: [], sessionCount: 0 }
+    ])
+    render(
+      <SessionActionsMenu profile="coder" sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    await openMoveToProjectSubmenu()
+    expect(await screen.findByRole('menuitem', { name: 'Folderless' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'Auto repo' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Folderless' }))
+    await waitFor(() => expect(assignSessionToProject).toHaveBeenCalledWith('s1', 'p_folderless', 'coder'))
+
+    await openMoveToProjectSubmenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Unfiled' }))
+    await waitFor(() => expect(assignSessionToProject).toHaveBeenCalledWith('s1', null, 'coder'))
+    expect(moveSessionToProject).not.toHaveBeenCalled()
+  })
+
+  it('does not offer another profile projects from an all-profile or foreign-profile row', async () => {
+    projectProfile.mockReturnValue('default')
+    projectsStore.$projectTree.set([
+      { id: 'p_default', isAuto: false, label: 'Default project', path: null, repos: [], sessionCount: 0 }
+    ])
+    render(
+      <SessionActionsMenu profile="coder" sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    await openMoveToProjectSubmenu()
+    expect(screen.queryByRole('menuitem', { name: 'Default project' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Unfiled' })).toBeNull()
+    expect(await screen.findByText('No other projects')).toBeTruthy()
+    projectProfile.mockReturnValue('coder')
+  })
+
   it('opens the dropdown on click without a tooltip on the kebab', async () => {
     renderMenu()
 

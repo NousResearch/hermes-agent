@@ -2401,6 +2401,60 @@
       }
     },
     {
+      "name": "projects.session.assign",
+      "summary": "Assign a session's compression lineage to one project.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProjectSessionAssignParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProjectSessionHomeResult"
+        }
+      }
+    },
+    {
+      "name": "projects.session.release",
+      "summary": "Remove explicit membership so cwd inference applies again.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProjectSessionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProjectSessionHomeResult"
+        }
+      }
+    },
+    {
+      "name": "projects.session.unfile",
+      "summary": "Explicitly place a session's compression lineage in Home (Unfiled).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProjectSessionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProjectSessionHomeResult"
+        }
+      }
+    },
+    {
       "name": "projects.set_active",
       "summary": "Switch (or clear) the active project for the profile.",
       "params": [
@@ -20664,6 +20718,94 @@
           "project"
         ],
         "title": "ProjectResult",
+        "type": "object"
+      },
+      "ProjectSessionAssignParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "project": {
+            "title": "Project",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "project"
+        ],
+        "title": "ProjectSessionAssignParams",
+        "type": "object"
+      },
+      "ProjectSessionHomeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "lineage_root_id": {
+            "title": "Lineage Root Id",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "explicit": {
+            "title": "Explicit",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "lineage_root_id",
+          "explicit"
+        ],
+        "title": "ProjectSessionHomeResult",
+        "type": "object"
+      },
+      "ProjectSessionParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ProjectSessionParams",
         "type": "object"
       },
       "ProjectTreeLane": {

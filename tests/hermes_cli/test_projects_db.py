@@ -38,16 +38,17 @@ def test_discovery_policy_change_clears_only_discovered_rows(conn):
 
 
 
-def test_create_get_list(conn):
-    pid = pdb.create_project(conn, name="Hermes Agent", folders=["/tmp/hermes"])
+def test_create_get_list(conn, tmp_path):
+    folder = tmp_path / "hermes"
+    pid = pdb.create_project(conn, name="Hermes Agent", folders=[str(folder)])
     proj = pdb.get_project(conn, pid)
 
     assert proj is not None
     assert proj.slug == "hermes-agent"
     assert proj.name == "Hermes Agent"
     # First folder becomes primary.
-    assert proj.primary_path == "/tmp/hermes"
-    assert [f.path for f in proj.folders] == ["/tmp/hermes"]
+    assert proj.primary_path == str(folder)
+    assert [f.path for f in proj.folders] == [str(folder)]
     assert proj.folders[0].is_primary is True
 
     # Lookup by slug too.
@@ -121,6 +122,53 @@ def test_find_by_primary_path(conn):
     assert pdb.find_by_primary_path(conn, "") is None
 
 
+def test_session_home_tristate_and_bulk_lookup(conn):
+    project_id = pdb.create_project(conn, name="App", folders=["/www/app"])
+
+    assert pdb.get_session_home_row(conn, "root-absent") is None
+    assert pdb.session_home_overrides(conn) == {}
+
+    pdb.set_session_home(conn, "root-project", project_id)
+    pdb.set_session_home(conn, "root-unfiled", None)
+
+    assert pdb.get_session_home_row(conn, "root-project")["project_id"] == project_id
+    assert pdb.get_session_home_row(conn, "root-unfiled")["project_id"] is None
+    assert pdb.session_home_overrides(conn) == {
+        "root-project": project_id,
+        "root-unfiled": None,
+    }
+
+    assert pdb.clear_session_home(conn, "root-project") is True
+    assert pdb.clear_session_home(conn, "root-project") is False
+    assert pdb.get_session_home_row(conn, "root-project") is None
+
+
+def test_session_home_rejects_unknown_project_but_retains_archived_assignment(conn):
+    with pytest.raises(ValueError, match="no such project"):
+        pdb.set_session_home(conn, "root", "p_missing")
+
+    project_id = pdb.create_project(conn, name="App", folders=["/www/app"])
+    pdb.set_session_home(conn, "root", project_id)
+    pdb.archive_project(conn, project_id)
+
+    assert pdb.get_session_home_row(conn, "root")["project_id"] == project_id
+    assert pdb.session_roots_for_project(conn, project_id) == ["root"]
+
+    pdb.restore_project(conn, project_id)
+    assert pdb.session_roots_for_project(conn, project_id) == ["root"]
+
+
+def test_deleting_project_unfiles_assigned_lineages_without_touching_existing_unfiled(conn):
+    project_id = pdb.create_project(conn, name="App", folders=["/www/app"])
+    pdb.set_session_home(conn, "root-project", project_id)
+    pdb.set_session_home(conn, "root-unfiled", None)
+
+    assert pdb.delete_project(conn, project_id) is True
+
+    assert pdb.get_session_home_row(conn, "root-project")["project_id"] is None
+    assert pdb.get_session_home_row(conn, "root-unfiled")["project_id"] is None
+
+
 
 
 
@@ -129,18 +177,18 @@ def test_per_profile_isolation(tmp_path):
     # Two distinct DB paths stand in for two profiles' HERMES_HOME.
     a = pdb.connect(db_path=tmp_path / "a" / "projects.db")
     b = pdb.connect(db_path=tmp_path / "b" / "projects.db")
+    project_root = tmp_path / "workspace-a"
+    scanned_root = project_root / "scanned"
     try:
-        pdb.create_project(a, name="Only In A", folders=["/a"])
-        pdb.record_discovered_repos(a, [("/a/scanned", "scanned")])
+        pdb.create_project(a, name="Only In A", folders=[str(project_root)])
+        pdb.record_discovered_repos(a, [(str(scanned_root), "scanned")])
 
         assert [p.slug for p in pdb.list_projects(a)] == ["only-in-a"]
         assert pdb.list_projects(b) == []
         assert [row["root"] for row in pdb.list_discovered_repos(a)] == [
-            "/a/scanned"
+            str(scanned_root)
         ]
         assert pdb.list_discovered_repos(b) == []
     finally:
         a.close()
         b.close()
-
-

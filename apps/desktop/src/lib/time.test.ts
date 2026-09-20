@@ -6,6 +6,7 @@ import {
   fmtMonth,
   fmtMonthYear,
   formatAgo,
+  formatSessionCreationDate,
   HOUR,
   MINUTE,
   nominalDayStart,
@@ -39,6 +40,24 @@ describe('formatAgo', () => {
 
   it('clamps future timestamps to "now"', () => {
     expect(ago(-HOUR)).toBe('now')
+  })
+})
+
+describe('formatSessionCreationDate', () => {
+  const now = new Date(2026, 8, 17, 12, 0, 0).getTime()
+
+  const secondsAt = (year: number, month: number, day: number) =>
+    Math.floor(new Date(year, month, day, 10, 30, 0).getTime() / 1000)
+
+  it('uses a compact numeric date and adds a two-digit year only for older sessions', () => {
+    expect(formatSessionCreationDate(secondsAt(2026, 8, 7), now)).toBe('9-7')
+    expect(formatSessionCreationDate(secondsAt(2025, 8, 7), now)).toBe('9-7-25')
+  })
+
+  it('omits absent and invalid creation timestamps', () => {
+    expect(formatSessionCreationDate(undefined, now)).toBeNull()
+    expect(formatSessionCreationDate(0, now)).toBeNull()
+    expect(formatSessionCreationDate(Number.NaN, now)).toBeNull()
   })
 })
 

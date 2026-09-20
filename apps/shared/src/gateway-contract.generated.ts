@@ -1878,6 +1878,20 @@ export interface ProjectsSetActiveParams {
 export interface ActiveIdResult {
   active_id?: string | null
 }
+export interface ProjectSessionAssignParams {
+  profile?: string | null
+  session_id: string
+  project: string
+}
+export interface ProjectSessionHomeResult {
+  lineage_root_id: string
+  project_id?: string | null
+  explicit: boolean
+}
+export interface ProjectSessionParams {
+  profile?: string | null
+  session_id: string
+}
 /** Absent ``cwd`` resolves the gateway's default completion cwd. */
 export interface ProjectsForCwdParams {
   profile?: string | null
@@ -4460,6 +4474,12 @@ export interface RpcMethods {
   'projects.record_repos': { params: ProjectsRecordReposParams; result: ProjectsRecordReposResult }
   /** Detach a folder from a project. */
   'projects.remove_folder': { params: ProjectFolderParams; result: ProjectResult }
+  /** Assign a session's compression lineage to one project. */
+  'projects.session.assign': { params: ProjectSessionAssignParams; result: ProjectSessionHomeResult }
+  /** Remove explicit membership so cwd inference applies again. */
+  'projects.session.release': { params: ProjectSessionParams; result: ProjectSessionHomeResult }
+  /** Explicitly place a session's compression lineage in Home (Unfiled). */
+  'projects.session.unfile': { params: ProjectSessionParams; result: ProjectSessionHomeResult }
   /** Switch (or clear) the active project for the profile. */
   'projects.set_active': { params: ProjectsSetActiveParams; result: ActiveIdResult }
   /** Make one attached folder the project's primary path. */
@@ -4766,6 +4786,9 @@ export const RPC_METHODS = [
   'projects.project_sessions',
   'projects.record_repos',
   'projects.remove_folder',
+  'projects.session.assign',
+  'projects.session.release',
+  'projects.session.unfile',
   'projects.set_active',
   'projects.set_primary',
   'projects.tree',

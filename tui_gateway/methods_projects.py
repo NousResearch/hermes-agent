@@ -10,11 +10,15 @@ method = _registry.method
 
 
 # JSON-RPC error codes: generic failure / id resolved to nothing / invalid argument.
-_E_PROJECTS, _E_NO_PROJECT, _E_PROJECT_ARG = 5061, 5062, 5063
+_E_PROJECTS, _E_NO_PROJECT, _E_PROJECT_ARG, _E_NO_SESSION = 5061, 5062, 5063, 5064
 
 
 class _NoProject(Exception):
     """Raised inside a projects handler when ``params['id']`` resolves to None."""
+
+
+class _NoSession(Exception):
+    """Raised when a session membership mutation cannot resolve the supplied segment."""
 
 
 def _projects_payload(conn) -> dict:
@@ -37,6 +41,8 @@ def _projects_method(name: str):
                     return fn(rid, params, pdb, conn)
             except _NoProject:
                 return _err(rid, _E_NO_PROJECT, "no such project")
+            except _NoSession:
+                return _err(rid, _E_NO_SESSION, "no such session")
             except ValueError as e:
                 return _err(rid, _E_PROJECT_ARG, str(e))
             except Exception as e:
@@ -55,6 +61,21 @@ def _require_project(pdb, conn, params: dict):
 
 def _pick(params: dict, *keys: str) -> dict:
     return {k: params.get(k) for k in keys}
+
+
+def _require_lineage_root(db, params: dict) -> str:
+    root_id = db.compression_lineage_root(str(params.get("session_id") or "")) if db else None
+    if root_id is None:
+        raise _NoSession
+    return root_id
+
+
+def _session_home_payload(root_id: str, project_id, *, explicit: bool) -> dict:
+    return {
+        "lineage_root_id": root_id,
+        "project_id": project_id,
+        "explicit": explicit,
+    }
 
 
 def _register_project_mutator(suffix: str, fn_name: str, takes_path: bool, kwargs_of) -> None:
@@ -116,6 +137,33 @@ def _(rid, params, pdb, conn) -> dict:
 def _(rid, params, pdb, conn) -> dict:
     pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
     return _ok(rid, {"active_id": pdb.get_active_id(conn)})
+
+
+@_projects_method("projects.session.assign")
+def _(rid, params, pdb, conn) -> dict:
+    with _profile_db(params) as db:
+        root_id = _require_lineage_root(db, params)
+    project = pdb.get_project(conn, str(params.get("project") or ""))
+    if project is None:
+        raise _NoProject
+    pdb.set_session_home(conn, root_id, project.id)
+    return _ok(rid, _session_home_payload(root_id, project.id, explicit=True))
+
+
+@_projects_method("projects.session.unfile")
+def _(rid, params, pdb, conn) -> dict:
+    with _profile_db(params) as db:
+        root_id = _require_lineage_root(db, params)
+    pdb.set_session_home(conn, root_id, None)
+    return _ok(rid, _session_home_payload(root_id, None, explicit=True))
+
+
+@_projects_method("projects.session.release")
+def _(rid, params, pdb, conn) -> dict:
+    with _profile_db(params) as db:
+        root_id = _require_lineage_root(db, params)
+    pdb.clear_session_home(conn, root_id)
+    return _ok(rid, _session_home_payload(root_id, None, explicit=False))
 
 
 @_projects_method("projects.for_cwd")
@@ -335,7 +383,7 @@ def _project_tree_row(r: dict) -> dict:
 
 def _project_tree_inputs(
     db, session_limit: int, *, include_discovered: bool
-) -> tuple[list[dict], list[dict], list[dict], str | None]:
+) -> tuple[list[dict], list[dict], list[dict], str | None, dict[str, str | None]]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
     ``include_discovered`` is the zero-session-repo overview tier; drill-in skips it (and
     the distinct-cwd scan + git probes) on that per-turn path."""
@@ -356,12 +404,13 @@ def _project_tree_inputs(
                 conn, policy_key, preserve_unversioned=_repo_discovery_policy_is_default(policy))
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
         active_id = pdb.get_active_id(conn)
+        session_homes = pdb.session_home_overrides(conn)
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = []
         if include_discovered:
             discovered = _discover_repos_payload(
                 db, conn=conn, backfill=False, include_cached=policy["enabled"])
-    return sessions, projects, discovered, active_id
+    return sessions, projects, discovered, active_id, session_homes
 
 
 # Per-build memo for `_dir_exists_cached`; cleared by every `_build_project_tree`.
@@ -382,7 +431,7 @@ def _build_project_tree(
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
     _DIR_EXISTS_CACHE.clear()
-    sessions, projects, discovered, active_id = _project_tree_inputs(
+    sessions, projects, discovered, active_id, session_homes = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered)
     # build_tree also resolves declared project folders and discovered roots — warm them too.
     git_probe.warm_roots(
@@ -391,7 +440,7 @@ def _build_project_tree(
     tree = project_tree.build_tree(
         projects, sessions, discovered, git_probe.resolve, preview_limit=preview_limit,
         hydrate=hydrate, is_junk_root=_is_repo_junk, is_junk_cwd=_is_session_cwd_junk,
-        exists=_dir_exists_cached)
+        exists=_dir_exists_cached, session_homes=session_homes)
     return tree, active_id
 
 

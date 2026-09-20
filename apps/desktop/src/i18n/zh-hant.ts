@@ -2320,7 +2320,7 @@ export const zhHant = defineLocale({
     projects: {
       showAllSessions: '顯示所有工作階段',
       sectionLabel: '專案',
-      home: '主頁',
+      home: '未歸檔',
       autoDiscovered: '自動探索',
       showAllCount: count => `顯示全部 ${count} 個工作階段`,
       newButton: '新增專案',

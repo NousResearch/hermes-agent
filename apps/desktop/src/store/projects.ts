@@ -579,11 +579,37 @@ interface WorkspaceMovePayload {
   git_repo_root?: null | string
 }
 
-// Re-home a stored session into another project's root folder — the fix for a
-// chat created in the wrong directory. The backend replaces cwd + git identity
-// (so the tree's grouping follows) and re-anchors any live agent bound to the
-// row; here we mirror the move into the `$sessions` cache so both the flat list
-// and the grouped tree reflect it before the next authoritative refresh.
+// Assign one compression lineage to an explicit project, or explicitly Unfiled
+// when projectId is null. This changes membership only: cwd and git identity
+// remain untouched. Await the authoritative tree so callers never mistake a
+// successful write for a locally inferred placement; failed writes propagate
+// without painting an optimistic tree.
+export async function assignSessionToProject(
+  sessionId: string,
+  projectId: null | string,
+  profile?: null | string
+): Promise<void> {
+  const targetProfile = normalizeProfileKey(profile || writableProjectProfile())
+  const context = await activeProjectsContext(targetProfile)
+  const params = projectParams({ session_id: sessionId }, context.profile)
+
+  if (projectId === null) {
+    await gatewayRequestOn(context.gateway, 'projects.session.unfile', params)
+  } else {
+    await gatewayRequestOn(context.gateway, 'projects.session.assign', { ...params, project: projectId })
+  }
+
+  // Reconciliation is best-effort and intentionally separate from the durable
+  // write: refreshProjectTree owns its own failure reporting and never turns a
+  // committed assignment into a false "move failed" result.
+  await refreshProjectTree()
+}
+
+// Re-home a stored session's WORKSPACE into another project's root folder —
+// the fix for a chat created in the wrong directory. Unlike explicit project
+// membership above, this replaces cwd + git identity and re-anchors any live
+// agent bound to the row; here we mirror that filesystem move into `$sessions`
+// before the next authoritative refresh.
 export async function moveSessionToProject(
   sessionId: string,
   projectId: string,

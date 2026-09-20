@@ -398,7 +398,8 @@ def build_tree(
     projects: list[dict], sessions: list[dict], discovered_repos: list[dict],
     resolve: Optional[Resolve] = None, *, preview_limit: int = 3, hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
-    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None) -> dict:
+    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None,
+    session_homes: Optional[dict[str, Optional[str]]] = None) -> dict:
     """Build the authoritative project tree -> ``{"projects", "scoped_session_ids"}``.
 
     ``is_junk_root`` flags git roots that must never become an AUTO project; ``is_junk_cwd``
@@ -411,9 +412,20 @@ def build_tree(
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     _exists = exists or (lambda _path: True)
     folder_index = _FolderIndex(active_projects)
+    active_by_id = {project["id"]: project for project in active_projects}
+    homes = session_homes or {}
     by_project: dict[str, list[dict]] = {}  # explicit project id -> owned rows
     unowned: list[dict] = []
+    forced_home: list[dict] = []
     for session in sessions:
+        lineage_root_id = session.get("_lineage_root_id") or session.get("id")
+        if lineage_root_id in homes:
+            owner = active_by_id.get(homes[lineage_root_id])
+            if owner is None:
+                forced_home.append(session)
+            else:
+                by_project.setdefault(owner["id"], []).append(session)
+            continue
         owner = _project_for_session(session, folder_index, resolve)
         (by_project.setdefault(owner["id"], []) if owner else unowned).append(session)
 
@@ -440,6 +452,7 @@ def build_tree(
 
     # Tier 2: auto projects from leftover sessions.
     by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists)
+    homeless = forced_home + homeless
     seen: set[str] = set()
     for bucket in by_auto_root.values():
         auto_root, auto_sessions = bucket["root"], bucket["sessions"]

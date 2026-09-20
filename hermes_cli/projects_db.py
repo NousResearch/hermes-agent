@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS project_folders (
 CREATE INDEX IF NOT EXISTS idx_project_folders_path
     ON project_folders(path);
 
+CREATE TABLE IF NOT EXISTS session_homes (
+    lineage_root_id  TEXT PRIMARY KEY,
+    project_id       TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    set_at           INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_homes_project_id
+    ON session_homes(project_id);
+
 CREATE TABLE IF NOT EXISTS project_meta (
     key    TEXT PRIMARY KEY,
     value  TEXT
@@ -370,6 +379,69 @@ def restore_project(conn: sqlite3.Connection, project_id: str) -> bool:
 def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
     """Hard-delete a project and its folders (cascade)."""
     return _execute_rowcount(conn, "DELETE FROM projects WHERE id = ?", (project_id,)) > 0
+
+
+# --- Explicit session-lineage membership -------------------------------------
+
+def set_session_home(
+    conn: sqlite3.Connection, lineage_root_id: str, project_id: Optional[str]
+) -> None:
+    """Assign a compression lineage to ``project_id``; ``None`` means explicit Unfiled."""
+    root_id = str(lineage_root_id or "").strip()
+    if not root_id:
+        raise ValueError("session lineage root must not be empty")
+    if project_id is not None and get_project(conn, project_id) is None:
+        raise ValueError(f"no such project: {project_id}")
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO session_homes (lineage_root_id, project_id, set_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(lineage_root_id) DO UPDATE SET "
+            "project_id = excluded.project_id, set_at = excluded.set_at",
+            (root_id, project_id, _now()),
+        )
+
+
+def clear_session_home(conn: sqlite3.Connection, lineage_root_id: str) -> bool:
+    """Remove an explicit assignment so cwd inference applies again."""
+    return _execute_rowcount(
+        conn, "DELETE FROM session_homes WHERE lineage_root_id = ?", (lineage_root_id,)
+    ) > 0
+
+
+def get_session_home_row(
+    conn: sqlite3.Connection, lineage_root_id: str
+) -> Optional[dict]:
+    """Return one assignment row, preserving absent-row vs nullable-project semantics."""
+    row = conn.execute(
+        "SELECT lineage_root_id, project_id, set_at FROM session_homes "
+        "WHERE lineage_root_id = ?",
+        (lineage_root_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def session_home_overrides(conn: sqlite3.Connection) -> dict[str, Optional[str]]:
+    """Return every lineage override in one query for project-tree construction."""
+    return {
+        row["lineage_root_id"]: row["project_id"]
+        for row in conn.execute(
+            "SELECT lineage_root_id, project_id FROM session_homes"
+        ).fetchall()
+    }
+
+
+def session_roots_for_project(
+    conn: sqlite3.Connection, project_id: str
+) -> list[str]:
+    """Lineage roots explicitly assigned to a project, oldest assignment first."""
+    return [
+        row["lineage_root_id"]
+        for row in conn.execute(
+            "SELECT lineage_root_id FROM session_homes WHERE project_id = ? "
+            "ORDER BY set_at ASC, lineage_root_id ASC",
+            (project_id,),
+        ).fetchall()
+    ]
 
 
 # --- Active-project pointer + discovery policy (project_meta KV) --------------

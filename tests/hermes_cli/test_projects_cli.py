@@ -57,5 +57,55 @@ def test_rename_and_archive(tmp_path):
         assert len(pdb.list_projects(conn)) == 1
 
 
+def test_session_membership_verbs_resolve_prefix_and_lineage_root(capsys, tmp_path):
+    from hermes_state import SessionDB
+
+    _run(["create", "App", str(tmp_path)])
+    capsys.readouterr()
+    db = SessionDB()
+    try:
+        db.create_session("session-root", source="cli", cwd=str(tmp_path))
+        db.end_session("session-root", "compression")
+        db.create_session(
+            "session-tip", source="cli", cwd=str(tmp_path),
+            parent_session_id="session-root",
+        )
+    finally:
+        db.close()
+
+    assert _run(["assign", "session-t", "app"]) == 0
+    assert "session-root" in capsys.readouterr().out
+    with pdb.connect_closing() as conn:
+        project = pdb.get_project(conn, "app")
+        assert pdb.session_home_overrides(conn) == {"session-root": project.id}
+
+    assert _run(["sessions", "app"]) == 0
+    assert "session-root" in capsys.readouterr().out
+
+    assert _run(["unfile", "session-t"]) == 0
+    with pdb.connect_closing() as conn:
+        assert pdb.session_home_overrides(conn) == {"session-root": None}
+
+    assert _run(["release", "session-r"]) == 0
+    with pdb.connect_closing() as conn:
+        assert pdb.session_home_overrides(conn) == {}
+
+
+def test_assign_rejects_unknown_session_and_project(capsys, tmp_path):
+    from hermes_state import SessionDB
+
+    _run(["create", "App", str(tmp_path)])
+    capsys.readouterr()
+    db = SessionDB()
+    try:
+        db.create_session("known-session", source="cli", cwd=str(tmp_path))
+    finally:
+        db.close()
+
+    assert _run(["assign", "missing", "app"]) == 2
+    assert "no unique session matches" in capsys.readouterr().err
+    assert _run(["assign", "known", "missing-project"]) == 1
+    assert "no such project" in capsys.readouterr().err
+
 
 

@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
+import { fmtDateTime } from '@/lib/time'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
@@ -255,6 +256,33 @@ describe('SidebarSessionRow', () => {
 
     const kebab = screen.getByRole('button', { name: 'Session actions' })
     expect(tipTrigger(kebab)).toBeNull()
+  })
+
+  it.each([
+    ['one-line', false],
+    ['inbox card', true]
+  ])('renders the started-at date before the title and outside its marquee in the %s variant', (_, card) => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 8, 17, 12, 0, 0))
+    const startedAt = Math.floor(new Date(2026, 8, 7, 10, 30, 0).getTime() / 1000)
+    const lastActive = Math.floor(new Date(2026, 8, 16, 18, 0, 0).getTime() / 1000)
+    const title = 'Stable creation date'
+
+    renderRow(makeSession({ last_active: lastActive, started_at: startedAt, title }), { card })
+
+    const created = screen.getByText('9-7')
+    const titleTip = screen.getByText(title).closest('[data-slot="tooltip-trigger"]') as HTMLElement
+    const fullTimestamp = fmtDateTime.format(new Date(startedAt * 1000))
+
+    expect(created.tagName).toBe('TIME')
+    expect(created.getAttribute('datetime')).toBe(new Date(startedAt * 1000).toISOString())
+    expect(created.getAttribute('aria-label')).toBe(fullTimestamp)
+    expect(created.getAttribute('title')).toBeNull()
+    expect(created.className).toMatch(/tabular-nums/)
+    expect(tipTrigger(created)).toBeTruthy()
+    expect(titleTip).toBeTruthy()
+    expect(titleTip.contains(created)).toBe(false)
+    expect(created.compareDocumentPosition(titleTip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   // Full-title tooltip on hover (#83000-class ask): the label is a tooltip

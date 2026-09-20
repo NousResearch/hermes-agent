@@ -2332,7 +2332,7 @@ export const ja = defineLocale({
     projects: {
       showAllSessions: 'すべてのセッションを表示',
       sectionLabel: 'プロジェクト',
-      home: 'ホーム',
+      home: '未分類',
       autoDiscovered: '自動検出',
       showAllCount: count => `${count} 件のセッションをすべて表示`,
       newButton: '新規プロジェクト',

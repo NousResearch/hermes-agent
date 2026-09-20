@@ -32,7 +32,8 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import { normalizeProfileKey } from '@/store/profile'
+import { $projectTree, assignSessionToProject, projectProfile } from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -144,40 +145,41 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
   )
 }
 
+export function canManageSessionProjects(rowProfile: string | undefined, activeProfile: null | string): boolean {
+  const owner = rowProfile ? normalizeProfileKey(rowProfile) : null
+
+  return !owner || (!!activeProfile && owner === normalizeProfileKey(activeProfile))
+}
+
 // The project list inside the session menu's "Move to project" submenu. Its own
-// component so only an OPEN submenu subscribes to the stores (same reasoning as
-// SessionColorSwatches). Re-homes the session's workspace at the target
-// project's root — the fix for a chat created in the wrong folder. The current
-// owner and folderless projects (the Home bucket) are excluded: there is
-// nothing to move into.
+// component so only an OPEN submenu subscribes to the store (same reasoning as
+// SessionColorSwatches). This writes explicit membership only; it does not move
+// the session's cwd. Auto-discovered repo pseudo-projects are inferred from cwd
+// and the synthetic Unfiled bucket has its own explicit action below.
 function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const tree = useStore($projectTree)
-  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
-  const cwd = session?.cwd?.trim() || ''
-  const currentProjectId = cwd ? projectIdForCwd(cwd) : null
-  const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+  const canAssign = canManageSessionProjects(profile, projectProfile())
+  const targets = canAssign ? tree.filter(node => !node.isAuto && !node.isNoProject) : []
 
-  if (targets.length === 0) {
-    return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
+  const assign = (projectId: null | string, label: string) => {
+    triggerHaptic('selection')
+    assignSessionToProject(sessionId, projectId, profile)
+      .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(label) }))
+      .catch(err => notifyError(err, p.moveFailed))
   }
 
   return (
     <>
+      {targets.length === 0 && <kit.Item disabled>{p.moveNoProjects}</kit.Item>}
       {targets.map(node => (
-        <kit.Item
-          key={node.id}
-          onSelect={() => {
-            triggerHaptic('selection')
-            moveSessionToProject(sessionId, node.id, profile)
-              .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(node.label) }))
-              .catch(err => notifyError(err, p.moveFailed))
-          }}
-        >
+        <kit.Item key={node.id} onSelect={() => assign(node.id, node.label)}>
           {node.label}
         </kit.Item>
       ))}
+      {canAssign && targets.length > 0 && <kit.Separator />}
+      {canAssign && <kit.Item onSelect={() => assign(null, p.home)}>{p.home}</kit.Item>}
     </>
   )
 }

@@ -59,6 +59,9 @@ def test_methods_registered():
         "projects.archive",
         "projects.set_active",
         "projects.for_cwd",
+        "projects.session.assign",
+        "projects.session.unfile",
+        "projects.session.release",
     ):
         assert m in server._methods
 
@@ -698,6 +701,20 @@ def _create_session(home: Path, session_id: str, cwd: Path) -> None:
         db.close()
 
 
+def _create_compression_lineage(home: Path, root_id: str, tip_id: str, cwd: Path) -> None:
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session(root_id, "cli", cwd=str(cwd))
+        db.append_message(root_id, "user", f"hello from {root_id}")
+        db.end_session(root_id, "compression")
+        db.create_session(tip_id, "cli", cwd=str(cwd), parent_session_id=root_id)
+        db.append_message(tip_id, "user", f"hello from {tip_id}")
+    finally:
+        db.close()
+
+
 @contextlib.contextmanager
 def _serving_launch_profile(launch_home: Path):
     """Run the handlers as a backend launched under ``launch_home``."""
@@ -721,6 +738,117 @@ def _cached_repo_labels(home: Path) -> list[str]:
 
     with pdb.connect_closing(home / "projects.db") as conn:
         return sorted(str(entry.get("label") or "") for entry in pdb.list_discovered_repos(conn))
+
+
+def test_session_membership_rpc_roundtrip_uses_compression_root(monkeypatch, tmp_path):
+    from hermes_cli import projects_db as pdb
+
+    home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "app"
+    repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": home})
+    project = _create_project(home, "App", repo)
+    _create_compression_lineage(home, "root", "tip", repo)
+
+    with _serving_launch_profile(home):
+        assigned = _call(
+            "projects.session.assign",
+            {"session_id": "tip", "project": project["slug"]},
+        )
+        unfiled = _call("projects.session.unfile", {"session_id": "tip"})
+        released = _call("projects.session.release", {"session_id": "root"})
+
+        missing_session = server._methods["projects.session.unfile"](
+            2, {"session_id": "missing"}
+        )
+        missing_project = server._methods["projects.session.assign"](
+            3, {"session_id": "tip", "project": "missing"}
+        )
+
+    assert assigned == {
+        "lineage_root_id": "root",
+        "project_id": project["id"],
+        "explicit": True,
+    }
+    assert unfiled == {
+        "lineage_root_id": "root",
+        "project_id": None,
+        "explicit": True,
+    }
+    assert released == {
+        "lineage_root_id": "root",
+        "project_id": None,
+        "explicit": False,
+    }
+    assert missing_session["error"]["message"] == "no such session"
+    assert missing_project["error"]["message"] == "no such project"
+    with pdb.connect_closing(home / "projects.db") as conn:
+        assert pdb.get_session_home_row(conn, "root") is None
+
+
+def test_session_membership_rpc_is_profile_scoped_a_b_a(monkeypatch, tmp_path):
+    from hermes_cli import projects_db as pdb
+
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "launch-membership"
+    coder_repo = tmp_path / "repos" / "coder-membership"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+    launch_project = _create_project(launch_home, "Launch", launch_repo)
+    coder_project = _create_project(coder_home, "Coder", coder_repo)
+    _create_session(launch_home, "same-session", launch_repo)
+    _create_session(coder_home, "same-session", coder_repo)
+
+    with _serving_launch_profile(launch_home):
+        first_a = _call(
+            "projects.session.assign",
+            {"session_id": "same-session", "project": launch_project["id"]},
+        )
+        only_b = _call(
+            "projects.session.assign",
+            {"profile": "coder", "session_id": "same-session", "project": coder_project["id"]},
+        )
+        second_a = _call("projects.session.unfile", {"session_id": "same-session"})
+
+    assert first_a["project_id"] == launch_project["id"]
+    assert only_b["project_id"] == coder_project["id"]
+    assert second_a["project_id"] is None
+    with pdb.connect_closing(launch_home / "projects.db") as conn:
+        assert pdb.session_home_overrides(conn) == {"same-session": None}
+    with pdb.connect_closing(coder_home / "projects.db") as conn:
+        assert pdb.session_home_overrides(conn) == {"same-session": coder_project["id"]}
+
+
+def test_projects_tree_reads_session_home_overrides_once(monkeypatch, tmp_path):
+    from hermes_cli import projects_db as pdb
+
+    home = _profile_dir(tmp_path, "launch")
+    owned_repo = tmp_path / "repos" / "owned"
+    other_repo = tmp_path / "repos" / "other"
+    owned_repo.mkdir(parents=True)
+    other_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": home})
+    project = _create_project(home, "Owned", owned_repo)
+    _create_session(home, "move-me", other_repo)
+    with pdb.connect_closing(home / "projects.db") as conn:
+        pdb.set_session_home(conn, "move-me", project["id"])
+
+    real_bulk = pdb.session_home_overrides
+    calls = []
+
+    def counted(conn):
+        calls.append(True)
+        return real_bulk(conn)
+
+    monkeypatch.setattr(pdb, "session_home_overrides", counted)
+    with _serving_launch_profile(home):
+        tree = _call("projects.tree")
+
+    assert calls == [True]
+    explicit = next(item for item in tree["projects"] if item["id"] == project["id"])
+    assert explicit["sessionCount"] == 1
 
 
 def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_path):
@@ -886,5 +1014,4 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert _cached_repo_labels(launch_home) == ["only"]
     assert not (coder_home / "projects.db").exists()
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
-
 

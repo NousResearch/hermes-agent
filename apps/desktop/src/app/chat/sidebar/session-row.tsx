@@ -21,7 +21,7 @@ import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
-import { coarseElapsed } from '@/lib/time'
+import { coarseElapsed, fmtDateTime, formatSessionCreationDate } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
@@ -147,6 +147,9 @@ function SidebarSessionRowImpl({
   const r = t.sidebar.row
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
+  const creationDate = formatSessionCreationDate(session.started_at)
+  const createdAt = creationDate ? new Date(session.started_at * 1000) : null
+  const creationTimestamp = createdAt ? fmtDateTime.format(createdAt) : null
   const density = useStore($sessionListDensity)
   const fmt = t.sidebar
 
@@ -336,6 +339,18 @@ function SidebarSessionRowImpl({
     </div>
   )
 
+  const creationPrefix = creationDate && createdAt && creationTimestamp && (
+    <Tip label={creationTimestamp} placement="row">
+      <time
+        aria-label={creationTimestamp}
+        className="shrink-0 tabular-nums text-[0.625rem] font-normal text-(--ui-text-quaternary) [unicode-bidi:isolate]"
+        dateTime={createdAt.toISOString()}
+      >
+        {creationDate}
+      </time>
+    </Tip>
+  )
+
   return (
     <SessionContextMenu
       onArchive={onArchive}
@@ -501,15 +516,18 @@ function SidebarSessionRowImpl({
                   {leadNode}
                   {handoffBadge}
                   <span className="min-w-0 flex-1 self-center">
-                    <OverflowTip label={title} placement="row">
-                      <SidebarRowLabel
-                        className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
-                        onPointerEnter={armMarquee}
-                        onPointerLeave={disarmMarquee}
-                      >
-                        <span className="hover-marquee-inner">{title}</span>
-                      </SidebarRowLabel>
-                    </OverflowTip>
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                      {creationPrefix}
+                      <OverflowTip label={title} placement="row">
+                        <SidebarRowLabel
+                          className="hover-marquee block flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                          onPointerEnter={armMarquee}
+                          onPointerLeave={disarmMarquee}
+                        >
+                          <span className="hover-marquee-inner">{title}</span>
+                        </SidebarRowLabel>
+                      </OverflowTip>
+                    </span>
                     {/* Session-list density (#68119): comfortable adds one
                         deterministic metadata line; detailed adds the initial
                         request preview. Compact keeps today's one-line row. */}
@@ -561,18 +579,21 @@ function SidebarSessionRowImpl({
                 {/* Title + preview: ONE grouped cell with its own tight
                     internal gap — it does not inherit the card's rhythm. */}
                 <div className="flex min-w-0 flex-col gap-[0.15rem]">
-                  <OverflowTip label={title} placement="row">
-                    <SidebarRowLabel
-                      className={cn(
-                        'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
-                        SIDEBAR_TRUNCATED_LEADING
-                      )}
-                      onPointerEnter={armMarquee}
-                      onPointerLeave={disarmMarquee}
-                    >
-                      <span className="hover-marquee-inner">{title}</span>
-                    </SidebarRowLabel>
-                  </OverflowTip>
+                  <div className="flex min-w-0 items-baseline gap-1.5">
+                    {creationPrefix}
+                    <OverflowTip label={title} placement="row">
+                      <SidebarRowLabel
+                        className={cn(
+                          'hover-marquee flex-1 text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
+                          SIDEBAR_TRUNCATED_LEADING
+                        )}
+                        onPointerEnter={armMarquee}
+                        onPointerLeave={disarmMarquee}
+                      >
+                        <span className="hover-marquee-inner">{title}</span>
+                      </SidebarRowLabel>
+                    </OverflowTip>
+                  </div>
                   {session.preview && rowMeta.includes('preview') ? (
                     <span
                       className={cn(

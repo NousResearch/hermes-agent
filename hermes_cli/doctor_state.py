@@ -165,12 +165,13 @@ _WRITE_PROBE_SNAPSHOT_MAX_BYTES = 1 << 30
 
 def _write_health_reason(state_db_path: Path, *, should_fix: bool):
     """FTS/write-health probe (a rolled-back BEGIN IMMEDIATE). Against a store a live writer holds,
-    that probe is the second-writer class (#103339), so probe a read-only snapshot instead; a quiet
-    store is probed in place. Returns the failure reason, or None when healthy or skipped."""
+    that probe is the second-writer class (#103339). Plain doctor always probes a read-only snapshot;
+    ``--fix`` may probe a quiet store in place. Returns the failure reason, or None when healthy or skipped."""
     from hermes_state_repair import _db_opens_cleanly, _live_writer_holds_db
-    if not _live_writer_holds_db(state_db_path):
+    held = _live_writer_holds_db(state_db_path)
+    if should_fix and not held:
         return _db_opens_cleanly(state_db_path)
-    if not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
+    if held and not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
         check_info("state.db write-health probe skipped: store is held by a live writer and larger than 1 GB "
                    "(run 'hermes doctor --fix' to probe it)")
         return None

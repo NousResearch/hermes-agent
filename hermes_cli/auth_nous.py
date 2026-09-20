@@ -1266,7 +1266,7 @@ def get_nous_session_validity() -> str:
 
 def _pool_first_oauth_status(
     provider_id: str, *, is_expiring: Callable[[str, int], bool], auth_mode: str,
-    resolve: Callable[[], Dict[str, Any]],
+    resolve: Optional[Callable[[], Dict[str, Any]]],
     on_pool_miss: Optional[Callable[[], Optional[Dict[str, Any]]]] = None) -> Dict[str, Any]:
     """Status snapshot for a store-backed OAuth provider (Codex, xAI).
 
@@ -1292,6 +1292,20 @@ def _pool_first_oauth_status(
                 return degraded
     except Exception:
         pass
+    if resolve is None:
+        try:
+            from hermes_cli.auth import get_provider_auth_state
+            state = get_provider_auth_state(provider_id) or {}
+            api_key = state.get("access_token") or state.get("api_key") or ""
+            if api_key and not is_expiring(api_key, 0):
+                return {
+                    "logged_in": True, "auth_store": str(_auth_file_path()),
+                    "last_refresh": state.get("last_refresh"), "auth_mode": auth_mode,
+                    "source": "auth_store", "api_key": api_key,
+                }
+            return {"logged_in": False, "auth_store": str(_auth_file_path())}
+        except Exception as exc:
+            return {"logged_in": False, "auth_store": str(_auth_file_path()), "error": str(exc)}
     try:
         creds = resolve()
         return {

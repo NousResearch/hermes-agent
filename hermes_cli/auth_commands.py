@@ -3,8 +3,6 @@
 from __future__ import annotations
 from hermes_cli.cli_output import line_input
 
-import asyncio
-import inspect
 import math
 import sys
 import time
@@ -16,11 +14,13 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _codex_principal_identity,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth_plugin_providers import (
+    dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -87,83 +87,6 @@ def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     return (_PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized)
             or auth_mod._plugin_aliases().get(normalized) or normalized)
-
-
-# ── Provider-owned interactive auth ──────────────────────────────────────────
-# A `kind: model-provider` plugin can set ``ProviderProfile.auth_handler`` and own
-# the interactive login flow for its provider (device-code, OIDC, …) without
-# shipping a second standalone command plugin — model-provider manifests are
-# skipped by the generic command-plugin loader on purpose. The four actions
-# below consult that handler FIRST; a provider without one (or a handler that
-# declines an action by returning falsy) keeps the built-in behavior untouched.
-
-def _provider_auth_handler(provider: str) -> tuple[Any, Callable | None]:
-    """Return ``(profile, handler)`` when *provider*'s plugin owns its own auth.
-
-    ``(None, None)`` when no profile is registered for the name, ``(profile,
-    None)`` when one is registered without an auth handler.
-    """
-    try:
-        from providers import get_provider_profile
-    except Exception:  # provider layer unavailable — built-in path only
-        return None, None
-    profile = get_provider_profile(provider)
-    handler = profile.auth_handler if profile is not None else None
-    return (profile, handler) if callable(handler) else (profile, None)
-
-
-def _await_from_sync(coro):
-    """Run a provider handler's coroutine from the sync CLI path.
-
-    Safe inside a running loop too (gateway/embedded callers) — same idiom as
-    ``agent.context_references.preprocess_context_references``.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
-
-
-def _dispatch_provider_auth(action: str, args, provider: str) -> bool:
-    """Offer ``hermes auth <action> <provider>`` to the provider's auth handler.
-
-    Returns True when the provider owned the action (core prints nothing more
-    and returns); False when the caller must run the built-in path. A handler
-    that fails becomes a readable ``SystemExit`` naming provider and action
-    instead of a raw traceback.
-    """
-    _profile, handler = _provider_auth_handler(provider)
-    if handler is None:
-        return False
-    try:
-        result = handler(action, args)
-        if inspect.isawaitable(result):
-            result = _await_from_sync(result)
-    except SystemExit:
-        raise
-    except Exception as exc:
-        raise SystemExit(
-            f"{provider} auth handler failed for `{action}`: {type(exc).__name__}: {exc}"
-        ) from exc
-    return bool(result)
-
-
-def _unknown_provider_error(provider: str, action: str) -> SystemExit:
-    """The existing ``Unknown provider`` exit, with a hint for plugin providers.
-
-    A registered model-provider profile that reaches this point offers no
-    ``auth_handler`` for the requested action (or declined it) — say so rather
-    than pretending the provider is unknown.
-    """
-    profile, _handler = _provider_auth_handler(provider)
-    if profile is not None:
-        return SystemExit(
-            f"Unknown provider: {provider} — the `{profile.name}` model-provider plugin does "
-            f"not provide auth handling for `hermes auth {action} {provider}`.")
-    return _unknown_provider_exit(provider)
 
 
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
@@ -453,11 +376,13 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    if _dispatch_provider_auth("add", args, provider):
+    if dispatch_plugin_auth("add", args, provider):
         return
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise _unknown_provider_error(provider, "add")
+        raise _unknown_provider_exit(provider)
+    if (error := plugin_missing_auth_handler_error(provider, "add")) is not None:
+        raise error
     if configured_provider is not None:
         _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
 
@@ -681,7 +606,7 @@ def auth_refresh_command(args) -> None:
     429s and benches it again. Failure leaves the pool's own verdict in place.
     """
     provider = _normalize_provider(getattr(args, "provider", ""))
-    if _dispatch_provider_auth("refresh", args, provider):
+    if dispatch_plugin_auth("refresh", args, provider):
         return
     target = getattr(args, "target", None)
     pool = load_pool(provider)
@@ -698,7 +623,7 @@ def auth_refresh_command(args) -> None:
         index, matched, error = pool.resolve_target(target)
         if matched is None or index is None:
             raise SystemExit(f"{error} Provider: {provider}.")
-    if (provider not in REFRESHABLE_OAUTH_PROVIDERS or matched.auth_type != AUTH_TYPE_OAUTH
+    if (not is_refreshable_oauth_provider(provider) or matched.auth_type != AUTH_TYPE_OAUTH
             or not matched.refresh_token):
         raise SystemExit(
             f"{provider} credential #{index} ({matched.label}) is not a refreshable OAuth "
@@ -731,7 +656,7 @@ def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
-    if _dispatch_provider_auth("status", args, provider):
+    if dispatch_plugin_auth("status", args, provider):
         return
     status = auth_mod.get_auth_status(provider)
     if status.get("free_tier"):
@@ -757,7 +682,7 @@ def auth_logout_command(args) -> None:
     # The built-in path keeps receiving the raw provider id (byte-for-byte
     # unchanged); the normalized alias is used only for the handler lookup.
     raw_provider = getattr(args, "provider", None)
-    if _dispatch_provider_auth("logout", args, _normalize_provider(raw_provider or "")):
+    if dispatch_plugin_auth("logout", args, _normalize_provider(raw_provider or "")):
         return
     auth_mod.logout_command(SimpleNamespace(provider=raw_provider))
 
@@ -866,11 +791,13 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
-    if _dispatch_provider_auth("add", SimpleNamespace(provider=provider), provider):
+    if dispatch_plugin_auth("add", SimpleNamespace(provider=provider), provider):
         return
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise _unknown_provider_error(provider, "add")
+        raise _unknown_provider_exit(provider)
+    if (error := plugin_missing_auth_handler_error(provider, "add")) is not None:
+        raise error
 
     auth_type = "api_key"
     if provider in _OAUTH_CAPABLE_PROVIDERS:

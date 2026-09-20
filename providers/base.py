@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -58,15 +58,14 @@ class ProviderProfile:
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
 
-    # ── Provider-owned interactive auth (optional) ────────────
-    # Lets a `kind: model-provider` plugin own its own login flow instead of
-    # shipping a second command plugin. When set, `hermes auth <action> <name>`
-    # (action ∈ add|status|logout|refresh) calls it FIRST as
-    # ``auth_handler(action, args)`` — ``args`` is the parsed CLI namespace — and
-    # only falls back to the built-in credential-pool flow when the handler
-    # returns falsy. Sync or async (a returned awaitable is awaited). The
-    # handler owns its own credential storage; Hermes passes no secrets to it.
-    auth_handler: Any = None
+    # ── Provider-owned auth (optional; non-api-key plugins) ──────────
+    # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
+    # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
+    # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
+    # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
+    # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
+    auth_handler: Callable[[str, Any], Any] | None = None
+    refresh_credential: Callable[[Any], Any] | None = None
 
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside

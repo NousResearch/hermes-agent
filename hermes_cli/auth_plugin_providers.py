@@ -1,0 +1,152 @@
+"""Model-provider plugins as first-class citizens of ``hermes auth`` and the credential pool.
+
+A ``plugins/model-providers/<name>/`` profile (``providers.base.ProviderProfile``) is mirrored into
+``hermes_cli.auth.PROVIDER_REGISTRY`` with the ``auth_type`` it declares, so ``resolve_provider()``
+accepts it whatever its auth shape. Non-api-key plugins own their login through two optional profile
+callables that core consults BEFORE any built-in, name-keyed path:
+
+- ``auth_handler(action, args) -> bool`` for ``hermes auth add|status|logout|refresh <name>``
+  (``args`` is the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path).
+- ``refresh_credential(entry) -> Mapping | None`` for the credential pool: given the pooled
+  ``PooledCredential`` it returns the rotated fields (``access_token``, ``refresh_token``,
+  ``expires_at_ms`` …) or raises. A separate hook rather than ``auth_handler("refresh", …)`` because
+  the pool has a credential row, not an argparse namespace, and needs tokens back, not a bool.
+
+Every function here late-imports ``hermes_cli.auth`` names: this module is imported by the auth facade
+right after ``PROVIDER_REGISTRY`` exists, and by ``agent.credential_pool``.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
+
+# Providers handled outside the registry: copilot/kimi/zai have bespoke token refresh in auth.py;
+# openrouter/custom are aggregator/user-supplied and runtime_provider relies on
+# ``openrouter not in PROVIDER_REGISTRY``.
+_REGISTRY_PLUGIN_SKIP = frozenset({"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"})
+
+PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
+
+
+def register_plugin_provider(pp: Any) -> None:
+    """Mirror one profile into ``PROVIDER_REGISTRY`` under the ``auth_type`` it declares.
+
+    Registering is what lets an out-of-tree provider pass ``resolve_provider()``'s known-provider
+    gate ("Unknown provider"); OAuth-shaped plugins carry their own login via ``auth_handler``.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig, _api_key_provider
+
+    if pp.name in _REGISTRY_PLUGIN_SKIP:
+        return
+    if pp.auth_type == "api_key":
+        if not pp.env_vars:
+            return
+        is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
+        pconfig = _api_key_provider(
+            pp.name, pp.display_name or pp.name, pp.base_url,
+            tuple(v for v in pp.env_vars if not is_url(v)) or pp.env_vars,
+            next((v for v in pp.env_vars if is_url(v)), None) or "")
+    else:
+        pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, pp.auth_type, inference_base_url=pp.base_url)
+    PROVIDER_REGISTRY[pp.name] = pconfig
+    for alias in pp.aliases:  # so resolve_provider() resolves them too
+        PROVIDER_REGISTRY.setdefault(alias, pconfig)
+
+
+def sync_plugin_provider_registry() -> int:
+    """Mirror provider-plugin profiles into ``PROVIDER_REGISTRY``; return how many were added.
+
+    Idempotent (existing entries are never replaced), so it is safe from resolution paths. It runs at
+    auth import and again whenever a name is missing (:func:`registry_lookup`) or when ``providers``
+    finishes discovery, because the import-time pass can observe a *partial* profile list: a plugin
+    whose own imports pull ``hermes_cli.auth`` in mid-``_discover_providers()`` sees only what was
+    registered so far, and every later plugin would otherwise fail with "Unknown provider" (#102123).
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    try:
+        from providers import list_providers
+        profiles = list_providers()
+    except Exception:
+        return 0
+    added = 0
+    for pp in profiles:
+        if pp.name in PROVIDER_REGISTRY:
+            continue
+        register_plugin_provider(pp)
+        added += pp.name in PROVIDER_REGISTRY
+    return added
+
+
+def registry_lookup(provider_id: str) -> Optional[Any]:
+    """``PROVIDER_REGISTRY.get`` that re-syncs plugin profiles on a miss."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if pconfig is None and sync_plugin_provider_registry():
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+    return pconfig
+
+
+def plugin_profile(provider: str) -> Optional[Any]:
+    """The registered ``ProviderProfile`` for *provider*, or None (also when the layer is unavailable)."""
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return None
+    return get_provider_profile(provider)
+
+
+def _profile_hook(provider: str, name: str) -> Optional[Callable[..., Any]]:
+    hook = getattr(plugin_profile(provider), name, None)
+    return hook if callable(hook) else None
+
+
+def plugin_auth_handler(provider: str) -> Optional[Callable[[str, Any], Any]]:
+    return _profile_hook(provider, "auth_handler")
+
+
+def plugin_refresh_hook(provider: str) -> Optional[Callable[[Any], Any]]:
+    """The profile's ``refresh_credential`` hook, i.e. whether its pooled OAuth rows are refreshable."""
+    return _profile_hook(provider, "refresh_credential")
+
+
+def is_refreshable_oauth_provider(provider: str) -> bool:
+    """Built-in refreshable set OR a plugin profile shipping ``refresh_credential``."""
+    from agent.credential_pool import REFRESHABLE_OAUTH_PROVIDERS
+
+    return provider in REFRESHABLE_OAUTH_PROVIDERS or plugin_refresh_hook(provider) is not None
+
+
+def dispatch_plugin_auth(action: str, args: Any, provider: str) -> bool:
+    """Offer ``hermes auth <action> <provider>`` to the provider's ``auth_handler``.
+
+    True = the plugin owned the action (core prints nothing more). False = run the built-in path. A
+    handler exception becomes a readable ``SystemExit`` naming provider and action.
+    """
+    handler = plugin_auth_handler(provider)
+    if handler is None:
+        return False
+    try:
+        return bool(handler(action, args))
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(f"{provider} auth handler failed for `{action}`: {type(exc).__name__}: {exc}") from exc
+
+
+def plugin_missing_auth_handler_error(provider: str, action: str) -> Optional[SystemExit]:
+    """Fail loud for a registered non-api-key plugin that ships no ``auth_handler``.
+
+    Its login is not something core can perform (there is no token endpoint to call), and silently
+    running the api-key prompt or reporting "Unknown provider" both hide the plugin bug.
+    """
+    profile = plugin_profile(provider)
+    if profile is None or profile.auth_type == "api_key" or plugin_auth_handler(provider) is not None:
+        return None
+    return SystemExit(
+        f"Provider '{provider}' declares auth_type '{profile.auth_type}' but its plugin ships no "
+        f"auth_handler, so `hermes auth {action} {provider}` cannot be handled. Add "
+        "`auth_handler=` to its ProviderProfile (see the model-provider plugin guide).")

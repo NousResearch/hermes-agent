@@ -100,7 +100,8 @@ Full definition in `providers/base.py`. The most useful ones:
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
-| `auth_handler` | `Callable \| None` | Optional provider-owned interactive auth for `hermes auth add/status/logout/refresh <name>` — see [Provider-owned interactive auth](#provider-owned-interactive-auth-auth_handler) |
+| `auth_handler` | `Callable \| None` | Provider-owned `hermes auth add/status/logout/refresh <name>` — see [Provider-owned auth](#provider-owned-auth-auth_handler-refresh_credential) |
+| `refresh_credential` | `Callable \| None` | Provider-owned rotation of a pooled OAuth row — same section |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
@@ -220,60 +221,76 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `auth_type` | Meaning | Who uses it |
 |---|---|---|
 | `api_key` | Single env var carries a static API key | Most providers |
-| `oauth_device_code` | Device-code OAuth flow | — |
+| `oauth_device_code` | Device-code OAuth flow | Nous Portal; out-of-tree plugins via `auth_handler` |
 | `oauth_external` | User signs in elsewhere, tokens land in `auth.json` | Anthropic OAuth, MiniMax OAuth, Qwen Portal, Nous Portal |
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
 | `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
 | `external_process` | Auth handled by a subprocess the agent spawns (see [External-process providers](#external-process-acp-providers)) | `copilot-acp` plugin, out-of-tree ACP plugins |
 
-`auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.
+Every profile is mirrored into Hermes' auth registry under the `auth_type` it declares, so `hermes auth`,
+`--provider <name>` and runtime resolution accept it whatever its shape. What differs is who performs the
+login: `api_key` profiles get the built-in key prompt / env-var resolution; every other `auth_type` is
+**provider-owned** — the plugin ships the two hooks below, and a non-api-key profile without an
+`auth_handler` makes `hermes auth add <name>` fail with a clear "ships no auth_handler" error instead of
+silently doing nothing.
 
-## Provider-owned interactive auth (`auth_handler`)
+## Provider-owned auth (`auth_handler`, `refresh_credential`)
 
-`auth_type` describes *what kind* of credential a provider needs; `auth_handler` is how the
-plugin **acquires** it — its own device-code / OIDC / IdC flow inside the existing `hermes auth`
-command family, with no second standalone command plugin (model-provider manifests are skipped by
-the generic command-plugin loader, so `register(ctx)` is not the way to add commands).
+`auth_type` describes *what kind* of credential a provider needs; `auth_handler` is how the plugin
+**acquires** it — its own device-code / OIDC / IdC flow inside the existing `hermes auth` command family
+(model-provider manifests are skipped by the generic command-plugin loader, so `register(ctx)` is not the
+way to add commands). `refresh_credential` is how the credential pool **rotates** a pooled token the plugin
+stored.
 
 ```python
+import uuid
 from providers import register_provider
 from providers.base import ProviderProfile
 
 
-def kiro_auth(action: str, args) -> bool:
+def example_auth(action: str, args) -> bool:
     """action: "add" | "status" | "logout" | "refresh"; args: parsed CLI namespace."""
     if action == "add":
-        start_url = input("IdC start URL: ").strip()   # provider-specific inputs
-        creds = run_device_code_flow(start_url)
-        save_my_credentials(creds)                     # the plugin owns its own storage
-        print("Signed in to Kiro.")
+        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        tokens = run_device_code_flow()                      # provider-specific
+        load_pool("example-oauth").add_entry(PooledCredential(
+            provider="example-oauth", id=uuid.uuid4().hex[:6], label=tokens["account"],
+            auth_type=AUTH_TYPE_OAUTH, priority=0, source="manual:example_device",
+            access_token=tokens["access_token"], refresh_token=tokens["refresh_token"],
+            extra={"tenant": tokens["tenant"]}))             # any extra keys round-trip through auth.json
+        print("Signed in to Example.")
         return True
     if action == "status":
-        print("kiro: " + ("logged in" if load_my_credentials() else "logged out"))
+        print("example-oauth: " + ("logged in" if load_pool("example-oauth").entries() else "logged out"))
         return True
     return False   # decline → this action stays with the built-in credential-pool handling
 
 
+def example_refresh(entry):
+    """Called by the credential pool with the pooled row; return the rotated fields or raise."""
+    tokens = post_refresh(entry.refresh_token)
+    return {"access_token": tokens["access_token"], "refresh_token": tokens["refresh_token"],
+            "expires_at_ms": tokens["expires_at_ms"]}
+
+
 register_provider(ProviderProfile(
-    name="kiro", auth_type="oauth_device_code", auth_handler=kiro_auth))
+    name="example-oauth", auth_type="oauth_external", base_url="https://api.example.com/v1",
+    auth_handler=example_auth, refresh_credential=example_refresh))
 ```
 
 | Contract | |
 |---|---|
-| Signature | `auth_handler(action, args)` — `args` is the parsed `hermes auth` namespace |
-| Return | truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action** |
-| Async | a returned awaitable is awaited, so `async def` handlers work |
-| Failure | an exception becomes `SystemExit("<provider> auth handler failed for `<action>`: ValueError: …")` |
-| No handler | `hermes auth <action> <provider>` behaves exactly as it did before the seam |
+| `auth_handler(action, args)` | `args` is the parsed `hermes auth` namespace. Truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action**. An exception becomes `SystemExit("<provider> auth handler failed for `<action>`: …")`. |
+| `refresh_credential(entry)` | Receives the `PooledCredential`; returns a mapping of rotated fields (`access_token`, `refresh_token`, `expires_at_ms`, …) applied to the row, or raises (the pool benches the row). Its presence is what makes the provider *refreshable* — `hermes auth refresh <name>` and the 401 recovery paths (main loop and auxiliary client) call it; no core name list is involved. |
+| No hooks | `api_key` profiles behave exactly as before. Any other `auth_type` without `auth_handler` fails loud on `hermes auth add`. |
 
-`hermes auth add|status|logout|refresh <provider>` consults the handler **first** — before the
-known-provider gate and before the credential pool — so a provider Hermes does not otherwise
-recognize (`oauth_device_code`, `oauth_external`) is fully drivable. Registering the same name
-twice is last-writer-wins, so a user plugin can replace a bundled provider's flow.
+`hermes auth add|status|logout|refresh <provider>` consults the handler **first** — before the built-in
+credential-pool flow. Registering the same name twice is last-writer-wins, so a user plugin can replace a
+bundled provider's flow.
 
 Hermes passes the parsed namespace, not provider-declared flags: ask for provider-specific values
-interactively (or read your own config/env). Credentials stay provider-owned — Hermes hands your
-handler no secrets and reads none back.
+interactively (or read your own config/env). Rows the plugin stores in the pool are its own — extra keys
+survive `load → save → load`, and Hermes passes no secrets beyond that pooled row to `refresh_credential`.
 
 ## Discovery timing
 

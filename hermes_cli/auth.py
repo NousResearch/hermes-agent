@@ -254,66 +254,10 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 from hermes_cli.config import (  # noqa: E402
     get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 
-# Providers handled outside the registry: copilot/kimi/zai have bespoke token refresh here;
-# openrouter/custom are aggregator/user-supplied and runtime_provider relies on
-# ``openrouter not in PROVIDER_REGISTRY``.
-_REGISTRY_PLUGIN_SKIP = frozenset({"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"})
-
-
-def _register_plugin_provider(pp: Any) -> None:
-    """Auto-register one providers/ profile (plugins/model-providers/<name>/) not declared above.
-
-    External-process (ACP) providers have no API-key env vars; registering them is what lets an
-    out-of-tree provider pass ``resolve_provider()``'s known-provider gate ("Unknown provider")."""
-    if pp.auth_type == "external_process":
-        pconfig = ProviderConfig(
-            pp.name, pp.display_name or pp.name, "external_process", inference_base_url=pp.base_url)
-    elif pp.auth_type == "api_key" and pp.env_vars and pp.name not in _REGISTRY_PLUGIN_SKIP:
-        is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
-        pconfig = _api_key_provider(
-            pp.name, pp.display_name or pp.name, pp.base_url,
-            tuple(v for v in pp.env_vars if not is_url(v)) or pp.env_vars,
-            next((v for v in pp.env_vars if is_url(v)), None) or "")
-    else:
-        return
-    PROVIDER_REGISTRY[pp.name] = pconfig
-    for alias in pp.aliases:  # so resolve_provider() resolves them too
-        PROVIDER_REGISTRY.setdefault(alias, pconfig)
-
-
-def sync_plugin_provider_registry() -> int:
-    """Mirror provider-plugin profiles into ``PROVIDER_REGISTRY``; return how many were added.
-
-    Idempotent and cheap (only missing names are registered, existing entries are never replaced),
-    so it is safe from resolution paths. It runs once at import below and again whenever a name is
-    missing (:func:`_registry_lookup`) or when ``providers`` finishes discovery, because the
-    import-time pass can observe a *partial* profile list: if a plugin's own imports pull this
-    module in while ``providers._discover_providers()`` is still iterating the plugin directories,
-    ``list_providers()`` returns only what has been registered so far (the discovery guard is
-    already set) and every plugin discovered after that point would otherwise be invisible to
-    ``resolve_provider()`` and fail with "Unknown provider". See #102123."""
-    try:
-        from providers import list_providers as _list_providers_for_registry
-        profiles = _list_providers_for_registry()
-    except Exception:
-        return 0
-    added = 0
-    for pp in profiles:
-        if pp.name in PROVIDER_REGISTRY:
-            continue
-        _register_plugin_provider(pp)
-        if pp.name in PROVIDER_REGISTRY:
-            added += 1
-    return added
-
-
-def _registry_lookup(provider_id: str) -> Optional[ProviderConfig]:
-    """``PROVIDER_REGISTRY.get`` that re-syncs plugin profiles on a miss."""
-    pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if pconfig is None and sync_plugin_provider_registry():
-        pconfig = PROVIDER_REGISTRY.get(provider_id)
-    return pconfig
-
+# Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
+# auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
+from hermes_cli.auth_plugin_providers import (  # noqa: E402
+    registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
 sync_plugin_provider_registry()
 

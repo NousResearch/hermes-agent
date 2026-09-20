@@ -21,6 +21,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
+from hermes_cli.auth_plugin_providers import plugin_refresh_hook
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
@@ -251,7 +252,10 @@ class PooledCredential:
         # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
         if isinstance(data.get("last_status_at"), str):
             data["last_status_at"] = _parse_absolute_timestamp(data["last_status_at"])
-        data["extra"] = {k: payload[k] for k in _EXTRA_KEYS if payload.get(k) is not None}
+        # Every non-field key rides in ``extra`` (to_dict writes them all back), so metadata a plugin
+        # stores on its own rows survives load -> save -> load. ``_EXTRA_KEYS`` stays the attribute
+        # surface for core logic; unknown keys are opaque payload.
+        data["extra"] = {k: v for k, v in payload.items() if k not in field_names and v is not None}
         data.setdefault("id", uuid.uuid4().hex[:6])
         data.setdefault("label", payload.get("source", provider))
         data.setdefault("auth_type", AUTH_TYPE_API_KEY)
@@ -760,8 +764,10 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
     "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
 }
 
-# Providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Any other
-# provider is returned unchanged by that path, so callers must not report a refresh for them.
+# Built-in providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Plugin
+# providers are refreshable when their profile ships ``refresh_credential`` (see
+# ``hermes_cli.auth_plugin_providers.is_refreshable_oauth_provider``); any other provider is returned
+# unchanged by that path, so callers must not report a refresh for them.
 REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
 
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
@@ -1456,6 +1462,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
                 entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
+            elif (plugin_refresh := plugin_refresh_hook(self.provider)) is not None:
+                updated = replace(entry, **dict(plugin_refresh(entry) or {}))
             elif self.provider == "nous":
                 stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
                 synced = self._sync_nous_entry_from_auth_store(entry)

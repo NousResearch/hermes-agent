@@ -789,6 +789,13 @@ export const en: Translations = {
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
+      pickerStyleTitle: 'Model and Reasoning Picker',
+      pickerStyleDesc:
+        'Classic: effort in the model label, submenu edits presets. Split: adds a reasoning button. Unified: submenu selects the model and applies options. Separated: model list and reasoning menu are separate.',
+      pickerStyleClassic: 'Classic',
+      pickerStyleSplit: 'Split',
+      pickerStyleUnified: 'Unified',
+      pickerStyleSeparated: 'Separated',
       sessionDensityTitle: 'Session List Density',
       sessionDensityDesc: 'Choose how much context appears beneath session titles in the sidebar.',
       sessionDensityCompact: 'Compact',

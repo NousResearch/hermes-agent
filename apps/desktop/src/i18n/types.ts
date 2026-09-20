@@ -627,6 +627,12 @@ export interface Translations {
       reasoningCollapsedDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
+      pickerStyleTitle: string
+      pickerStyleDesc: string
+      pickerStyleClassic: string
+      pickerStyleSplit: string
+      pickerStyleUnified: string
+      pickerStyleSeparated: string
       sessionDensityTitle: string
       sessionDensityDesc: string
       sessionDensityCompact: string

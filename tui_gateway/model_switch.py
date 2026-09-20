@@ -269,11 +269,13 @@ def _apply_model_switch(
         cfg = load_config()
         user_provs = cfg.get("providers")
         custom_provs = get_compatible_custom_providers(cfg)
-    result = switch_model(
-        raw_input=model_input, current_provider=current_provider, current_model=current_model,
-        current_base_url=current_base_url, current_api_key=current_api_key, is_global=persist_global,
-        explicit_provider=explicit_provider, user_providers=user_provs,
-        custom_providers=custom_provs)
+    from hermes_cli.models_cache_policy import manual_catalog_refresh
+    with manual_catalog_refresh():
+        result = switch_model(
+            raw_input=model_input, current_provider=current_provider, current_model=current_model,
+            current_base_url=current_base_url, current_api_key=current_api_key, is_global=persist_global,
+            explicit_provider=explicit_provider, user_providers=user_provs,
+            custom_providers=custom_provs)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None

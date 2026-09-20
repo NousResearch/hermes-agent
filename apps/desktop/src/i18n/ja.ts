@@ -547,6 +547,13 @@ export const ja = defineLocale({
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
+      pickerStyleTitle: 'モデルと推論の選択',
+      pickerStyleDesc:
+        '従来型：モデル名に推論レベルを表示し、サブメニューでプリセットを編集。分割：推論ボタンを追加。統合：サブメニューでモデルと設定を適用。独立：モデル一覧と推論メニューを分離。',
+      pickerStyleClassic: '従来型',
+      pickerStyleSplit: '分割',
+      pickerStyleUnified: '統合',
+      pickerStyleSeparated: '独立',
       sessionDensityTitle: 'セッションリストの密度',
       sessionDensityDesc: 'サイドバーのセッションタイトルの下に表示する情報量を選びます。',
       sessionDensityCompact: 'コンパクト',

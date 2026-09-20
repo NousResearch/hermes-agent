@@ -8,6 +8,8 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 
 from __future__ import annotations
 
+from hermes_cli.models_cache_policy import catalog_refresh_is_manual
+
 import contextvars
 import copy
 import gzip
@@ -1865,7 +1867,7 @@ def cached_provider_model_ids(
 
     if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
         age = now - entry["at"]
-        if age < ttl_seconds:
+        if catalog_refresh_is_manual() or age < ttl_seconds:
             return list(entry["models"])
         # Empty native catalogs are authoritative only for the short native TTL — never served
         # through the stale window. Non-empty stale rows are served immediately (SWR) so picker
@@ -2687,7 +2689,7 @@ def cached_fetch_api_models(
 
     if valid:
         age = now - entry["at"]
-        if age < ttl_seconds:
+        if catalog_refresh_is_manual() or age < ttl_seconds:
             return _catalog(entry)
         # An empty native catalog is authoritative only inside the TTL (as in
         # cached_provider_model_ids): never stale-serve it, or an Ollama that was model-less at

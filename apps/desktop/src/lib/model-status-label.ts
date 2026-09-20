@@ -1,3 +1,5 @@
+import { reasoningEffortLabel } from './reasoning-effort'
+
 /** Which model/provider pair a picker should mark "current". SessionView state
  *  also drives the composer label, so a complete pair there wins over an older
  *  `model.options` response. During initial hydration (or pre-session startup),
@@ -107,17 +109,10 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Composer model-pill label — model name plus Fast when it applies. The
- *  reasoning level is NOT here: it has its own pill (`ReasoningPill`), so a
- *  long model name can no longer push the effort out of the truncating span. */
-export function formatModelPillLabel(model: string, options?: { fastMode?: boolean }): string {
+/** Composer label, optionally including effort when it has no separate pill. */
+export function formatModelPillLabel(model: string, options?: { fastMode?: boolean; effort?: string }): string {
   const name = displayModelName(model)
+  const fast = model.trim() && (options?.fastMode || /-fast$/i.test(modelBaseId(model)))
 
-  // Fast is shown when the speed=fast param is on (options.fastMode) OR the
-  // active model is a `…-fast` variant (fast via a separate model id).
-  if (model.trim() && (options?.fastMode || /-fast$/i.test(modelBaseId(model)))) {
-    return `${name} · Fast`
-  }
-
-  return name
+  return [name, fast ? 'Fast' : '', reasoningEffortLabel(options?.effort ?? '')].filter(Boolean).join(' · ')
 }

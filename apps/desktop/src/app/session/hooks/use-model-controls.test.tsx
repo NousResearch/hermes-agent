@@ -2,6 +2,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useGatewayScopeRefresh } from '@/app/contrib/hooks/use-gateway-scope-refresh'
 import { getGlobalModelInfo } from '@/hermes'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -558,6 +559,57 @@ describe('useModelControls', () => {
     // A profile swap forces a reseed to the new profile's default.
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+  })
+
+  it('restores a saved manual model on first connection and reconnect, but reseeds a different source', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'default-model', provider: 'default-provider' })
+    setCurrentModel('saved-model')
+    setCurrentProvider('saved-provider')
+    setCurrentModelSource('manual')
+    const queryClient = new QueryClient()
+    const requestGateway = vi.fn()
+
+    const { rerender } = renderHook(
+      ({ connectionId }: { connectionId: string | null }) => {
+        const controls = useModelControls({ queryClient, requestGateway })
+        useGatewayScopeRefresh(connectionId, 'default', controls.refreshCurrentModel)
+      },
+      { initialProps: { connectionId: null as string | null } }
+    )
+
+    await act(async () => rerender({ connectionId: 'local' }))
+    expect($currentModel.get()).toBe('saved-model')
+    expect(getCurrentModelSource()).toBe('manual')
+    await act(async () => rerender({ connectionId: null }))
+    await act(async () => rerender({ connectionId: 'local' }))
+    expect($currentModel.get()).toBe('saved-model')
+
+    await act(async () => rerender({ connectionId: 'remote' }))
+    expect($currentModel.get()).toBe('default-model')
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('reseeds on an actual profile change even on legacy connections without an id', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'target-model', provider: 'target-provider' })
+    setCurrentModel('saved-model')
+    setCurrentModelSource('manual')
+    const queryClient = new QueryClient()
+    const requestGateway = vi.fn()
+
+    const { rerender } = renderHook(
+      ({ profile }) => {
+        const controls = useModelControls({ queryClient, requestGateway })
+        useGatewayScopeRefresh(null, profile, controls.refreshCurrentModel)
+      },
+      { initialProps: { profile: 'default' } }
+    )
+
+    await act(async () => {
+      $activeGatewayProfile.set('research')
+      rerender({ profile: 'research' })
+    })
+    expect($currentModel.get()).toBe('target-model')
+    expect(getGlobalModelInfo).toHaveBeenCalledWith('research')
   })
 
   it('reads a forced profile reseed from that concrete profile', async () => {

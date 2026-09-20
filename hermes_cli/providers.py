@@ -459,18 +459,19 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
     return None
 
 
-def _llamacpp_pdef() -> Optional[ProviderDef]:
-    """The llamacpp aliases are a real provider whenever the managed server (or a detected external
-    one) resolves — reachability is the credential. Without this rung model-switch rejected the very
-    provider the Local Models 'Use' flow writes to config."""
+def _llamacpp_pdef() -> ProviderDef:
+    """Keep local provider identity while its server is stopped or still starting.
+
+    Runtime resolution owns boot/wait and unavailable-server errors. Dropping the identity here
+    makes session resume discard the saved provider and route its local model to the cloud default.
+    """
     try:
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
         endpoint = resolve_llamacpp_endpoint(wait_for_boot_s=0)
     except Exception:
         endpoint = None
-    if not endpoint:
-        return None
-    return ProviderDef(id="llamacpp", name="Local", transport="openai_chat", api_key_env_vars=(), base_url=endpoint["base_url"],
+    return ProviderDef(id="llamacpp", name="Local", transport="openai_chat", api_key_env_vars=(),
+                       base_url=endpoint["base_url"] if endpoint else "",
                        source="local-runtime")
 
 

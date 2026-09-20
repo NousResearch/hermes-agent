@@ -872,6 +872,48 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
     assert result is None  # no exception escaped
 
 
+@pytest.mark.parametrize("alias", ["llamacpp", "llama.cpp", "llama-cpp"])
+def test_local_identity_survives_resume_before_server_ready(tmp_path, monkeypatch, alias):
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli.local_runtime import endpoint
+    from tui_gateway import server
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  default: cloud-model\n", encoding="utf-8")
+    monkeypatch.setattr(endpoint, "resolve_llamacpp_endpoint", lambda **kw: None)
+    assert rp.is_routable_provider(alias)
+    restored = server._stored_session_runtime_overrides({
+        "model": "local-test-model", "model_config": {"provider": alias}})
+    assert restored["model_override"]["provider"] == alias
+    assert restored["provider_override"] == alias
+
+
+@pytest.mark.parametrize("manual_catalog", [False, True])
+def test_switch_to_local_waits_for_runtime_after_unready_catalog(tmp_path, monkeypatch, stub_server, manual_catalog):
+    from hermes_cli.local_runtime import endpoint
+    from hermes_cli.model_switch import switch_model
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  default: cloud-model\n", encoding="utf-8")
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "local-test-model"}]}
+    route = {"base_url": f"http://127.0.0.1:{port}/v1", "api_key": "local-test-key"}
+    monkeypatch.setattr(endpoint, "resolve_llamacpp_endpoint",
+                        lambda **kw: None if kw.get("wait_for_boot_s") == 0 else route)
+    from contextlib import nullcontext
+    from hermes_cli.models_cache_policy import manual_catalog_refresh
+
+    with manual_catalog_refresh() if manual_catalog else nullcontext():
+        result = switch_model("local-test-model", current_provider="anthropic", current_model="cloud-model",
+                              current_base_url="https://api.anthropic.com", explicit_provider="llamacpp")
+    assert result.success, result.error_message
+    assert result.target_provider == "llamacpp"
+    assert result.base_url == route["base_url"]
+    assert result.api_key == route["api_key"]
+
+
 def test_manifest_verified_tolerates_non_dict_manifest(tmp_path):
     """A parseable-but-non-object manifest used to raise AttributeError out of
     manifest_verified (the .get ran inside a try that only caught decode/OSError),

@@ -532,6 +532,13 @@ export const zhHant = defineLocale({
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
+      pickerStyleTitle: '模型與推理選擇器',
+      pickerStyleDesc:
+        '經典：在模型名稱中顯示推理強度，子選單編輯預設。拆分：增加推理按鈕。統一：子選單選擇模型並套用選項。獨立：模型清單與推理選單分開。',
+      pickerStyleClassic: '經典',
+      pickerStyleSplit: '拆分',
+      pickerStyleUnified: '統一',
+      pickerStyleSeparated: '獨立',
       sessionDensityTitle: '工作階段列表密度',
       sessionDensityDesc: '選擇側邊欄工作階段標題下方顯示的資訊量。',
       sessionDensityCompact: '緊湊',

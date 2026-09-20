@@ -41,6 +41,7 @@ import {
   modelVisibilityKey,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
+import { $pickerStyle, pickerBehavior } from '@/store/picker-style'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress } from '@/types/hermes'
@@ -134,6 +135,7 @@ export function ModelCatalogMenu({
   sessionId = null
 }: ModelCatalogMenuProps) {
   const { t } = useI18n()
+  const { modelSubmenu } = pickerBehavior(useStore($pickerStyle))
   const copy = t.shell.modelMenu
   const copyPicker = t.modelPicker
   const closeMenu = useContext(ModelMenuCloseContext)
@@ -536,6 +538,53 @@ export function ModelCatalogMenu({
                       closeMenu()
                     }
 
+                    const rowContent = (
+                      <>
+                        <span className="min-w-0 flex-1 truncate">
+                          <HighlightMatches foldSeparators query={search} text={name} />
+                          {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                        </span>
+                        {loadProgress ? (
+                          <span
+                            className="ml-auto flex shrink-0 items-center gap-1.5"
+                            title={copyPicker.loadingIntoMemory}
+                          >
+                            <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                              <span
+                                className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                                style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                              />
+                            </span>
+                            <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
+                              {loadProgress.percent}%
+                            </span>
+                          </span>
+                        ) : null}
+                        {isCurrent ? (
+                          <Codicon
+                            className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
+                            name="check"
+                            size="0.75rem"
+                          />
+                        ) : null}
+                      </>
+                    )
+
+                    if (modelSubmenu === 'hidden') {
+                      return (
+                        <DropdownMenuItem
+                          key={group.provider.slug + ':' + family.id}
+                          onSelect={event => {
+                            event.preventDefault()
+                            activate()
+                          }}
+                          {...kbRowProps(group.provider.slug + ':' + family.id)}
+                        >
+                          {rowContent}
+                        </DropdownMenuItem>
+                      )
+                    }
+
                     return (
                       <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
                         <DropdownMenuSubTrigger
@@ -548,33 +597,7 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                          </span>
-                          {loadProgress ? (
-                            <span
-                              className="ml-auto flex shrink-0 items-center gap-1.5"
-                              title={copyPicker.loadingIntoMemory}
-                            >
-                              <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
-                                <span
-                                  className="block h-full rounded-full bg-primary transition-[width] duration-500"
-                                  style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
-                                />
-                              </span>
-                              <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
-                                {loadProgress.percent}%
-                              </span>
-                            </span>
-                          ) : null}
-                          {isCurrent ? (
-                            <Codicon
-                              className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
-                              name="check"
-                              size="0.75rem"
-                            />
-                          ) : null}
+                          {rowContent}
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu
                           canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
@@ -585,13 +608,43 @@ export function ModelCatalogMenu({
                           isActive={isCurrent}
                           model={family.id}
                           onSelectModel={nextModel => controller.select(nextModel, group.provider.slug)}
-                          onSetOptions={patch =>
-                            controller.setOptions(patch, {
-                              isActive: isCurrent,
-                              model: family.id,
+                          onSetOptions={async patch => {
+                            const row = {
+                              model: activeId ?? family.id,
                               provider: group.provider.slug
-                            })
-                          }
+                            }
+
+                            if (modelSubmenu !== 'select-and-apply' || isCurrent) {
+                              controller.setOptions(patch, { ...row, isActive: isCurrent })
+
+                              return
+                            }
+
+                            // Apply the edited preset only after the model switch succeeds.
+                            const variantFast = fastControl.kind === 'variant'
+                            const fast = patch.fast ?? effFast
+                            row.model = variantFast && fast ? family.fastId! : family.id
+
+                            const options = {
+                              effort: patch.effort ?? effEffort,
+                              fast: variantFast ? false : fast
+                            }
+
+                            if ((await controller.select(row.model, row.provider)) === false) {
+                              return
+                            }
+
+                            controller.applyPreset(options, row)
+
+                            if (variantFast) {
+                              controller.setOptions(
+                                { fast },
+                                { model: family.id, provider: row.provider, isActive: false }
+                              )
+                            }
+
+                            closeMenu()
+                          }}
                           provider={group.provider.slug}
                           reasoning={caps?.reasoning ?? true}
                         />

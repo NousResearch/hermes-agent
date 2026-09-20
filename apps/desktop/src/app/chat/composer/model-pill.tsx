@@ -1,3 +1,4 @@
+import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -14,7 +15,8 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
-import { $currentModelSource, setModelPickerOpen } from '@/store/session'
+import { $pickerStyle, pickerBehavior } from '@/store/picker-style'
+import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
 
 import { onComposerModelMenuRequest } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -56,6 +58,16 @@ export function ModelPill({
   const viewProvider = useStore(view.$provider)
   const currentModel = model.model || viewModel
   const currentProvider = model.provider || viewProvider
+
+  const behavior = pickerBehavior(useStore($pickerStyle))
+  const reasoningEffort = useStore(view.$reasoningEffort)
+  const defaultEffort = useStore($defaultReasoningEffort)
+
+  const effort =
+    behavior.effortInModelLabel && model.supportsReasoning !== false
+      ? reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT
+      : undefined
+
   const fastMode = useStore(view.$fast)
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)
@@ -129,7 +141,7 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelPillLabel(currentModel, { fastMode })}</span>
+        <span className="truncate">{formatModelPillLabel(currentModel, { fastMode, effort })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

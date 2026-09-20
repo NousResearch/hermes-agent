@@ -617,6 +617,13 @@ export const ru = defineLocale({
       uiScaleTitle: 'Масштаб интерфейса',
       uiScaleDesc: percent =>
         `Масштабирует текст и элементы управления во всём приложении. Также работает Cmd/Ctrl с +, − и 0. Сейчас: ${percent}%.`,
+      pickerStyleTitle: 'Выбор модели и рассуждений',
+      pickerStyleDesc:
+        'Классический: уровень в названии модели, подменю меняет пресеты. Раздельные кнопки: отдельная кнопка рассуждений. Единый: подменю выбирает модель и применяет параметры. Отдельные меню: список моделей без подменю.',
+      pickerStyleClassic: 'Классический',
+      pickerStyleSplit: 'Раздельные кнопки',
+      pickerStyleUnified: 'Единый',
+      pickerStyleSeparated: 'Отдельные меню',
       sessionDensityTitle: 'Плотность списка сеансов',
       sessionDensityDesc: 'Выберите, сколько контекста показывать под заголовками сеансов в боковой панели.',
       sessionDensityCompact: 'Компактно',

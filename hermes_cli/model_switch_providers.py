@@ -220,6 +220,7 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
 
     # Read-only staleness check mirroring cached_provider_model_ids (which re-reads the cache
     # itself, so a concurrent change between check and fetch is harmless).
+    from hermes_cli.models_cache_policy import catalog_refresh_is_manual
     now = time.time()
     stale_slugs: list[str] = []
     cache = _load_provider_models_cache()
@@ -231,7 +232,7 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
         if (
             isinstance(entry, dict) and entry.get("fp") == _credential_fingerprint(normalized)
             and isinstance(entry.get("models"), list) and entry["models"]
-            and now - float(entry.get("at", 0)) < _PROVIDER_MODELS_CACHE_TTL):
+            and (catalog_refresh_is_manual() or now - float(entry.get("at", 0)) < _PROVIDER_MODELS_CACHE_TTL)):
             continue
         stale_slugs.append(normalized)
 

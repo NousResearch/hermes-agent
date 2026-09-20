@@ -739,6 +739,13 @@ export const zh = defineLocale({
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      pickerStyleTitle: '模型与推理选择器',
+      pickerStyleDesc:
+        '经典：在模型名称中显示推理强度，子菜单编辑预设。拆分：增加推理按钮。统一：子菜单选择模型并应用选项。独立：模型列表与推理菜单分开。',
+      pickerStyleClassic: '经典',
+      pickerStyleSplit: '拆分',
+      pickerStyleUnified: '统一',
+      pickerStyleSeparated: '独立',
       sessionDensityTitle: '会话列表密度',
       sessionDensityDesc: '选择侧边栏会话标题下方显示的信息量。',
       sessionDensityCompact: '紧凑',

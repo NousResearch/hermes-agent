@@ -68,3 +68,14 @@ describe('model-status-label', () => {
     })
   })
 })
+
+it('adds effort without losing the model name or Fast indicator', () => {
+  for (const effort of ['high', 'none', 'budget:4096']) {
+    const base = formatModelPillLabel('example-model', { fastMode: true })
+    expect(formatModelPillLabel('example-model', { fastMode: true, effort })).toBe(
+      base + ' · ' + reasoningEffortLabel(effort)
+    )
+  }
+
+  expect(formatModelPillLabel('example-model', { effort: '' })).toBe(formatModelPillLabel('example-model'))
+})

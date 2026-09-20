@@ -598,6 +598,13 @@ export const ar = defineLocale({
       }
     },
     appearance: {
+      pickerStyleTitle: 'اختيار النموذج والاستدلال',
+      pickerStyleDesc:
+        'كلاسيكي: المستوى في اسم النموذج والقائمة الفرعية تعدّل الإعدادات المحفوظة. مقسّم: زر استدلال إضافي. موحّد: اختيار النموذج وتطبيق الخيارات معًا. منفصل: قائمة النماذج منفصلة عن خيارات الاستدلال.',
+      pickerStyleClassic: 'كلاسيكي',
+      pickerStyleSplit: 'مقسّم',
+      pickerStyleUnified: 'موحّد',
+      pickerStyleSeparated: 'منفصل',
       title: 'المظهر',
       intro: 'خصص مظهر Hermes Desktop.',
       colorMode: 'نمط الألوان',

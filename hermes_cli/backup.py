@@ -769,8 +769,8 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     # Prune only after a complete archive: a timer hitting the same unreadable file every run must
     # not rotate the last good backups out in favour of incomplete ones.
     keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
-    if keep and not errors and out_path.name.startswith(_RUN_BACKUP_PREFIX):
-        pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
+    if keep and not errors and _RUN_BACKUP_NAME_RE.fullmatch(out_path.name):
+        pruned = _prune_run_backup_zips(out_path.parent, keep, "backup")
         if pruned:
             print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
     return not errors

@@ -3408,6 +3408,12 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
         return True
     if "response_format" in err_lower and "invalid schema" in err_lower:
         return True
+    # Some strict OpenAI-compatible gateways validate the object-form
+    # json_schema with a string-only schema and return a Pydantic 422 rather
+    # than the usual unsupported-parameter wording.
+    if ("response_format" in err_lower and "json_schema" in err_lower
+            and "str type expected" in err_lower):
+        return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 
 

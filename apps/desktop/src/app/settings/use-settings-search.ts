@@ -209,6 +209,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.hideThreadTimelineDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.hideThreadTimeline}`,
+      keywords: ['thread', 'conversation', 'timeline', 'bars', 'rail', 'navigation', 'hide'],
+      label: appearance.hideThreadTimelineTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.hideThreadTimeline, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.appActionsDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.appActions}`,

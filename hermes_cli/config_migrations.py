@@ -121,6 +121,8 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
         if not isinstance(entry, dict):
             continue
         old_name = entry.get("name", "")
+        if not isinstance(old_name, str):  # hand-edited name: 5 must not crash .strip()
+            old_name = ""
         old_url = entry.get("base_url", "") or entry.get("url", "") or entry.get("api", "") or ""
         if not old_url:
             continue
@@ -194,6 +196,8 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
         return
     legacy_model = raw_stt["model"]
     provider = raw_stt.get("provider", "local")
+    if not isinstance(provider, str):  # a mapping/int provider has no valid target section
+        provider = "local"
     config = read_raw_config()
     stt = config.get("stt", {})
     stt.pop("model", None)
@@ -201,11 +205,14 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
     def _place(section: str) -> None:
         existing = raw_stt.get(section, {})
         if not isinstance(existing, dict) or "model" not in existing:
-            stt.setdefault(section, {})["model"] = legacy_model
+            target = stt.get(section)
+            if not isinstance(target, dict):  # stt.<section>: 5 — replace, don't index a scalar
+                target = stt[section] = {}
+            target["model"] = legacy_model
 
     if provider in {"local", "local_command"}:
         # An OpenAI model name is dropped; the local section already defaults to "base".
-        if legacy_model in _LOCAL_WHISPER_MODELS:
+        if isinstance(legacy_model, str) and legacy_model in _LOCAL_WHISPER_MODELS:
             _place("local")
     else:
         _place(provider)
@@ -223,10 +230,11 @@ def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
         return
     platforms = _dict_at(display, "platforms")
     for plat, mode in old_overrides.items():
-        if plat not in platforms:
-            platforms[plat] = {}
-        if "tool_progress" not in platforms[plat]:
-            platforms[plat]["tool_progress"] = mode
+        target = platforms.get(plat)
+        if not isinstance(target, dict):  # platforms.<plat>: 5 — replace, don't index a scalar
+            target = platforms[plat] = {}
+        if "tool_progress" not in target:
+            target["tool_progress"] = mode
     display["platforms"] = platforms
     config["display"] = display
     migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
@@ -249,7 +257,12 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
         val = str(raw).strip() if raw else ""
         if not val or (k == "provider" and val == "auto"):
             continue
-        aux_comp = config.setdefault("auxiliary", {}).setdefault("compression", {})
+        aux = config.get("auxiliary")
+        if not isinstance(aux, dict):  # auxiliary: 5 — setdefault would index a scalar
+            aux = config["auxiliary"] = {}
+        aux_comp = aux.get("compression")
+        if not isinstance(aux_comp, dict):
+            aux_comp = aux["compression"] = {}
         cur = aux_comp.get(k)
         if not cur or (k == "provider" and cur == "auto"):
             aux_comp[k] = val
@@ -720,4 +733,12 @@ def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> No
     """
     for target_ver, migration_fn in MIGRATIONS:
         if current_ver < target_ver:
-            migration_fn(results, quiet)
+            try:
+                migration_fn(results, quiet)
+            except Exception as exc:
+                # A malformed nested value in one step must not abort the rest of the
+                # ladder (config loading itself fails otherwise). Loud, not silent.
+                warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
+                results.setdefault("warnings", []).append(warning)
+                if not quiet:
+                    print(f"  ⚠ {warning}")

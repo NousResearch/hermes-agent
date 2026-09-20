@@ -187,13 +187,28 @@ def _nous_logged_in() -> bool:
 
 
 def _fetch_portal_account(timeout: float):
-    """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout)."""
-    import concurrent.futures
+    """Wall-clock-bounded fresh portal account fetch (raises on any failure/timeout).
+
+    No ``with`` block on purpose: ``Executor.__exit__`` joins the worker via
+    ``shutdown(wait=True)``, so a portal that accepts the connection but never
+    answers would hold the caller until the provider's own timeout instead of
+    ``timeout``. The abandoned daemon worker runs on to its own network timeout
+    and never blocks the caller or process exit; its eventual exception is
+    drained so GC never logs "exception was never retrieved"."""
     import contextvars
     from hermes_cli.nous_account import get_nous_portal_account_info
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+
     context = contextvars.copy_context()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(context.run, get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    future = pool.submit(context.run, get_nous_portal_account_info, force_fresh=True)
+    try:
+        return future.result(timeout=timeout)
+    except BaseException:
+        future.add_done_callback(lambda f: f.exception())
+        raise
+    finally:
+        pool.shutdown(wait=False)
 
 
 def nous_credits_lines(*, markdown: bool = False, timeout: float = 10.0) -> list[str]:
@@ -643,18 +658,17 @@ PLUGIN_USAGE_HOOK_DEADLINE_S = 10.0
 
 
 def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
-    """Run the profile hook on a daemon thread; past the deadline (or on any exception) → None."""
-    import contextvars
-    import threading
-    result: list = []
-    context = contextvars.copy_context()  # the hook may read profile-scoped secrets
-    worker = threading.Thread(
-        target=lambda: result.append(
-            context.run(profile.fetch_account_usage, base_url=base_url, api_key=api_key)),
-        name="plugin-account-usage", daemon=True)
-    worker.start()
-    worker.join(PLUGIN_USAGE_HOOK_DEADLINE_S)
-    return result[0] if result else None
+    """Run the profile hook under the shared deadline; past it → None. Exceptions re-raise in the
+    caller so ``fetch_account_usage`` fails open without a worker-thread traceback on ``/usage``."""
+    from agent.deadline import run_bounded_sync
+    from providers.base import ProviderProfile
+
+    if type(profile).fetch_account_usage is ProviderProfile.fetch_account_usage:
+        return None  # base no-op: no thread to spawn
+    bounded = run_bounded_sync(
+        lambda: profile.fetch_account_usage(base_url=base_url, api_key=api_key),
+        PLUGIN_USAGE_HOOK_DEADLINE_S, label="plugin-account-usage")
+    return None if bounded.timed_out else bounded.value
 
 
 def fetch_account_usage(

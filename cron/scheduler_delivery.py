@@ -702,6 +702,24 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+def _get_standalone_send_timeout() -> int:
+    """Wall-clock bound for one standalone-lane send (#115469).
+
+    ``_send_to_platform``'s gateway-loop dispatch deliberately awaits its future with no
+    timeout ("the adapter and outer _run_async bound the wait") — but on this lane the
+    outer runner is a bare ``asyncio.run``, not ``model_tools._run_async``, so without a
+    bound here a reconnecting transport pins the run (and the restart drain behind it)
+    indefinitely. Mirrors the sibling lanes: live dispatch ``future.result(timeout=60)``,
+    thread fallback ``result(timeout=30)``. ``cron.standalone_send_timeout_seconds``;
+    default 60."""
+    try:
+        cfg = _sched.load_config()
+        value = int(cfg.get("cron", {}).get("standalone_send_timeout_seconds", 60))
+        return value if value > 0 else 60
+    except Exception:
+        return 60
+
+
 _BOT_CHAT_STDERR_TAIL = 500
 # stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
 _BOT_CHAT_STDOUT_TAIL = 200
@@ -724,9 +742,25 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
     """
     from hermes_cli.quiet_single_query import read_turn_report
 
+    # Lossy decode everywhere; on Windows also decode as the UTF-8 the child writes.
+    # A stray non-UTF-8 byte (e.g. a grandchild sharing the pipe interleaving a
+    # partial multi-byte write) must not raise UnicodeDecodeError in the drain
+    # thread and take both the reply and the failure tail with it (#105582; same
+    # errors= hardening as _run_job_script). On win32 the child is guaranteed
+    # UTF-8 — hermes_cli reconfigures its own streams via hermes_bootstrap even
+    # under PYTHONIOENCODING=cp1252 — while the gateway parent is NOT started in
+    # UTF-8 mode (its env overlay sets only PYTHONIOENCODING), so text=True alone
+    # decodes the pipes with the ANSI code page: accented replies come back
+    # mojibake'd, or the reader thread dies on bytes undefined in cp1252 and the
+    # captured reply is silently lost while the delivery still books as delivered
+    # (#115894). On POSIX the child keeps the locale codec, so the locale default
+    # stays correct there (#66566).
+    popen_kwargs: dict = {"errors": "replace"}
+    if sys.platform == "win32":
+        popen_kwargs["encoding"] = "utf-8"
     proc = subprocess.Popen(
         argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=env, creationflags=windows_hide_flags())
+        env=env, creationflags=windows_hide_flags(), **popen_kwargs)
     streams: dict = {}
 
     def _drain() -> None:
@@ -1651,10 +1685,14 @@ def _standalone_send(
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
-    def _send():
-        return _send_to_platform(
+    send_timeout = _get_standalone_send_timeout()
+
+    async def _send():
+        # The bound lives inside the coroutine: the running-loop fallback below closes ``coro``
+        # unstarted, and a wait_for wrapper created out here would be left never awaited.
+        return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+            media_files=media_files), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1676,6 +1714,13 @@ def _standalone_send(
     coro = _send()
     try:
         return asyncio.run(coro), None
+    except TimeoutError:
+        # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
+        # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).
+        msg = (f"standalone send to {t.where} timed out after {send_timeout}s "
+               "(the send may still be in flight)")
+        logger.error("Job '%s': %s", job["id"], msg)
+        return None, msg
     except RuntimeError as run_err:
         # asyncio.run() refuses inside a running loop; close the unstarted coro, retry in a thread.
         coro.close()

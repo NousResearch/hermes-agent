@@ -642,7 +642,18 @@ def _cloud_stale_timeout(base: float, api_kwargs: dict) -> float:
 def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     """Stale-stream patience for a provider that is never a local endpoint (Bedrock):
     the OpenAI/Anthropic stale detector's budget minus its local branch."""
-    return _cloud_stale_timeout(_configured_stale_base(agent), api_kwargs)
+    return _cloud_stale_timeout_for(agent, api_kwargs)
+
+
+def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
+    """An explicit ``providers.<id>.stale_timeout_seconds`` is the operator's deadline and
+    wins over every implicit floor — the context-size tier as well as the reasoning-model
+    floor — so it can SHORTEN patience for a hung stream (#115024). Only the 180s default
+    is scaled and floored."""
+    explicit = get_provider_stale_timeout(agent.provider, agent.model)
+    if explicit is not None:
+        return explicit
+    return _cloud_stale_timeout(env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), api_kwargs)
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
@@ -3611,7 +3622,7 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
             return
-        self._stream_stale_timeout = _cloud_stale_timeout(base, self.api_kwargs)
+        self._stream_stale_timeout = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
 
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the

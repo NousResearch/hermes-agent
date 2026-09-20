@@ -107,6 +107,12 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
         # the assertions below depend only on the synchronous arm.
         second = live
         for _ in range(5):
+            # Re-assert the state this phase tests — one stall already on the record (line above) — and
+            # clear the lapsed backoff. Pinning the counter also stops a retry from ACCUMULATING stall
+            # history, which would let a regression that makes escalation harder (e.g. a threshold of 3)
+            # satisfy itself on a later iteration and pass. A refused, or fleetingly degraded, attempt
+            # stays retryable; a regression cannot buy itself green.
+            compressor._consecutive_timeout_failures = 1
             compressor._summary_failure_cooldown_until = 0.0
             compressor._session_db.clear_compression_failure_cooldown(compressor._session_id)
             calls.clear()
@@ -119,8 +125,10 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
     assert len(_summary_rows(second)) == 1, "the deterministic fallback summary is committed as the handoff"
     assert calls == ["primary"], "the deterministic rung makes no summary LLM call"
     assert getattr(agent, "_last_compression_timed_out", None) is not True
-    # The stalled LLM route stays in its backoff even though the deterministic rung committed. Read the
-    # synchronous host arm: the durable row is the worker's own async write and is not this test's subject.
+    # The stalled LLM route stays in its backoff even though the deterministic rung committed. This arm
+    # comes from the cancelled PRIMARY worker's `stall_interrupted` record (the deterministic retry path
+    # never reaches `on_timeout`), which normally lands while the retry above runs — hence the read last,
+    # after that work, rather than immediately after the clear.
     assert compressor._summary_failure_cooldown_until > time.monotonic(), (
         "the stalled LLM route keeps its stall backoff after the deterministic commit"
     )

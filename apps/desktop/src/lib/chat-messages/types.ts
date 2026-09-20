@@ -90,7 +90,7 @@ export type GatewayEventPayload = {
   yolo?: boolean
   running?: boolean
   turn_started_at?: number | null
-  turn_id?: string | null
+  turn_id?: number | null
   cwd?: string
   branch?: string
   terminal_backend?: string

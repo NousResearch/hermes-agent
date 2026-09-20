@@ -317,7 +317,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
               // that never replays its start event).
               turnLive: true,
               turnStartedAt: state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now(),
-              turnId: state.turnId ?? gatewayTurnId
+              turnId: gatewayTurnId ?? state.turnId
             }
           }
 

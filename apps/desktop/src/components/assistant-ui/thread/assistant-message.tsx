@@ -76,6 +76,8 @@ import { sessionTileDelegate } from '@/store/session-states'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
 
+import { BotChatAvatar, useBotChatHandle } from './bot-chat-avatar'
+
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
 const EMPTY_PARTS: readonly unknown[] = []
@@ -226,6 +228,9 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
+  // A bot chat is a conversation with someone, so the message row carries their
+  // face; working sessions stay avatar-free (see bot-chat-avatar.tsx).
+  const botChatHandle = useBotChatHandle(sessionId)
 
   const activityOnly = useAuiState(
     state =>
@@ -271,23 +276,11 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // are off, so the root carries no listener at all.
   const onDoubleClick = useTapbackDoubleClick(messageId, 'assistant')
 
-  return (
-    <MessagePrimitive.Root
-      className={cn(
-        'group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden',
-        collapsedNotice && 'pb-(--conversation-turn-gap)'
-      )}
-      data-approval-activity-only={approval && activityOnly ? '' : undefined}
-      data-role="assistant"
-      data-slot="aui_assistant-message-root"
-      // Collapsed inter-agent rows never carried the tapback listener; keeping
-      // that exact truth table means gating it on the notice rather than on
-      // whether the hook returned a handler.
-      onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
-      ref={enterRef}
-    >
-      {collapsedNotice ?? (
-        <>
+  // The row's content, shared by both layouts: a bot chat puts the bot's face in
+  // a left gutter beside it (the two-column shape a room message has); every
+  // other session renders exactly the column it always did.
+  const body = collapsedNotice ?? (
+    <>
           <div
             className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
             data-slot="aui_assistant-message-content"
@@ -333,7 +326,34 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
           turn on its summary rather than burying it above the controls. */}
           <SettledChangedFiles />
           <StreamingMarker />
+    </>
+  )
+
+  return (
+    <MessagePrimitive.Root
+      className={cn(
+        'group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden',
+        botChatHandle && 'flex-row items-start gap-2',
+        collapsedNotice && 'pb-(--conversation-turn-gap)'
+      )}
+      data-approval-activity-only={approval && activityOnly ? '' : undefined}
+      data-role="assistant"
+      data-slot="aui_assistant-message-root"
+      // Collapsed inter-agent rows never carried the tapback listener; keeping
+      // that exact truth table means gating it on the notice rather than on
+      // whether the hook returned a handler.
+      onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
+      ref={enterRef}
+    >
+      {botChatHandle ? (
+        <>
+          <div className="mt-0.5 shrink-0">
+            <BotChatAvatar handle={botChatHandle} />
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col gap-0">{body}</div>
         </>
+      ) : (
+        body
       )}
     </MessagePrimitive.Root>
   )

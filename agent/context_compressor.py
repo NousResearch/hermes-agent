@@ -465,18 +465,27 @@ def _looks_like_compaction_summary(msg: Dict[str, Any], content: str) -> bool:
 
 
 def _salvage_reduce_todo_snapshot(out: List[Dict[str, Any]]) -> None:
-    """Last-resort shrink: drop the synthetic todo snapshot, keeping only a pruned-skill reload notice if present."""
-    from agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
+    """Last-resort shrink: remove the todo block without dropping a mixed carrier."""
+    from agent.conversation_compression import (
+        _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
+        _strip_stale_todo_snapshot,
+        _todo_snapshot_is_only_content,
+    )
     for i in range(len(out) - 1, -1, -1):
         msg = out[i]
         if not isinstance(msg, dict) or not (msg.get("_todo_snapshot_synthetic") and msg.get("role") == "user"):
             continue
         content = msg.get("content")
+        stripped = _strip_stale_todo_snapshot(content)
         notice_idx = content.find(_PRUNED_SKILL_RELOAD_NOTICE_HEADER) if isinstance(content, str) else -1
         if notice_idx >= 0:
-            msg["content"] = content[notice_idx:]
-        else:
+            notice = content[notice_idx:]
+            if isinstance(stripped, str) and _PRUNED_SKILL_RELOAD_NOTICE_HEADER not in stripped:
+                stripped = f"{stripped}\n\n{notice}".strip()
+        if _todo_snapshot_is_only_content(content, stripped):
             del out[i]
+        else:
+            msg["content"] = stripped
         return
 
 

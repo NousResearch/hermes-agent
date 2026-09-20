@@ -1,0 +1,271 @@
+"""Owner-transactional retry of retained Output, never execution admission.
+
+Adapted from David Dudok de Wit's O4fb3f28 artifact retry/completion contract.
+Historical table names preserve the driver's bounded retry-retention guard.
+Legacy rows without exact commitments are not upgraded by guessing authority.
+"""
+import base64
+import hashlib
+import math
+import json
+import sqlite3
+import threading
+import time
+
+from gateway.hosted_room_artifacts import RoomArtifactError, RoomArtifactScope
+from gateway.hosted_room_output_fence import require_output_task, require_peer_output_receipt
+from hermes_state_runtime import RuntimeStoreError, _epoch
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def retryable(error):
+    # Retain historical classification. SQLite BUSY/LOCKED is transient, but
+    # arbitrary SQL/corruption must never become a network retry classification.
+    from gateway.hosted_rooms import EventCursorConflictError
+    if isinstance(error, EventCursorConflictError):
+        return True
+    if isinstance(error, sqlite3.Error):
+        return getattr(error, 'sqlite_errorcode', None) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    return (getattr(error, 'retryable', False) is True
+            or isinstance(error, (ConnectionError, OSError, TimeoutError)))
+
+
+class CanonicalOutputRetry:
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._artifact_clock = time.time
+        self._output_publish_lock = threading.RLock()
+        self._output_epoch = self.authority.epoch
+        self._output_instance = self.authority.instance_id
+        self._prepare_artifact_retry_store()
+
+    def _prepare_artifact_retry_store(self):
+        def prepare(conn):
+            _epoch(conn, self._output_epoch)
+            conn.execute('''CREATE TABLE IF NOT EXISTS hosted_room_artifact_retries (
+                room_id TEXT NOT NULL, task_id TEXT NOT NULL, execution_generation INTEGER NOT NULL,
+                member_id TEXT NOT NULL, attempts INTEGER NOT NULL, next_attempt_at REAL NOT NULL,
+                blocked INTEGER NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                metadata_json TEXT NOT NULL, operation TEXT NOT NULL, reason_code TEXT NOT NULL,
+                PRIMARY KEY(room_id, task_id, execution_generation))''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS hosted_room_artifact_completions (
+                room_id TEXT NOT NULL, task_id TEXT NOT NULL, execution_generation INTEGER NOT NULL,
+                completed_at REAL NOT NULL, valid_until REAL NOT NULL, metadata_json TEXT NOT NULL,
+                event_digest TEXT NOT NULL, operation TEXT NOT NULL,
+                PRIMARY KEY(room_id, task_id, execution_generation))''')
+            return all('metadata_json' in {r['name'] for r in conn.execute('PRAGMA table_info(' + table + ')')}
+                       for table in ('hosted_room_artifact_retries', 'hosted_room_artifact_completions'))
+        self._output_retry_ready = self.authority.db._execute_write(prepare)
+
+    def _prune_output_retry_metadata(self, room_id):
+        if not self._output_retry_ready:
+            return  # legacy rows need a separately authorized exact migration
+        from gateway.hosted_room_driver import ARTIFACT_RETRY_RETENTION_SECONDS
+        cutoff = float(self._artifact_clock()) - ARTIFACT_RETRY_RETENTION_SECONDS
+        def prune(conn):
+            self._output_owner(conn)
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_tasks'").fetchone() is None:
+                return
+            for table, age, params in (
+                ('hosted_room_artifact_completions', '', (room_id,)),
+                ('hosted_room_artifact_retries', 'AND metadata.created_at<=?', (room_id, cutoff)),
+            ):
+                conn.execute(f"""DELETE FROM {table} WHERE rowid IN (
+                    SELECT metadata.rowid FROM {table} metadata WHERE metadata.room_id=? {age}
+                      AND NOT EXISTS (SELECT 1 FROM hosted_room_driver_tasks task
+                        WHERE task.room_id=metadata.room_id AND task.task_id=metadata.task_id
+                          AND task.execution_generation=metadata.execution_generation)
+                    ORDER BY metadata.rowid LIMIT 256)""", params)
+        self.authority.db._execute_write(prune)
+
+    def _output_owner(self, conn):
+        a = self.authority
+        if (a.hosted_room_service is not self or a.runner.session_authority is not a
+                or (a.epoch, a.instance_id) != (self._output_epoch, self._output_instance)
+                or a.db._db_file_was_replaced()):
+            raise RoomArtifactError('Group Chat output owner changed')
+        a._require_admission_open()
+        _epoch(conn, self._output_epoch)
+        if not self._output_retry_ready:
+            raise RoomArtifactError('legacy output retries require exact authority migration')
+
+    @staticmethod
+    def _output_key(task):
+        return task['identity'].room_id, task['identity'].task_id, task['execution_generation']
+
+    def _output_metadata(self, conn, key):
+        self._output_owner(conn)
+        row = conn.execute('SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND task_id=?', key[:2]).fetchone()
+        if row is None or row['execution_generation'] != key[2]:
+            raise RoomArtifactError('Group Chat output attempt changed')
+        result, payload = json.loads(row['result_json']), json.loads(row['payload_json'])
+        scope = RoomArtifactScope.from_mapping(result.get('artifact_scope') or {})
+        task = require_output_task(conn, scope, row['cancel_generation'])
+        if (scope.room_id, scope.task_id, scope.execution_generation) != key or not payload.get('recipient_member_ids'):
+            raise RoomArtifactError('Group Chat output receipt changed')
+        owner = conn.execute('SELECT value FROM state_meta WHERE key=?', ('gateway.hosted.owner.v1:' + key[0],)).fetchone()
+        room = conn.execute('SELECT * FROM hosted_rooms WHERE room_id=?', (key[0],)).fetchone()
+        if owner is None:
+            raise RoomArtifactError('Group Chat output owner changed')
+        work = dict(scope=scope.as_mapping(), payload=payload, result=result,
+                    cancel_generation=task['cancel_generation'], status=task['status'], owner=owner[0],
+                    roster=json.loads(room['members_json']), epoch=self._output_epoch, instance=self._output_instance)
+        route_hash, lineage, until = '', '', float(self._artifact_clock()) + 86400
+        if scope.target_install_id != scope.home_install_id:
+            from gateway.session_authorities import authority_for_home
+            from gateway.runtime_ownership import process_ownership
+            from gateway import hosted_rooms
+            if (authority_for_home(self.authority.runner, self.authority.profile_id) is not self.authority
+                    or not process_ownership.owns(self.root)
+                    or scope.home_install_id != hosted_rooms.local_authority_gateway_id()):
+                raise RoomArtifactError('Group Chat output owner changed')
+            work['receipt'] = require_peer_output_receipt(conn, scope, result)
+            link = conn.execute('SELECT * FROM hosted_room_links WHERE room_id=? AND member_id=?',
+                                (key[0], scope.member_id)).fetchone()
+            if link is None:
+                raise RoomArtifactError('Group Chat output route unavailable')
+            link = dict(link)
+            route_hash = digest(link)
+            # Metadata is not authorization. Decode only the signed token's
+            # lifetime/scope commitment; the actual target verifies its signature
+            # and operation rights. Do not require NEW/input permissions here.
+            try:
+                encoded, signature = link['grant'].split('.')
+                claims = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+                expiry = claims['expires_at']
+                if not signature or type(expiry) not in {int, float} or not math.isfinite(expiry):
+                    raise ValueError('invalid horizon')
+            except (ValueError, TypeError, KeyError) as exc:
+                raise RoomArtifactError('Group Chat output grant commitment unavailable') from exc
+            until = claims['expires_at']  # artifact rights, NOT the longer status horizon
+            # Only authenticated same-scope renewal can replace these three fields.
+            stable_claims = {k: v for k, v in claims.items() if k not in {'grant_id', 'issued_at', 'expires_at'}}
+            lineage = digest(dict(target_url=link['target_url'], target_profile=link['target_profile'],
+                catalog=link['catalog_json'], cancellation_scope_id=link['cancellation_scope_id'],
+                trace_id=link['trace_id'], claims=stable_claims))
+        return dict(work=digest(work), route=route_hash, lineage=lineage,
+                    member_id=scope.member_id, valid_until=until)
+
+    @staticmethod
+    def _output_events_digest(conn, key):
+        stem = key[1].removeprefix('dtask:')
+        rows = conn.execute('SELECT event_id,kind,actor_json,payload_json,authority_epoch FROM hosted_room_events '
+                            'WHERE room_id=? AND event_id IN (?,?) ORDER BY event_id',
+                            (key[0], 'dmessage:' + stem, 'dterminal:' + stem)).fetchall()
+        return digest([dict(r) for r in rows]) if rows else ''
+
+    def _begin_output_retry(self, task):
+        key, now = self._output_key(task), float(self._artifact_clock())
+        def begin(conn):
+            metadata = self._output_metadata(conn, key)
+            current = conn.execute('SELECT payload_json,result_json,cancel_generation FROM hosted_room_driver_tasks '
+                                   'WHERE room_id=? AND task_id=?', key[:2]).fetchone()
+            if (json.loads(current['payload_json']) != task['payload'] or json.loads(current['result_json']) != task['result']
+                    or current['cancel_generation'] != task['cancel_generation']):
+                raise RoomArtifactError('Group Chat output snapshot changed')
+            done = conn.execute('SELECT * FROM hosted_room_artifact_completions WHERE room_id=? AND task_id=? '
+                                'AND execution_generation=?', key).fetchone()
+            same = lambda old: all(old[k] == metadata[k] for k in ('work', 'route', 'lineage', 'member_id'))
+            if (done and same(json.loads(done['metadata_json'])) and now < done['valid_until']
+                    and done['event_digest'] == self._output_events_digest(conn, key)):
+                return dict(metadata, completed_operation=done['operation'])
+            row = conn.execute('SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? '
+                               'AND execution_generation=?', key).fetchone()
+            if row and (row['blocked'] or now < row['next_attempt_at']):
+                return None
+            stale = bool(row and not same(json.loads(row['metadata_json'])))
+            # Completion never grants a new route/result the old success.
+            stale = stale or bool(done and not row and not same(json.loads(done['metadata_json'])))
+            stale = stale or bool(done and done['event_digest'] != self._output_events_digest(conn, key))
+            expired = now >= metadata['valid_until']
+            attempts = min(2147483647, row['attempts'] + 1) if row else 1
+            delay = min(60.0, 2.0 ** min(attempts - 1, 16))
+            encoded = done['metadata_json'] if done and not row else json.dumps(metadata, sort_keys=True)
+            conn.execute('''INSERT INTO hosted_room_artifact_retries VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(room_id,task_id,execution_generation) DO UPDATE SET
+                attempts=excluded.attempts,next_attempt_at=excluded.next_attempt_at,blocked=excluded.blocked,
+                updated_at=excluded.updated_at,reason_code=excluded.reason_code''',
+                (*key, metadata['member_id'], attempts, now + delay, int(stale or expired),
+                 row['created_at'] if row else now, now, encoded, 'publish',
+                 'stale_binding' if stale else 'expired_grant' if expired else 'pending'))
+            return None if stale or expired else metadata
+        return self.authority.db._execute_write(begin)
+
+    def _finish_output_retry(self, task, metadata, *, operation, error=None):
+        key, now = self._output_key(task), float(self._artifact_clock())
+        def finish(conn):
+            self._output_owner(conn)
+            try:
+                current = self._output_metadata(conn, key)
+                exact = all(current[k] == metadata[k] for k in ('work', 'route', 'lineage', 'member_id'))
+            except (RoomArtifactError, RuntimeStoreError):
+                exact = False
+            if error is not None or not exact:
+                conn.execute('UPDATE hosted_room_artifact_retries SET blocked=?,operation=?,reason_code=?,updated_at=? '
+                             'WHERE room_id=? AND task_id=? AND execution_generation=?',
+                             (int(not exact or not retryable(error)), operation,
+                              'stale_binding' if not exact else 'transient' if retryable(error) else 'authorization_or_verification',
+                              now, *key))
+                return
+            event_digest = self._output_events_digest(conn, key)
+            if not event_digest or now >= metadata['valid_until']:
+                raise RoomArtifactError('Group Chat output completion authority expired')
+            conn.execute('''INSERT INTO hosted_room_artifact_completions VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(room_id,task_id,execution_generation) DO UPDATE SET
+                completed_at=excluded.completed_at,valid_until=excluded.valid_until,metadata_json=excluded.metadata_json,
+                event_digest=excluded.event_digest,operation=excluded.operation''',
+                (*key, now, metadata['valid_until'], json.dumps(metadata, sort_keys=True), event_digest, operation))
+            conn.execute('DELETE FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? AND execution_generation=?', key)
+        self.authority.db._execute_write(finish)
+
+    def _unblock_authenticated_output_routes(self, room_id):
+        """Consume Route's exact authenticated CAS notification on normal ticks."""
+        if not self._output_retry_ready:
+            return
+        def unblock(conn):
+            self._output_owner(conn)
+            rows = conn.execute('SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND blocked=1',
+                                (room_id,)).fetchall()
+            for row in rows:
+                member_id = row['member_id']
+                link = conn.execute('SELECT * FROM hosted_room_links WHERE room_id=? AND member_id=?',
+                                    (room_id, member_id)).fetchone()
+                marker = 'gateway.hosted.route.recovered.v1:' + json.dumps([room_id, member_id], separators=(',', ':'))
+                notification = conn.execute('SELECT value FROM state_meta WHERE key=?', (marker,)).fetchone()
+                if link is None or notification is None or notification[0] != digest(dict(link)):
+                    continue
+                key = (room_id, row['task_id'], row['execution_generation'])
+                old = json.loads(row['metadata_json'])
+                done = conn.execute('SELECT event_digest FROM hosted_room_artifact_completions WHERE room_id=? AND task_id=? AND execution_generation=?', key).fetchone()
+                if done and done['event_digest'] != self._output_events_digest(conn, key):
+                    continue
+                try:
+                    current = self._output_metadata(conn, key)
+                except (RoomArtifactError, RuntimeStoreError):
+                    continue
+                if (old['work'] != current['work'] or old['lineage'] != current['lineage']
+                        or old['route'] == current['route'] or float(self._artifact_clock()) >= current['valid_until']):
+                    continue
+                conn.execute('UPDATE hosted_room_artifact_retries SET metadata_json=?,blocked=0,next_attempt_at=0,'
+                             'reason_code=? WHERE room_id=? AND task_id=? AND execution_generation=?',
+                             (json.dumps(current, sort_keys=True), 'route_recovered', *key))
+        self.authority.db._execute_write(unblock)
+
+    def status(self, room_id=None):
+        result = super().status(room_id)
+        if room_id is None:
+            return result
+        obligations = self.output_retry_status(room_id)
+        # Informational only: these are retained output operations, never the
+        # driver's NEW-execution Retry action.
+        return {**result, 'pending_actions': [*result['pending_actions'], *[
+            dict(row, kind='output_retry', blocked=bool(row['blocked'])) for row in obligations]]}
+
+    def output_retry_status(self, room_id):
+        with self.authority.db._read_ctx() as conn:
+            self._output_owner(conn)
+            return [dict(r) for r in conn.execute('SELECT task_id,execution_generation,member_id,attempts,next_attempt_at,'
+                'blocked,operation,reason_code FROM hosted_room_artifact_retries WHERE room_id=?', (room_id,))]

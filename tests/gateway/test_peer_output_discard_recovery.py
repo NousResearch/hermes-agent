@@ -88,6 +88,8 @@ async def test_real_silent_publication_waits_for_discard_and_replays_lost_reply(
             with pytest.raises(PeerRunsHTTPError):
                 await asyncio.to_thread(c.service._publish_terminal_tasks, c.service._room('room-one'))
             assert not [e for e in c.service._events('room-one') if e['event_id'] == 'dterminal:' + scope.task_id.removeprefix('dtask:')]
+            due = c.db._conn.execute('SELECT next_attempt_at FROM hosted_room_artifact_retries').fetchone()[0]
+            c.service._artifact_clock = lambda: due
             assert await asyncio.to_thread(c.service._publish_terminal_tasks, c.service._room('room-one'))
             events = [e for e in c.service._events('room-one') if e['event_id'] == 'dterminal:' + scope.task_id.removeprefix('dtask:')]
             assert len(events) == 1 and events[0]['kind'] == 'turn.cancelled'

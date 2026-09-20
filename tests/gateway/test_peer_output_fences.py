@@ -257,6 +257,9 @@ async def test_actual_ack_and_retirement_replay_hold_both_grant_stores(files_tar
             initial = len(checked)
             await asyncio.to_thread(c.service._publish_terminal_tasks, c.service._room('room-one'))
         assert commits == [c.stored['result']['artifact_scope']]
+        assert len(checked) == initial, 'completed Home work no longer retransmits'
+        # Explicit exact target replay still holds the original two-store checks.
+        await ack(c)
         assert len(checked) > initial
         assert all(checked[i:i+2] == ['shared-state.db', 'state.db'] for i in range(0, len(checked), 2))
 

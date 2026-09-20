@@ -81,6 +81,9 @@ async def test_publication_uses_admitted_recipients_and_exact_source(tmp_path, m
             assert not [e for e in service._events("room") if e["kind"] == "message.member"]
             assert not ack_calls and not outbox.retirement_complete(scope)
             return
+        due = authority.db._conn.execute('SELECT next_attempt_at FROM hosted_room_artifact_retries').fetchone()
+        if due is not None:
+            service._artifact_clock = lambda: due[0]
         service.prepare_room(binding)
         message, = [e for e in service._events("room") if e["kind"] == "message.member"]
         assert message["payload"]["recipient_member_ids"] == ["writer"]
@@ -118,11 +121,13 @@ async def test_lost_exact_ack_response_replays_without_second_publication(tmp_pa
             raise ConnectionError("inert lost ACK response")
 
         monkeypatch.setattr(RoomArtifactOutbox, "acknowledge", lose_response)
-        with pytest.raises(ConnectionError, match="inert lost ACK"):
-            service.prepare_room(binding)
+        service.prepare_room(binding)
+        retry = authority.db._conn.execute('SELECT blocked,next_attempt_at FROM hosted_room_artifact_retries').fetchone()
+        assert retry is not None and retry['blocked'] == 0
         message, = [e for e in service._events("room") if e["kind"] == "message.member"]
         assert calls == [(scope, [i["artifact_id"] for i in saved["result"]["artifacts"]["items"]],
                           message["event_id"])]
+        service._artifact_clock = lambda: retry['next_attempt_at']
         service.prepare_room(binding)
         assert [e for e in service._events("room") if e["kind"] == "message.member"] == [message]
         assert len(calls) == 1

@@ -15,6 +15,8 @@ export {
 export type { UnspokenTurnSpeech } from './parts'
 export { branchGroupForUser, preserveLocalAssistantErrors } from './reconciliation'
 export {
+  discardOpenClarifyToolCalls,
+  discardPendingClarifyToolCall,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,

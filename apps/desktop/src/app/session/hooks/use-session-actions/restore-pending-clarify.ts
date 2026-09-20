@@ -1,11 +1,61 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
-import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import {
+  $clarifyRequests,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  normalizeChoices,
+  normalizeQuestions
+} from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
 export interface PendingClarifyResumeState {
   authoritativeAbsent: boolean
   cleared: ClarifyRequest | null
   request: ClarifyRequest | null
+}
+
+export function pendingClarifyRequestFromSnapshot(
+  response: Pick<SessionResumeResult, 'open_requests'>,
+  sessionId: string
+): ClarifyRequest | null {
+  const pending = (response.open_requests ?? []).find(entry => entry.method === 'clarify')
+
+  if (!pending) {
+    return null
+  }
+
+  const parked = $clarifyRequests.get()[sessionId]
+
+  if (parked?.requestId === pending.id) {
+    return parked
+  }
+
+  const questions = normalizeQuestions(pending.params.questions)
+  const question = typeof pending.params.question === 'string' ? pending.params.question : ''
+
+  if (!question && questions.length === 0) {
+    return null
+  }
+
+  const choices = normalizeChoices(pending.params.choices)
+  const answers = pending.params.answers
+  const lockedAnswers =
+    typeof answers === 'object' && answers !== null
+      ? Object.fromEntries(
+          Object.entries(answers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+        )
+      : undefined
+
+  return {
+    choices: choices.length > 0 ? choices : null,
+    lockedAnswers,
+    multiSelect: pending.params.multi_select === true,
+    question,
+    receivedAt: Date.now() / 1000,
+    requestId: pending.id,
+    sessionId,
+    ...(questions.length > 0 ? { questions } : {})
+  }
 }
 
 /**
@@ -24,8 +74,13 @@ export function restorePendingClarifyFromSnapshot(
   response: Pick<SessionResumeResult, 'open_requests'>,
   sessionId: string,
   resumeStartedAt: number,
-  requestIdAtStart?: string
+  requestIdAtStart?: string | null,
+  preserveCurrentClarifyRequest = false
 ): PendingClarifyResumeState {
+  if (preserveCurrentClarifyRequest) {
+    return { authoritativeAbsent: false, cleared: null, request: null }
+  }
+
   const pending = (response.open_requests ?? []).find(entry => entry.method === 'clarify')
 
   if (!pending) {
@@ -48,8 +103,9 @@ export function restorePendingClarifyFromSnapshot(
   // re-delivered `open_requests`; a card the handler declined (empty
   // question) is simply not there.
   const parked = $clarifyRequests.get()[sessionId]
+  const request = parked?.requestId === pending.id ? parked : null
 
-  return { authoritativeAbsent: false, cleared: null, request: parked?.requestId === pending.id ? parked : null }
+  return { authoritativeAbsent: false, cleared: null, request }
 }
 
 export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEventPayload {

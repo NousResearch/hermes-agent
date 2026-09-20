@@ -56,4 +56,106 @@ describe('transcript provenance', () => {
     expect(suppressTranscriptForView(state, true).messages).toEqual([])
     expect(state.messages).toHaveLength(1)
   })
+
+  it('keeps the open clarify part correlated to the active input request', () => {
+    const state = createClientSessionState('stored-1')
+    state.needsInput = true
+    state.streamId = 'clarify-1'
+    state.messages = [
+      {
+        id: 'clarify-1',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          { type: 'text', text: 'unproven commentary' },
+          {
+            type: 'tool-call',
+            toolCallId: 'request-1',
+            toolName: 'clarify',
+            args: { question: 'Which path?' },
+            argsText: '{"question":"Which path?"}'
+          }
+        ]
+      }
+    ]
+
+    expect(suppressTranscriptForView(state, true).messages).toEqual([
+      {
+        ...state.messages[0],
+        parts: [expect.objectContaining({ toolCallId: 'request-1', toolName: 'clarify' })]
+      }
+    ])
+  })
+
+  it('hides a matching pending clarify when the state does not need input', () => {
+    const state = createClientSessionState('stored-1')
+    state.needsInput = false
+    state.streamId = 'clarify-1'
+    state.messages = [
+      {
+        id: 'clarify-1',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'request-1',
+            toolName: 'clarify',
+            args: { question: 'Which path?' },
+            argsText: '{"question":"Which path?"}'
+          }
+        ]
+      }
+    ]
+
+    expect(suppressTranscriptForView(state, true).messages).toEqual([])
+  })
+
+  it('hides a correlated pending clarify from a non-assistant message', () => {
+    const state = createClientSessionState('stored-1')
+    state.needsInput = true
+    state.streamId = 'clarify-1'
+    state.messages = [
+      {
+        id: 'clarify-1',
+        role: 'user',
+        pending: true,
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'request-1',
+            toolName: 'clarify',
+            args: { question: 'Which path?' },
+            argsText: '{"question":"Which path?"}'
+          }
+        ]
+      }
+    ]
+
+    expect(suppressTranscriptForView(state, true).messages).toEqual([])
+  })
+
+  it.each([null, 'other-message'])('hides a pending clarify without a matching stream id (%s)', streamId => {
+    const state = createClientSessionState('stored-1')
+    state.needsInput = true
+    state.streamId = streamId
+    state.messages = [
+      {
+        id: 'clarify-1',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'request-1',
+            toolName: 'clarify',
+            args: { question: 'Which path?' },
+            argsText: '{"question":"Which path?"}'
+          }
+        ]
+      }
+    ]
+
+    expect(suppressTranscriptForView(state, true).messages).toEqual([])
+  })
 })

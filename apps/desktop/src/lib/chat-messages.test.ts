@@ -10,6 +10,8 @@ import {
   chatMessageText,
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
+  discardOpenClarifyToolCalls,
+  discardPendingClarifyToolCall,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
@@ -1410,6 +1412,195 @@ describe('stripPendingClarifyProjectionForCache', () => {
   })
 })
 
+describe('discardPendingClarifyToolCall', () => {
+  it('keeps one provider-authored row carrying a concurrent settled answer', () => {
+    const args = { choices: ['safe', 'fast'], question: 'Which path?' }
+
+    const messages: ChatMessage[] = [
+      {
+        id: 'provider',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ]
+      },
+      {
+        id: 'synthetic',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'req-answer',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args),
+            result: { question: 'Which path?', user_response: 'safe' }
+          }
+        ],
+        pending: false
+      }
+    ]
+
+    const reconciled = discardPendingClarifyToolCall(messages, { args, tool_id: 'req-answer' }, true)
+    const clarifyParts = reconciled.flatMap(message => message.parts).filter(part => part.type === 'tool-call')
+
+    expect(clarifyParts).toHaveLength(1)
+    expect(clarifyParts[0]).toMatchObject({
+      result: { question: 'Which path?', user_response: 'safe' },
+      toolCallId: 'call-provider'
+    })
+    expect(clarifyParts[0]).not.toMatchObject({ result: expect.objectContaining({ timed_out: true }) })
+  })
+
+  it('does not transplant an older identical clarification result onto the current open row', () => {
+    const args = { choices: ['safe', 'fast'], question: 'Which path?' }
+    const historicalResult = { question: 'Which path?', user_response: 'fast' }
+
+    const messages: ChatMessage[] = [
+      {
+        id: 'historical',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-historical',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args),
+            result: historicalResult
+          }
+        ]
+      },
+      {
+        id: 'current-provider',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-current-provider',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ]
+      }
+    ]
+
+    const reconciled = discardPendingClarifyToolCall(messages, { args, tool_id: 'req-current' }, true)
+
+    expect(reconciled).toEqual([messages[0]])
+    expect(reconciled[0].parts[0]).toMatchObject({
+      result: historicalResult,
+      toolCallId: 'call-historical'
+    })
+  })
+
+  it('transfers an exact settled result only to an earlier provider row', () => {
+    const args = { choices: ['same'], question: 'Repeated question?' }
+    const answer = { question: 'Repeated question?', user_response: 'same' }
+
+    const messages: ChatMessage[] = [
+      {
+        id: 'provider-old',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider-old',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ]
+      },
+      {
+        id: 'settled-exact',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'req-old',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args),
+            result: answer
+          }
+        ]
+      },
+      {
+        id: 'newer-open',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'req-newer',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ]
+      }
+    ]
+
+    const reconciled = discardPendingClarifyToolCall(messages, { args, tool_id: 'req-old' }, true)
+    const clarifyParts = reconciled.flatMap(message => message.parts).filter(part => part.type === 'tool-call')
+
+    expect(clarifyParts).toHaveLength(2)
+    expect(clarifyParts.find(part => part.toolCallId === 'call-provider-old')).toMatchObject({
+      result: answer,
+      toolCallId: 'call-provider-old'
+    })
+    expect(clarifyParts.find(part => part.toolCallId === 'req-newer')).not.toHaveProperty('result')
+    expect(clarifyParts).not.toEqual(expect.arrayContaining([expect.objectContaining({ toolCallId: 'req-old' })]))
+  })
+
+  it('removes every open clarify while preserving settled history and unrelated parts', () => {
+    const args = { choices: ['same'], question: 'Repeated question?' }
+
+    const settled = {
+      type: 'tool-call' as const,
+      toolCallId: 'call-settled',
+      toolName: 'clarify',
+      args,
+      argsText: JSON.stringify(args),
+      result: { question: 'Repeated question?', user_response: 'same' }
+    }
+
+    const textPart = { type: 'text' as const, text: 'Still running.' }
+
+    const messages: ChatMessage[] = [
+      { id: 'history', role: 'assistant', parts: [settled] },
+      {
+        id: 'mixed',
+        role: 'assistant',
+        parts: [
+          textPart,
+          {
+            type: 'tool-call',
+            toolCallId: 'req-open',
+            toolName: 'clarify',
+            args,
+            argsText: JSON.stringify(args)
+          }
+        ],
+        pending: true
+      }
+    ]
+
+    const filtered = discardOpenClarifyToolCalls(messages)
+
+    expect(filtered).toHaveLength(2)
+    expect(filtered[0].parts).toEqual([settled])
+    expect(filtered[1].parts).toEqual([textPart])
+  })
+})
+
 describe('sealOpenToolParts', () => {
   const toolPart = (over: Partial<ChatMessagePart> = {}): ChatMessagePart =>
     ({
@@ -1445,7 +1636,10 @@ describe('sealOpenToolParts', () => {
       )
     ])
 
-    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+    const messages = [
+      ...stopped,
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage
+    ]
 
     const restored = restorePendingClarifyToolCall(
       messages,

@@ -245,6 +245,48 @@ def _child_env() -> dict:
     return {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in (_REPO_ROOT, os.environ.get("PYTHONPATH")) if p)}
 
 
+def test_turn_report_is_booked_when_the_launcher_is_not_the_writer(tmp_path):
+    """The reporting process is not always the one ``Popen`` returned.
+
+    A venv ``Scripts/python.exe`` redirector or a pip/uv ``hermes.exe`` console script re-execs,
+    so the spawner holds the launcher's pid while the report carries the interpreter's. Modelled
+    here with an explicit relauncher so the case reproduces on every platform, not only where
+    ``sys.executable`` happens to be a trampoline: gating on pid equality books a delivered turn
+    as a timeout (#113608).
+    """
+    report = tmp_path / "turn.json"
+    writer = textwrap.dedent("""
+        import os, time
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+        write_turn_report(os.environ.pop(TURN_REPORT_FILE_ENV), exit_code=0)
+        time.sleep(30)
+        """)
+    relauncher = textwrap.dedent(f"""
+        import subprocess, sys
+        raise SystemExit(subprocess.call([sys.executable, "-c", {writer!r}]))
+        """)
+    procs, real_popen = [], subprocess.Popen
+
+    def spy(*args, **kwargs):
+        procs.append(real_popen(*args, **kwargs))
+        return procs[-1]
+
+    started = time.monotonic()
+    try:
+        with mock.patch.object(sched_delivery.subprocess, "Popen", side_effect=spy):
+            result = sched_delivery._run_bot_chat_turn(
+                [sys.executable, "-c", relauncher],
+                {**_child_env(), TURN_REPORT_FILE_ENV: str(report)}, str(report), timeout=10)
+        elapsed = time.monotonic() - started
+        # The report was written by the grandchild, whose pid the spawner never saw.
+        assert json.loads(report.read_text(encoding="utf-8"))["pid"] != procs[0].pid
+        assert result.returncode == 0
+        assert elapsed < 8, elapsed
+    finally:
+        for proc in procs:
+            proc.kill()
+
+
 def test_turn_report_books_the_delivery_while_the_child_still_lingers(tmp_path):
     """The cap bounds the TURN: a child that reported its turn and then lingers for a nested
     notify_on_complete reply (bounded by oneshot_completion_wait_seconds, default == the cap) is

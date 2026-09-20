@@ -1951,6 +1951,24 @@
       }
     },
     {
+      "name": "plugin.card.action",
+      "summary": "Run one card action through the exact command currently registered by its originating plugin.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PluginCardActionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PluginCardActionResult"
+        }
+      }
+    },
+    {
       "name": "plugins.list",
       "summary": "Loaded plugin manager entries (legacy flat view); the Plugins Hub uses plugins.manage list.",
       "params": [
@@ -7156,6 +7174,11 @@
             "default": false,
             "title": "Server Requests",
             "type": "boolean"
+          },
+          "plugin_cards": {
+            "default": false,
+            "title": "Plugin Cards",
+            "type": "boolean"
           }
         },
         "title": "ClientCapabilitiesParams",
@@ -7326,6 +7349,17 @@
             ],
             "default": null,
             "title": "Output"
+          },
+          "card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginCardWire"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "target": {
             "anyOf": [
@@ -10328,6 +10362,7 @@
           "exec",
           "alias",
           "plugin",
+          "plugin_card",
           "send",
           "skill",
           "prefill"
@@ -18032,6 +18067,141 @@
           "pong"
         ],
         "title": "PingResult",
+        "type": "object"
+      },
+      "PluginCardActionParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "plugin_id": {
+            "title": "Plugin Id",
+            "type": "string"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "args": {
+            "default": "",
+            "title": "Args",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "plugin_id",
+          "command"
+        ],
+        "title": "PluginCardActionParams",
+        "type": "object"
+      },
+      "PluginCardActionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PluginCardResultKind"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginCardWire"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "PluginCardActionResult",
+        "type": "object"
+      },
+      "PluginCardActionWire": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "args": {
+            "title": "Args",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "command",
+          "args"
+        ],
+        "title": "PluginCardActionWire",
+        "type": "object"
+      },
+      "PluginCardResultKind": {
+        "enum": [
+          "card",
+          "text"
+        ],
+        "title": "PluginCardResultKind",
+        "type": "string"
+      },
+      "PluginCardWire": {
+        "additionalProperties": false,
+        "properties": {
+          "plugin_id": {
+            "title": "Plugin Id",
+            "type": "string"
+          },
+          "plugin_name": {
+            "title": "Plugin Name",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/PluginCardActionWire"
+            },
+            "minItems": 1,
+            "title": "Actions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plugin_id",
+          "plugin_name",
+          "title",
+          "body",
+          "actions"
+        ],
+        "title": "PluginCardWire",
         "type": "object"
       },
       "PluginsAction": {
@@ -28407,6 +28577,17 @@
             ],
             "default": null
           },
+          "card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginCardWire"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "target": {
             "anyOf": [
               {
@@ -34221,6 +34402,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ChangeSignalPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugin.card.show",
+      "summary": "Present a direct actionable notice attributed to its originating plugin.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/PluginCardWire"
           }
         }
       ]

@@ -346,8 +346,12 @@ class CLIChatTurnMixin:
         self._pending_one_turn_model_restore = None
         try:
             from agent.notification_presentation import notification_turn
+            from hermes_cli.plugin_cards import card_publisher_scope
             muted = getattr(turn, "mute_notification_reply", False)
-            with notification_turn(self.agent, muted=muted, session_id=self.session_id):
+            with (
+                notification_turn(self.agent, muted=muted, session_id=self.session_id),
+                card_publisher_scope(self._plugin_card_publisher()),
+            ):
                 turn.result = self.agent.run_conversation(
                     user_message=agent_message,
                     conversation_history=self.conversation_history[:-1],

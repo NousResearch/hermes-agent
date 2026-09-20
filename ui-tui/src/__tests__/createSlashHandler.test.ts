@@ -838,6 +838,34 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('shows a plugin notice returned by slash.exec without an open step', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const card = {
+      actions: [{ args: 'share', command: 'build-choice', label: 'Share' }],
+      body: 'Choose an operation.',
+      plugin_id: 'build-tools',
+      plugin_name: 'Build Tools',
+      title: 'Build menu'
+    }
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          ...buildGateway().gw,
+          request: vi.fn(() => Promise.resolve({ card, type: 'plugin_card' }))
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/build-menu')).toBe(true)
+    await vi.waitFor(() =>
+      expect(getOverlayState().pluginNotice).toEqual({ notice: card, sessionId: 'sid-abc' })
+    )
+    expect(ctx.transcript.panel).toHaveBeenCalledWith('Build Tools · Build menu', [{ text: 'Choose an operation.' }])
+  })
+
   it('resolves unique local aliases through the catalog', () => {
     const ctx = buildCtx({
       local: {
@@ -937,6 +965,7 @@ describe('createSlashHandler', () => {
 
   it('surfaces the slash worker failure itself instead of the command.dispatch refusal', async () => {
     patchUiState({ sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         gw: {
@@ -965,6 +994,7 @@ describe('createSlashHandler', () => {
 
   it('still falls back to command.dispatch on a 4018 "not mine" refusal', async () => {
     patchUiState({ sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         gw: {

@@ -3337,14 +3337,19 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         return True
 
     def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:
-        from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
+        from hermes_cli.plugin_cards import PluginCard, card_publisher_scope
+        from hermes_cli.plugins import get_plugin_commands, resolve_plugin_command_result
 
-        plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
-        if not plugin_handler:
+        entry = get_plugin_commands().get(base_cmd.lstrip("/"))
+        if not entry:
             return
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
-            if result:
+            with card_publisher_scope(self._plugin_card_publisher()):
+                result = resolve_plugin_command_result(entry["handler"](user_args))
+            if isinstance(result, PluginCard):
+                self._present_plugin_card(
+                    str(entry.get("plugin_key") or ""), str(entry.get("plugin") or ""), result)
+            elif result:
                 _cprint(str(result))
         except Exception as e:
             _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")

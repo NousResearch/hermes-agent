@@ -172,7 +172,7 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
-    "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
+    "command.dispatch", "plugin.card.action",  # plugin handlers may perform arbitrary bounded work
 })
 
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
@@ -663,6 +663,22 @@ _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, 
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
+_plugin_card_clients: set[Transport] = set()
+
+
+def _advertise_plugin_cards(transport: Transport, supported: bool) -> None:
+    with _live_transports_lock:
+        (_plugin_card_clients.add if supported else _plugin_card_clients.discard)(transport)
+
+
+def _plugin_cards_supported(sid: str) -> bool:
+    transport = (_sessions.get(sid) or {}).get("transport") or current_transport() or _stdio_transport
+    with _live_transports_lock:
+        return transport in _plugin_card_clients
+
+
+def _publish_plugin_card(sid: str, payload: dict) -> bool:
+    return _emit("plugin.card.show", sid, payload) if _plugin_cards_supported(sid) else False
 
 
 def register_live_transport(transport: Transport | None) -> None:
@@ -676,6 +692,7 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+        _plugin_card_clients.discard(transport)
     _server_requests.forget(transport)
 
 

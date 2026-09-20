@@ -6,9 +6,14 @@ don't have to construct a full HermesCLI (which requires extensive setup).
 
 from __future__ import annotations
 
+import os
 import queue
+import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
+from prompt_toolkit.utils import get_cwidth
 
 
 def _bound(fn, instance):
@@ -29,6 +34,49 @@ def _make_self(prompt_response):
         HermesCLI._normalize_slash_confirm_choice, self_,
     )
     return self_
+
+
+@pytest.mark.parametrize(
+    ("choice_count", "quick_pick_count"),
+    ((2, 2), (3, 3), (4, 4), (10, 9)),
+)
+def test_slash_confirm_hints_match_immediate_numeric_choices(choice_count, quick_pick_count):
+    from cli import HermesCLI
+
+    choices = [(str(index), f"Choice {index + 1}", "detail") for index in range(choice_count)]
+    cli = HermesCLI.__new__(HermesCLI)
+    setattr(cli, "_slash_confirm_state", {
+        "title": "Choose",
+        "detail": "Pick one.",
+        "choices": choices,
+        "selected": 0,
+    })
+    setattr(cli, "_slash_confirm_deadline", time.monotonic() + 120)
+    cli._sudo_state = cli._secret_state = cli._approval_state = None
+    cli._clarify_state = None
+    cli._clarify_freetext = cli._voice_recording = cli._voice_processing = False
+    cli._command_running = cli._agent_running = cli._voice_mode = False
+
+    numbers = "/".join(str(index) for index in range(1, quick_pick_count + 1))
+    hint = f"{numbers} quick pick · ↑/↓ then Enter"
+    with patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((80, 40))):
+        panel = "".join(text for _style, text in cli._get_slash_confirm_display_fragments())
+    countdown = "".join(text for _style, text in cli._tui_hint_text())
+
+    rows = panel.splitlines()
+    assert all(get_cwidth(row) <= get_cwidth(rows[0]) for row in rows)
+    assert f"{hint} · Esc/Ctrl+C cancel" in panel
+    assert hint in countdown
+    assert cli._tui_placeholder_text() == hint
+    assert "10" not in hint
+
+    cli._submit_slash_confirm_response = MagicMock()
+    buffer = SimpleNamespace(reset=MagicMock())
+    event = SimpleNamespace(app=SimpleNamespace(current_buffer=buffer, invalidate=MagicMock()))
+    cli._tui_make_slash_confirm_number_handler(quick_pick_count - 1)(event)
+
+    cli._submit_slash_confirm_response.assert_called_once_with(choices[quick_pick_count - 1][0])
+    buffer.reset.assert_called_once_with()
 
 
 

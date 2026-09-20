@@ -21,6 +21,7 @@ from .base import JsonValue, Payload, WireEnum
 from .common import MessageReaction, SessionLiveInfo, SubagentStatus, Usage
 from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
+from .plugin_cards import PluginCardWire
 
 
 class OpenPayload(Payload):
@@ -327,6 +328,8 @@ class NotificationClearPayload(Payload):
 
 event("notification.show", NotificationShowPayload, doc="Show / replace a keyed out-of-band notice (toast or status bar).")
 event("notification.clear", NotificationClearPayload, doc="Withdraw the notice with this key.")
+event("plugin.card.show", PluginCardWire,  # type: ignore[arg-type]
+      doc="Present a direct actionable notice attributed to its originating plugin.")
 
 
 class TipShowPayload(Payload):

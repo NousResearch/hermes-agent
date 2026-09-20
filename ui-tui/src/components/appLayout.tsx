@@ -7,7 +7,12 @@ import { Fragment, memo, type MutableRefObject, useEffect, useMemo, useRef } fro
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
+import {
+  $isBlocked,
+  $overlayState,
+  clearPluginNoticeForSession,
+  patchOverlayState
+} from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
@@ -539,6 +544,7 @@ export const AppLayout = memo(function AppLayout({
   const cursorSnapshotRef = useRef<InputCursorSnapshot | null>(null)
   useEffect(() => {
     cursorSnapshotRef.current = null
+    clearPluginNoticeForSession(ui.sid)
   }, [ui.sid])
 
   // Inline mode skips AlternateScreen so the host terminal's native
@@ -576,6 +582,7 @@ export const AppLayout = memo(function AppLayout({
                 onApprovalChoice={actions.answerApproval}
                 onClarifyAnswer={actions.answerClarify}
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
+                onPluginResult={(title, body) => transcript.panel(title, [{ text: body }])}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
                 onVaultUnlockSubmit={actions.answerVaultUnlock}

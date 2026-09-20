@@ -447,6 +447,7 @@ def _(rid, params: dict) -> dict:
     from tui_gateway import server_requests
     from tui_gateway.contracts import registry as contracts
     server_requests.advertise(_caller_transport(), bool(params.get("server_requests")))
+    _advertise_plugin_cards(_caller_transport(), bool(params.get("plugin_cards")))
     return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS)})
 
 

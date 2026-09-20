@@ -9,7 +9,8 @@ import {
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
   shouldDetachEditedHistoryInput,
-  shouldFallThroughForScroll
+  shouldFallThroughForScroll,
+  shouldPromptOverlayFallThroughForScroll
 } from '../app/useInputHandlers.js'
 
 const baseKey = {
@@ -50,6 +51,14 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
   it('does NOT fall through for unrelated state (no scroll keys held)', () => {
     expect(shouldFallThroughForScroll(baseKey)).toBe(false)
   })
+})
+
+it('keeps PageUp and PageDown on the transcript while a plugin notice owns the prompt', () => {
+  const overlay = { pluginNotice: { notice: {}, sessionId: 'sid-a' } }
+
+  expect(shouldPromptOverlayFallThroughForScroll(overlay, { ...baseKey, pageUp: true })).toBe(true)
+  expect(shouldPromptOverlayFallThroughForScroll(overlay, { ...baseKey, pageDown: true })).toBe(true)
+  expect(shouldPromptOverlayFallThroughForScroll(overlay, baseKey)).toBe(false)
 })
 
 describe('shouldAllowIdleHotkeyExit', () => {

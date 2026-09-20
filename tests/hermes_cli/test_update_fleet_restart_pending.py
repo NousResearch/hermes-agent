@@ -1011,3 +1011,47 @@ def test_pending_fleet_restart_cleared_instead_of_exit_1(monkeypatch, tmp_path):
 
     assert seen["ran"] is False
     assert not marker.exists()
+
+
+def test_catchup_settles_failed_receipt_from_live_fleet_instead_of_exit_1(monkeypatch, capsys):
+    """A failed receipt whose plan rows carry pre-pull SHAs and an unidentifiable profile can never
+    be matched to a live gateway, so every up-to-date `hermes update` ran the restart, printed
+    "completed" then "incomplete", exited 1 and wrote another failed receipt — even after a manual
+    `hermes gateway restart` put the fleet on the checkout code (#117051). With every live row
+    current at the checkout SHA, the catch-up settles the receipt from that matrix and exits 0."""
+    sha = "d" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    latest = receipt_dir / "latest.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "outcome": "failed",
+                "exit_code": 1,
+                "stop_reason": "sys.exit(1)",
+                "gateway_restart": {},
+                "fleet": [],
+                "plan": {
+                    "expected_sha": sha,
+                    "runtimes": [{"kind": "gateway", "profile": "unknown", "pid": 42, "code_sha": "0" * 40}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    live = [{"profile": "default", "pid": 48096, "code_sha": sha, "state": "current"}]
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **k: list(live))
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", lambda: True)
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+    update_cmd._apply_pending_fleet_restart_catchup()
+
+    out = capsys.readouterr().out
+    assert "incomplete" not in out and "still off the checkout code" not in out
+    settled = json.loads(latest.read_text(encoding="utf-8"))
+    assert settled["fleet"] == live
+    assert settled["gateway_restart"]["incomplete"] is False
+    assert update_cmd._pending_fleet_restart_needed() is False
+    assert update_cmd_fleet._update_owes_fleet_restart() is False

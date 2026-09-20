@@ -246,6 +246,36 @@ def _prune_old_receipts(directory: Path) -> None:
                 stale.unlink()
 
 
+def settle_latest_receipt_fleet(fleet: list[dict[str, Any]]) -> bool:
+    """Record on ``latest.json`` that the fleet it still reports as owed now serves the checkout.
+
+    A failed receipt whose plan rows cannot be matched to a live gateway (unknown identity,
+    pre-pull SHAs) keeps ``hermes update`` exiting 1 and every CLI start warning about mixed
+    modules, long after the operator's ``hermes gateway restart`` fixed the fleet (#117051). The
+    caller has just verified every live row is current at the checkout SHA; persisting that
+    matrix as the receipt's post-restart ``fleet`` (and un-flagging ``gateway_restart``) is what
+    lets the stale-runtime readers see the recovery. Only the ``latest.json`` pointer is
+    rewritten; the archived per-run file keeps the original outcome. Never raises.
+    """
+    try:
+        path = _receipt_dir() / "latest.json"
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict):
+            return False
+        receipt["fleet"] = list(fleet)
+        gateway_restart = receipt.get("gateway_restart")
+        if not isinstance(gateway_restart, dict):
+            gateway_restart = {}
+        gateway_restart.update({"incomplete": False, "phase_error": ""})
+        gateway_restart["settled_from_live_fleet_at"] = _utc_now_iso()
+        receipt["gateway_restart"] = gateway_restart
+        path.write_text(json.dumps(receipt, indent=2, default=str), encoding="utf-8")
+        return True
+    except Exception as exc:
+        logger.debug("Could not settle latest update receipt from the live fleet: %s", exc)
+        return False
+
+
 def read_latest_receipt() -> Optional[dict[str, Any]]:
     """Read the most recent update receipt, or None. Never raises."""
     with suppress(Exception):

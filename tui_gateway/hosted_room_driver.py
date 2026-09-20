@@ -9,8 +9,6 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 import time
 import uuid
@@ -21,6 +19,8 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+from gateway.hosted_room_artifacts import RoomArtifactError, validate_terminal_artifact_manifest
+from gateway.hosted_rooms_common import identifier
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -1012,22 +1012,19 @@ def _legacy_artifact_receipt_is_held(message: Mapping[str, Any]) -> bool:
         "peer_run_id", "peer_admission_id", "peer_execution_generation", "peer_result_digest"
     )
     if (
-        not isinstance(run_id, str)
-        or not 0 < len(run_id) <= 256
-        or "artifact_scope" in message
+        "artifact_scope" in message
         or any(field in message for field in peer_fields)
         or not isinstance(artifacts, Mapping)
-        or set(artifacts) != {"version", "manifest_digest", "items"}
-        or artifacts.get("version") != 1
-        or not isinstance(artifacts.get("items"), list)
-        or not artifacts["items"]
-        or not isinstance(artifacts.get("manifest_digest"), str)
     ):
         return False
-    digest = hashlib.sha256(
-        json.dumps(artifacts["items"], sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    return artifacts["manifest_digest"] == digest
+    try:
+        checked_run_id = identifier(
+            run_id, label="run_id", error=RoomArtifactError, max_chars=256
+        )
+        validate_terminal_artifact_manifest(artifacts)
+    except RoomArtifactError:
+        return False
+    return message.get("message_id") == "peer-run:" + checked_run_id
 
 
 def _find_terminal_receipt(

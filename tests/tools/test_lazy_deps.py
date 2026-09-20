@@ -613,7 +613,7 @@ class TestPipConfIndexBridge:
         """Run _venv_pip_install against a stubbed uv (with *env* set) and return the env it was spawned with."""
         conf = tmp_path / "pip.conf"
         conf.write_text(f"[global]\nindex-url = {self.MIRROR}\n", encoding="utf-8")
-        # PIP_CONFIG_FILE keeps the host's own /etc, sys.prefix and ~ pip files out of the read.
+        # PIP_CONFIG_FILE is pip's highest file tier, so it wins over any host /etc file.
         monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
         monkeypatch.setattr(ld.Path, "home", staticmethod(lambda: tmp_path))
         monkeypatch.setattr(ld.sys, "prefix", str(tmp_path / "venv"))
@@ -639,9 +639,11 @@ class TestPipConfIndexBridge:
         env = self._run_with_fake_uv(monkeypatch, tmp_path)
         assert env["UV_INDEX_URL"] == self.MIRROR
 
-    def test_pip_index_url_env_beats_pip_conf_and_explicit_uv_config_is_left_alone(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("PIP_INDEX_URL", "https://env.example/simple")
-        assert self._run_with_fake_uv(monkeypatch, tmp_path)["UV_INDEX_URL"] == "https://env.example/simple"
+    def test_pip_index_url_env_beats_pip_conf(self, monkeypatch, tmp_path):
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, PIP_INDEX_URL="https://env.example/simple")
+        assert env["UV_INDEX_URL"] == "https://env.example/simple"
 
+    def test_explicit_uv_index_knob_is_not_overridden(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
         env = self._run_with_fake_uv(monkeypatch, tmp_path, UV_DEFAULT_INDEX="https://custom.example/simple")
-        assert "UV_INDEX_URL" not in env, "an explicit uv index knob must not be overridden"
+        assert "UV_INDEX_URL" not in env

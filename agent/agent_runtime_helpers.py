@@ -2956,7 +2956,7 @@ def fallback_short_reply_stall(
     trailing-intent and codex-ack detectors (max ``continuations_used`` < 2
     per turn total across all detectors).
 
-    All five gates must be true:
+    All six gates must be true:
       1. ``agent.fallback_short_reply_continue`` (default True)
       2. ``agent.valid_tool_names`` is truthy
       3. ``continuations_used < 2``

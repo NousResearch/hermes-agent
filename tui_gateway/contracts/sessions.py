@@ -157,6 +157,10 @@ class SessionResumeParams(SessionParams):
     omit_messages: bool = False
     eager_build: bool = False
     close_on_disconnect: bool = False
+    # False renders image parts as ``[image]`` references instead of inlining their data URIs:
+    # the payload is the sum of every attachment the conversation ever carried, re-paid on each
+    # reconnect, so a remote client that can fetch images separately should not have to take it.
+    inline_images: bool = True
 
 
 class SessionResumeResult(LiveSessionSnapshot):

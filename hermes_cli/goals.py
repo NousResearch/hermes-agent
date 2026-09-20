@@ -55,6 +55,16 @@ _MAX_BARRIER_WAIT_S = 30 * 60
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
 _GATE_OUTPUT_TAIL_CHARS = 3000
 
+# Judge evidence surface: host-observed tool calls from the agent's most recent turn, extracted
+# from SessionDB so every surface (CLI/TUI/gateway) feeds the judge the same evidence without
+# call-site changes. Bounded so a tool-heavy turn cannot bloat the judge prompt.
+_TOOL_ACTIVITY_MAX_ITEMS = 12
+_TOOL_ACTIVITY_ARG_KEYS = ("path", "command", "query", "url", "name", "pattern", "task_id")
+JUDGE_TOOL_ACTIVITY_BLOCK_TEMPLATE = (
+    "Tool activity observed during the agent's most recent turn (host-observed, "
+    "not part of the agent's response text):\n{tool_lines}\n\n"
+)
+
 
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
@@ -112,7 +122,8 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text, the agent's "
-    "most recent response, and — when present — a list of background "
+    "most recent response, the agent's host-observed tool activity for that "
+    "turn (when present), and — when present — a list of background "
     "processes the agent has running. Decide one of four verdicts.\n\n"
     "DONE — the goal is fully satisfied:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
@@ -851,6 +862,79 @@ def _render_background_block(background_processes: Optional[List[Dict[str, Any]]
     return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
+def _format_tool_call_line(call: Any, result_by_id: dict) -> str:
+    """One host-observed tool call as a short judge-evidence line (``- name key=value → exit N``)."""
+    if not isinstance(call, dict):
+        return "- (unparseable tool call)"
+    function = call.get("function") if isinstance(call.get("function"), dict) else call
+    name = str(function.get("name") or "?")
+    args_raw = function.get("arguments") or {}
+    try:
+        args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw if isinstance(args_raw, dict) else {})
+    except Exception:
+        args = {}
+    detail = ""
+    for key in _TOOL_ACTIVITY_ARG_KEYS:
+        value = args.get(key) if isinstance(args, dict) else None
+        if value not in (None, "", [], {}):
+            detail = f" {key}={_truncate(str(value).replace(chr(10), ' '), 80)}"
+            break
+    outcome = ""
+    call_id = str(call.get("call_id") or call.get("id") or "")
+    result_content = result_by_id.get(call_id)
+    if isinstance(result_content, str) and result_content.strip().startswith("{"):
+        try:
+            result_data = json.loads(result_content)
+        except Exception:
+            result_data = None
+        if isinstance(result_data, dict) and result_data.get("exit_code") is not None:
+            outcome = f" → exit {result_data['exit_code']}"
+    return f"- {name}{detail}{outcome}"
+
+
+def gather_tool_activity(session_id: Optional[str], *, max_items: int = _TOOL_ACTIVITY_MAX_ITEMS) -> str:
+    """Host-observed tool calls from the session's most recent assistant turn, as a judge prompt
+    block (``""`` when nothing extractable — prompts stay byte-identical to the no-evidence case).
+
+    Reads SessionDB ``messages`` (``tool_calls`` JSON on the assistant row; ``tool`` rows joined by
+    ``tool_call_id`` supply exit codes). The scan stops at the previous user message so a
+    response-only turn never attributes an earlier turn's tool calls to the current one.
+    Fail-safe: any error degrades to no block."""
+    if not session_id:
+        return ""
+    try:
+        db = _get_session_db()
+        if db is None:
+            return ""
+        rows = db.get_messages(str(session_id), limit=40, latest=True) or []
+    except Exception as exc:
+        logger.debug("gather_tool_activity: messages read failed: %s", exc)
+        return ""
+    calls: List[Any] = []
+    for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        if row.get("role") == "user":
+            break   # turn boundary: never attribute a PREVIOUS turn's tool calls to this one
+        if row.get("role") == "assistant" and row.get("tool_calls"):
+            raw = row.get("tool_calls")
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list) and parsed:
+                calls = parsed
+            break
+    if not calls:
+        return ""
+    result_by_id: Dict[str, Any] = {}
+    for row in rows:
+        if isinstance(row, dict) and row.get("role") == "tool" and row.get("tool_call_id"):
+            result_by_id[str(row.get("tool_call_id"))] = row.get("content")
+    lines = [_format_tool_call_line(call, result_by_id) for call in calls[:max_items]]
+    return JUDGE_TOOL_ACTIVITY_BLOCK_TEMPLATE.format(tool_lines="\n".join(lines))
+
+
 def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout: Optional[float]) -> str:
     """Route through call_llm so auxiliary.goal_judge.* config (provider/model, extra_body,
     reasoning_effort, retries) all apply. Returns the raw reply text."""
@@ -876,6 +960,7 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    tool_activity: str = "",
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -903,7 +988,8 @@ def judge_goal(
     common = dict(
         goal=_truncate(goal, 2000),
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
-        background_block=_render_background_block(background_processes)
+        background_block=(tool_activity or "")
+        + _render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
         current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
     )
@@ -1476,6 +1562,7 @@ class GoalManager:
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            tool_activity=gather_tool_activity(self.session_id),
         )
         state.last_verdict = verdict
         state.last_reason = reason

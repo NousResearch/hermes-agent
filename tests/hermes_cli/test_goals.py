@@ -981,6 +981,71 @@ class TestBlockedVerdict:
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
 
 
+def test_format_tool_call_line_evidence():
+    """Judge evidence lines carry tool name, one key argument, and the host-observed exit code."""
+    from hermes_cli.goals import _format_tool_call_line
+
+    call = {
+        "call_id": "call_1",
+        "function": {"name": "terminal", "arguments": '{"command": "pytest -q", "timeout": 60}'},
+    }
+    results = {"call_1": '{"output": "...", "exit_code": 0}'}
+    line = _format_tool_call_line(call, results)
+    assert line.startswith("- terminal command=pytest -q")
+    assert "\u2192 exit 0" in line
+
+
+def test_gather_tool_activity_db_integration_and_turn_boundary(hermes_home):
+    """gather_tool_activity over a REAL SessionDB handle: evidence lines from the newest
+    assistant tool_calls row; a response-only NEW turn yields NO block (user-row turn boundary —
+    previous-turn tool calls must never be misattributed to the current turn)."""
+    import json as _json
+    from hermes_cli import goals
+
+    sid = "tool-activity-sid"
+    db = goals._get_session_db()
+    assert db is not None
+    db.ensure_session(sid)   # messages.session_id has a FK to sessions
+    calls = [
+        {"call_id": "c1", "function": {"name": "terminal", "arguments": '{"command": "pytest -q"}'}},
+        {"call_id": "c2", "function": {"name": "write_file", "arguments": '{"path": "/tmp/x.md"}'}},
+    ]
+    db.append_message(sid, "user", "run the suite")
+    db.append_message(sid, "assistant", "working", tool_calls=_json.dumps(calls))
+    db.append_message(sid, "tool", '{"output": "...", "exit_code": 1}', tool_call_id="c1")
+    db.append_message(sid, "tool", '{"output": "ok"}', tool_call_id="c2")
+    db.append_message(sid, "assistant", "All tests pass.")
+
+    block = goals.gather_tool_activity(sid)
+    assert "Tool activity observed" in block
+    assert "- terminal command=pytest -q" in block
+    assert "\u2192 exit 1" in block
+    assert "- write_file path=/tmp/x.md" in block
+    assert "exit" not in block.split("- write_file", 1)[1]   # c2 carries no exit_code
+
+    # Response-only NEW turn: the user-row boundary stops the scan — no stale evidence.
+    db.append_message(sid, "user", "quick question")
+    db.append_message(sid, "assistant", "just prose, no tools this turn")
+    assert goals.gather_tool_activity(sid) == ""
+
+
+def test_gather_tool_activity_truncates_to_max_items():
+    import json as _json
+    from unittest.mock import patch as _patch
+    from hermes_cli.goals import _TOOL_ACTIVITY_MAX_ITEMS, gather_tool_activity
+
+    class _StubDB:
+        def get_messages(self, *a, **k):
+            calls = [{"call_id": f"c{i}", "function": {"name": "terminal",
+                      "arguments": '{"command": "x"}'}} for i in range(_TOOL_ACTIVITY_MAX_ITEMS + 3)]
+            return [{"role": "assistant", "tool_calls": _json.dumps(calls)}]
+
+    with _patch("hermes_cli.goals._get_session_db", return_value=_StubDB()):
+        block = gather_tool_activity("sid-x")
+    lines = [ln for ln in block.splitlines() if ln.startswith("- ")]
+    assert len(lines) == _TOOL_ACTIVITY_MAX_ITEMS
+
+
 def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     """GoalManager must borrow the process-wide registry handle for ``state.db`` rather than
     minting a bare ``SessionDB()``: a second writer per profile carries its own token-writer

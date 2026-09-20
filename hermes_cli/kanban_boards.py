@@ -6,6 +6,7 @@ Filesystem-only, so every action works before ``kanban init`` and must ignore th
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
@@ -55,6 +56,11 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
         b["is_current"] = (b["slug"] == current)
         b["counts"] = _board_task_counts(b["slug"])
         b["total"] = sum(b["counts"].values())
+        try:
+            board_meta = kb.read_board_metadata(b["slug"])
+            b["default_skills"] = board_meta.get("default_skills") or []
+        except Exception:
+            b["default_skills"] = []
     if _json_out(args, boards):
         return 0
     if not boards:
@@ -65,6 +71,9 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
         marker = "●" if b["is_current"] else " "
         name = (b.get("name") or "") + (" [archived]" if b.get("archived") else "")
         print(f"{marker:2s}  {b['slug']:24s}  {name:28s}  {_fmt_counts(b['counts'] or {}, '(empty)')}")
+        skills = b.get("default_skills") or []
+        if skills:
+            print(f"{'':2s}  {'':24s}  default skills: {', '.join(skills)}")
     print(f"\nCurrent board: {current}")
     if len(boards) > 1:
         print("Switch boards with `hermes kanban boards switch <slug>`.")
@@ -131,7 +140,25 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
         print(f"  Description:  {meta['description']}")
     print(f"  DB path:      {meta['db_path']}\n"
           f"  Tasks:        {sum(counts.values())} total" + (f" ({_fmt_counts(counts)})" if counts else ""))
+    _print_default_skills(current, meta)
     return 0
+
+
+def _print_default_skills(slug: str, meta: dict) -> None:
+    """Effective default worker skills for a board (override, else global config)."""
+    try:
+        from hermes_cli.kanban_db_dispatch import effective_default_worker_skills
+        effective = effective_default_worker_skills(slug)
+    except Exception:
+        effective = []
+    board_override = meta.get("default_skills") is not None
+    source = "board override" if board_override else "kanban.default_skills"
+    if effective:
+        print(f"  Default worker skills ({source}): {', '.join(effective)}")
+    elif meta.get("default_skills") is not None:
+        print(f"  Default worker skills: none (board opts out)")
+    else:
+        print(f"  Default worker skills: none ({source} is empty)")
 
 
 def _cmd_boards_rename(args: argparse.Namespace) -> int:
@@ -152,6 +179,42 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_default_skills(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-default-skills", must_exist=True)
+    if rc:
+        return rc
+    if getattr(args, "clear", False):
+        path = kb.board_metadata_path(normed)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            if isinstance(raw, dict):
+                raw.pop("default_skills", None)
+                dumped = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
+                path.write_text(dumped, encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            pass
+        removal_note = f"Board {normed!r} default-skills override removed (kanban.default_skills applies)."
+        print(removal_note)
+        return 0
+    skills = [s for s in (getattr(args, "skills", None) or []) if str(s).strip()]
+    for s in skills:
+        if "," in s:
+            msg = (
+                f"kanban boards set-default-skills: skill name cannot contain comma: {s!r} "
+                f"(pass separate names instead of a comma-joined string)"
+            )
+            return _err(msg, 2)
+    meta = kb.write_board_metadata(normed, default_skills=skills)
+    effective = meta.get("default_skills") or []
+    if effective:
+        joined = ", ".join(effective)
+        print(f"Board {normed!r} default worker skills: {joined}")
+    else:
+        opt_out_note = f"Board {normed!r} opts out of default worker skills (empty list persisted)."
+        print(opt_out_note)
     return 0
 
 
@@ -209,6 +272,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-default-skills": _cmd_boards_set_default_skills,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

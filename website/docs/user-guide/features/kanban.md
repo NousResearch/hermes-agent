@@ -311,6 +311,11 @@ kanban:
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
                                    # for human-only review boards.
+  default_skills:                  # force-loaded on every dispatched worker
+    - team-workflow                # (both lanes), on top of the card's own
+                                   # skills. Per board: `hermes kanban boards
+                                   # set-default-skills <slug> [names...]`. An
+                                   # empty board list opts that board out.
   # dispatch_profiles: [sage]       # unset (key omitted): this home may claim
                                    # cards for any existing profile. Set to a
                                    # list (or comma-separated string) of profile
@@ -817,6 +822,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = the root task keeps its own assignee, else the active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to the root task's assignee, else the active default. |
+| `default_skills` | `[]` | Skill names force-loaded on every dispatched worker (both ready and review lanes), appended after the lane-specific set and de-duplicated against skills already on the card. Per-board override in `board.json` via `hermes kanban boards set-default-skills <slug> [names...]` (a present list replaces the global one for that board; no names = the board opts out; `--clear` removes the override). Entries that can't be read or normalized are skipped with a warning — a board-wide default never takes down an otherwise runnable card. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |

@@ -1828,6 +1828,10 @@ DEFAULT_CONFIG = {
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.
         "auto_subscribe_on_create": True,
+        # Skill names force-loaded on EVERY dispatched worker (both ready and review lanes),
+        # in addition to the card's own skills. A board-level list in board.json replaces this
+        # one for that board; an empty board list opts the board out.
+        "default_skills": [],
         # Poll and deliver Kanban subscriptions from this gateway. Disable on profiles that do
         # not own notification subscriptions to avoid an idle five-second board probe.
         "notify_in_gateway": True,

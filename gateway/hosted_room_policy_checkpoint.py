@@ -11,7 +11,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, ContextManager, Mapping
 
 from gateway import hosted_rooms
 from gateway.hosted_room_task_input import validate_task_input
@@ -314,14 +314,18 @@ class HostedRoomPolicyCheckpoint:
         return cursor
 
     def snapshot(self, *, room_id: str, latest_seq: int,
-                 held_output_threads: Callable[[sqlite3.Connection], frozenset[str]] | None = None) -> PolicySnapshot:
+                 held_output_threads: Callable[[sqlite3.Connection], frozenset[str]] | None = None,
+                 read_connection: Callable[[], ContextManager[sqlite3.Connection]] | None = None) -> PolicySnapshot:
         """Oldest eligible discussion; exact Output holds defer whole causal threads.
 
-        The canonical Output owner supplies and validates holds on this same
-        snapshot transaction. Ordinary policy/FIFO callers have no exclusions.
+        The canonical Output owner supplies a live connection/lifetime fence.
+        An explicit read transaction binds cursor, hold proof, discussion, events
+        and watermarks. Sync writes finish first; FIFO callers take no owner lock.
         """
         self.sync(room_id=room_id, latest_seq=latest_seq)
-        with self._transaction() as conn:
+        with (read_connection or self._transaction)() as conn, conn:
+            # A sqlite3 connection context alone does not BEGIN for SELECTs.
+            conn.execute("BEGIN")
             cursor = conn.execute(
                 "SELECT through_seq, stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?", (room_id,)).fetchone()
             if cursor is None:

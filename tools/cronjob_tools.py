@@ -81,6 +81,57 @@ def _notify_provider_jobs_changed_safe() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Config-enforced required skills (cron.required_skills, #79797)
+# ---------------------------------------------------------------------------
+
+
+def _required_skills_violation(
+    skills: Any,
+    no_agent: bool,
+    *,
+    force: bool = False,
+) -> str:
+    """Return an error string when a job violates ``cron.required_skills``.
+
+    Reads ``cron.required_skills``, ``cron.required_skills_agent_only``, and
+    ``cron.required_skills_enforce`` from the merged config (issue #79797).
+    Returns an empty string when the job is compliant, when the check is
+    disabled, or when *force* is set (the CLI-only escape hatch). When
+    enforcement is downgraded to warning mode (``required_skills_enforce:
+    false``), the violation is logged and the operation proceeds.
+    """
+    if force:
+        return ""
+    from hermes_cli.config import (
+        cron_required_skills,
+        cron_required_skills_agent_only,
+        cron_required_skills_enforce,
+    )
+
+    if no_agent and cron_required_skills_agent_only():
+        return ""
+    required = cron_required_skills()
+    if not required:
+        return ""
+    present = {s.strip().lower() for s in (skills or []) if isinstance(s, str)}
+    missing = [r for r in required if r.strip().lower() not in present]
+    if not missing:
+        return ""
+    if not cron_required_skills_enforce():
+        logger.warning(
+            "Cron job is missing required skill(s) %s from cron.required_skills; "
+            "enforcement disabled (cron.required_skills_enforce=false), allowing.",
+            ", ".join(missing),
+        )
+        return ""
+    return (
+        "Blocked: job missing required skill(s) configured in cron.required_skills: "
+        + ", ".join(missing)
+        + ". Add them (agent tool: skills=[...]; CLI: --skill) or use --force on the CLI."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Manual run execution (claim -> run_one_job -> report)
 # ---------------------------------------------------------------------------
 
@@ -578,6 +629,12 @@ def _action_create(a: Dict[str, Any]) -> str:
                 success=False)
     elif not prompt and not canonical_skills:
         return tool_error("create requires either prompt or at least one skill", success=False)
+    # Config-enforced required skills (#79797): the agent tool lands here; the
+    # CLI routes through the same function and may pass force=True.
+    required_skills_error = _required_skills_violation(
+        canonical_skills, _no_agent, force=bool(a.get("force")))
+    if required_skills_error:
+        return tool_error(required_skills_error, success=False)
     error = (
         (prompt and _scan_cron_prompt(prompt))
         or (script and _validate_cron_script_path(script))
@@ -852,6 +909,24 @@ def _action_update(job: Dict[str, Any], a: Dict[str, Any]) -> str:
             return tool_error(error, success=False)
     if not updates:
         return tool_error("No updates provided.", success=False)
+    # Config-enforced required skills (#79797): gate updates that change the
+    # skills axis (skills/skill) or the agent mode (no_agent). The check runs
+    # against the EFFECTIVE post-update state - stored skills merged with this
+    # update's changes - so a --clear-skills / skills=[] that strips a required
+    # skill is rejected, while untouched-axis updates stay allowed even on a
+    # legacy noncompliant job so it can still be remediated field-by-field.
+    if "skills" in updates or "no_agent" in updates:
+        effective_skills = (
+            updates["skills"]
+            if updates.get("skills") is not None or "skills" in updates
+            else (job.get("skills") or ([job["skill"]] if job.get("skill") else []))
+        )
+        effective_no_agent = bool(
+            updates["no_agent"] if "no_agent" in updates else job.get("no_agent"))
+        violation = _required_skills_violation(
+            effective_skills, effective_no_agent, force=bool(a.get("force")))
+        if violation:
+            return tool_error(violation, success=False)
     updated = update_job(job["id"], updates)
     _notify_provider_jobs_changed_safe()
     # An update can switch modes or delivery — echo the same guidance as create.
@@ -958,6 +1033,7 @@ def cronjob(
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
     all: Optional[bool] = None,
+    force: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,

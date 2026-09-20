@@ -98,7 +98,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "~400 MB Chromium download confirmation).")
     parser.add_argument("--reasoning", dest="reasoning", default=None, metavar="LEVEL",
                         help="Reasoning effort for every session in this ACP server "
-                             "(none/minimal/low/medium/high/xhigh/max). Overrides config.yaml "
+                             "(none/minimal/low/medium/high/xhigh/max/ultra). Overrides config.yaml "
                              "agent.reasoning_effort / reasoning_overrides for this process.")
     return parser.parse_args(argv)
 

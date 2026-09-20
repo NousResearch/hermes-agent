@@ -34,6 +34,6 @@ def build_acp_parser(subparsers, *, cmd_acp: Callable) -> None:
     acp_parser.add_argument(
         "--reasoning", dest="acp_reasoning", default=None, metavar="LEVEL",
         help="Reasoning effort for every session in this ACP server "
-             "(none/minimal/low/medium/high/xhigh/max). Overrides config.yaml "
+             "(none/minimal/low/medium/high/xhigh/max/ultra). Overrides config.yaml "
              "agent.reasoning_effort / reasoning_overrides for this process.")
     acp_parser.set_defaults(func=cmd_acp)

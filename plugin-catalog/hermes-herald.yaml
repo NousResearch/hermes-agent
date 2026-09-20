@@ -1,0 +1,28 @@
+name: hermes-herald
+repo: https://github.com/bennybuoy/hermes-herald
+sha: 1d185a9e0f4fbfa141447be401903cc80407e1cb
+description: "Cross-profile agent dispatch for Hermes Agent — 12 tools for agents talking to agents: async dispatch with SSE completion, synchronous multi-turn chat, model-selectable in-process subagents, a durable SQLite run ledger, fail-closed per-target model-route discovery, and host-owned bare LLM inference."
+maintainer: bennybuoy
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/bennybuoy/hermes-herald#readme
+version: "1.1.1"
+platforms: []
+capabilities:
+  provides_tools:
+  - dispatch_agent
+  - check_dispatch
+  - collect_dispatches
+  - dispatch_status
+  - dispatch_chat
+  - cancel_dispatch
+  - delegate_subagent
+  - llm_call
+  - llm_direct
+  - ping_profile
+  - approve_dispatch
+  - list_profile_models
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

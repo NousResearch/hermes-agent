@@ -293,6 +293,59 @@ def test_active_cooldown_blocks_automatic_codex_compaction():
     assert session.calls == 0, "compaction ran despite an active cooldown"
 
 
+def test_frequency_guard_blocks_stale_automatic_codex_compaction(tmp_path):
+    from unittest.mock import patch
+
+    from agent.context_compressor import (
+        COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY,
+        ContextCompressor,
+    )
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli")
+
+    def compressor():
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=100_000,
+        ):
+            instance = ContextCompressor(model="test/model", quiet_mode=True)
+        instance.bind_session_state(db, "s1")
+        return instance
+
+    first = compressor()
+    stale = compressor()
+    with patch(
+        "agent.context_compressor.time.time",
+        side_effect=(1_000.0, 1_120.0, 1_240.0),
+    ):
+        for _ in range(first._FREQUENT_COMPACTION_LIMIT):
+            first.record_completed_compaction()
+
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
+        auto_compaction="hermes",
+    )
+    agent.session_id = "s1"
+    agent.context_compressor = stale
+    session = agent._codex_session
+    messages = [{"role": "user", "content": "hi"}]
+
+    with patch("agent.context_compressor.time.time", return_value=1_300.0):
+        returned, prompt = compress_context(
+            agent, messages, "system", approx_tokens=100000, task_id="test"
+        )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert session.calls == 0
+    persisted = db.get_session_model_config_value(
+        "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {}
+    )
+    assert persisted["count"] == first._FREQUENT_COMPACTION_LIMIT
+
+
 def test_force_bypasses_the_codex_compaction_cooldown():
     """An explicit /compress is a user decision and must not be braked by a
     failure it did not cause."""

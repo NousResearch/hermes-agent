@@ -3858,6 +3858,8 @@ def _compress_context_via_codex_app_server(
         _cooldown_remaining = _codex_compaction_cooldown_remaining(agent)
         if _cooldown_remaining > 0:
             skip_reason = f"failure cooldown active for {_cooldown_remaining:.0f}s"
+        elif _automatic_compression_gate_blocks(agent, bypass_cooldown=False):
+            skip_reason = "automatic compression guard active"
     codex_session = getattr(agent, "_codex_session", None)
     if skip_reason is None and codex_session is None:
         skip_reason = "no active codex thread"

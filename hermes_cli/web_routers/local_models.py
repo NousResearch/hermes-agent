@@ -52,6 +52,9 @@ _SPLIT_PART_RE = r"-\d{5}-of-\d{5}"
 _DOWNLOAD_CONNECTIONS = 8
 _CHUNK = 4 << 20
 _SERVER_START_FAILED = "The local server could not start — check the runtime is installed"
+# Default for a staged model the preset INI says nothing about: no recorded refusal, so the row
+# renders as servable (the old behavior).
+_PRESET_DEFAULT = presets.PresetEntry(model_id="", window=0, spilled=False)
 
 
 class RuntimeInstallBody(BaseModel):
@@ -450,12 +453,26 @@ def _installed_backend(tag: str) -> str | None:
     return next((d.name for d in dirs if _quiet(lambda: binaries.server_binary(d), None) is not None), None)
 
 
-def _staged_row(gguf: Path) -> Dict[str, Any]:
-    model_id = _model_id_for(gguf)
-    # Split models: report the whole variant's bytes, not one part's.
-    hit = catalog.find_entry_for_model(model_id)
-    size = hit[1].size_bytes if hit is not None else gguf.stat().st_size
-    return {"id": model_id, "size_bytes": size, "size_label": _human_gb(size)}
+def _staged_rows(ggufs) -> "list[Dict[str, Any]]":
+    """Rows for every staged GGUF, each carrying why it isn't served when the launch decision
+    refused it (unreadable header, too new a quant, weights past VRAM+RAM). A staged-but-excluded
+    file must say so on its row, not surface later as a generic "not found in the model listing"."""
+    decisions = presets.read_preset_decisions()
+
+    def row(gguf: Path) -> Dict[str, Any]:
+        model_id = _model_id_for(gguf)
+        # Split models: report the whole variant's bytes, not one part's.
+        hit = catalog.find_entry_for_model(model_id)
+        size = hit[1].size_bytes if hit is not None else gguf.stat().st_size
+        out = {"id": model_id, "size_bytes": size, "size_label": _human_gb(size)}
+        refusal = (decisions.get(model_id) or _PRESET_DEFAULT).refusal
+        if refusal:
+            out.update(servable=False, refusal=refusal)
+        else:
+            out["servable"] = True
+        return out
+
+    return [row(gguf) for gguf in ggufs]
 
 
 def _active_llamacpp_model_id() -> str | None:
@@ -498,7 +515,7 @@ def local_models_status():
         # The chat's loading bar and the picker rows poll this; garnish, never a 500.
         "loading": _quiet(load_progress.get_loading_progress, {}),
         "placement": placement,
-        "models": [_staged_row(gguf) for gguf in bootstrap.staged_models()] if mdir.exists() else [],
+        "models": _staged_rows(bootstrap.staged_models()) if mdir.exists() else [],
         "models_dir": str(mdir),
     }
 
@@ -790,11 +807,20 @@ async def local_models_quickstart(body: QuickstartBody):
 # ── server lifecycle: turn the engine on/off ─────────────────
 def _terminate_state_pid() -> None:
     """Explicit recovery, never raw-PID termination of another live owner."""
+    from hermes_cli.local_runtime import recovery
     from hermes_cli.local_runtime.recovery import stop_recorded_orphan
 
+    state = _quiet(recovery.read_state, {})
+    # A record whose PID is alive but is no longer the recorded llama-server is a stale record,
+    # not a competing Hermes: say so, or "Turn off" refuses with a message that has no remedy
+    # while the Local Models page keeps showing the server as running.
+    detail = ""
+    if state and state.get("pid") and recovery.is_modern(state) and recovery.recorded_process(state) is None:
+        detail = (f" — the recorded server (pid {state['pid']}) is no longer the managed "
+                  "llama-server; the record is stale")
     if not stop_recorded_orphan():
         raise HTTPException(status_code=409, detail=(
-            "Another Hermes process owns this server, or its ownership could not be verified"))
+            f"Another Hermes process owns this server, or its ownership could not be verified{detail}"))
 
 
 def _stop_server() -> None:

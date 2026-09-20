@@ -1354,7 +1354,16 @@ export interface LocalModelsStatus {
   /** Models loading into memory right now: real per-tensor load percent. */
   loading?: Record<string, LocalModelLoadProgress>
   placement?: Record<string, LocalModelPlacement>
-  models: { id: string; size_bytes: number; size_label: string }[]
+  models: {
+    id: string
+    size_bytes: number
+    size_label: string
+    /** False when the launch decision refused this GGUF (unreadable header, too new a
+     *  quant, weights past VRAM+RAM); the router's preset-only listing never serves it. */
+    servable?: boolean
+    /** The launch decision's own words for WHY the model is excluded. */
+    refusal?: string
+  }[]
   models_dir: string
 }
 

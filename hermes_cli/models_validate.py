@@ -462,11 +462,46 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
 
     staged = {sid.lower() for sid in staged_model_ids()}
     if req.lookup.strip().lower() in staged:
-        return _accept_with_note(
-            f"Note: `{req.requested}` was not found in the live /v1/models listing "
-            "but is downloaded in the managed local-models library — accepted."
-        )
+        # A staged file the runtime REFUSED to launch (unreadable header, too new a quant,
+        # weights past VRAM+RAM) must not validate as usable: the router never serves it, so
+        # accepting here sends the user to a model that cannot start. Fall through so the
+        # rejection carries the recorded reason instead.
+        if not _exclusion_reason(req):
+            return _accept_with_note(
+                f"Note: `{req.requested}` was not found in the live /v1/models listing "
+                "but is downloaded in the managed local-models library — accepted."
+            )
     return None
+
+
+# The managed local runtime's provider aliases. Only these can have a recorded GGUF exclusion,
+# so only these look one up — a cloud miss keeps its message unchanged.
+_LOCAL_PROVIDERS = frozenset({"local", "llamacpp", "llama.cpp", "llama-cpp"})
+
+
+def _exclusion_reason(req: _Request) -> str:
+    """Why the managed local runtime excluded this GGUF, as a sentence to append to a rejection.
+
+    The router's listing is preset-only, so a staged-but-refused file is simply absent from
+    ``/models`` and the generic "not found in this provider's model listing" is all the user
+    ever sees. The launch decision already recorded the real reason (unreadable header, too new
+    a quant, weights past VRAM+RAM) — carry it here. Empty string for anything else, so cloud
+    providers keep their message unchanged.
+
+    Reached only when ``_validate_managed_local`` did NOT accept: an id that is not staged at
+    all, or a staged file the runtime refused to launch (exactly the case this covers).
+    """
+    if req.normalized not in _LOCAL_PROVIDERS:
+        return ""
+    from hermes_cli.local_runtime.gguf import model_id_from_stem
+
+    try:
+        from hermes_cli.local_runtime.presets import read_preset_decisions
+
+        refusal = read_preset_decisions().get(model_id_from_stem(req.requested.strip()))
+        return f"\n  {refusal.refusal}" if refusal is not None and refusal.refusal else ""
+    except Exception:  # noqa: BLE001 — garnish: never fail a validation on the runtime's state
+        return ""
 
 
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
@@ -515,7 +550,8 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     if req.normalized == "nous" and req.lookup.lower() in _nous_portal_recommended_names():
         return _accept_with_note(f"Note: `{req.requested}` was not found in the live /v1/models listing "
                                  "but is a current Nous Portal recommendation — accepted.")
-    return _reject(f"Model `{req.requested}` was not found in this provider's model listing.{match.suggestion_text}")
+    return _reject(f"Model `{req.requested}` was not found in this provider's model listing."
+                   f"{match.suggestion_text}{_exclusion_reason(req)}")
 
 
 def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:

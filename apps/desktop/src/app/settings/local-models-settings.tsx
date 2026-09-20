@@ -835,7 +835,15 @@ export function LocalModelsSettings() {
                       </Tip>
                     </div>
                   }
-                  description={<span>{copy.addedByYou}</span>}
+                  description={
+                    <span>
+                      {copy.addedByYou}
+                      {/* A staged-but-refused GGUF says why, here, where the user clicked. */}
+                      {m.servable === false && (
+                        <span className="mt-1 block text-[0.68rem] text-destructive">{m.refusal}</span>
+                      )}
+                    </span>
+                  }
                   key={m.id}
                   title={
                     <span className="inline-flex items-center gap-2">

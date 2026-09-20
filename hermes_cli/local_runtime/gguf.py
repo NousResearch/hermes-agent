@@ -167,36 +167,54 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
             return [read_value(f, etype) for _ in range(n)]
         return read(f, _SCALAR_FMT[vtype])[0]
 
-    with open(path, "rb") as f:
-        if f.read(4) != _GGUF_MAGIC:
-            raise ValueError(f"not a GGUF file: {path}")
+    def read_header(f) -> "tuple[int, int, dict]":
         version, n_tensors, n_kv = read(f, "<IQQ")
-
         metadata: dict = {}
         for _ in range(n_kv):
             key = read_str(f)
             (vtype,) = read(f, "<I")
             metadata[key] = read_value(f, vtype)
+        return version, n_tensors, metadata
+
+    with open(path, "rb") as f:
+        if f.read(4) != _GGUF_MAGIC:
+            # Path-free: every caller already logs the name/id, and these strings reach the user
+            # verbatim as the Local Models row's exclusion reason.
+            raise ValueError("not a GGUF file — the download is incomplete or the file is "
+                             "not a GGUF; re-download it")
+        try:
+            version, n_tensors, metadata = read_header(f)
+        except (struct.error, UnicodeDecodeError, MemoryError, KeyError):
+            # A truncated header reads as a short buffer (or a bogus length), not a ValueError.
+            # Say so, or the model just vanishes from every list with no reason at all.
+            raise ValueError("the file ends before its header is complete — the download is "
+                             "incomplete; delete and re-download it") from None
 
         tensor_bytes = 0
         embd_bytes = 0
-        for _ in range(n_tensors):
-            name = read_str(f)
-            (n_dims,) = read(f, "<I")
-            dims = read(f, f"<{n_dims}Q")
-            (ttype,) = read(f, "<I")
-            f.read(8)  # offset
-            size = _GGML_TYPE_SIZES.get(ttype)
-            if size is None:
-                raise ValueError(f"unknown ggml tensor type {ttype} in {path}")
-            block_bytes, block_elems = size
-            elems = 1
-            for d in dims:
-                elems *= d
-            nbytes = (elems // block_elems) * block_bytes
-            tensor_bytes += nbytes
-            if name == "token_embd.weight":
-                embd_bytes = nbytes
+        try:
+            for _ in range(n_tensors):
+                name = read_str(f)
+                (n_dims,) = read(f, "<I")
+                dims = read(f, f"<{n_dims}Q")
+                (ttype,) = read(f, "<I")
+                f.read(8)  # offset
+                size = _GGML_TYPE_SIZES.get(ttype)
+                if size is None:
+                    raise ValueError(
+                        f"unknown ggml tensor type {ttype} — this quant is too new for this "
+                        "build; try a standard Q4_K_M/Q8_0 build, or update the local engine")
+                block_bytes, block_elems = size
+                elems = 1
+                for d in dims:
+                    elems *= d
+                nbytes = (elems // block_elems) * block_bytes
+                tensor_bytes += nbytes
+                if name == "token_embd.weight":
+                    embd_bytes = nbytes
+        except (struct.error, UnicodeDecodeError, MemoryError, KeyError):
+            raise ValueError("the file ends before its tensor table — the download is "
+                             "incomplete; delete and re-download it") from None
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,

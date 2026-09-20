@@ -87,8 +87,11 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         header = read_gguf_header(gguf)
         profile = profile_from_gguf(header)
     except (ValueError, OSError) as exc:
+        # Record the exclusion, don't drop the model: the Local Models row and the "Use" failure
+        # read this string back from the preset INI, and a silently absent model is what the user
+        # sees as a generic "not found in this provider's model listing".
         logger.warning("preset skip %s: %s", gguf.name, exc)
-        return None
+        return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=str(exc))
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
 

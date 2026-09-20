@@ -1,19 +1,33 @@
 """Structural disk guards for the gateway housekeeping loop.
 
-Two chores born of the 2026-09-19 incident: cron/verification runs left
-abandoned multi-GB SQLite copies (``tmp*.db``, ``statedb_ro*``) in the temp
-root — ~107 GB accumulated over three days, the volume hit 100 %, the gateway
-died unclean (OOM/SIGKILL) and every board raised
-``sqlite3.OperationalError: disk I/O error``.
+Three chores born of the 2026-09-19 and 2026-09-20 incidents: cron/verification
+runs left abandoned multi-GB SQLite copies in the temp root — ~107 GB
+(``tmp*.db``, ``statedb_ro*``) over three days, then another ~14 GB
+(``sess_state*.db``, ``state_check*.db``) after the first guard shipped.
+The volume hit 100 %, the gateway died unclean (OOM/SIGKILL) and every board
+raised ``sqlite3.OperationalError: disk I/O error``.
 
-* :func:`sweep_abandoned_db_copies` — pattern- AND size-bound removal of the
-  leaked-copy fingerprints from the temp root. Structural safety net: it works
-  no matter which process left the copies behind, independent of prompt
-  discipline in any single cron run. Foreign temp files never match: only
-  regular, non-symlink files whose name matches ``tmp*.db``/``statedb_ro*``
-  AND whose size exceeds 1 GiB are removed. On POSIX an unlink under a live
-  sqlite connection is safe (the fd keeps working); on Windows the unlink of
-  an open file fails and is skipped at debug level.
+* :func:`sweep_abandoned_db_copies` — sweep of abandoned >1 GiB SQLite files
+  from the temp root. The second incident proved a hand-maintained leak-pattern
+  list cannot win (``sess_state*``/``state_check*`` were missed), so the set is
+  closed: ANY >1 GiB ``*.db`` / ``*.db-wal`` / ``*.db-shm`` file (plus the
+  extension-less ``statedb_ro*`` fingerprints from the first incident) is sweep
+  material — agent/session tooling must not park multi-GB databases in the temp
+  root at all. Two guards protect files that are alive:
+
+  - **open-handle guard** — on macOS/Linux the file is only removed when
+    :command:`lsof` sees NO process holding it (rc 1). On POSIX an unlink under
+    a live sqlite connection would technically be safe (the fd keeps working),
+    but "connected" is not "abandoned", so a live DB is left alone on purpose.
+    If :command:`lsof` is missing or errors, the mtime guard below is the only
+    protection and the file is skipped.
+  - **mtime grace** — files modified within ``SWEEP_GRACE_SECONDS`` (10 min)
+    are skipped; a process may legitimately hold a >1 GiB temp DB without
+    lsof noticing (e.g. mmap without fd, other-user fd, or a transient lsof
+    failure). Fresh files are presumed live.
+
+  Symlinks, directories and everything else (other names, other suffixes, other
+  sizes) are never touched.
 * :func:`check_free_disk_warning` — fail-fast early warning in the gateway
   log when free space drops below 5 GiB (ERROR below 1 GiB), so the trend is
   visible hours before SQLite dies. Edge-triggered with a 30-minute re-warn
@@ -28,6 +42,7 @@ from __future__ import annotations
 import logging
 import shutil
 import stat as stat_module
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -37,11 +52,18 @@ logger = logging.getLogger(__name__)
 
 _GIB = 1024 * 1024 * 1024
 
-# Leak fingerprints from the incident evidence (16 loose tmp*.db copies at
-# 4.4-4.7 GB plus stale read-only verification copies). Pattern-bound on
-# purpose: anything outside these globs is foreign temp data and stays.
-LEAK_PATTERNS: Tuple[str, ...] = ("tmp*.db", "statedb_ro*")
+# Sweep set. Closing it over the *shape* (a >1 GiB SQLite database) instead of
+# a hand-list of leak names is the structural fix: the 2026-09-20 relapse
+# (sess_state*.db / state_check*.db) sailed past the first guard because
+# nobody had written those names down. "*.db*" alone would be tempting but
+# ".db"-suffixed backups (.db.bak) are a common user idiom — enumerate the
+# three sqlite spellings explicitly.
+SWEEP_PATTERNS: Tuple[str, ...] = ("*.db", "*.db-wal", "*.db-shm", "statedb_ro*")
 SWEEP_MIN_BYTES = 1 * _GIB
+# A file last modified more recently than this is presumed live even when lsof
+# sees no handle (mmap'd without fd, another user's fd, transient lsof error):
+# the sweep only takes files that are both handle-free AND stale.
+SWEEP_GRACE_SECONDS = 10 * 60.0
 
 # Early-warning floors. 5 GiB leaves room to see the trend and act; below
 # 1 GiB sqlite journaling/config writes are at imminent risk (the incident's
@@ -55,22 +77,60 @@ REWARN_SECONDS = 30 * 60.0
 _WARN_STATE: Dict[str, Any] = {"level": "ok", "last_warn_monotonic": 0.0}
 
 
+def _has_open_handle(path: Path) -> Optional[bool]:
+    """True/False from :command:`lsof`; None when lsof is unavailable/failed.
+
+    rc 0 means at least one process holds the file, rc 1 means no holder.
+    Any other outcome (missing binary, timeout, weird path) is None — callers
+    treat None as "cannot prove it is abandoned" and fall back to the mtime
+    grace guard.
+    """
+    try:
+        proc = subprocess.run(
+            ["/usr/sbin/lsof", "-w", "--", str(path)],
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    return None
+
+
 def sweep_abandoned_db_copies(
     directory: Optional[Path | str] = None,
     *,
-    patterns: Iterable[str] = LEAK_PATTERNS,
+    patterns: Iterable[str] = SWEEP_PATTERNS,
     min_bytes: int = SWEEP_MIN_BYTES,
+    grace_seconds: float = SWEEP_GRACE_SECONDS,
+    lsof: Optional[Any] = "auto",
+    _now: Optional[float] = None,
     logger_: Optional[logging.Logger] = None,
 ) -> int:
-    """Remove abandoned >1 GiB DB copies matching *patterns* from *directory*.
+    """Remove abandoned >1 GiB SQLite files from *directory*.
 
-    Shallow (non-recursive) scan of the temp root — the incident copies sat
-    flat in ``$TMPDIR``. Returns the number of files removed; never raises
-    (scan/unlink failures degrade to debug logs). Symlinks and directories
-    are never touched, and neither are files at or below ``min_bytes``.
+    Shallow (non-recursive) scan of the temp root — both incident copy sets sat
+    flat in ``$TMPDIR``. A candidate is removed only when ALL of:
+
+    * name matches *patterns* (closed set of sqlite spellings by default);
+    * regular, non-symlink file strictly larger than *min_bytes*;
+    * NOT currently held by any process — :command:`lsof` must report no
+      open handle (``lsof=None`` disables the check);
+    * older than *grace_seconds* (mtime) — the backstop for live files lsof
+      cannot see.
+
+    Returns the number of files removed; never raises (scan/lsof/unlink
+    failures degrade to debug logs and are retried next tick).
     """
     log = logger_ or logger
     root = Path(directory) if directory is not None else Path(tempfile.gettempdir())
+    lsof_check = _has_open_handle if lsof == "auto" else lsof
+    now = time.time() if _now is None else float(_now)
+
+    seen: set[Path] = set()
     removed = 0
     for pattern in patterns:
         try:
@@ -79,6 +139,9 @@ def sweep_abandoned_db_copies(
             log.debug("Disk guard: cannot scan %s for %r: %s", root, pattern, exc)
             continue
         for victim in candidates:
+            if victim in seen:
+                continue  # *.db glob also lists the .db-wal/.db-shm siblings
+            seen.add(victim)
             try:
                 st = victim.lstat()
             except OSError:  # raced away between glob and stat
@@ -87,6 +150,20 @@ def sweep_abandoned_db_copies(
                 continue
             if st.st_size <= min_bytes:
                 continue
+            if now - st.st_mtime < grace_seconds:
+                continue  # fresh: presume a live writer, retry next tick
+            if lsof_check is not None:
+                held = lsof_check(victim)
+                if held is None:
+                    log.debug(
+                        "Disk guard: lsof inconclusive on %s — skipping this tick", victim
+                    )
+                    continue
+                if held:
+                    log.debug(
+                        "Disk guard: %s is held open by a live process — not sweeping", victim
+                    )
+                    continue
             try:
                 victim.unlink()
             except FileNotFoundError:
@@ -98,7 +175,8 @@ def sweep_abandoned_db_copies(
             removed += 1
             log.warning(
                 "Disk guard: removed abandoned DB copy %s (%.2f GiB, mtime %s) — "
-                "pattern-bound sweep, see incident 2026-09-19.",
+                "closed-set sweep of stale handle-free *.db files, incidents "
+                "2026-09-19/2026-09-20.",
                 victim, st.st_size / _GIB, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
             )
     if removed:
@@ -177,15 +255,15 @@ def check_free_disk_warning(
         if level == "critical":
             log.error(
                 "Disk guard: only %.2f GiB free on %s (below %.0f GiB) — SQLite writes and the "
-                "gateway are at imminent risk; free space now. Known cause: abandoned tmp*.db / "
-                "statedb_ro* copies in the temp root (swept automatically each minute).",
+                "gateway are at imminent risk; free space now. Known cause: abandoned *.db "
+                "copies in the temp root (swept automatically each minute).",
                 free / _GIB, worst_path, critical_bytes / _GIB,
             )
         else:
             log.warning(
                 "Disk guard: %.2f GiB free on %s is below the %.0f GiB early-warning floor — "
-                "disk is filling up; investigate before SQLite writes start failing. Known cause: "
-                "abandoned tmp*.db / statedb_ro* copies in the temp root.",
+                "disk is filling up; investigate before SQLite writes start failing. Known "
+                "cause: abandoned *.db copies in the temp root.",
                 free / _GIB, worst_path, warn_bytes / _GIB,
             )
         st_.update(level=level, last_warn_monotonic=now)

@@ -27,25 +27,37 @@ export function captureSteeringSession(deps: SteeringSessionDeps) {
     deps
 
   const sessionId = activeSessionIdRef.current
+
+  if (!sessionId) {
+    return null
+  }
+
   const selectedStoredSessionId = selectedStoredSessionIdRef.current
   const routedStoredSessionId = getRoutedStoredSessionId()
   const bindings = runtimeIdByStoredSessionIdRef.current
-  const boundStoredSessionId = sessionId ? findStoredIdForRuntimeId(bindings, sessionId) : undefined
+  const boundStoredSessionId = findStoredIdForRuntimeId(bindings, sessionId)
   const sessions = $sessions.get()
 
   const matchesSelection = (id: string) =>
     Boolean(selectedStoredSessionId && idsShareLineage(id, selectedStoredSessionId, sessions))
 
-  // Navigation publishes these identities independently. Unlike ordinary Send,
-  // a mid-turn correction must not resolve another target and interrupt it.
-  if (
-    !sessionId ||
-    (routedStoredSessionId && !matchesSelection(routedStoredSessionId)) ||
-    (selectedStoredSessionId &&
-      selectedStoredSessionId !== sessionId &&
-      (!boundStoredSessionId || !matchesSelection(boundStoredSessionId))) ||
-    [...bindings].some(([stored, runtime]) => runtime === sessionId && !matchesSelection(stored))
-  ) {
+  // Navigation publishes route, selection and runtime independently. Unlike an
+  // ordinary Send, a mid-turn correction must never resolve another target and
+  // interrupt it, so any disagreement refuses and the composer queues the text.
+  const routeLeftSelection = Boolean(routedStoredSessionId && !matchesSelection(routedStoredSessionId))
+
+  // Selection names a stored chat, yet this runtime proves no binding at all.
+  const runtimeUnbound = Boolean(
+    selectedStoredSessionId && selectedStoredSessionId !== sessionId && !boundStoredSessionId
+  )
+
+  // Any stored id bound to this runtime outside the selected lineage — which is
+  // every binding when nothing is selected (a fresh draft next to a live turn).
+  const runtimeBoundElsewhere = [...bindings].some(
+    ([stored, runtime]) => runtime === sessionId && !matchesSelection(stored)
+  )
+
+  if (routeLeftSelection || runtimeUnbound || runtimeBoundElsewhere) {
     return null
   }
 

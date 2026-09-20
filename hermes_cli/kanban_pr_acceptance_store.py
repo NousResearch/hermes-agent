@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from hermes_cli.kanban_db_connect import write_txn
 from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
+from hermes_cli.kanban_text_artifact import PREFIX as TEXT_ARTIFACT_PREFIX
 
 
 def _snapshot(conn, task_id):
@@ -15,7 +16,7 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     if snapshot is None:
         return False
     run_id, status, contract = snapshot
-    if not contract or contract == "local-only":
+    if not contract or contract == "local-only" or contract.startswith(TEXT_ARTIFACT_PREFIX):
         return None
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False

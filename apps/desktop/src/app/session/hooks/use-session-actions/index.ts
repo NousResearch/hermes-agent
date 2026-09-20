@@ -117,6 +117,7 @@ import {
   dropSessionState,
   focusOpenSession,
   holdSessionOwnerUntilForeground,
+  knownOwnerForSession,
   openSessionTile,
   patchSessionTile,
   publishSessionState,
@@ -2622,12 +2623,18 @@ export function useSessionActions({
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
 
+      // A row fetched right after activating a registry gateway can be untagged
+      // (see resumeSession above) — fall back to whatever an inbound runtime
+      // event already proved about this session (#97511's owner ladder, keyed
+      // by the RUNTIME id when one is live) before a bare profile name, which
+      // the RPC door resolves onto the PRIMARY connection and can silently
+      // target the wrong machine (02b6802c8d).
       const removedOwner: SessionOwnerScope = removed?.connection_id
         ? {
             connectionId: removed.connection_id,
             profile: removed.profile || 'default'
           }
-        : profile
+        : (knownOwnerForSession(closingRuntimeId ?? storedSessionId) ?? profile)
 
       const previousArchived = $archivedSessions.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the

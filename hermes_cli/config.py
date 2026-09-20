@@ -3515,13 +3515,66 @@ def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:
     return "\n".join(lines)
 
 
-def set_config_value(key: str, value: str, force: bool = False):
+def _masked_display_value(key: str, value: Any) -> Any:
+    """Echo helper: mask a credential-shaped value (``model.api_key``, ``*.token``, ...) so a
+    printed/staged config change never leaks the secret it carries."""
+    if isinstance(value, str) and value and _is_secret_config_key(key):
+        from agent.redact import mask_secret
+
+        return mask_secret(value)
+    return value
+
+
+def _stage_persistent_config_change(key: str, raw_value: str, force: bool, *, display: Any = None) -> bool:
+    """Return True when this config change was STAGED for approval instead of applied.
+
+    Opt-in via ``agent.require_persistent_change_approval`` (#110429): with the switch on, a
+    config.yaml change is *proposed* rather than committed — the exact call is written to the
+    pending store and replayed by ``hermes pending approve <id>``, so no control file changes
+    without an accepted approval. Off (the default) this returns False immediately and
+    ``hermes config set`` behaves exactly as it always has.
+
+    Fails open (returns False) when the gate module cannot be imported: a broken import must
+    not make config.yaml unwritable."""
+    try:
+        from tools import write_approval as wa
+    except Exception:
+        return False
+    shown = _masked_display_value(key, raw_value if display is None else display)
+    message = wa.gate_or_stage(
+        wa.CONFIG, {"key": key, "value": raw_value, "force": bool(force)},
+        summary=f"set {key}", inline_detail=f"{key} = {shown}")
+    if message is None:
+        return False
+    print(message)
+    return True
+
+
+def _stage_persistent_config_unset(key: str) -> bool:
+    """Same gate as ``_stage_persistent_config_change`` for ``hermes config unset`` — without
+    it, removing a key would be an un-approved way to change config.yaml."""
+    try:
+        from tools import write_approval as wa
+    except Exception:
+        return False
+    message = wa.gate_or_stage(
+        wa.CONFIG, {"key": key, "unset": True},
+        summary=f"unset {key}", inline_detail=f"unset {key}")
+    if message is None:
+        return False
+    print(message)
+    return True
+
+
+def set_config_value(key: str, value: str, force: bool = False, *, _approved: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
     ``force`` writes a known key given under the wrong prefix (``gateway.discord.foo`` where
     ``discord.foo`` is known; otherwise refused — any other unknown path under a known section
     is written with a did-you-mean notice), skips the unknown-top-level-key notice AND
     authorizes replacing a mapping section with a scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
-    to ``model.default``."""
+    to ``model.default``. ``_approved`` marks the replay of an approved staged write (see
+    ``_stage_persistent_config_change``) — it bypasses the approval gate, and nothing else does."""
+    raw_value = value
     if is_managed():
         managed_error("set configuration values")
         return
@@ -3614,6 +3667,10 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
+    # Approval gate (#110429): opt-in, and a no-op when the switch is off. Staged writes are
+    # replayed by `hermes pending approve <id>`, which re-enters here with _approved=True.
+    if not _approved and _stage_persistent_config_change(key, raw_value, force, display=value):
+        return
     _write_user_config(config_path, user_config)
 
     # Keep .env in sync: terminal_tool reads TERMINAL_ENV etc. directly from env vars.
@@ -3625,10 +3682,7 @@ def set_config_value(key: str, value: str, force: bool = False):
 
     # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
     # ``model.api_key`` (lowercase, so it misses the .env routing above).
-    _display_value = value
-    if _is_secret_config_key(key) and isinstance(value, str) and value:
-        from agent.redact import mask_secret
-        _display_value = mask_secret(value)
+    _display_value = _masked_display_value(key, value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
     if _route_notice:
         print(_route_notice)
@@ -3692,8 +3746,9 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
                 print(color(f"  Did you mean: {suggestion}", Colors.YELLOW), file=sys.stderr)
 
 
-def unset_config_value(key: str):
-    """Remove a user-set configuration or .env value."""
+def unset_config_value(key: str, *, _approved: bool = False):
+    """Remove a user-set configuration or .env value. ``_approved`` marks the replay of an
+    approved staged write (see ``_stage_persistent_config_unset``)."""
     if is_managed():
         managed_error("unset configuration values")
         return
@@ -3730,7 +3785,22 @@ def unset_config_value(key: str):
     if legacy_key:
         removed = _unset_nested(user_config, legacy_key) or removed
 
+    # Approval gate (#110429): removing a key is a persistent config.yaml change too. Runs
+    # BEFORE the .env sync below so a staged (not yet approved) unset leaves both files
+    # untouched. No-op unless the opt-in switch is on.
+    if removed and not _approved and _stage_persistent_config_unset(key):
+        return
+
     env_var = terminal_config_env_var_for_key(key)
+    if not removed and not _approved and env_var and key != "terminal.cwd":
+        # Key lives only in .env (terminal sync mirror): still a persistent
+        # control-file change, so gate it instead of removing immediately.
+        try:
+            _has_env = load_env().get(env_var) is not None
+        except Exception:
+            _has_env = False
+        if _has_env and _stage_persistent_config_unset(key):
+            return
     if env_var and key != "terminal.cwd":
         removed = remove_env_value(env_var) or removed
 

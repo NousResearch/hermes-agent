@@ -57,6 +57,13 @@ DEFAULT_CONFIG = {
         # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
         # `hermes chat --run-budget N`.
         "run_budget_seconds": None,
+        # Approval-required persistent changes (#110429). false (default) = today's behavior:
+        # the agent writes its own control files (memory, skills, config.yaml) freely. true =
+        # NO control file changes without an accepted approval: a gated write is proposed
+        # instead of committed, lands in <HERMES_HOME>/pending/<subsystem>/, and is replayed by
+        # `hermes pending approve <id>` (or /memory pending, /skills pending). Opt-in — it
+        # trades convenience for reproducibility across sessions.
+        "require_persistent_change_approval": False,
         # Gateway inactivity timeout (seconds). Only fires when the agent is completely idle — not
         # while calling tools or receiving API responses. 0 = unlimited.
         "gateway_timeout": 1800,

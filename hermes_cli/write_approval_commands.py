@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -11,6 +10,9 @@ from tools import write_approval as wa
 
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
+    if on and wa.persistent_change_approval_required():
+        # Say WHY it is on, so a user who did not set <subsystem>.write_approval is not confused.
+        return f"{subsystem}.write_approval = on (via {wa.GLOBAL_SWITCH})"
     return f"{subsystem}.write_approval = {'on' if on else 'off'}"
 
 
@@ -91,19 +93,10 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
 
 def _apply_one(subsystem: str, rec, memory_store):
-    payload = rec.get("payload", {})
-    try:
-        if subsystem == wa.MEMORY:
-            if memory_store is None:
-                return False, "memory store unavailable"
-            from tools.memory_tool import apply_memory_pending
-            result = apply_memory_pending(payload, memory_store)
-        else:
-            from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
-        return bool(result.get("success")), result.get("error", "")
-    except Exception as e:
-        return False, str(e)
+    """Apply one approved record through the shared replay dispatcher (``tools.write_approval``),
+    so this handler and ``hermes pending`` cannot drift apart."""
+    result = wa.apply_pending(subsystem, rec, memory_store=memory_store)
+    return bool(result.get("success")), result.get("error", "")
 
 
 def _reject(subsystem: str, rest: List[str]) -> str:

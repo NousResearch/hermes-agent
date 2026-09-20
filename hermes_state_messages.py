@@ -583,13 +583,23 @@ class SessionMessagesMixin:
         kept = 0
         for row, msg in zip(live, messages):
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
-            identity = (msg.get("role", "unknown"), self._encode_content(msg.get("content")),
+            role = msg.get("role", "unknown")
+            identity = (role, self._encode_content(self._loaded_view_content(role, msg.get("content"))),
                         msg.get("tool_call_id"), json.dumps(tool_calls) if tool_calls else None)
-            if identity != (row[1], row[2], row[3], row[4]):
+            row_content = self._encode_content(self._loaded_view_content(row[1], self._decode_content(row[2])))
+            if identity != (row[1], row_content, row[3], row[4]):
                 break
             msg["_row_id"] = row[0]
             kept += 1
         return kept
+
+    @staticmethod
+    def _loaded_view_content(role: str, content: Any) -> Any:
+        """Content as ``_rows_to_messages`` hands it to callers: user/assistant strings are sanitized and
+        stripped on load, so a reloaded session's messages must be compared to rows through the same lens."""
+        if role in {"user", "assistant"} and isinstance(content, str):
+            return sanitize_context(content).strip()
+        return content
 
     def has_archived_messages(self, session_id: str) -> bool:
         """True if the session has any soft-archived (``active = 0``) rows (tests/diagnostics).
@@ -1081,9 +1091,7 @@ class SessionMessagesMixin:
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         for row in rows:
-            content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
-                content = sanitize_context(content).strip()
+            content = self._loaded_view_content(row["role"], self._decode_content(row["content"]))
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
             # assembly copies strip it so rotated child handoffs still flush (_fresh_compaction_message_copy).
             msg = {"role": row["role"], "content": content, _DB_PERSISTED_MARKER_KEY: True}

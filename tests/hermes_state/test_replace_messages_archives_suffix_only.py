@@ -40,3 +40,21 @@ def test_archive_mode_rewind_archives_only_the_dropped_suffix(tmp_path):
     assert len(rows) == 80
     assert len([m for m in rows if m["active"]]) == 50
     assert db.get_session(sid)["message_count"] == 50
+
+
+def test_reloaded_session_prefix_still_matches_its_rows(tmp_path):
+    """Loading strips/sanitizes user+assistant text; a rewind issued from that loaded view must still
+    recognise the stored rows as the same prefix, or every post-reload rewind falls back to archive-all."""
+    db = SessionDB(tmp_path / "state.db")
+    sid = "rewind-after-reload"
+    db.create_session(sid, "test")
+    for i in range(6):
+        db.append_message(sid, "user" if i % 2 == 0 else "assistant", f"turn {i}   \n")
+
+    loaded = db.get_messages_as_conversation(sid)
+    prefix_ids = [m["id"] for m in db.get_messages(sid)][:4]
+
+    db.replace_messages(sid, [dict(m) for m in loaded[:4]], active_only=True, archive_dropped=True)
+
+    assert [m["id"] for m in db.get_messages(sid)] == prefix_ids
+    assert len([m for m in db.get_messages(sid, include_inactive=True) if not m["active"]]) == 2

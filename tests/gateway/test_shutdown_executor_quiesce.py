@@ -18,6 +18,7 @@ import concurrent.futures
 import threading
 import time
 from collections import OrderedDict
+from contextlib import suppress
 
 import pytest
 
@@ -82,6 +83,7 @@ class _FakeGateway:
     _api_server_hook = gw_mod.GatewayShutdownMixin._api_server_hook
     _mark_api_runs_shutdown_requested = gw_mod.GatewayShutdownMixin._mark_api_runs_shutdown_requested
     _active_api_run_count = gw_mod.GatewayShutdownMixin._active_api_run_count
+    _active_api_worker_count = gw_mod.GatewayShutdownMixin._active_api_worker_count
     _active_deferred_agent_worker_count = gw_mod.GatewayShutdownMixin._active_deferred_agent_worker_count
 
     def _update_runtime_status(self, *_a, **_kw):
@@ -266,6 +268,65 @@ async def test_live_writer_outside_the_executor_skips_the_session_db_close(monke
         f"SessionDB closed despite a live {arm.__name__[5:]} writer: {events}"
     )
     assert gw._executor_closing is True, "executor left unsealed on the outside-writer path"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkeypatch):
+    """A cancelled request handler must not let state.db be closed under its live worker (#116535).
+
+    The handler-side ``_inflight_agent_runs`` count drops in the handler's ``finally`` when the
+    handler task is cancelled, while the executor thread behind ``run_in_executor`` is still
+    blocked in the turn. Only the worker-scoped count still sees that thread, so the SessionDB
+    close gate must consult it alongside the handler snapshot -- and must not close until the
+    worker itself exits.
+    """
+    import hermes_state_registry
+    from gateway.platforms import api_server_runs as api_runs
+
+    events = []
+    gw = _FakeGateway(events)
+    monkeypatch.setattr(
+        hermes_state_registry, "close_all", lambda: events.append("close_all") or 0
+    )
+
+    release = threading.Event()
+    worker_started = threading.Event()
+
+    def _blocked_turn():
+        worker_started.set()
+        assert release.wait(5.0), "test tore down while the worker was still blocked"
+        events.append("worker_done")
+
+    loop = asyncio.get_running_loop()
+
+    async def _handler():
+        # Same shape as the api_server call sites: the worker-scoped count is taken before
+        # run_in_executor and released in the worker's own finally, so cancelling this task
+        # drops the handler side while the thread keeps holding the worker side.
+        return await loop.run_in_executor(None, api_runs._track_api_worker(_blocked_turn))
+
+    task = asyncio.ensure_future(_handler())
+    assert await loop.run_in_executor(None, worker_started.wait, 5.0), "worker never started"
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    assert api_runs.api_worker_live_count() == 1, (
+        "cancelled handler took the worker count with it"
+    )
+
+    await gw_mod.GatewayRunner.stop(gw)
+
+    assert "close:session_db" not in events and "close_all" not in events, (
+        f"SessionDB closed while the API worker was still alive: {events}"
+    )
+
+    release.set()
+    for _ in range(100):
+        if "worker_done" in events:
+            break
+        await asyncio.sleep(0.05)
+    assert "worker_done" in events, "worker never finished"
+    assert api_runs.api_worker_live_count() == 0, "worker exit did not release the count"
 
 
 def test_shutdown_executor_defaults_to_no_wait():

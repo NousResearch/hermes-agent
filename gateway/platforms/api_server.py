@@ -4046,7 +4046,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
         try:
-            return await loop.run_in_executor(None, _run)
+            # Worker-scoped count rides along so the shutdown close gate still sees the thread
+            # after this handler task is cancelled (#116535); released in the worker's finally.
+            return await loop.run_in_executor(None, _api_runs._track_api_worker(_run))
         finally:
             self._inflight_agent_runs -= 1
 

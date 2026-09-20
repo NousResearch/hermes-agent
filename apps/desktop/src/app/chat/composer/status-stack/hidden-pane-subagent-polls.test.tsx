@@ -14,19 +14,20 @@ const SID = 'sess-hidden-subagent-poll'
 
 function SnapshotHarness({ sessionId }: { sessionId: string }) {
   useSubagentSnapshot(sessionId)
+
   return <div data-testid="snapshot-harness" />
 }
 
-function renderSnapshot(visible: boolean) {
-  return render(
+function snapshotTree(visible: boolean) {
+  return (
     <PaneVisibleContext.Provider value={visible}>
       <SnapshotHarness sessionId={SID} />
     </PaneVisibleContext.Provider>
   )
 }
 
-function renderTranscript(visible: boolean) {
-  return render(
+function transcriptTree(visible: boolean) {
+  return (
     <I18nProvider configClient={null} initialLocale="en">
       <PaneVisibleContext.Provider value={visible}>
         <SubagentTranscript sessionId={SID} subagentId="worker" />
@@ -36,8 +37,8 @@ function renderTranscript(visible: boolean) {
 }
 
 // #106686: keep-alive hidden tiles stay mounted with document.visibilityState
-// === 'visible'. document.hidden alone does not stop subagent.list (5s) or
-// subagent.tail (2s); both must gate the interval on usePaneVisible().
+// === 'visible', so document.hidden alone never stops subagent.list (5s) or
+// subagent.tail (2s); both effects gate on usePaneVisible() and re-run on reveal.
 describe('hidden-pane subagent polls', () => {
   const request = vi.fn(async (_c: string, _p: string, method: string) => {
     if (method === 'subagent.list') {
@@ -70,78 +71,43 @@ describe('hidden-pane subagent polls', () => {
     _resetSessionOwnerHintsForTests()
   })
 
-  it('hidden tile seeds subagent.list once; visible tile polls; reveal resumes', async () => {
-    const hidden = renderSnapshot(false)
-    await vi.advanceTimersByTimeAsync(0)
+  it('hidden snapshot tile issues no subagent.list; reveal seeds once and polls every 5s; hiding again stops it', async () => {
+    const view = render(snapshotTree(false))
     await vi.advanceTimersByTimeAsync(15_000)
-    expect(listCalls()).toBe(1)
-    hidden.unmount()
+    expect(listCalls()).toBe(0)
 
-    request.mockClear()
-    const shown = renderSnapshot(true)
+    view.rerender(snapshotTree(true))
     await vi.advanceTimersByTimeAsync(0)
-    await vi.advanceTimersByTimeAsync(15_000)
-    // Mount seed + three 5s ticks.
+    expect(listCalls()).toBe(1)
+    await vi.advanceTimersByTimeAsync(15_100)
     expect(listCalls()).toBe(1 + 3)
-    shown.unmount()
-  })
 
-  it('revealing a hidden snapshot tile arms the 5s poll', async () => {
-    const view = renderSnapshot(false)
-    await vi.advanceTimersByTimeAsync(0)
+    view.rerender(snapshotTree(false))
     await vi.advanceTimersByTimeAsync(15_000)
-    expect(listCalls()).toBe(1)
-
-    view.rerender(
-      <PaneVisibleContext.Provider value>
-        <SnapshotHarness sessionId={SID} />
-      </PaneVisibleContext.Provider>
-    )
-    await vi.advanceTimersByTimeAsync(10_000)
-    expect(listCalls()).toBeGreaterThan(1)
-    view.unmount()
+    expect(listCalls()).toBe(1 + 3)
   })
 
-  it('hidden tile seeds subagent.tail once; visible tile polls; reveal resumes', async () => {
-    const hidden = renderTranscript(false)
-    await vi.advanceTimersByTimeAsync(0)
+  it('hidden transcript tile issues no subagent.tail; reveal seeds once and polls every 2s; hiding again stops it', async () => {
+    const view = render(transcriptTree(false))
     await vi.advanceTimersByTimeAsync(6_000)
-    expect(tailCalls()).toBe(1)
-    hidden.unmount()
+    expect(tailCalls()).toBe(0)
 
-    request.mockClear()
-    const shown = renderTranscript(true)
+    view.rerender(transcriptTree(true))
     await vi.advanceTimersByTimeAsync(0)
-    await vi.advanceTimersByTimeAsync(6_000)
-    // Mount seed + three 2s ticks.
+    expect(tailCalls()).toBe(1)
+    await vi.advanceTimersByTimeAsync(6_100)
     expect(tailCalls()).toBe(1 + 3)
-    shown.unmount()
-  })
 
-  it('revealing a hidden transcript tile arms the 2s poll', async () => {
-    const view = renderTranscript(false)
-    await vi.advanceTimersByTimeAsync(0)
+    view.rerender(transcriptTree(false))
     await vi.advanceTimersByTimeAsync(6_000)
-    expect(tailCalls()).toBe(1)
-
-    view.rerender(
-      <I18nProvider configClient={null} initialLocale="en">
-        <PaneVisibleContext.Provider value>
-          <SubagentTranscript sessionId={SID} subagentId="worker" />
-        </PaneVisibleContext.Provider>
-      </I18nProvider>
-    )
-    await vi.advanceTimersByTimeAsync(4_000)
-    expect(tailCalls()).toBeGreaterThan(1)
-    view.unmount()
+    expect(tailCalls()).toBe(1 + 3)
   })
 
-  it('visible snapshot tile skips in-tick polls when the document is hidden', async () => {
+  it('visible snapshot tile skips in-tick polls while the document is hidden', async () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
-    const shown = renderSnapshot(true)
+    render(snapshotTree(true))
     await vi.advanceTimersByTimeAsync(0)
     await vi.advanceTimersByTimeAsync(15_000)
     expect(listCalls()).toBe(1)
-    shown.unmount()
   })
 })

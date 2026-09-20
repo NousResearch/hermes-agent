@@ -15,7 +15,8 @@ export function useSubagentSnapshot(sessionId: string | null) {
   const gatewayState = useStore($gatewayState)
   const paneVisible = usePaneVisible()
   useEffect(() => {
-    if (!sessionId) {
+    if (!sessionId || !paneVisible) {
+      // Keep-alive tiles stay mounted; only poll while this pane is the visible tab (reveal re-runs the effect).
       return
     }
 
@@ -59,15 +60,12 @@ export function useSubagentSnapshot(sessionId: string | null) {
     }
 
     void refresh()
-    // Keep-alive tiles stay mounted; only arm the 5s safety-net while the pane
-    // is the visible tab. Reveal re-arms via `paneVisible` in the dep array.
-    const timer = paneVisible
-      ? window.setInterval(() => {
-          if (document.visibilityState === 'visible') {
-            void refresh()
-          }
-        }, 5000)
-      : undefined
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refresh()
+      }
+    }, 5000)
 
     const retry = () => {
       failures = 0
@@ -78,9 +76,7 @@ export function useSubagentSnapshot(sessionId: string | null) {
 
     return () => {
       cancelled = true
-      if (timer !== undefined) {
-        window.clearInterval(timer)
-      }
+      window.clearInterval(timer)
       window.removeEventListener('focus', retry)
     }
   }, [sessionId, gatewayState, paneVisible])

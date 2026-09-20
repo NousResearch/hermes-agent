@@ -160,7 +160,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
-        # Verify the devShell builds successfully (cross-platform).
+        # Verify the devShell builds successfully. Note: macOS flake check fails at
+        # `build-devshell` (`driverLink` unsupported) — pre-existing, does not block Ubuntu CI.
+        # Verify the devShell builds (cross-platform, Linux passes).
         build-devshell = pkgs.runCommand "hermes-build-devshell" { } ''
           echo "PASS: devShell built at ${self'.devShells.default}"
           mkdir -p $out

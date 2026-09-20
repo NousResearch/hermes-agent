@@ -519,7 +519,12 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string, failedMembers = new Set<string>()) {
+export async function runGroupChatRounds(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  failedMembers = new Set<string>()
+) {
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -893,7 +898,12 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
     } catch (error) {
       if (binding.isLive()) {
         const reason = groupFailureReason(error)
-        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread, ...(reason ? { reason } : {}) })
+        recordGroupActivity(group, {
+          kind: 'failed',
+          member: null,
+          thread: currentThread,
+          ...(reason ? { reason } : {})
+        })
         updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
       }
     } finally {

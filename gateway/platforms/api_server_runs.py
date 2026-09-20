@@ -162,12 +162,16 @@ def _uses_room_run_auth(self, request: "web.Request") -> bool:
 def _initialize_run_state(self, *, store_factory) -> None:
     """Initialize adapter-owned durable and live ``/v1/runs`` state."""
     self._run_idempotency_store = store_factory()
+    # Run status is durable, so the receipts have to be too: without the index a restart leaves
+    # every saved conversation advertising artifacts whose download 404s. It lives beside the
+    # artifact root, not inside it, so the orphan sweep never has to reason about it.
     self._run_artifact_store = ArtifactStore(
         Path(get_hermes_home()) / "artifacts" / "runs",
         ttl_seconds=float(self._RUN_STATUS_TTL),
         max_bytes=_RUN_ARTIFACT_MAX_BYTES,
         allowed_mime_types=frozenset(_RUN_ARTIFACT_MIME_TYPES.values()),
         one_shot=False,
+        index_path=Path(get_hermes_home()) / "artifacts" / "run_artifacts.db",
     )
     self._run_owner_pid = os.getpid()
     try:

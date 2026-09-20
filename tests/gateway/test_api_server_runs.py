@@ -12,6 +12,7 @@ Covers:
 import asyncio
 import hashlib
 import json
+import sqlite3
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
-from gateway.browser_control_artifacts import ArtifactStore
+from gateway.browser_control_artifacts import ArtifactNotFound, ArtifactStore
 from gateway.platforms.api_server_runs import _run_artifact_scope
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -2452,18 +2453,47 @@ _ARTIFACT_RUN_ID = "run_" + "a" * 32
 _PNG = b"\x89PNG\r\n\x1a\ngenerated-bytes"
 
 
-def _stage_artifact_store(adapter, tmp_path, *, clock=None, max_bytes=1024 * 1024):
-    """Swap in a test-local artifact store so nothing touches the real Hermes home."""
+def _artifact_index_path(tmp_path):
+    """Mirror production layout: the index sits beside the artifact root, never inside it."""
+    return tmp_path / "run_artifacts.db"
+
+
+def _stage_artifact_store(adapter, tmp_path, *, clock=None, max_bytes=1024 * 1024, mime="image/png"):
+    """Swap in a test-local artifact store so nothing touches the real Hermes home. Durable like
+    the real run store, so calling this twice over one ``tmp_path`` is a process restart."""
     store = ArtifactStore(
         tmp_path / "artifacts",
         ttl_seconds=300,
         max_bytes=max_bytes,
-        allowed_mime_types=frozenset({"image/png"}),
+        allowed_mime_types=frozenset({mime}),
         clock=clock,
         one_shot=False,
+        index_path=_artifact_index_path(tmp_path),
     )
     adapter._run_artifact_store = store
     return store
+
+
+def _seed_index_row(index_path, **overrides):
+    """Write a raw receipt row, standing in for an index left by an older gateway version."""
+    row = {
+        "artifact_id": "b" * 32, "sha256": "0" * 64, "size_bytes": len(_PNG),
+        "content_type": "image/png", "filename": "seeded.png", "created_at": 0.0,
+        "expires_at": 1e12, "ttl_seconds": 300.0, "scope_key": "c" * 64, "one_shot": 0}
+    row.update(overrides)
+    connection = sqlite3.connect(str(index_path))
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS artifact_receipts (
+            artifact_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+            content_type TEXT NOT NULL, filename TEXT NOT NULL, created_at REAL NOT NULL,
+            expires_at REAL NOT NULL, ttl_seconds REAL NOT NULL, scope_key TEXT NOT NULL,
+            one_shot INTEGER NOT NULL DEFAULT 0)""")
+    connection.execute(
+        f"INSERT OR REPLACE INTO artifact_receipts ({','.join(row)}) "
+        f"VALUES ({','.join('?' * len(row))})", tuple(row.values()))
+    connection.commit()
+    connection.close()
+    return row
 
 
 def _stage_completed_run(adapter, run_id, *, artifacts, output="Rendered below."):
@@ -2666,21 +2696,116 @@ class TestRunArtifacts:
             assert (await (await cli.get(f"/v1/runs/{_ARTIFACT_RUN_ID}")).json())["artifacts"]
 
     @pytest.mark.asyncio
-    async def test_artifact_bytes_do_not_survive_a_gateway_restart(self, adapter, tmp_path):
-        """The receipt index is in-memory, so a restarted gateway sweeps the files it cannot
-        vouch for. A persisted status may still list them: that has to fail closed."""
+    async def test_artifact_bytes_survive_a_gateway_restart(self, adapter, tmp_path):
+        """Run status is durable, so the receipts behind it must be too: reopening a saved
+        conversation after a restart has to serve the image the status still advertises."""
         store = _stage_artifact_store(adapter, tmp_path)
         _claim_run(adapter, _ARTIFACT_RUN_ID)
         mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
         _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
-        # A fresh store over the same root is what process restart looks like.
-        _stage_artifact_store(adapter, tmp_path)
+        store.close()
+        # A fresh store over the same root and index is what process restart looks like.
+        restarted = _stage_artifact_store(adapter, tmp_path)
+        assert restarted.count() == 1
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            served = await cli.get(mine["download_path"])
+            assert served.status == 200
+            assert await served.read() == _PNG
+
+    @pytest.mark.asyncio
+    async def test_restart_does_not_resurrect_an_expired_artifact(self, adapter, tmp_path):
+        """Surviving a restart must not mean outliving the TTL."""
+        now = [1000.0]
+        store = _stage_artifact_store(adapter, tmp_path, clock=lambda: now[0])
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
+        store.close()
+        now[0] += 301.0
+        restarted = _stage_artifact_store(adapter, tmp_path, clock=lambda: now[0])
+        assert restarted.count() == 0
+        # Reclaimed from disk on the way, not merely made unreachable.
+        assert not (tmp_path / "artifacts" / mine["artifact_id"]).exists()
         app = _create_runs_app(adapter)
 
         async with TestClient(TestServer(app)) as cli:
             gone = await cli.get(mine["download_path"])
             assert gone.status == 404
             assert (await gone.json())["error"]["code"] == "artifact_not_found"
+
+    def test_restart_drops_a_receipt_whose_bytes_vanished(self, adapter, tmp_path):
+        """A file removed out of band must not come back as a live receipt that then fails its
+        checksum mid-download."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        store.close()
+        (tmp_path / "artifacts" / mine["artifact_id"]).unlink()
+
+        assert _stage_artifact_store(adapter, tmp_path).count() == 0
+
+    def test_restart_drops_a_receipt_outside_the_current_allowlist(self, adapter, tmp_path):
+        """The allowlist can tighten between versions; a receipt minted under the looser one must
+        not keep being served after the upgrade."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        store.close()
+
+        tightened = _stage_artifact_store(adapter, tmp_path, mime="image/webp")
+        assert tightened.count() == 0
+        assert not (tmp_path / "artifacts" / mine["artifact_id"]).exists()
+
+    @pytest.mark.parametrize(
+        "artifact_id",
+        ["../../../etc/passwd", "not-hex", "", "A" * 32, "0" * 31, "0" * 33, "a/b"],
+    )
+    def test_restart_ignores_a_malformed_id_in_the_index(self, adapter, tmp_path, artifact_id):
+        """The index is state from an older process, so a row that is not a minted id is dropped
+        without ever being turned into a path."""
+        _seed_index_row(_artifact_index_path(tmp_path), artifact_id=artifact_id)
+
+        assert _stage_artifact_store(adapter, tmp_path).count() == 0
+
+    def test_index_never_records_a_filesystem_path(self, adapter, tmp_path):
+        """Paths are re-derived from the live root on restore and never written down, so a leaked
+        or tampered index cannot redirect a read out of the controlled root."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        _publish(adapter, store, _ARTIFACT_RUN_ID)
+        store.close()
+
+        assert str(tmp_path).encode() not in _artifact_index_path(tmp_path).read_bytes()
+
+    def test_one_shot_consumption_survives_a_restart(self, tmp_path):
+        """One-shot means once, not once per process: the browser-control contract must not be
+        weakened by giving a store an index."""
+        scope = _run_artifact_scope("principal-one-shot")
+        shared = {
+            "allowed_mime_types": frozenset({"image/png"}), "one_shot": True,
+            "index_path": _artifact_index_path(tmp_path)}
+        store = ArtifactStore(tmp_path / "artifacts", **shared)
+        receipt = store.store(_PNG, filename="a.png", content_type="image/png", scope=scope)
+        assert store.load(receipt.artifact_id, scope=scope)[0] == _PNG
+        store.close()
+
+        restarted = ArtifactStore(tmp_path / "artifacts", **shared)
+        with pytest.raises(ArtifactNotFound):
+            restarted.load(receipt.artifact_id, scope=scope)
+        restarted.close()
+
+    def test_durability_is_opt_in(self, tmp_path):
+        """Browser-control transport passes no index and keeps its sweep-on-start behaviour."""
+        scope = _run_artifact_scope("principal-ephemeral")
+        root = tmp_path / "artifacts"
+        store = ArtifactStore(root, allowed_mime_types=frozenset({"image/png"}), one_shot=False)
+        receipt = store.store(_PNG, filename="a.png", content_type="image/png", scope=scope)
+
+        restarted = ArtifactStore(root, allowed_mime_types=frozenset({"image/png"}), one_shot=False)
+        assert restarted.count() == 0
+        assert not (root / receipt.artifact_id).exists()
 
     @pytest.mark.parametrize(
         "artifacts",

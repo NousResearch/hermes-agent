@@ -1257,6 +1257,147 @@ class TestSessionSwitchBufferFlush:
 
 
 # ---------------------------------------------------------------------------
+# Prefetch generation fence (#64745: stale/superseded worker must not publish)
+# ---------------------------------------------------------------------------
+
+
+class TestPrefetchGenerationFence:
+    def test_stale_worker_cannot_publish_after_switch_join_timeout(self, provider, monkeypatch):
+        """A prefetch worker can legitimately outlive on_session_switch's 3s
+        join (10s drain + 120s recall). Its late publish lands in the NEW
+        session's slot upstream; the generation fence must drop it, and the
+        new session's first prefetch() must inject nothing of the old one."""
+        import threading
+
+        gate = threading.Event()
+        entered = threading.Event()
+
+        def _gated_recall(query):
+            entered.set()
+            gate.wait(timeout=10.0)
+            return "- old-session memory", 1
+
+        monkeypatch.setattr(provider, "_do_recall", _gated_recall)
+        provider.queue_prefetch("old session query")
+        assert entered.wait(timeout=5.0), "prefetch worker never reached the recall"
+
+        # The worker is still gated when the switch's 3.0s join times out, so
+        # the switch returns with the worker alive — the leaked window upstream.
+        provider.on_session_switch("new-sid")
+        gate.set()
+        provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == ""
+        assert provider.prefetch("anything") == ""
+
+    def test_superseded_worker_cannot_overwrite_newer_result(self, provider, monkeypatch):
+        """Two overlapping workers: the older finishing after the newer must
+        not clobber the newer result sitting in the slot."""
+        import threading
+
+        gate_first = threading.Event()
+
+        def _routed_recall(query):
+            if query == "first query":
+                gate_first.wait(timeout=10.0)
+                return "- first (older) memory", 1
+            return "- second (newer) memory", 1
+
+        monkeypatch.setattr(provider, "_do_recall", _routed_recall)
+
+        provider.queue_prefetch("first query")
+        worker_first = provider._prefetch_thread
+        # Simulate the lost-thread-handle hazard: upstream overwrote
+        # _prefetch_thread freely, so a dead handle lets the next warm spawn.
+        provider._prefetch_thread = None
+        provider.queue_prefetch("second query")
+        worker_second = provider._prefetch_thread
+
+        # The newer worker finishes first and wins the slot.
+        worker_second.join(timeout=5.0)
+        with provider._prefetch_lock:
+            assert provider._prefetch_result == "- second (newer) memory"
+
+        # The older worker finishes LAST; its result must be fenced out.
+        gate_first.set()
+        worker_first.join(timeout=5.0)
+        with provider._prefetch_lock:
+            assert provider._prefetch_result == "- second (newer) memory"
+
+    def test_shutdown_fences_inflight_prefetch_publish(self, provider):
+        """A recall resuming after shutdown() began must not publish, and the
+        fence must prevent a recall against a client shutdown already closed."""
+        import threading
+
+        gate = threading.Event()
+        entered = threading.Event()
+
+        async def _gated_arecall(**kwargs):
+            entered.set()
+            gate.wait(timeout=10.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="late memory")])
+
+        provider._client.arecall = AsyncMock(side_effect=_gated_arecall)
+
+        provider.queue_prefetch("q")
+        assert entered.wait(timeout=5.0), "prefetch worker never reached the recall"
+
+        # Release the recall the moment shutdown starts so shutdown's prefetch
+        # join returns promptly instead of burning its 5s budget.
+        def _release_on_shutdown():
+            provider._shutting_down.wait(timeout=10.0)
+            gate.set()
+
+        threading.Thread(target=_release_on_shutdown, daemon=True).start()
+        provider.shutdown()
+        provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == ""
+        assert provider._client is None
+        assert provider.prefetch("q") == ""
+
+    def test_queue_prefetch_skips_while_prior_worker_running(self, provider):
+        """Rapid turns must warm serially: while one worker runs, further
+        queue_prefetch calls neither spawn nor bump — only ONE recall happens."""
+        import threading
+
+        gate = threading.Event()
+        entered = threading.Event()
+
+        async def _gated_arecall(**kwargs):
+            entered.set()
+            gate.wait(timeout=10.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="m")])
+
+        provider._client.arecall = AsyncMock(side_effect=_gated_arecall)
+
+        provider.queue_prefetch("q1")
+        assert entered.wait(timeout=5.0), "prefetch worker never reached the recall"
+        first = provider._prefetch_thread
+
+        provider.queue_prefetch("q2")
+        provider.queue_prefetch("q3")
+
+        gate.set()
+        first.join(timeout=5.0)
+
+        # The live worker was never replaced and nothing else ever recalled.
+        assert provider._prefetch_thread is first
+        assert provider._client.arecall.await_count == 1
+
+    def test_same_session_boundary_still_publishes(self, provider):
+        """Positive control: with no session switch the fence must be a no-op —
+        an uninterrupted warm → prefetch cycle delivers exactly as upstream."""
+        provider.queue_prefetch("test")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        result = provider.prefetch("test")
+        assert "Memory 1" in result
+        assert "Memory 2" in result
+
+
+# ---------------------------------------------------------------------------
 # update_mode='append' capability probe + retain dispatch
 # ---------------------------------------------------------------------------
 

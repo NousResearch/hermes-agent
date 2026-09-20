@@ -367,6 +367,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result, self._prefetch_count = "", 0
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        # Prefetch-slot ownership (guarded by _prefetch_lock): bumped per spawned
+        # worker and on session switch/shutdown, so a late or superseded worker
+        # whose captured generation is stale can never publish into the slot.
+        self._prefetch_generation = 0
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
 
@@ -963,15 +967,36 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_sync or self._recall_disabled():
             return
 
+        # One worker at a time (mirrors _ensure_writer): rapid turns must not
+        # stack concurrent recalls against one embedded daemon — the LAST
+        # finisher would win the slot, not the newest warm.
+        if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+            logger.debug("Prefetch: prior worker still running; skipping this warm")
+            return
+
+        with self._prefetch_lock:
+            self._prefetch_generation += 1
+            generation = self._prefetch_generation
+
         def _run():
             # Wait (bounded, off the reply path) for the just-completed turn's
             # retain to be recall-visible so the warmed context includes it.
             if self._prefetch_waits_for_retain:
                 self._wait_for_retains_drained(self._prefetch_retain_drain_timeout)
+            # A superseded/shut-down worker must not even spend a recall
+            # against the daemon on a result nobody will use.
+            with self._prefetch_lock:
+                if generation != self._prefetch_generation or self._shutting_down.is_set():
+                    return
             text, count = self._do_recall(query)
             if text:
+                # Fenced publish: the slot can outlive the switching session's
+                # 3s join (drain up to 10s + recall up to 120s), so only the
+                # generation that owns the slot may write it — a stale worker
+                # must not inject the old session's memories into the new one.
                 with self._prefetch_lock:
-                    self._prefetch_result, self._prefetch_count = text, count
+                    if generation == self._prefetch_generation and not self._shutting_down.is_set():
+                        self._prefetch_result, self._prefetch_count = text, count
 
         self._prefetch_thread = spawn_context_thread(_run, name="hindsight-prefetch")
         self._prefetch_thread.start()
@@ -1193,6 +1218,9 @@ class HindsightMemoryProvider(MemoryProvider):
         # 2. Drain the old session's in-flight prefetch and drop its result.
         self._join_prefetch(3.0)
         with self._prefetch_lock:
+            # Fence out any worker still running past the join: the slot now
+            # belongs to the new session.
+            self._prefetch_generation += 1
             self._prefetch_result = ""
 
         # 3. Rotate to the new session.
@@ -1223,6 +1251,10 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
+        # Fence any in-flight prefetch worker: a recall finishing during or
+        # after the joins below must never publish into a closing provider.
+        with self._prefetch_lock:
+            self._prefetch_generation += 1
         # The writer finishes in-flight work then exits on the sentinel; the
         # bounded join keeps shutdown predictable even if the daemon is wedged.
         if (writer := self._writer_thread) is not None and writer.is_alive():

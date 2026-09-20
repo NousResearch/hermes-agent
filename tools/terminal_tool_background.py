@@ -107,6 +107,25 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
     if async_delivery_supported():
         _stamp_gateway_routing(proc_session, get_session_env)
         return notify_on_complete, watch_patterns
+    # Opt-in cron continuation (#110650): the job declared background_continuation, so a finished
+    # child resumes the JOB (job-scoped record + one continuation turn), not a chat. Routing comes
+    # from the payload bound at run start — never from the ambient HERMES_SESSION_* env, which is
+    # the leak this path exists to avoid. The session keeps notify_on_complete=False: the generic
+    # completion event is keyed on a live session and must stay closed for cron.
+    from cron.continuation import active as _cron_continuation_active
+    payload = _cron_continuation_active()
+    if payload and notify_on_complete:
+        proc_session.cron_continuation = payload
+        result_data["notify_on_complete"] = True
+        result_data["cron_continuation"] = {
+            "job_id": payload["job_id"], "process_id": proc_session.id}
+        # The "runs SILENTLY, you will not be told" hint never applies here: this child's exit
+        # does come back, to the job.
+        result_data.pop("hint", None)
+        logger.info(
+            "background proc %s: cron job-scoped continuation armed for job %s",
+            proc_session.id, payload["job_id"])
+        return False, None
     result_data["notify_on_complete"] = False
     result_data["notify_unsupported"] = _ASYNC_UNSUPPORTED_NOTE
     logger.info("background proc %s: async delivery unsupported on this "

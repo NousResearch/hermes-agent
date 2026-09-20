@@ -2086,7 +2086,8 @@ class _CronRunScope:
     driving the agent. Delivery reads job["origin"] / HERMES_CRON_AUTO_DELIVER_* directly.
     """
 
-    def __init__(self, job: dict, job_id: str, execution_id: Optional[str]):
+    def __init__(self, job: dict, job_id: str, execution_id: Optional[str],
+                 continuation: bool = False):
         from gateway.session_context import set_session_vars, _VAR_MAP
         from tools.terminal_tool import record_session_cwd
 
@@ -2121,6 +2122,19 @@ class _CronRunScope:
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
         self._non_dispatcher_token = None
+        # Opt-in job-scoped continuation (#110650): arms the terminal tool's background path so a
+        # child of this run reports its exit to the JOB (durable job-scoped record) instead of to a
+        # chat. NOT bound when this run already IS a continuation — one generation, so a continuation
+        # can never spawn a further continuation.
+        self._continuation_token = None
+        if job.get("background_continuation") and not continuation:
+            from cron.continuation import bind as _bind_continuation
+            try:
+                _target = _resolve_delivery_target(job)
+            except Exception:
+                # Recorded for audit only: continuation delivery re-resolves the job's live config.
+                _target = None
+            self._continuation_token = _bind_continuation(job, job_id, execution_id, _target)
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
@@ -2133,9 +2147,12 @@ class _CronRunScope:
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
 
     def exit(self) -> None:
+        from cron.continuation import unbind as _unbind_continuation
         from gateway.session_context import clear_session_vars
         from tools.terminal_tool import clear_session_cwd
 
+        _unbind_continuation(self._continuation_token)
+        self._continuation_token = None
         clear_session_cwd(self.task_id)
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
         if self._cron_session_token is not None:
@@ -2283,6 +2300,7 @@ class _FireAudit:
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
+    continuation: bool = False,
 ) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job. Returns (success, full_output_doc, final_response, error).
     ``defer_agent_teardown``: if a list, the live agent is appended instead of torn down; the caller
@@ -2298,6 +2316,8 @@ def run_job(
     existing caller is unchanged.
     ``extra_prompt``: optional per-run context from ``cronjob(action='run', prompt=...)`` (#57331). Appended
     to the stored prompt for this fire only — never persisted to the job definition.
+    ``continuation``: this fire IS a background continuation (#110650) — the job-scoped continuation
+    context is not re-armed, so a continuation can never spawn another one.
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
@@ -2316,7 +2336,7 @@ def run_job(
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
-    scope = _CronRunScope(job, job_id, execution_id)
+    scope = _CronRunScope(job, job_id, execution_id, continuation=continuation)
     try:
         scope.enter()
         if scope.workdir:
@@ -3941,6 +3961,129 @@ def _sweep_mcp_orphans_when_all_done(futures: list) -> None:
 
     for _f in futures:
         _f.add_done_callback(_on_done)
+
+
+def _run_cron_continuation(job: dict, record: dict, *, adapters=None, loop=None) -> bool:
+    """One post-exit agent turn for a job's finished background child (#110650).
+
+    Uses ``run_job`` directly: a continuation is not a scheduled fire, so it must not consume the
+    fire's claim, advance the schedule, or count toward the job's failure streak / auto-pause.
+    Delivery goes through the job's own delivery config, exactly like a normal run.
+    """
+    from cron.continuation import build_prompt
+
+    # The monitor gate is a SCHEDULING gate ("output unchanged -> skip this fire"); it must not
+    # swallow a continuation, whose whole trigger is that the child exited.
+    job = {k: v for k, v in job.items() if k not in ("monitor_script", "monitor_url")}
+    try:
+        success, _output, final_response, _error = run_job(
+            job, extra_prompt=build_prompt(record), continuation=True)
+    except Exception as exc:
+        logger.exception(
+            "Job '%s': background continuation run failed: %s", job.get("id"), exc)
+        return False
+    content = (final_response or "").strip()
+    if success and (not content or _is_cron_silence_response(content)):
+        logger.info("Job '%s': background continuation produced nothing to deliver", job.get("id"))
+        return True
+    if not content:
+        success = False
+        content = (
+            f"Background continuation for job {job.get('id')} finished without a response "
+            f"(process {record.get('process_id')}, exit {record.get('exit_code')}).")
+    error = _deliver_result(job, content, adapters=adapters, loop=loop, for_failure=not success)
+    if error:
+        logger.warning(
+            "Job '%s': background continuation delivery failed: %s", job.get("id"), error)
+    return success
+
+
+def _continuation_route_matches(record: dict, job: dict) -> bool:
+    """True if the job's CURRENT delivery target still equals the frozen spawn-time route.
+
+    The completion record froze ``(platform, chat_id, thread_id)`` at bind time. A long-running
+    child can outlive a job edit that re-targets delivery (A -> B); running the old child's
+    output through the NEW config would authorize it to B. Equality here is the fence: on
+    mismatch the record is dropped, never delivered.
+    """
+    try:
+        current = _resolve_delivery_target(job)
+    except Exception:
+        logger.warning(
+            "Job '%s': dropping background continuation (current delivery target unresolvable)",
+            job.get("id"), exc_info=True)
+        return False
+    frozen = (str(record.get("platform") or "").lower(), str(record.get("chat_id") or ""),
+              "" if record.get("thread_id") is None else str(record.get("thread_id")))
+    if current is None:
+        return frozen == ("", "", "")
+    thread = current.get("thread_id")
+    now = (str(current.get("platform") or "").lower(), str(current.get("chat_id") or ""),
+           "" if thread is None else str(thread))
+    if now != frozen:
+        logger.warning(
+            "Job '%s': dropping background continuation for process %s "
+            "(job re-targeted after spawn: was %s, now %s)",
+            job.get("id"), record.get("process_id"), frozen, now)
+        return False
+    return True
+
+
+def _collect_continuation_runs() -> list:
+    """Claim pending completion records and validate them; returns [(job, record)] to run.
+
+    Claims one record at a time (read, then unlink): a crash between two continuations leaves
+    the later records on disk for the next tick instead of deleting work never attempted.
+    Records whose job is gone, paused, opted out, or re-targeted since spawn are dropped here,
+    under scheduler authority — but nothing RUNS here. The caller executes the returned runs
+    outside the tick lock so a slow provider call can't wedge due-job dispatch.
+    """
+    from cron.continuation import claim_next
+    from cron.jobs import get_job, is_job_runnable
+
+    runs = []
+    while True:
+        record = claim_next()
+        if record is None:
+            break
+        job = get_job(str(record.get("job_id") or ""))
+        if not job or not job.get("background_continuation") or not is_job_runnable(job):
+            logger.info(
+                "Cron: dropping background continuation for job %s "
+                "(missing, paused, or no longer opted in)", record.get("job_id"))
+            continue
+        if not _continuation_route_matches(record, job):
+            continue
+        runs.append((job, record))
+    return runs
+
+
+def _run_collected_continuations(runs, adapters=None, loop=None) -> int:
+    """Execute pre-claimed continuation runs. MUST be called without the tick lock held."""
+    resumed = 0
+    for job, record in runs:
+        logger.info(
+            "Job '%s': resuming after background process %s exited (exit=%s, %s)",
+            job.get("name"), record.get("process_id"), record.get("exit_code"),
+            record.get("completion_reason"))
+        try:
+            _run_cron_continuation(job, record, adapters=adapters, loop=loop)
+        except Exception as exc:
+            logger.exception(
+                "Job '%s': background continuation for process %s failed: %s",
+                job.get("id"), record.get("process_id"), exc)
+            continue
+        resumed += 1
+    return resumed
+
+
+def resume_background_continuations(adapters=None, loop=None) -> int:
+    """Run one continuation turn per pending job-scoped completion record; returns how many ran.
+
+    Collect-then-run: claimed records are validated under the caller's authority and each run
+    is isolated, so one failing continuation never deletes or blocks its siblings.
+    """
+    return _run_collected_continuations(_collect_continuation_runs(), adapters, loop)
 
 
 from cron.scheduler_tick import tick  # noqa: E402

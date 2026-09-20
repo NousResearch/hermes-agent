@@ -19,7 +19,10 @@ def _tick_admitted(
     verbose: bool = True, adapters=None, loop=None, sync: bool = True, *, can_dispatch=None):
     """Check and run all due jobs. File-locked so only one tick runs at a time (gateway ticker vs
     standalone daemon / manual tick). ``can_dispatch``: optional gate; false leaves due jobs for the
-    next allowed tick. Returns the number of jobs executed (0 if another tick holds the lock)."""
+    next allowed tick. Returns the number of jobs executed (0 if another tick holds the lock).
+
+    Also drains opt-in background continuations (#110650) — those count as one execution each and
+    run even on ticks with no due job, since a fire's child usually exits between ticks."""
     from cron import scheduler as _sched
 
     # Stale-code yield gate — BEFORE the lock race. A process whose checkout was updated under it
@@ -36,6 +39,11 @@ def _tick_admitted(
     if lock_fd is None:
         return 0
 
+    # Continuation runs are claimed under the tick lock below but EXECUTED after it is
+    # released: a slow provider/tool call in a continuation must never hold the dispatcher
+    # critical section or delay due-job enumeration for competing tickers.
+    cont_runs: list = []
+    due_total = 0
     try:
         # `hermes pause` ESTOP: skip dispatch, never touch in-flight runs; check_paused logs once.
         with contextlib.suppress(ImportError):
@@ -59,6 +67,15 @@ def _tick_admitted(
         except Exception as _wt_exc:
             _sched.logger.debug("Worktree maintenance dispatch failed: %s", _wt_exc)
 
+        # Opt-in background continuations (#110650): CLAIM before the due-job early return —
+        # a fire's child usually exits between ticks, when the job itself is not due. Claiming
+        # (unlinking, one record at a time) here keeps at-most-once across ticks; execution
+        # happens after the tick lock is released below.
+        try:
+            cont_runs = _sched._collect_continuation_runs()
+        except Exception as _cont_exc:
+            _sched.logger.error("Cron background continuation claim failed: %s", _cont_exc)
+
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
 
@@ -72,50 +89,59 @@ def _tick_admitted(
                 # due.
                 _sched.logger.info("%s - No jobs due", _sched._hermes_now().strftime('%H:%M:%S'))
             _sched._sweep_mcp_orphans()
-            return 0
+            due_total = 0
+        else:
 
-        if verbose:
-            _sched.logger.info("%s - %s job(s) due", _sched._hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+            if verbose:
+                _sched.logger.info("%s - %s job(s) due", _sched._hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
-        # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
-        # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
-        _sched.advance_next_runs([job["id"] for job in due_jobs])
+            # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
+            # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
+            # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
+            _sched.advance_next_runs([job["id"] for job in due_jobs])
 
-        _max_workers = _sched._resolve_max_parallel_workers()
-        if verbose:
-            _sched.logger.info(
-                "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
-                _max_workers if _max_workers else "unbounded")
+            _max_workers = _sched._resolve_max_parallel_workers()
+            if verbose:
+                _sched.logger.info(
+                    "Running %d job(s) in parallel (max_workers=%s)",
+                    len(due_jobs),
+                    _max_workers if _max_workers else "unbounded")
 
-        def _process_job(job: dict) -> bool:
-            return _sched._process_due_job(job, adapters, loop, verbose)
+            def _process_job(job: dict) -> bool:
+                return _sched._process_due_job(job, adapters, loop, verbose)
 
-        # Persistent pool, non-blocking dispatch. Already-running jobs are skipped; mark_job_run
-        # re-arms next_run_at on completion, so no catch-up queue is needed.
-        _results: list = []
-        _all_futures: list = []
-        pool = _sched._get_parallel_pool(_max_workers)
-        for job in due_jobs:
-            fut = _sched._submit_with_guard(job, pool, _process_job)
-            if fut is None:
-                continue
-            _all_futures.append(fut)
-            if not sync:
-                _results.append(True)  # optimistically counted
+            # Persistent pool, non-blocking dispatch. Already-running jobs are skipped; mark_job_run
+            # re-arms next_run_at on completion, so no catch-up queue is needed.
+            _results: list = []
+            _all_futures: list = []
+            pool = _sched._get_parallel_pool(_max_workers)
+            for job in due_jobs:
+                fut = _sched._submit_with_guard(job, pool, _process_job)
+                if fut is None:
+                    continue
+                _all_futures.append(fut)
+                if not sync:
+                    _results.append(True)  # optimistically counted
 
-        if sync:
-            for f in concurrent.futures.as_completed(_all_futures):
-                try:
-                    _results.append(f.result())
-                except Exception as exc:
-                    _sched.logger.error("Cron job future failed: %s", exc)
-                    _results.append(False)
-            _sched._sweep_mcp_orphans()
-            return sum(_results)
+            if sync:
+                for f in concurrent.futures.as_completed(_all_futures):
+                    try:
+                        _results.append(f.result())
+                    except Exception as exc:
+                        _sched.logger.error("Cron job future failed: %s", exc)
+                        _results.append(False)
+                _sched._sweep_mcp_orphans()
+                due_total = sum(_results)
 
-        _sched._sweep_mcp_orphans_when_all_done(_all_futures)
-        return sum(_results)
+            _sched._sweep_mcp_orphans_when_all_done(_all_futures)
+            due_total = sum(_results)
     finally:
         _sched._release_tick_lock(lock_fd)
+
+    resumed = 0
+    if cont_runs:
+        try:
+            resumed = _sched._run_collected_continuations(cont_runs, adapters, loop)
+        except Exception as _cont_exc:
+            _sched.logger.error("Cron background continuation failed: %s", _cont_exc)
+    return due_total + resumed

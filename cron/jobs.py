@@ -1773,6 +1773,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    background_continuation: bool = False,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1781,7 +1782,8 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatibility with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    background_continuation: opt-in job-scoped continuation for background child processes (#110650)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1872,6 +1874,10 @@ def create_job(
     ):
         if value is not None:
             job[key] = value
+    # Opt-in background continuation (#110650). Written only when set: a job without it stays
+    # byte-identical to a pre-feature record (and never arms the path).
+    if background_continuation:
+        job["background_continuation"] = True
 
     with _jobs_lock():
         save_jobs(load_jobs() + [job])

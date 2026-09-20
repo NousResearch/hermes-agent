@@ -520,6 +520,10 @@ class ProcessSession:
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
     watch_patterns: List[str] = field(default_factory=list)
+    # Opt-in cron (#110650): job-scoped continuation payload. When set, the child's completion is
+    # written as a job-scoped record for the scheduler instead of a completion event, and
+    # ``notify_on_complete`` stays False so the session-key-routed queue path is never opened.
+    cron_continuation: Optional[dict] = None
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
     _watch_disabled: bool = field(default=False, repr=False) # permanently killed after strike limit
@@ -558,7 +562,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "watch_patterns")
+    "parent_session_id", "notify_on_complete", "watch_patterns", "cron_continuation")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1446,6 +1450,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # buffered ``output_buffer``, never from the pipe.
         self._release_finished_handles(session)
         self._write_checkpoint()
+        if was_running and getattr(session, "cron_continuation", None):
+            # Opt-in cron continuation (#110650): the durable job-scoped record IS the completion
+            # event — nothing is put on the session-key-routed completion queue for these sessions.
+            try:
+                from cron.continuation import write_record
+                write_record(session)
+            except Exception:
+                logger.warning("Cron continuation record failed for %s", session.id, exc_info=True)
         if was_running and session.notify_on_complete:
             notification = {
                 "type": "completion",

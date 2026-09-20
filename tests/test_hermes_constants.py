@@ -1240,3 +1240,108 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+
+class TestMsysEnvPathNormalization:
+    """_normalize_msys_env_path() converts only the intentional MSYS drive form.
+
+    Under git-bash/MSYS, Win32 env vars arrive as ``/c/Users/...`` instead of
+    ``C:/Users/...``. A bare ``Path()`` mangles the leading ``/c`` into a rooted
+    relative path (``\\c\\Users\\...``) pointing at a non-existent shadow tree.
+    The helper converts ``/<ASCII drive letter>/...`` -> ``<UPPER DRIVE>:/...``
+    on win32 only, leaving every other form unchanged.
+
+    The platform is passed as DATA (``platform=``) for the rule rows, so they
+    hold on any host; only the rows that exercise the real Windows call sites
+    carry the ``windows_only`` marker.
+    """
+
+    # --- rule: win32 converts the MSYS drive form ---
+
+    def test_direct_msys_hermes_home(self):
+        assert hermes_constants._normalize_msys_env_path(
+            "/c/Users/alex/AppData/Local/hermes", platform="win32"
+        ) == "C:/Users/alex/AppData/Local/hermes"
+
+    def test_msys_lowercase_drive_uppercased(self):
+        assert hermes_constants._normalize_msys_env_path(
+            "/d/other/path", platform="win32"
+        ) == "D:/other/path"
+
+    # --- rule: every other form passes through unchanged ---
+
+    def test_native_forward_slash_drive_path_unchanged(self):
+        assert hermes_constants._normalize_msys_env_path(
+            "C:/Users/alex/AppData/Local/hermes", platform="win32"
+        ) == "C:/Users/alex/AppData/Local/hermes"
+
+    def test_native_backslash_drive_path_unchanged(self):
+        assert hermes_constants._normalize_msys_env_path(
+            "C:\\Users\\alex\\AppData\\Local\\hermes", platform="win32"
+        ) == "C:\\Users\\alex\\AppData\\Local\\hermes"
+
+    def test_unc_path_unchanged(self):
+        assert hermes_constants._normalize_msys_env_path(
+            "\\\\server\\share\\hermes", platform="win32"
+        ) == "\\\\server\\share\\hermes"
+
+    def test_custom_root_relative_path_unchanged(self):
+        # /custom/hermes is not a drive path (third char isn't a slash).
+        assert hermes_constants._normalize_msys_env_path(
+            "/custom/hermes", platform="win32"
+        ) == "/custom/hermes"
+
+    def test_bare_drive_slash_unchanged(self):
+        # A bare /c (no following slash) is intentionally left untouched.
+        assert hermes_constants._normalize_msys_env_path("/c", platform="win32") == "/c"
+
+    def test_unicode_non_drive_path_unchanged(self):
+        # /e-acute/... is not an ASCII drive letter path, so it passes through.
+        assert hermes_constants._normalize_msys_env_path(
+            "/\u00e9/not-a-drive", platform="win32"
+        ) == "/\u00e9/not-a-drive"
+
+    def test_non_windows_passthrough(self):
+        assert hermes_constants._normalize_msys_env_path(
+            "/c/Users/alex/AppData/Local/hermes", platform="linux"
+        ) == "/c/Users/alex/AppData/Local/hermes"
+
+    # --- wiring: the real Windows call sites ---
+
+    @pytest.mark.windows_only
+    def test_msys_hermes_home_via_process_home(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+        monkeypatch.setenv("HERMES_HOME", "/c/Users/alex/AppData/Local/hermes")
+        assert hermes_constants.get_process_hermes_home() == Path(
+            "C:/Users/alex/AppData/Local/hermes"
+        )
+
+    @pytest.mark.windows_only
+    def test_msys_localappdata_with_hermes_home_unset(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", "/c/Users/alex/AppData/Local")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+        assert hermes_constants._get_platform_default_hermes_home() == (
+            Path("C:/Users/alex/AppData/Local") / "hermes"
+        )
+
+    @pytest.mark.windows_only
+    def test_msys_profile_path_resolves_via_get_default_root(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+        native_root = tmp_path / "LocalAppData" / "hermes"
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+        # MSYS form of <native_root>/profiles/coder: lowercase drive, no colon.
+        profile = native_root / "profiles" / "coder"
+        msys = f"/{profile.drive[0].lower()}/{str(profile)[2:].replace(chr(92), '/')}"
+        monkeypatch.setenv("HERMES_HOME", msys)
+        # After normalization the profile lives under the native root, so the
+        # root unwraps to the native home rather than treating it as Docker.
+        assert hermes_constants.get_default_hermes_root() == native_root
+
+    def test_posix_form_without_drive_pattern_unchanged_on_any_host(self, monkeypatch):
+        # No drive pattern -> unchanged on Windows and POSIX alike; no OS faking.
+        monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+        monkeypatch.setenv("HERMES_HOME", "/home/alex/.hermes")
+        assert hermes_constants.get_process_hermes_home() == Path("/home/alex/.hermes")

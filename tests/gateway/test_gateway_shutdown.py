@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import gateway.run as gateway_run
+import gateway.run_shutdown as run_shutdown
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
@@ -59,6 +60,95 @@ def test_cron_provider_stop_cannot_override_gateway_exit_code(caplog):
 
     provider.stop.assert_called_once_with()
     assert f"attempted to exit the gateway with code {GATEWAY_SERVICE_RESTART_EXIT_CODE}; ignoring" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_tail_transfers_watchdog_only_after_all_cleanup(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    armed = []
+    order = []
+
+    def arm_long(delay_s, *, done_event, **_kwargs):
+        armed.append(("long", delay_s, done_event))
+        return done_event
+
+    def arm_short(*, loop, **_kwargs):
+        armed.append(("short", loop, None))
+        order.append("short")
+
+    monkeypatch.setattr(run_shutdown, "arm_shutdown_watchdog", arm_long)
+    monkeypatch.setattr(run_shutdown, "arm_process_exit_backstop", arm_short)
+
+    runner, adapter = make_restart_runner()
+    runner._exit_with_failure = False
+    adapter.disconnect = AsyncMock()
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert armed[0][0:2] == (
+        "long",
+        run_shutdown.resolve_shutdown_watchdog_delay(runner._restart_drain_timeout),
+    )
+    assert armed[0][2].is_set()
+    assert [entry[0] for entry in armed] == ["long"]
+
+    control_server = MagicMock()
+    control_server.stop = AsyncMock(side_effect=lambda: order.append("control"))
+    cron_stop = MagicMock()
+    cron_provider = MagicMock()
+    cron_thread = MagicMock()
+    housekeeping_thread = MagicMock()
+    planned_stop_watcher_stop = MagicMock()
+    planned_stop_watcher_thread = MagicMock()
+
+    async def await_thread_exit(thread, *, timeout):
+        del timeout
+        order.append("cron" if thread is cron_thread else "housekeeping")
+        return True
+
+    async def shutdown_mcp_servers_nonblocking():
+        order.append("mcp")
+        return True
+
+    monkeypatch.setattr(gateway_run, "_await_thread_exit", await_thread_exit)
+    monkeypatch.setattr(
+        gateway_run, "_shutdown_mcp_servers_nonblocking", shutdown_mcp_servers_nonblocking
+    )
+    monkeypatch.setattr(
+        gateway_run, "_stop_cron_provider", lambda _provider: order.append("cron_provider")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.nous_auth_keepalive.stop_nous_auth_keepalive", lambda: None
+    )
+
+    result = await gateway_run._start_gateway_shutdown_tail(
+        runner,
+        control_server,
+        cron_stop,
+        cron_provider,
+        cron_thread,
+        housekeeping_thread,
+        planned_stop_watcher_stop,
+        planned_stop_watcher_thread,
+        [False],
+    )
+
+    assert result is True
+    assert [entry[0] for entry in armed] == ["long", "short", "short"]
+    assert order == ["control", "short", "cron_provider", "cron", "housekeeping", "mcp", "short"]
+
+    armed.clear()
+    runner, _adapter = make_restart_runner()
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_stop_finalize_agents_and_adapters",
+        AsyncMock(side_effect=RuntimeError("teardown failed")),
+    )
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        await runner.stop()
+
+    assert [entry[0] for entry in armed] == ["long"]
+    assert not armed[0][2].is_set()
 
 
 @pytest.mark.asyncio

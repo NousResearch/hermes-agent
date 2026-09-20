@@ -629,7 +629,7 @@ class PeerRunsHTTPClient:
                 yield view[offset : offset + 64 * 1024].tobytes()
 
         request = urllib.request.Request(
-            f"{self.base_url}{path}",
+            f"{self.base_url}{self._profile_prefix}{path}",
             data=chunks() if streamed else data,
             method="PUT",
             headers={

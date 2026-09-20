@@ -1144,13 +1144,13 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
         # alive for the same interval and inspect THESE connections, not readers.
         with ExitStack() as locks:
             from gateway.session_peer_target import root_target
+            profile = _effective_room_profile(_api_request_profile)
             try:
-                owner, _ = root_target(adapter)
+                owner, _ = root_target(adapter, profile)
             except RuntimeStoreError as exc:
                 raise RoomGrantReauthorizationRequired(exc.reason) from exc
             profile_conn = locks.enter_context(owner.db.live_write_connection())
             claims = _decode_request_grant(adapter, request, permission=permission)
-            profile = _effective_room_profile(_api_request_profile)
             _validate_target_scope(claims, profile)
             if claims != expected or 'attachment.stage' not in claims['permissions']:
                 raise HostedRoomGrantError('room grant changed or cannot stage attachments')

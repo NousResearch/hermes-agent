@@ -19,6 +19,7 @@ def test_selection_prefetch_and_refresh_share_the_same_catalog(monkeypatch):
         cache = models._load_provider_models_cache()
         cache['gemini']['at'] = 0  # Age cannot trigger background or blocking I/O.
         models._save_provider_models_cache(cache)
+        assert models.cached_provider_model_ids('gemini', non_blocking=True) == ['cached-model']
         _prefetch_provider_models_parallel(['gemini'])
         assert validate_requested_model('cached-model', 'gemini')['accepted']
         assert live.call_count == 1
@@ -32,6 +33,25 @@ def test_selection_prefetch_and_refresh_share_the_same_catalog(monkeypatch):
         assert models.cached_provider_model_ids('gemini') == ['account-b-model']
         assert live.call_count == 3
     assert not catalog_refresh_is_manual()
+    network.assert_not_called()
+
+
+def test_profile_owned_catalog_validation_reuses_manual_snapshot(monkeypatch):
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(name='catalog-test', models_url='https://example.test/catalog')
+    monkeypatch.setattr('providers.get_provider_profile', lambda provider: profile)
+    monkeypatch.setattr(models, '_credential_fingerprint', lambda provider: 'account-a')
+    live = Mock(return_value=['cached-model'])
+    monkeypatch.setattr(models, 'provider_model_ids', live)
+    network = Mock(side_effect=AssertionError('validation rediscovered a profile-owned catalog'))
+    monkeypatch.setattr(models, 'fetch_api_models', network)
+    with manual_catalog_refresh():
+        assert models.cached_provider_model_ids(profile.name) == ['cached-model']
+        live.side_effect = AssertionError('validation bypassed the picker snapshot')
+        assert validate_requested_model('cached-model', profile.name,
+                                        api_key='test-key', base_url='https://example.test/v1')['accepted']
+    assert live.call_count == 1
     network.assert_not_called()
 
 

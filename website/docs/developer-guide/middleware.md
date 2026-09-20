@@ -79,7 +79,11 @@ def on_tool_execution(**kwargs):
 If multiple plugins register the same execution middleware kind, Hermes runs
 them as a nested chain in registration order. Middleware failures are fail-open:
 Hermes logs a warning and continues with the next middleware or the base
-runtime path.
+runtime path. A callback that fails the same way on every call (typically a
+signature naming a field the middleware does not send) is reported **once** at
+WARNING — the message lists the fields it does provide — and identical repeats go
+to DEBUG, so a mis-declared middleware cannot flood the log; a plugin reload
+resets the report.
 
 ## Execution Order
 
@@ -127,7 +131,7 @@ For isolated local testing, use one `HERMES_HOME` for plugin enablement and the
 agent run:
 
 ```bash
-export HERMES_HOME=/tmp/hermes-middleware-test
+export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-middleware-test
 mkdir -p "$HERMES_HOME"
 hermes plugins enable <plugin-name>
 hermes chat --query 'Reply exactly ok'
@@ -176,6 +180,9 @@ The effective request is passed to `pre_api_request`, provider execution, and
 This plugin constrains `terminal` calls to a known working directory:
 
 ```python
+from pathlib import Path
+
+
 def register(ctx):
     ctx.register_middleware("tool_request", normalize_terminal_workdir)
 
@@ -184,7 +191,7 @@ def normalize_terminal_workdir(**kwargs):
     if kwargs.get("tool_name") != "terminal":
         return None
     args = dict(kwargs["args"])
-    args.setdefault("workdir", "/tmp/hermes-middleware-demo")
+    args.setdefault("workdir", str(Path.home() / ".hermes" / "cache" / "scratch" / "hermes-middleware-demo"))
     return {
         "args": args,
         "source": "middleware-demo",

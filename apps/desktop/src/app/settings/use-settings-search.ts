@@ -21,7 +21,7 @@ import {
   type SettingsSearchEntry
 } from './settings-search'
 
-/** An installed plugin row, deep-linkable as `/skills?tab=plugins&plugin=<id>`. */
+/** An installed plugin row, deep-linkable as `/capabilities?tab=plugins&plugin=<id>`. */
 export interface PluginSearchEntry {
   context: string
   description?: string
@@ -197,6 +197,24 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       keywords: ['tool display', 'technical'],
       label: appearance.toolViewTitle,
       target: { setting: APPEARANCE_SETTING_IDS.toolView, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
+      description: appearance.hideCodeDiffsDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.hideCodeDiffs}`,
+      keywords: ['code', 'diff', 'patch', 'file edits', 'inline', 'added', 'removed'],
+      label: appearance.hideCodeDiffsTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.hideCodeDiffs, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
+      description: appearance.hideThreadTimelineDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.hideThreadTimeline}`,
+      keywords: ['thread', 'conversation', 'timeline', 'bars', 'rail', 'navigation', 'hide'],
+      label: appearance.hideThreadTimelineTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.hideThreadTimeline, view: 'config:appearance' }
     },
     {
       context: appearanceContext,

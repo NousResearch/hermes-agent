@@ -8,6 +8,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
+import { noteBotAttention } from './data'
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
@@ -104,7 +105,10 @@ interface GroupPendingApproval {
 /** The `session.resume` fields the room engine reads off a member's hidden
  *  per-group session. */
 interface GroupSessionSnapshot {
-  inflight?: boolean
+  /** `true`/`false` on older gateways; current ones replay the in-flight turn
+   *  object, which after a failure is RETAINED as `{ status: 'error', … }`
+   *  (`_fail_inflight_turn`) so a reconnecting client can rebuild the error. */
+  inflight?: boolean | { error?: string; status?: string }
   message_count?: number
   messages?: GroupTurnTranscriptMessage[]
   /** Still-open server→client requests (`server_requests.open_requests`); the
@@ -114,6 +118,33 @@ interface GroupSessionSnapshot {
   running?: boolean
   session_id?: string
   session_key?: string
+}
+
+/** The error message of a RETAINED failed turn, else null. The gateway keeps
+ *  `{ status: 'error', error }` under `inflight` after a turn dies so a
+ *  reconnecting client can rebuild the error bubble; it is a tombstone of
+ *  finished work, not live work (`prompt_turn.py` itself treats it as a
+ *  stale leftover when the next turn starts). */
+export function retainedGroupTurnError(state: GroupSessionSnapshot | null | undefined): null | string {
+  const inflight = state?.inflight
+
+  if (inflight && typeof inflight === 'object' && inflight.status === 'error') {
+    return String(inflight.error || 'turn failed')
+  }
+
+  return null
+}
+
+/** Is the member's session still doing work this turn should wait for?
+ *  Reading a retained failure as busy kept a dead turn's deadline sliding to
+ *  the 20-minute hard cap and left its stranded marker harvestable forever
+ *  (#92760 silent stall, diagnosed in #95103). */
+export function groupSessionBusy(state: GroupSessionSnapshot | null | undefined): boolean {
+  if (state?.running) {
+    return true
+  }
+
+  return Boolean(state?.inflight) && retainedGroupTurnError(state) === null
 }
 
 /** A member's per-group session, resolved for one turn. */
@@ -815,6 +846,10 @@ interface GroupTurnPollContext {
   liveRuntime: string
   runtimeIds: Set<string>
   before: number
+  /** The retained failed turn (`session.resume.inflight`) already on the
+   *  session BEFORE this turn's submit, serialized; a retained error that
+   *  still matches it is an older turn's tombstone, not this turn's death. */
+  leftover: null | string
   binding: { isLive(): boolean }
 }
 
@@ -871,29 +906,42 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     }
 
     const messages = Array.isArray(state?.messages) ? state.messages : []
-    const busy = Boolean(state?.inflight || state?.running)
+    const busy = groupSessionBusy(state)
     // A clarify blocking inside the member's session is a question for the
     // HUMAN (#90694) — mirror it into the room store so a card renders, and
     // hold the turn open: the member isn't stalling, it's waiting on us.
     const awaitingUser = syncGroupClarify(context.group, member, thread, state)
     const done = !busy && !awaitingUser
+    // The gateway's retained error for THIS turn. A turn that dies before its
+    // prompt is committed (agent-init failure, no-agent refusal) never grows
+    // the transcript, so the tombstone — not the message count — is the only
+    // evidence; a tombstone identical to the pre-submit one is an older turn's.
+    const failure = retainedGroupTurnError(state)
+    const died = failure !== null && (messages.length > before || JSON.stringify(state?.inflight) !== context.leftover)
 
-    if (messages.length > before && done) {
-      const replyText = pickGroupTurnReply(messages, before)
+    if ((messages.length > before || died) && done) {
+      const replyText = messages.length > before ? pickGroupTurnReply(messages, before) : null
 
       if (replyText !== null) {
         recordGroupActivity(context.group, {
           kind: isGroupPassText(replyText) ? 'passed' : 'replied',
-          member: member.name,
+          member: groupMemberKey(member),
           thread
         })
 
         return replyText
       }
 
+      // The turn died on our prompt: surface the gateway's retained error
+      // through the failed-turn path (activity row + roster badge) instead of
+      // reading the silence as a pass or sitting out the deadline.
+      if (failure !== null) {
+        throw new Error(failure)
+      }
+
       recordGroupActivity(context.group, {
         kind: 'passed',
-        member: member.name,
+        member: groupMemberKey(member),
         thread
       })
 
@@ -918,7 +966,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
   // thread instead of vanishing.
   recordGroupActivity(context.group, {
     kind: 'timed-out',
-    member: member.name,
+    member: groupMemberKey(member),
     thread
   })
   syncGroupClarify(context.group, member, thread, null)
@@ -942,8 +990,10 @@ async function prepareGroupTurnBaseline(
   runtime: string,
   stored: GroupMemberSessionHandle['stored']
 ) {
-  // Baseline: how many messages exist before our submit.
+  // Baseline: how many messages exist before our submit, and any failed
+  // turn the gateway still retains from before it.
   let before = 0
+  let leftover: null | string = null
   // Every runtime id this turn has seen for the member's session. Terminal
   // frames are keyed by runtime id, and a resume can hand back a fresh one.
   const runtimeIds = new Set<string>([runtime])
@@ -955,6 +1005,7 @@ async function prepareGroupTurnBaseline(
     })) as GroupSessionSnapshot
 
     before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
+    leftover = retainedGroupTurnError(pre) === null ? null : JSON.stringify(pre.inflight)
 
     if (pre?.session_id) {
       runtimeIds.add(pre.session_id)
@@ -963,7 +1014,7 @@ async function prepareGroupTurnBaseline(
     /* lazy session — zero messages */
   }
 
-  return { before, runtimeIds }
+  return { before, leftover, runtimeIds }
 }
 
 async function runGroupChatMemberTurnLeased(
@@ -989,11 +1040,11 @@ async function runGroupChatMemberTurnLeased(
     const dispatchEpoch = ($groupChats.get()[group] || {}).epoch || 0
     recordGroupActivity(group, {
       kind: 'working',
-      member: member.name,
+      member: groupMemberKey(member),
       thread
     })
 
-    const { before, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
+    const { before, leftover, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
 
     const { failed, fileRefs } = await stageGroupTurnAttachments(member, runtime, images)
 
@@ -1026,6 +1077,7 @@ async function runGroupChatMemberTurnLeased(
       liveRuntime,
       runtimeIds,
       before,
+      leftover,
       binding
     })
   } finally {
@@ -1077,7 +1129,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     // Pending prompts are authoritative even while the session is running.
     const awaitingUser = syncGroupClarify(group, member, strandedThread, state)
 
-    if (state?.inflight || state?.running || awaitingUser) {
+    if (groupSessionBusy(state) || awaitingUser) {
       return
     }
 
@@ -1093,17 +1145,29 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       return r
     })
     const messages = Array.isArray(state?.messages) ? state.messages : []
+    // A transcript that never grew is not proof of nothing: a turn that dies
+    // before its prompt is committed leaves only the retained error behind.
+    const reply = messages.length > strandedBefore ? pickGroupTurnReply(messages, strandedBefore) : null
 
-    if (messages.length <= strandedBefore) {
-      return
+    if (reply === null) {
+      // The late turn died instead of answering: say so where the user looks
+      // (activity row + roster badge) rather than consuming the marker silently.
+      const failure = retainedGroupTurnError(state)
+
+      if (failure !== null) {
+        recordGroupActivity(group, {
+          kind: 'failed',
+          member: memberKey,
+          thread: strandedThread
+        })
+        noteBotAttention(memberKey, failure)
+      }
     }
-
-    const reply = pickGroupTurnReply(messages, strandedBefore)
 
     if (reply && !isGroupPassText(reply)) {
       recordGroupActivity(group, {
         kind: 'delivered',
-        member: member.name,
+        member: groupMemberKey(member),
         thread: strandedThread
       })
       appendGroupChatEntry(

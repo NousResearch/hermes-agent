@@ -90,6 +90,16 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "new_name",
         help="New profile name (for 'default': a display name — the canonical id stays 'default')")
 
+    profile_purge = profile_subparsers.add_parser(
+        "purge-identity",
+        help="Retry a deleted profile's session/routing identity purge",
+        description="Re-run the session/routing identity purge that `hermes profile delete` performs "
+            "automatically. The profile directory is already gone when this is needed: state still "
+            "keyed by the deleted profile name (routing keys, heartbeats, routing/delivery rows) is "
+            "deleted. Run it after restarting the gateway (which reloads the routing index from the "
+            "DB) or after stopping it. Idempotent.")
+    profile_purge.add_argument("profile_name", help="Deleted profile name")
+
     profile_migrate = profile_subparsers.add_parser(
         "migrate-identity",
         help="Retry a renamed profile's session/routing identity migration",

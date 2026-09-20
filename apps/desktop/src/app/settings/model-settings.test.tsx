@@ -677,6 +677,13 @@ describe('ModelSettings MoA preset editor', () => {
       vi.useRealTimers()
     }
   })
+
+  it('labels the aggregator row as the acting model billed for the run', async () => {
+    await openReferenceEditor()
+
+    // The aggregator row is the slot that pays for the whole tool loop (#112359).
+    expect(screen.getByText('acting model · billed for the run')).toBeTruthy()
+  })
 })
 
 describe('ModelSettings code-skew 503', () => {

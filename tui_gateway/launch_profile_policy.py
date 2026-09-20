@@ -17,10 +17,11 @@ Two facts anchor this module:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterator, Optional
 
 _lock = threading.Lock()
 _snapshot: Optional[Dict[str, str]] = None
@@ -76,3 +77,22 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
+
+
+@contextlib.contextmanager
+def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
+    """Bind the launch profile's own runtime scope for one body: ``launch_secret_scope`` plus its
+    terminal policy over the frozen launch ``TERMINAL_*`` overlay. No HERMES_HOME override — the
+    launch home IS the process home. For hosts whose launch-profile bodies are not RPC sessions
+    (the standalone messaging gateway after a hosted room activated multiplexing, #112878)."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+
+    home = Path(launch_home)
+    secret_token = set_secret_scope(launch_secret_scope(home))
+    terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
+    try:
+        yield
+    finally:
+        reset_terminal_scope(terminal_token)
+        reset_secret_scope(secret_token)

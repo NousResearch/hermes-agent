@@ -1684,9 +1684,9 @@ class TestTerminateHostPidWindows:
         assert "/F" in captured["args"], "Force flag required for headless Chromium"
 
 class TestTerminateHostPidPosix:
-    """POSIX branch walks the tree via psutil and SIGTERMs children first."""
+    """POSIX branch gives a managed parent its shutdown window first."""
 
-    def test_posix_walks_tree_and_terminates_children_then_parent(self, monkeypatch):
+    def test_posix_terminates_parent_before_snapshot_descendants(self, monkeypatch):
         from tools import process_registry as pr
         import psutil
 
@@ -1711,17 +1711,57 @@ class TestTerminateHostPidPosix:
                 terminate_order.append(self.pid)
 
         monkeypatch.setattr(psutil, "Process", _FakeParent)
-        # This test covers only the SIGTERM tree-walk ordering; disable the
-        # SIGKILL-escalation step (which would call psutil.wait_procs on the
-        # fakes) by setting the grace to 0.
+        # A zero grace keeps this ordering probe deterministic while retaining
+        # the configured no-SIGKILL behavior.
         monkeypatch.setattr(pr.ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.0))
 
         pr.ProcessRegistry._terminate_host_pid(12345)
 
-        assert terminate_order == [101, 102, 103, 12345], (
-            "Children must be terminated before the parent"
+        assert terminate_order == [12345, 101, 102, 103], (
+            "Parent must receive SIGTERM before any snapshot descendant"
         )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal ordering; Windows uses taskkill")
+    @pytest.mark.live_system_guard_bypass
+    def test_posix_self_reaping_supervisor_child_is_never_signalled_by_registry(self, monkeypatch, tmp_path):
+        """A parent that tears down its own children on SIGTERM keeps that job.
+
+        #111598: Chromium/Electron reap their zygotes during an async SIGTERM
+        shutdown; SIGTERMing the descendants first left the browser without a
+        zygote and it crash-dumped (SIGTRAP). Invariant: the registry signals the
+        parent first and a child the parent reaps inside the grace window is
+        never signalled by the registry, so the parent exits 0.
+        """
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 2.0))
+        log = tmp_path / "order.log"
+        child_sh = tmp_path / "child.sh"
+        parent_sh = tmp_path / "parent.sh"
+        # Child logs a registry-delivered TERM; the parent kills it with KILL
+        # (logs nothing) and reaps it, then exits 0 — like a browser reaping its zygote.
+        child_sh.write_text(
+            "#!/bin/bash\n"
+            f"trap 'echo child-TERM >> {log}; exit 0' TERM\n"
+            f"echo up >> {log}\nwhile :; do sleep 0.1; done\n")
+        parent_sh.write_text(
+            "#!/bin/bash\n"
+            f"bash {child_sh} & kid=$!\n"
+            f"trap 'echo parent-TERM >> {log}; kill -KILL $kid; wait $kid; exit 0' TERM\n"
+            "while :; do sleep 0.1; done\n")
+        parent = subprocess.Popen(["bash", str(parent_sh)], stdin=subprocess.DEVNULL)
+        try:
+            assert _wait_until(lambda: log.exists() and "up" in log.read_text(), timeout=5.0)
+            ProcessRegistry._terminate_host_pid(parent.pid)
+            assert _wait_until(lambda: parent.poll() is not None, timeout=5.0)
+            lines = log.read_text().split()
+            assert parent.returncode == 0, f"supervisor must exit cleanly, got {parent.returncode}"
+            assert "parent-TERM" in lines and "child-TERM" not in lines, (
+                f"registry must SIGTERM only the parent, which reaps its own child: {lines}")
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+            parent.wait()
 
     def test_posix_oserror_falls_back_to_os_kill(self, monkeypatch):
         from tools import process_registry as pr
@@ -2156,7 +2196,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         # _build_systemd_scope_argv calls shutil.which — point it at a stub.
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
@@ -2224,7 +2264,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
 
         with (
@@ -2251,7 +2291,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: False,
+            lambda environ=None: False,
         )
 
         with (
@@ -2377,7 +2417,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2412,7 +2452,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2462,7 +2502,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2499,7 +2539,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2858,7 +2898,7 @@ class TestSystemdCgroupIsolation:
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
         monkeypatch.setattr(
-            "gateway.restart.is_gateway_supervisor_process", lambda: True
+            "gateway.restart.is_gateway_supervisor_process", lambda environ=None: True
         )
         # If any branch consults the probe or builds a scope argv on darwin,
         # fail loudly.

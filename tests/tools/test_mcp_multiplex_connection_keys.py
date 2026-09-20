@@ -300,3 +300,49 @@ def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_prof
     finally:
         registry.deregister("mcp__x__t")
         registry_mod.invalidate_check_fn_cache()
+
+
+def test_launch_profile_pruning_a_server_keeps_served_profiles_same_named_connection(two_profiles, monkeypatch):
+    """The launch profile's registry scope is ``None``; when it drops server ``x`` from its config,
+    ``reconcile_mcp_servers_with_config`` prunes with ``shutdown_mcp_servers(scope=None,
+    names={"x"})``. ``scope=None`` must mean *the unscoped owner* there, not *every owner* —
+    otherwise the dashboard's own profile silently tears down profile B's ``(B, "x")``."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc, mcp_tool_lifecycle as lifecycle, mcp_tool_loop as loop
+
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    cfg = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
+
+    scope_b = two_profiles("b")
+    srv_b = _server("x", cfg)
+    disc._adopt_server("x", srv_b)
+    assert core._server_scope_keys[(scope_b, "x")] == scope_b
+
+    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        assert core._mcp_registry_scope() is None
+        srv_launch = _server("x", cfg)
+        disc._adopt_server("x", srv_launch)
+        assert core._server_scope_keys["x"] is None
+    # A third profile adopted the launch profile's connection: pruning it must remember the
+    # adopter so the next discovery pass re-registers it.
+    core._server_tool_scopes["x"] = {"c"}
+
+    closed = []
+
+    async def _shutdown(self):
+        closed.append(self.name)
+
+    for srv in (srv_b, srv_launch):
+        srv.shutdown = _shutdown.__get__(srv)
+
+    loop._ensure_mcp_loop()
+    try:
+        lifecycle.shutdown_mcp_servers(scope=None, names={"x"})
+    finally:
+        loop._stop_mcp_loop()
+
+    assert "x" not in core._servers and "x" not in core._server_scope_keys
+    assert core._servers[(scope_b, "x")] is srv_b
+    assert core._server_scope_keys[(scope_b, "x")] == scope_b
+    assert closed == ["x"]
+    assert core._orphaned_adopters == {"c": {"x"}}

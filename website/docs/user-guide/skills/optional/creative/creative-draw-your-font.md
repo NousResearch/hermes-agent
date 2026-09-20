@@ -21,7 +21,7 @@ Turn a handwriting photo into an installable TTF font.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `font`, `handwriting`, `typography`, `ttf`, `woff`, `vision`, `creative` |
-| Related skills | [`pixel-art`](/docs/user-guide/skills/optional/creative/creative-pixel-art) |
+| Related skills | [`pixel-art`](./creative-pixel-art.md) |
 
 ## Reference: full SKILL.md
 

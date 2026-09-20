@@ -9,7 +9,6 @@ function GestureHarness({ onPopOut }: { onPopOut: () => void }) {
 
   const { onPointerDown } = useComposerPopoutGestures({
     composerRef,
-    groupId: 'test-zone',
     onDock: vi.fn(),
     onPopOut,
     poppedOut: false,

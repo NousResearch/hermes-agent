@@ -260,7 +260,7 @@ class TestHandleBtwCommand:
         runner._reply_anchor_for_event = MagicMock(return_value=None)
         runner._thread_metadata_for_source = MagicMock(return_value=None)
         mock_adapter = AsyncMock()
-        runner._adapter_for_source = MagicMock(return_value=mock_adapter)
+        runner._delivery_adapter_for = MagicMock(return_value=mock_adapter)
 
         event = _make_event(text="/btw which file was that?")
 

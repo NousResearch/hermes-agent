@@ -172,8 +172,12 @@ def _execute_console_line(
 
 async def _unwind_console_worker(worker: Any, scope: InterruptScope, reason: str) -> None:
     """Stop the command's worker after cancel/timeout: asyncio can only drop the waiter, so interrupt
-    any agent the command forked (closing its provider request) and wait for the thread to exit."""
-    scope.cancel(f"Console command {reason}")
+    any agent the command forked (closing its provider request) and wait for the thread to exit.
+    A user cancel is attributed to the user; only the timeout is a host-issued stop (#112647)."""
+    if reason == "cancelled":
+        scope.cancel(f"Console command {reason}", tool_reason=None)
+    else:
+        scope.cancel(f"Console command {reason}")
     if worker.cancel():  # still queued: never ran
         return
     exited = asyncio.wrap_future(worker)

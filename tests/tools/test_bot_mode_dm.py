@@ -86,6 +86,30 @@ def test_injects_only_into_bot_chat_on_managed_install(tmp_path):
     assert len(agent.tools) == 1
 
 
+def test_restores_allowlist_when_schema_survives_surface_refresh(tmp_path):
+    """#96105: success must restore the executor allowlist on the
+    schema-present branch.
+
+    A long-lived Bot Chat whose tool surface is reconstructed can keep the
+    schema while the executor's allowlist is rebuilt empty. The injector then
+    returned True while dispatch would reject every ``message_agent`` call —
+    advertised but non-dispatchable. Restore-on-success contract: whenever
+    ``ensure_message_agent_tool()`` returns True, ``MESSAGE_AGENT_TOOL_NAME``
+    is in ``valid_tool_names`` whenever that attribute is a set.
+    """
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Bot Chat")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert len(agent.tools) == 1
+
+    # capability refresh: schema survives, executor allowlist rebuilt empty
+    agent.valid_tool_names = set()
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME in agent.valid_tool_names
+    # byte-stable: no duplicate schema was appended
+    assert len(agent.tools) == 1
+
+
 @pytest.mark.parametrize(
     "title",
     ["", "My research chat", "Group: room-abc123", "handoff-12ab34cd"],
@@ -250,7 +274,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
             agent=agent,
         )
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     assert result["to"] == "@researcher"
     assert result["process_id"] == "proc_test1234"
     assert "do NOT wait" in result["detail"]
@@ -288,6 +312,101 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
+def test_cli_runner_ack_is_a_dispatch_ack_that_names_the_completion_notification(tmp_path, monkeypatch):
+    """``status: queued`` is returned before the background runner has delivered anything; the
+    detail (and the schema text the model reads) must say the completion notification carries
+    the outcome, so a runner that dies at exec is never read as a delivered message."""
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "queued"
+    assert "not a delivery receipt" in result["detail"]
+    assert "completion notification" in result["detail"]
+    assert "delivery failure" in result["detail"]
+    description = bot_mode_dm.message_agent_tool_schema()["function"]["description"]
+    assert "dispatch acknowledgement" in description and "not a delivery receipt" in description
+
+
+def test_cli_runner_ack_is_queued_with_the_runner_delivery_id(tmp_path, monkeypatch):
+    """The CLI-runner ack speaks the same vocabulary as the live-owner and relay branches:
+    ``queued`` + ``delivery_id`` (+ ``process_id``). The id is the one the runner itself pins
+    for the same DM file when it admits to a live owner, so a sender can correlate both."""
+    import hashlib
+
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "queued"
+    assert result["process_id"] == "proc_test1234"
+    _, dm_file, _ = _runner_parts(calls[0]["command"])
+    assert result["delivery_id"] == hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
+
+
+def test_relay_ack_is_queued_with_the_envelope_id(tmp_path, monkeypatch):
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1", "connection_label": "Hermes Cloud"},
+    ])
+    result = json.loads(bot_mode_dm.message_agent_tool(target="hermes", message="ping", agent=_FakeAgent(home)))
+
+    assert result["status"] == "queued"
+    (envelope,) = bot_relay.claim_pending_envelopes(home)
+    assert result["delivery_id"] == envelope["id"]
+
+
+def _rename(home: Path, folder: str, *, display_name: str = "", title: str = "") -> None:
+    lines = ["description: teammate for tests", "ui_meta:", "  hermes-bots:", "    shape: cloud"]
+    if title:
+        lines.append(f"    title: {title}")
+    if display_name:
+        lines.append(f"display_name: {display_name}")
+    (home / "profiles" / folder / "profile.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("target", ["Scribe", "@scribe", "Dr. Foo", "dr-foo", "drfoo", "Builder"])
+def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkeypatch, target):
+    """A display name, Bot Mode title or the Desktop's @-slug of either lands on the
+    folder id message_agent keys on — the same aliases the composer autocompletes (#100671)."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("writer", "foo", "builder"))
+    _rename(home, "writer", display_name="Scribe")
+    _rename(home, "foo", title="Dr. Foo")
+    _rename(home, "builder", display_name="Builder")
+    expected = {"Scribe": "writer", "@scribe": "writer", "Dr. Foo": "foo", "dr-foo": "foo", "drfoo": "foo",
+                "Builder": "builder"}[target]
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="ping", agent=_FakeAgent(home)))
+
+    assert result["status"] == "queued", result
+    assert result["to"] == f"@{expected}"
+    _mode, _dm_file, argv = _runner_parts(calls[0]["command"])
+    assert argv[1:3] == ["-p", expected]
+
+
+def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
+    """Two bots titled the same must not let a DM land on whichever sorts first; the
+    reserved @hermes alias can never be hijacked by a rename."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("aaa", "bbb", "ops"))
+    _rename(home, "aaa", display_name="Scribe")
+    _rename(home, "bbb", display_name="Scribe")
+    _rename(home, "ops", display_name="Hermes")
+
+    ambiguous = json.loads(bot_mode_dm.message_agent_tool(target="Scribe", message="ping", agent=_FakeAgent(home)))
+    hijack = json.loads(bot_mode_dm.message_agent_tool(target="hermes", message="ping",
+                                                       agent=_FakeAgent(home / "profiles" / "aaa")))
+
+    assert "error" in ambiguous and "No teammate named 'Scribe'" in ambiguous["error"]
+    assert hijack.get("to") == "@hermes"
+    assert [_runner_parts(c["command"])[2][1:3] for c in calls] == [["-p", "default"]]
+
+
 def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tmp_path, monkeypatch
 ):
@@ -310,7 +429,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
     # The registry the tool validated against is the machine root's — the
@@ -328,7 +447,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="spark/researcher", message="ping", agent=agent)
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     assert "spark" in result["to"]
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
@@ -340,7 +459,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     result2 = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
-    assert result2["status"] == "sent"
+    assert result2["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
@@ -364,7 +483,7 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent)
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "query-file"
     assert transport_argv[0] == str(hermes_entry)
@@ -374,7 +493,7 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     result2 = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
     )
-    assert result2["status"] == "sent"
+    assert result2["status"] == "queued"
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == [str(hermes_entry), "-p", "default", "peer", "dm", "spark"]
@@ -388,11 +507,41 @@ def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(t
     home = _managed_home(tmp_path, teammates=("researcher", "coder"), peers=("spark",))
     agent = _FakeAgent(home / "profiles" / "coder", title="Bot Chat")
 
-    assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "sent"
-    assert json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent))["status"] == "sent"
+    assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "queued"
+    assert json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent))["status"] == "queued"
 
     assert _runner_author(calls[0]["command"]) == {"id": "bot:erimac.local/coder", "name": "coder", "is_bot": True}
     assert _runner_author(calls[1]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
+
+
+def test_renamed_primary_signs_with_its_friendly_name_and_is_reachable_by_it(tmp_path, monkeypatch):
+    """#89720: `hermes profile rename default Maia` writes profile.yaml ``display_name`` (no Bot Mode
+    title). The primary must then sign `Maia (@hermes)`, not `hermes (@hermes)`, and a teammate must
+    reach it as `maia` / `@maia` — the tag the Desktop roster inserts — while `@hermes` keeps resolving.
+    A Bot Mode title outranks the display_name in the signature, as in the Desktop's botFriendlyNames."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("coder",))
+    (home / "profile.yaml").write_text("display_name: Maia\n", encoding="utf-8")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
+    assert result["status"] == "queued"
+    _mode, dm_file, _argv = _runner_parts(calls[0]["command"])
+    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia (@hermes): ")
+
+    coder = _FakeAgent(home / "profiles" / "coder")
+    for target in ("maia", "@maia", "@hermes"):
+        result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="pong", agent=coder))
+        assert result["status"] == "queued", (target, result)
+        _mode, _dm_file, argv = _runner_parts(calls[-1]["command"])
+        assert argv[1:3] == ["-p", "default"], (target, argv)
+
+    (home / "profile.yaml").write_text(
+        "display_name: Maia\nui_meta:\n  hermes-bots:\n    title: Maia Prime\n", encoding="utf-8"
+    )
+    json.loads(bot_mode_dm.message_agent_tool(target="coder", message="hi", agent=_FakeAgent(home)))
+    _mode, dm_file, _argv = _runner_parts(calls[-1]["command"])
+    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Maia Prime (@hermes): ")
 
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
@@ -405,7 +554,7 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
     )
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     _mode, dm_file, _transport_argv = _runner_parts(calls[0]["command"])
     assert Path(dm_file).read_text(encoding="utf-8").startswith(
         "Message from 🤖 coder (@coder): "
@@ -854,7 +1003,7 @@ def test_successful_spawn_transfers_cleanup_to_runner(tmp_path, monkeypatch):
         )
     )
 
-    assert result["status"] == "sent"
+    assert result["status"] == "queued"
     assert dm_file.exists(), "the parent must not delete before the background runner reads"
 
 
@@ -1021,3 +1170,84 @@ def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monk
     assert "Do NOT resend" in result["detail"]
     assert "approval" in result["notification_error"]
     assert list((bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR).glob("*.json")), "envelope still queued"
+
+
+def test_ack_names_poll_return_path_when_session_cannot_receive_completions(tmp_path, monkeypatch):
+    """#101142: on a non-push sender surface (api_server) terminal_tool refuses the
+    ``notify_on_complete`` promise, so the reply can never be injected later. The ack must not
+    promise a completion notification; it names the surface-supported return path instead."""
+    import tools.terminal_tool as terminal_tool_module
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kw: json.dumps({
+        "output": "Background process started", "session_id": "proc_np1", "notify_on_complete": False,
+        "notify_unsupported": "poll"}))
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "queued"
+    assert result["reply_delivery"] == "poll"
+    assert "completion notification carries" not in result["detail"]
+    assert "process(action='wait', session_id='proc_np1')" in result["detail"]
+    assert "if wait returns status=timeout, call wait again" in result["detail"]
+
+
+def test_live_owner_ack_carries_the_poll_return_path_when_session_cannot_receive_completions(tmp_path, monkeypatch):
+    """#101142 sibling: a live-owner (Desktop) target still runs the same tracked runner whose
+    stdout carries the reply. On a non-push sender the live-owner ack must propagate
+    ``reply_delivery="poll"`` and the wait instruction instead of 'finish your turn'."""
+    from tools import bot_live_delivery as live
+    import tools.terminal_tool as terminal_tool_module
+
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner if Path(h) == target else None)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kw: json.dumps({
+        "output": "Background process started", "session_id": "proc_np2", "notify_on_complete": False}))
+
+    result = json.loads(bot_mode_dm.message_agent_tool("researcher", "hello", agent=_FakeAgent(home)))
+    assert result["status"] == "queued"
+    assert result["process_id"] == "proc_np2"
+    assert result["reply_delivery"] == "poll"
+    assert "process(action='wait', session_id='proc_np2')" in result["detail"]
+    assert "finish your turn" not in result["detail"].lower()
+
+
+def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_path, monkeypatch):
+    """#101142 durable leg: with no completion notification the sender may end its turn without
+    polling; the tracked runner's exit must still land the reply in the sender's session transcript
+    as a DELIVERY row (``display_kind=process_complete``), so nothing is silently lost."""
+    import tools.terminal_tool as terminal_tool_module
+    from tools.process_registry import process_registry
+
+    reply = json.dumps({"status": "settled", "reply": "PAYLOAD_SENTINEL_42", "delivery_id": "d1"})
+    procs = []
+
+    def fake_terminal_tool(command, **kw):
+        popen = subprocess.Popen([sys.executable, "-c", f"import json; print({reply!r})"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        procs.append(process_registry.adopt_local(popen, command=command, cwd=str(tmp_path), notify_on_complete=False))
+        return json.dumps({"output": "Background process started", "session_id": procs[-1].id,
+                           "notify_on_complete": False})
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+    rows = []
+    agent._session_db.append_message = lambda session_id, role, **kw: rows.append((session_id, role, kw)) or 1
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent))
+    assert result["reply_delivery"] == "poll"
+    assert "transcript" in result["detail"]
+    deadline = time.monotonic() + 10
+    while not rows and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(rows) == 1
+    session_id, role, kw = rows[0]
+    assert (session_id, role) == ("sess-1", "user")
+    assert kw["display_kind"] == "process_complete"
+    assert "PAYLOAD_SENTINEL_42" in kw["content"]
+    assert procs[0].id in kw["content"]
+    assert kw["display_metadata"]["display_text"].startswith("Background Process Finished")

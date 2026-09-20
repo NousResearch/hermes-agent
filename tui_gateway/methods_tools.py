@@ -318,15 +318,20 @@ def _(rid, params: dict) -> dict:
         can change WHILE discover connects: re-hash and repeat until stable so the marked
         generation matches what loaded."""
         global _mcp_reload_gen, _mcp_reload_loaded_rev
-        loaded = _compute_mcp_rev()
-        for _ in range(_MCP_RELOAD_MAX_PASSES):
-            _mcp_lifecycle.shutdown_mcp_servers()
-            _mcp_agent.reprobe_tool_availability()
-            _mcp_discovery.discover_mcp_tools()
-            after = _compute_mcp_rev()
-            if after == loaded:
-                break
-            loaded = after
+        # The launch profile is a profile too: its servers' connect-time credential reads (stdio
+        # child env, ``${VAR}`` header refs) go through ``get_secret``, which fails closed once this
+        # process multiplexes — an unscoped rediscovery parked every launch-profile stdio server
+        # with UnscopedSecretError while the RPC still answered "reloaded" (#113746).
+        with _session_profile_runtime_scope({"profile_home": None}):
+            loaded = _compute_mcp_rev()
+            for _ in range(_MCP_RELOAD_MAX_PASSES):
+                _mcp_lifecycle.shutdown_mcp_servers()
+                _mcp_agent.reprobe_tool_availability()
+                _mcp_discovery.discover_mcp_tools()
+                after = _compute_mcp_rev()
+                if after == loaded:
+                    break
+                loaded = after
         # The unscoped shutdown tore down every profile's servers, but discover_mcp_tools() above
         # only rebuilt the launch profile's overlay; a secondary-profile session refreshed against
         # that registry would lose its MCP tools until its own reload.
@@ -420,19 +425,28 @@ def _catalog_plugin_commands(cat: _Catalog) -> None:
         cat.commands[key] = {"argument_mode": mode, "desktop": None}
 
 
-def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
-    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
+def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
+    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them).
+    Returns the one-line notice for skills whose name is a built-in command (no ``/<name>`` entry;
+    ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
-    for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
+    sc = _tools_mod("agent.skill_commands")
+    for k, info in sorted(sc.scan_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
+    names = sorted(s["name"] for s in _tools_mod("tools.skills_tool")._find_all_skills())
+    return "; ".join(filter(None, map(sc.skill_command_collision_note, names)))
 
 
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins')."""
+    (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Skill
+    discovery is bound to the calling session's profile and workspace (``_completion_cwd``: its record,
+    else the cwd a new session would be seeded with) so project-local skills register for the repo the
+    session is actually in (#114359)."""
     cat = _Catalog()
     _catalog_registry(cat)
     warning = ""
@@ -446,7 +460,9 @@ def _(rid, params: dict) -> dict:
         warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
     try:
-        _catalog_skills(cat, skills)
+        with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+            collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
+        warning = warning or collision_note
     except Exception as e:
         warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
@@ -516,18 +532,27 @@ def _run_plugin_command(handler, arg: str) -> str:
 
 
 @contextlib.contextmanager
-def _session_home_scope(session):
-    """Bind HERMES_HOME to the session's profile for the block (no-op for the launch profile).
+def _session_home_scope(session, cwd: str | None = None):
+    """Bind HERMES_HOME and the logical cwd to the session for the block.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
     ``quick_commands`` all live in the profile's config/home); nothing upstream of these RPC handlers
-    binds it, so an unscoped call resolves against the launch profile (#110695)."""
+    binds it, so an unscoped call resolves against the launch profile (#110695). Project-local skills
+    are cwd-keyed (``find_project_root`` reads the session-bound cwd first): these RPCs run on the socket
+    thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
+    ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
+    record (a session-less catalog request binds the workspace a new session would be seeded with)."""
     hc = _tools_mod("hermes_constants")
+    rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
+    cwd = cwd or (str(session.get("cwd") or "") if session else "")
     token = hc.set_hermes_home_override(profile_home) if profile_home else None
+    cwd_token = rc.set_session_cwd(cwd) if cwd else None
     try:
         yield
     finally:
+        if cwd_token is not None:
+            rc.reset_session_cwd(cwd_token)
         if token is not None:
             hc.reset_hermes_home_override(token)
 
@@ -949,6 +974,8 @@ def _(rid, params: dict, session) -> dict:
         return _err(rid, 4009, busy_message("rollback restore"))
 
     def go(mgr, cwd):
+        if reason := _container_checkpoint_refusal(session, mgr, cwd):
+            return {"success": False, "error": reason}
         result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
         if result.get("success") and not file_path:
             removed = 0
@@ -968,12 +995,34 @@ def _(rid, params: dict, session) -> dict:
 def _(rid, params: dict, session) -> dict:
     if not (target := params.get("hash", "")):
         return _err(rid, 4014, "hash required")
-    r = _with_checkpoints(session, lambda mgr, cwd: mgr.diff(cwd, _resolve_checkpoint_hash(mgr, cwd, target)))
-    raw = r.get("diff", "")[:4000]
-    payload = {"stat": r.get("stat", ""), "diff": raw}
-    if rendered := render_diff(raw, session.get("cols", 80)):
-        payload["rendered"] = rendered
-    return _ok(rid, payload)
+
+    def go(mgr, cwd):
+        # Host tree vs host checkpoint is not this session's diff either (same refusal as /rollback diff).
+        if reason := _container_checkpoint_refusal(session, mgr, cwd):
+            return _err(rid, 5022, reason)
+        r = mgr.diff(cwd, _resolve_checkpoint_hash(mgr, cwd, target))
+        raw = r.get("diff", "")[:4000]
+        payload = {"stat": r.get("stat", ""), "diff": raw}
+        if rendered := render_diff(raw, session.get("cols", 80)):
+            payload["rendered"] = rendered
+        return _ok(rid, payload)
+    return _with_checkpoints(session, go)
+
+
+def _container_checkpoint_refusal(session, mgr, cwd) -> str | None:
+    """Why host checkpoints are off limits for a container-backed session, else ``None``.
+
+    Classifies with the identity and scopes a turn binds (prompt_turn.py): the session key is the
+    tool-call task id, the session context drives the terminal registry lookup, and the profile
+    scope supplies the terminal policy; otherwise a cached launch-profile environment or the launch
+    config would answer for another profile's session."""
+    task_id = session.get("session_key") or "default"
+    tokens = _set_session_context(task_id, cwd=cwd)
+    try:
+        with _session_profile_runtime_scope(session):
+            return mgr.unsupported_backend_reason(task_id)
+    finally:
+        _clear_session_context(tokens)
 
 
 @method("browser.manage")
@@ -989,12 +1038,13 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4015, f"unknown action: {action}")
 
 
-@_rpc("config.show", 5030)
+@_scoped_rpc("config.show", 5030)
 def _(rid, params: dict) -> dict:
     cfg = _load_cfg()
-    api_key = _tools_mod("agent.secret_scope").get_secret("HERMES_API_KEY", "") or cfg.get("api_key", "")
+    get_secret = _tools_mod("agent.secret_scope").get_secret
+    api_key = get_secret("HERMES_API_KEY", "") or cfg.get("api_key", "")
     masked = f"****{api_key[-4:]}" if len(api_key) > 4 else "(not set)"
-    base_url = os.environ.get("HERMES_BASE_URL", "") or cfg.get("base_url", "")
+    base_url = get_secret("HERMES_BASE_URL", "") or cfg.get("base_url", "")
     sections = [
         {"title": "Model", "rows": [
             ["Model", _resolve_model()], ["Base URL", base_url or "(default)"], ["API Key", masked]]},
@@ -1002,7 +1052,7 @@ def _(rid, params: dict) -> dict:
             ["Max Turns", str(_cfg_max_turns(cfg, 500))],
             ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
             ["Verbose", str(cfg.get("verbose", False))]]},
-        {"title": "Environment", "rows": [["Working Dir", os.getcwd()], ["Config File", str(_hermes_home / "config.yaml")]]},
+        {"title": "Environment", "rows": [["Working Dir", os.getcwd()], ["Config File", str(_active_config_path())]]},
     ]
     return _ok(rid, {"sections": sections})
 
@@ -1171,7 +1221,10 @@ def _(rid, params: dict) -> dict:
 
 @_rpc("skills.reload", 5025)
 def _(rid, params: dict) -> dict:
-    result = _tools_mod("agent.skill_commands").reload_skills()
+    # Bound like ``commands.catalog``: an unbound rescan runs against the launch env, reports the session's
+    # project skills as "Removed" and republishes a registry without them (#114359).
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+        result = _tools_mod("agent.skill_commands").reload_skills()
     added, removed = result.get("added") or [], result.get("removed") or []
     lines = ["Reloading skills..."] + ([] if added or removed else ["No new skills detected."])
     for label, items in (("Added skills:", added), ("Removed skills:", removed)):
@@ -1379,6 +1432,7 @@ def _plugin_rows() -> list[dict]:
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
     pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
+    versions = cat.catalog_versions()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
@@ -1396,7 +1450,7 @@ def _plugin_rows() -> list[dict]:
             "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
-            **cat.catalog_row_fields(_dir, pins),
+            **cat.catalog_row_fields(_dir, pins, versions),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 

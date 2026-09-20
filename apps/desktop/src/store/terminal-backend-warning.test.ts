@@ -45,7 +45,7 @@ test('a selected non-local backend that is not ready warns once with Use Local /
   expect(`${toast?.title} ${toast?.message} ${toast?.action?.label}`).not.toMatch(/backend/i)
 
   toast?.action?.onClick()
-  expect($routeRequest.get()?.path).toBe('/skills?tab=toolsets')
+  expect($routeRequest.get()?.path).toBe('/capabilities?tab=toolsets')
 
   toast?.secondaryAction?.onClick()
   expect(selectTerminalBackend).toHaveBeenCalledWith('local')

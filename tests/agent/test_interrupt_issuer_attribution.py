@@ -96,3 +96,38 @@ def test_gateway_lifecycle_producers_name_a_system_issuer():
         assert interrupt_issuer(sse_agent) == "sse_client_disconnected"
     finally:
         set_interrupt(False)
+
+
+def test_cli_signal_handler_names_a_system_issuer_for_sigterm_and_sighup():
+    """cli.py's own OS-signal interrupt path is a system stop too: SIGTERM/SIGHUP mean an external
+    process manager (kill, systemd, the kanban dispatcher reaping a worker) ended this process, not
+    a human choosing to stop the turn — it must not fall through to the reason-less default that
+    books interrupted_by_user (the same #112647 class already fixed for the cron/gateway
+    producers, missed for cli.py's own signal handlers). SIGINT stays on the default: in
+    single-query mode it is also how a real interactive Ctrl+C arrives, and that IS a user stop."""
+    import os
+    import signal
+
+    import cli
+
+    prior_grace = os.environ.get("HERMES_SIGTERM_GRACE")
+    os.environ["HERMES_SIGTERM_GRACE"] = "0"
+    try:
+        term_agent = _bare_agent()
+        cli._interrupt_agent_for_signal(term_agent, signal.SIGTERM)
+        assert interrupt_issuer(term_agent) == "external_signal"
+
+        if hasattr(signal, "SIGHUP"):
+            hup_agent = _bare_agent()
+            cli._interrupt_agent_for_signal(hup_agent, signal.SIGHUP)
+            assert interrupt_issuer(hup_agent) == "external_signal"
+
+        int_agent = _bare_agent()
+        cli._interrupt_agent_for_signal(int_agent, signal.SIGINT)
+        assert interrupt_issuer(int_agent) is None
+    finally:
+        if prior_grace is None:
+            os.environ.pop("HERMES_SIGTERM_GRACE", None)
+        else:
+            os.environ["HERMES_SIGTERM_GRACE"] = prior_grace
+        set_interrupt(False)

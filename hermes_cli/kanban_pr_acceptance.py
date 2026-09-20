@@ -15,10 +15,14 @@ _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([
 
 
 def validate_contract(value: str | None) -> str:
+    from hermes_cli.kanban_text_artifact import PREFIX, parse_contract
+
     if value is None or value == "local-only":
         return "local-only"
+    if isinstance(value, str) and value.startswith(PREFIX):
+        return PREFIX + json.dumps(parse_contract(value), sort_keys=True, separators=(",", ":"))
     if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+        raise ValueError("completion_contract must be local-only, OWNER/REPO, an exact GitHub PR URL, or text-artifact-v1:JSON")
     return value
 
 

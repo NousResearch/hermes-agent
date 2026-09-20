@@ -1312,11 +1312,15 @@ def create_task(
     # race may insert twice, the next lookup stabilises on the newest.
     if idempotency_key:
         row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "SELECT id, completion_contract FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
             "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
         ).fetchone()
         if row:
+            from hermes_cli.kanban_text_artifact import PREFIX
+            if (completion_contract.startswith(PREFIX) or (row["completion_contract"] or "").startswith(PREFIX)):
+                if row["completion_contract"] != completion_contract:
+                    raise ValueError("idempotent task has a different text artifact completion contract")
             return row["id"]
 
     now = int(time.time())
@@ -2701,6 +2705,8 @@ def complete_task(
         # _claim_is_live for what "live" means.
         if expected_run_id is None and not force and trow and _claim_is_live(trow):
             raise LiveClaimError(task_id)
+        from hermes_cli.kanban_text_artifact import require_artifact
+        require_artifact(conn, task_id, metadata, handoff_summary)
         sql = """
                 UPDATE tasks
                    SET status       = 'done',

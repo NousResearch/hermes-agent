@@ -14,7 +14,9 @@ it('hands an account task to the connection flow without substituting a no-auth 
     expect(runbook).toContain('Check my email')
     expect(runbook).toContain('manage_connections action="status"')
     expect(runbook).toContain('only the apps needed for this task')
-    expect(runbook).not.toMatch(/must be finishable with NO external|build the no-auth core|connectors set to every one/)
+    expect(runbook).not.toMatch(
+      /must be finishable with NO external|build the no-auth core|connectors set to every one/
+    )
     expect(runbook).toContain('never fabricate account data')
   }
 })
@@ -37,9 +39,14 @@ it('offers connector-based work without displacing the existing fresh-machine an
       expect(buildChatOnboardingPrompt()).not.toMatch(/\bNEW Spark\b/)
     }
 
-    const machineRunbook = buildFirstTaskRunbook('Set up this computer', {
-      ...DEFAULT_ANSWERS, connectors: ['gmail']
-    }, 'machine-setup')
+    const machineRunbook = buildFirstTaskRunbook(
+      'Set up this computer',
+      {
+        ...DEFAULT_ANSWERS,
+        connectors: ['gmail']
+      },
+      'machine-setup'
+    )
 
     expect(machineRunbook).toContain('START BY LOOKING, NOT PLANNING')
     expect(machineRunbook).not.toContain('CONNECT FOR THIS TASK')

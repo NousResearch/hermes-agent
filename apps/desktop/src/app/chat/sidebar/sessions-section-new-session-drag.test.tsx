@@ -20,6 +20,14 @@ const workspaceOpen = vi.hoisted(() => ({ value: false }))
 
 vi.mock('../new-session-drag', () => ({ startNewSessionDrag }))
 
+// SidebarWorkspaceGroup reads desktop.sidebar.project_preview_count via
+// useHermesConfigRecord (react-query); this file's renders have no
+// QueryClientProvider ancestor, so stub the hook the same way
+// ./projects/model's projectPreviewCountFromConfig mock below assumes.
+vi.mock('@/app/hooks/use-config-record', () => ({
+  useHermesConfigRecord: () => ({ data: undefined })
+}))
+
 // Capture what the virtualized list receives so the divider wiring can be
 // asserted on the long-list path too (jsdom can't measure a real viewport).
 const virtualPropsHistory = vi.hoisted(() => [] as VirtualSessionListProps[])
@@ -86,6 +94,7 @@ vi.mock('./projects/model', () => ({
   PROJECT_PREVIEW_COUNT: 3,
   SIDEBAR_GROUP_PAGE: 5,
   latestProjectSessions: () => [],
+  projectPreviewCountFromConfig: () => 3,
   useWorkspaceNodeOpen: () => [workspaceOpen.value, vi.fn()]
 }))
 

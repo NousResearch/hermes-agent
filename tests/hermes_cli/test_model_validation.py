@@ -672,6 +672,26 @@ class TestValidateOpenRouterVariantSuffixes:
         assert result["accepted"] is True
         assert result.get("corrected_model") is None
 
+    def test_live_free_sku_absent_from_curated_picker_is_accepted(self):
+        """An explicit live SKU is valid even before the bounded picker manifest includes it."""
+        with patch(
+            "hermes_cli.models.fetch_openrouter_live_model_ids",
+            return_value=["foo/model", "foo/model:free"],
+        ), patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["foo/model"],
+        ), patch("hermes_cli.models.fetch_api_models") as generic_listing:
+            result = validate_requested_model(
+                "foo/model:free",
+                "openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        generic_listing.assert_not_called()
+
     def test_variant_uppercase_suffix_accepted(self):
         result = self._validate("x-ai/grok-4.6:NITRO")
         assert result["accepted"] is True

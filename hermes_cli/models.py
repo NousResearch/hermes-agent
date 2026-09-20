@@ -557,6 +557,18 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
     return live_items, live_by_id
 
 
+def fetch_openrouter_live_model_ids(timeout: float = 5.0) -> Optional[list[str]]:
+    """Return every ID in OpenRouter's public live catalog, or ``None`` when unreachable.
+
+    This is the provider-validity catalog, not the bounded picker catalog returned by
+    :func:`fetch_openrouter_models`.  In particular, live ``:free`` SKUs must remain independently
+    selectable even when the curated manifest has not added them yet.
+    """
+    live = _fetch_live_catalog_index(
+        _OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
+    return list(live[1]) if live is not None else None
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
     """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""

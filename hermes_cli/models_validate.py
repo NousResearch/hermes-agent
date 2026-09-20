@@ -457,7 +457,15 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
 
     if _profile_owns_catalog(req.normalized) and _match_in_catalog(req.lookup, _static_catalog(req.normalized)).exact:
         return _accept()
-    api_models = _m.fetch_api_models(req.api_key, req.base_url)
+    if req.normalized == "openrouter":
+        # Picker curation is deliberately bounded, but explicit IDs validate against OpenRouter's
+        # authoritative public catalog.  The credential-scoped generic listing remains the fallback
+        # when that catalog cannot be reached.
+        api_models = _m.fetch_openrouter_live_model_ids()
+        if api_models is None:
+            api_models = _m.fetch_api_models(req.api_key, req.base_url)
+    else:
+        api_models = _m.fetch_api_models(req.api_key, req.base_url)
     if api_models is None:
         return None
     if req.normalized == "gemini":

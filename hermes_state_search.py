@@ -1232,6 +1232,40 @@ class SessionSearchMixin:
         ranked = sorted(enumerate(candidates), key=lambda item: (score(item[1]), item[0]))
         return [row for _, row in ranked[:limit]]
 
+    def search_sessions_by_title(
+        self, query: str, limit: int = 20, offset: int = 0,
+        source: str = None, sources: List[str] = None,
+        exclude_sources: List[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Literal title matches, including historical compression segments.
+
+        Project to a continuation at the caller, after matching the ancestor's
+        title. Do not load prompts or message bodies while enumerating candidates.
+        """
+        from hermes_state_common import _sql_session_last_active
+
+        needle = (query or "").strip()
+        if not needle or limit <= 0:
+            return []
+        clauses = ["s.title LIKE ? ESCAPE '\\'"]
+        params = [f"%{_escape_like(needle)}%"]
+        included = [source] if source else sources
+        if included:
+            clauses.append(f"s.source IN ({','.join('?' for _ in included)})")
+            params.extend(included)
+        if exclude_sources:
+            clauses.append(f"(s.source IS NULL OR s.source NOT IN ({','.join('?' for _ in exclude_sources)}))")
+            params.extend(exclude_sources)
+        sql = f"""SELECT s.id, s.title, s.source, s.model, s.started_at,
+                         {_sql_session_last_active('s')} AS last_active
+                  FROM sessions s WHERE {' AND '.join(clauses)}
+                  ORDER BY CASE WHEN s.title = ? COLLATE NOCASE THEN 0 ELSE 1 END,
+                           last_active DESC, s.id
+                  LIMIT ? OFFSET ?"""
+        params.extend([needle, limit, offset])
+        with self._lock:
+            return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
+
     # ── FTS maintenance commands ───────────────────────────────────────────
 
     def _fts_table_exists(self, name: str) -> bool:

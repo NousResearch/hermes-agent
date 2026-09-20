@@ -56,6 +56,63 @@ def test_structured_needs_input_is_canonical_and_persists_exact_payload(board):
     assert state.readiness_probe == {"kind": "env_present", "name": "CANARY_KEY"}
 
 
+def test_failed_block_fence_rolls_back_persisted_user_action(board):
+    conn, home = board
+    tid = _running(conn)
+    running = kb.get_task(conn, tid)
+    assert running is not None and running.current_run_id is not None
+
+    assert not kb.block_task(
+        conn, tid, kind="needs_input", reason="stale mutation",
+        expected_run_id=running.current_run_id + 1, user_action=_action("stale mutation"),
+        readiness_probe={"kind": "env_present", "name": "CANARY_KEY"},
+    )
+
+    with kbc.connect(home / "kanban.db") as observer:
+        task = kb.get_task(observer, tid)
+        assert task is not None
+        assert task.status == "running"
+        assert task.current_run_id == running.current_run_id
+        assert observer.execute(
+            "SELECT COUNT(*) FROM kanban_user_actions WHERE task_id=?", (tid,),
+        ).fetchone()[0] == 0
+
+
+def test_valid_block_fence_atomically_persists_action_and_run_state(board):
+    conn, home = board
+    tid = _running(conn)
+    running = kb.get_task(conn, tid)
+    assert running is not None and running.current_run_id is not None
+
+    assert kb.block_task(
+        conn, tid, kind="needs_input", reason="credential missing",
+        expected_run_id=running.current_run_id, user_action=_action(),
+        readiness_probe={"kind": "env_present", "name": "CANARY_KEY"},
+    )
+
+    with kbc.connect(home / "kanban.db") as observer:
+        task = kb.get_task(observer, tid)
+        state = kua.get_user_action(observer, tid)
+        run = observer.execute(
+            "SELECT status, outcome, summary FROM task_runs WHERE id=?",
+            (running.current_run_id,),
+        ).fetchone()
+        assert task is not None and task.status == "needs_user_action"
+        assert task.current_run_id is None
+        assert state is not None and state.payload == _action()
+        assert state.readiness_probe == {"kind": "env_present", "name": "CANARY_KEY"}
+        assert observer.execute(
+            "SELECT COUNT(*) FROM kanban_user_actions WHERE task_id=?", (tid,),
+        ).fetchone()[0] == 1
+        assert run is not None
+        assert tuple(run) == ("blocked", "blocked", "credential missing")
+        events = kb.list_events(observer, tid)
+        blocked = [event for event in events if event.kind == "needs_user_action"]
+        assert len(blocked) == 1
+        assert blocked[0].run_id == running.current_run_id
+        assert blocked[0].payload["material_fingerprint"] == state.fingerprint
+
+
 def test_legacy_needs_input_gets_actionable_fallback_atomically(board):
     conn, _ = board
     tid = _running(conn)

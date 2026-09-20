@@ -3147,7 +3147,11 @@ def edit_completed_task_result(
     return True
 
 
-def block_task(
+class _BlockFenceRejected(Exception):
+    """Abort a block transaction when its task/run ownership fence loses."""
+
+
+def _block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
     user_action: Optional[dict] = None, readiness_probe: Optional[dict] = None,
@@ -3217,7 +3221,7 @@ def block_task(
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
-            return False
+            raise _BlockFenceRejected
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
@@ -3229,6 +3233,20 @@ def block_task(
             return True
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return not descendant_wait_refused
+
+
+def block_task(
+    conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
+    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    user_action: Optional[dict] = None, readiness_probe: Optional[dict] = None,
+) -> bool:
+    try:
+        return _block_task(
+            conn, task_id, reason=reason, kind=kind, expected_run_id=expected_run_id,
+            user_action=user_action, readiness_probe=readiness_probe,
+        )
+    except _BlockFenceRejected:
+        return False
 
 
 def _route_block(

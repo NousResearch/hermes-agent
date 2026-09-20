@@ -1171,12 +1171,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         member: groupMemberKey(member),
         thread: strandedThread
       })
-      appendGroupChatEntry(
-        group,
-        groupMemberAuthor(member),
-        reply,
-        strandedThread
-      )
+      appendGroupChatEntry(group, groupMemberAuthor(member), reply, strandedThread)
       updateGroupChat(group, (r: GroupChatRoom) => {
         const markKey = `${strandedThread}::${memberKey}`
 

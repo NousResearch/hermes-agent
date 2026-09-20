@@ -1324,6 +1324,22 @@ check_network_prerequisites() {
 }
 
 install_system_packages() {
+    # The installer's own command link dir (~/.local/bin for user installs,
+    # $PREFIX/bin on Termux, /usr/local/bin for root FHS installs) is not yet
+    # on PATH this early in the script, so a deliberately pre-staged static
+    # binary there would be missed and we would offer a 548 MiB distro package
+    # the user went out of their way to avoid. Probe it explicitly; runtime
+    # resolution goes through shutil.which() with the dir on PATH anyway.
+    local probe_path="$PATH"
+    local command_link_dir
+    command_link_dir="$(get_command_link_dir 2>/dev/null)"
+    if [ -n "$command_link_dir" ] && [ -d "$command_link_dir" ]; then
+        case ":$PATH:" in
+            *":$command_link_dir:"*) ;;
+            *) probe_path="$PATH:$command_link_dir" ;;
+        esac
+    fi
+
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false
@@ -1331,16 +1347,16 @@ install_system_packages() {
     local need_ffmpeg=false
 
     log_info "Checking ripgrep (fast file search)..."
-    if command -v rg &> /dev/null; then
-        log_success "$(rg --version | head -1) found"
+    if PATH="$probe_path" command -v rg &> /dev/null; then
+        log_success "$(PATH="$probe_path" rg --version | head -1) found"
         HAS_RIPGREP=true
     else
         need_ripgrep=true
     fi
 
     log_info "Checking ffmpeg (TTS voice messages)..."
-    if command -v ffmpeg &> /dev/null; then
-        local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+    if PATH="$probe_path" command -v ffmpeg &> /dev/null; then
+        local ffmpeg_ver=$(PATH="$probe_path" ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
         log_success "ffmpeg $ffmpeg_ver found"
         HAS_FFMPEG=true
     else

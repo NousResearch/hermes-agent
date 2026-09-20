@@ -1,8 +1,7 @@
 name: profile-pane
 repo: https://github.com/taxbax/profile-pane
-sha: 88186a52bfd0a002790b4169804cfcfe2fd72fa6
-description: Native Hermes desktop pane for cross-profile configuration — stage skills onto profiles
-  and sync SOUL / memory / user / profile layers to a group's anchor, on demand or on a schedule.
+sha: 2b480df77307e263df800dac03c220d009c0fae8
+description: "Disclosure — copies .env key values (and opt-in auth.json backups) between profiles; rewrites other profiles' SOUL, memory and config.yaml. Cross-profile config pane with copy+manifest reconcile and per-group scope."
 maintainer: taxbax
 tier: community
 category: desktop

@@ -222,6 +222,8 @@ class _KanbanDispatcher:
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
         for slug in self._board_slugs():
+            if self.kb.board_automation_held(slug):
+                continue
             conn = None
             try:
                 conn = _kbc().connect(board=slug)
@@ -252,6 +254,8 @@ class _KanbanDispatcher:
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
                     break
+                if self.kb.board_automation_held(slug):
+                    continue
                 # Pin the board via env for the call: the decomposer connects
                 # with no board kwarg (same pattern as the dashboard specify endpoint).
                 prev_env = os.environ.get("HERMES_KANBAN_BOARD")

@@ -57,8 +57,19 @@ def ensure_project_root_on_path() -> None:
     """Put the project root at sys.path[0], deduping realpath-equivalents."""
     project_root = project_root_str()
     normalized_root = os.path.normcase(os.path.realpath(project_root))
-    sys.path[:] = [entry for entry in sys.path
-                   if not entry or os.path.normcase(os.path.realpath(entry)) != normalized_root]
+    kept = []
+    for entry in sys.path:
+        if not entry:
+            kept.append(entry)
+            continue
+        try:
+            normalized = os.path.normcase(os.path.realpath(entry))
+        except OSError:
+            kept.append(entry)
+            continue
+        if normalized != normalized_root:
+            kept.append(entry)
+    sys.path[:] = kept
     sys.path.insert(0, project_root)
 
 

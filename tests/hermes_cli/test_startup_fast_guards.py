@@ -24,6 +24,41 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+def test_ensure_project_root_on_path_preserves_unresolvable_entries(monkeypatch, tmp_path):
+    """Startup path dedupe must not crash on unreadable sys.path entries.
+
+    Dispatcher-spawned workers can inherit relative path entries from a cwd the
+    process cannot resolve.  The startup fast path should still put the Hermes
+    project root first and dedupe resolvable root aliases without deleting or
+    crashing on the unresolvable entry.
+    """
+    from hermes_cli import _startup_fast
+
+    project_root = str(tmp_path / "hermes-agent")
+    project_alias = str(tmp_path / "alias")
+    unresolvable = "relative-entry-from-inaccessible-cwd"
+    original_sys_path = sys.path[:]
+
+    def fake_realpath(entry):
+        if entry == unresolvable:
+            raise PermissionError("operation not permitted")
+        if entry in {project_root, project_alias}:
+            return project_root
+        return os.path.realpath(entry)
+
+    monkeypatch.setattr(_startup_fast, "project_root_str", lambda: project_root)
+    monkeypatch.setattr(_startup_fast.os.path, "realpath", fake_realpath)
+    monkeypatch.setattr(sys, "path", [project_alias, unresolvable, ""])
+    try:
+        _startup_fast.ensure_project_root_on_path()
+        assert sys.path[0] == project_root
+        assert unresolvable in sys.path
+        assert "" in sys.path
+        assert project_alias not in sys.path
+    finally:
+        sys.path[:] = original_sys_path
+
 # Modules that must NEVER be imported by the fast path. Each one either
 # pulls yaml/argparse/logging config or is itself a god-module.
 _FORBIDDEN_MODULES = (

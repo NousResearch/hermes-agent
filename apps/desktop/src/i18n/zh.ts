@@ -2721,6 +2721,7 @@ export const zh = defineLocale({
   },
 
   cron: {
+    shownOf: (shown, total) => `${shown} / ${total}`,
     close: '关闭定时任务',
     title: '定时任务',
     count: count => `${count} 个任务`,

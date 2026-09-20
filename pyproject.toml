@@ -108,6 +108,11 @@ dependencies = [
   # cryptography<49, so [tool.uv] also holds an override. Read that comment
   # before you move this version.
   "cryptography==50.0.0",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
+  # Security floors for transitives reached through MCP/Teams and Rich. Keep
+  # them direct so every install path rejects the vulnerable line instead of
+  # relying on the resolver to happen to select the latest release.
+  "pydantic-settings>=2.14.2,<3",  # GHSA-4xgf-cpjx-pc3j
+  "Pygments>=2.20.0,<3",  # GHSA-5239-wwwm-4pmq
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -282,7 +287,7 @@ mcp = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026
 nemo-relay = []
 homeassistant = ["aiohttp==3.14.3"]
 sms = ["aiohttp==3.14.3"]
-teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3", "pydantic-settings>=2.14.2,<3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7; pydantic-settings: GHSA-4xgf-cpjx-pc3j
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk

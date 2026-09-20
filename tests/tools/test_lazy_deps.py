@@ -223,6 +223,33 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
+    def test_platform_teams_rejects_vulnerable_pydantic_settings(self, monkeypatch):
+        """Teams lazy-install must not treat GHSA-vulnerable pydantic-settings as satisfied."""
+        self._fake_version(
+            monkeypatch,
+            {
+                "microsoft-teams-apps": "2.0.13.4",
+                "aiohttp": "3.14.3",
+                "pydantic-settings": "2.14.1",
+            },
+        )
+        spec = "pydantic-settings>=2.14.2,<3"
+        assert ld._is_satisfied(spec) is False
+        assert spec in ld.feature_missing("platform.teams")
+
+    def test_platform_teams_accepts_patched_pydantic_settings(self, monkeypatch):
+        self._fake_version(
+            monkeypatch,
+            {
+                "microsoft-teams-apps": "2.0.13.4",
+                "aiohttp": "3.14.3",
+                "pydantic-settings": "2.14.2",
+            },
+        )
+        spec = "pydantic-settings>=2.14.2,<3"
+        assert ld._is_satisfied(spec) is True
+        assert spec not in ld.feature_missing("platform.teams")
+
     def test_trace_upload_hub_at_core_locked_version_is_current(self, monkeypatch):
         """#60783 regression: refresh must not churn the shared hub install.
 

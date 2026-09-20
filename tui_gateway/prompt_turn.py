@@ -526,16 +526,17 @@ def _adopt_out_of_band_turns(session: dict) -> None:
                 logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
                 return
         rewritten = rewritten or any(row.get("_compressed_summary") for row in newer)
-        rows = _load_durable_truncation_history(session, repair_alternation=rewritten)
+        # Keep the submit-time row separate until the ceiling has excluded it.
+        # Repairing the full durable transcript first can merge a rewritten
+        # trailing user row with this turn's prompt and make the prompt survive
+        # the later row-id filter.
+        rows = _load_durable_truncation_history(session, repair_alternation=False)
         if rows is None:
             return
         # Rewind and replacement also reinsert active rows. They need not add a
         # summary, so the missing prior boundary is the authoritative rewrite signal.
         if not rewritten and seen not in {_message_row_id(row) for row in rows}:
             rewritten = True
-            rows = _load_durable_truncation_history(session, repair_alternation=True)
-            if rows is None:
-                return
     else:
         rows = _load_durable_truncation_history(session, repair_alternation=False)
         if rows is None:
@@ -555,8 +556,10 @@ def _adopt_out_of_band_turns(session: dict) -> None:
                 mem_content, row_content = mem_view.get("content"), row_view.get("content")
                 if not isinstance(mem_content, str) or not isinstance(row_content, str):
                     if isinstance(mem_content, list) != isinstance(row_content, list):
-                        from agent.session_persistence import _durable_content
-                        return _durable_content(mem_content) == _durable_content(row_content)
+                        # Persistence intentionally replaces native media bytes
+                        # with placeholders. That projection cannot prove that
+                        # marker-free live media is the same durable message.
+                        return False
                     return mem_content == row_content
                 return True  # _mem_db_pair_agrees already compared sanitized text.
             if role == "assistant":
@@ -595,6 +598,15 @@ def _adopt_out_of_band_turns(session: dict) -> None:
         return
     keep = _below_ceiling if rewritten else _foreign
     selected = [m for m in rows if keep(_message_row_id(m))]
+    if rewritten:
+        summary_ids = {
+            row.get("id") for row in newer if row.get("_compressed_summary")
+        }
+        for message in selected:
+            if _message_row_id(message) in summary_ids:
+                message["_compressed_summary"] = True
+        from agent.agent_runtime_helpers import repair_message_sequence
+        repair_message_sequence(None, selected)
     adopted = canonicalize_replay_history(selected if rewritten else history + selected)
     if adopted == history and not rewritten:
         return

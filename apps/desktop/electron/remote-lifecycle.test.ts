@@ -1839,6 +1839,8 @@ test.skipIf(process.platform === 'win32')('capability probe survives a zsh login
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
 test('remote SSH ownership capability probe failure is not reported as a missing capability', async () => {
   const failedProbe = fakeSsh([[/serve --help/, '']])
 

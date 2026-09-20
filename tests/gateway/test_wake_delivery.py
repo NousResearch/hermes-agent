@@ -168,6 +168,36 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
     assert meta["duration_seconds"] == 12.5
 
 
+def test_persist_canonical_delegation_delivery_projects_internal_envelope(tmp_path):
+    from pathlib import Path
+
+    from gateway.wake import persist_delegation_delivery
+    from hermes_state import SessionDB
+    from tools.async_delegation import _internal_event_envelope
+
+    db = SessionDB(db_path=Path(tmp_path) / "state.db")
+    sid = "canonical-sid"
+    db.create_session(sid, source="api_server")
+
+    class DbAdapter(ApiServerLikeAdapter):
+        def _ensure_session_db(self):
+            return db
+
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
+    evt = {"type": "async_delegation", "delegation_id": delegation_id,
+           **_internal_event_envelope(delegation_id)}
+    asyncio.run(persist_delegation_delivery(
+        DbAdapter(), text="[ASYNC DELEGATION COMPLETE]", session_id=sid, evt=evt,
+    ))
+
+    delivery = db.get_messages(sid)[-1]
+    assert delivery["role"] == "user"
+    assert delivery["display_kind"] == "internal_event"
+    assert delivery["display_metadata"]["event_schema"] == "hermes.internal_event.v1"
+    assert delivery["display_metadata"]["event_id"] == f"async_delegation:{delegation_id}:terminal"
+    assert delivery["display_metadata"]["user_originated"] is False
+
+
 def test_persist_delegation_delivery_raises_without_db():
     """DB unavailable must RAISE so the durable claim is released for retry."""
     from gateway.wake import persist_delegation_delivery

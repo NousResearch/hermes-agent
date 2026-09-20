@@ -24,7 +24,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.response_filters import display_kind_for_event, internal_event_projection, is_machinery_display_kind
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -2178,7 +2178,8 @@ class GatewayTurnMixin:
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
+                    "gateway_input_owner": prepared.persistence_owner,
+                    **(internal_event_projection(event)[1] or {}), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )

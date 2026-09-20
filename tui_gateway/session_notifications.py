@@ -469,8 +469,12 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # from the reaper, keeps its lease, and never reaches its bot mailbox again.
         _notif_release_turn(session)
         return
-    kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
-              if evt.get("type") == "async_delegation" else {})
+    kwargs = {}
+    if evt.get("type") == "async_delegation":
+        from tools.async_delegation import internal_event_persistence
+        display_kind, _display_metadata = internal_event_persistence(evt)
+        kwargs = {"display_kind": display_kind or "async_delegation_complete",
+                  "display_metadata": _async_delegation_display_metadata(evt)}
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
@@ -752,10 +756,13 @@ def _async_delegation_display_metadata(evt: dict) -> dict:
     completed_count = sum(1 for r in results if r.get("status") in {"completed", "success"})
     failed_count = sum(1 for r in results if r.get("status") in {"failed", "error"})
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
+    from tools.async_delegation import internal_event_persistence
+    _display_kind, internal_metadata = internal_event_persistence(evt)
     return {"display_text": async_delegation_display_text(evt),
             "delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
             "completed_count": completed_count or task_count - failed_count, "failed_count": failed_count,
-            **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {})}
+            **({"duration_seconds": duration} if isinstance(duration, (int, float)) else {}),
+            **(internal_metadata or {})}
 
 
 _desktop_ui_wired = False

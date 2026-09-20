@@ -138,6 +138,30 @@ async def test_internal_event_threads_marker_into_agent_run(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_canonical_delegation_event_threads_validated_projection(monkeypatch, tmp_path):
+    from tools.async_delegation import _internal_event_envelope
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "ack", "messages": [], "tools": [],
+        "history_offset": 0, "last_prompt_tokens": 0,
+    })
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
+    event = _event(internal=True, text="[ASYNC DELEGATION COMPLETE]")
+    event.metadata.update(delegation_id=delegation_id, **_internal_event_envelope(delegation_id))
+
+    await runner._handle_message_with_agent(event, _source(), SESSION_KEY, 1)
+
+    kwargs = runner._run_agent.call_args.kwargs
+    assert kwargs["persist_user_display_kind"] == "internal_event"
+    assert kwargs["persist_user_display_metadata"]["event_schema"] == "hermes.internal_event.v1"
+    assert kwargs["persist_user_display_metadata"]["event_id"] == (
+        f"async_delegation:{delegation_id}:terminal"
+    )
+    assert kwargs["persist_user_display_metadata"]["user_originated"] is False
+
+
+@pytest.mark.asyncio
 async def test_real_user_event_gets_no_marker(monkeypatch, tmp_path):
     runner = _bootstrap(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(

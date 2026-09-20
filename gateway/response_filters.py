@@ -31,7 +31,8 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
 # machinery kind the gateway produces; only these may vanish on a bare silence marker.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
-MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
+INTERNAL_EVENT_DISPLAY_KIND = "internal_event"
+MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, INTERNAL_EVENT_DISPLAY_KIND})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
@@ -108,9 +109,20 @@ def display_kind_for_event(event: Any) -> str | None:
     by the gateway poller, never inferred from inbound text), but it deliberately stays
     non-internal so authorization and the emergency stop still apply to it.
     """
+    display_kind, _metadata = internal_event_projection(event)
+    if display_kind is not None:
+        return display_kind
     if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
     return None
+
+
+def internal_event_projection(event: Any) -> tuple[str | None, dict | None]:
+    """Validated delegation projection for a trusted synthetic gateway event."""
+    if not getattr(event, "internal", False):
+        return None, None
+    from tools.async_delegation import internal_event_persistence
+    return internal_event_persistence(getattr(event, "metadata", None))
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:

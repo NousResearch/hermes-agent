@@ -587,7 +587,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     ) : activeView === 'vault' ? (
       <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
     ) : (
-      <SessionsSettings subpage={subpage} />
+      <SessionsSettings key={settingsOwnerKey} settingsOwner={settingsOwner} subpage={subpage} />
     )
 
   return (

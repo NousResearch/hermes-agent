@@ -8,8 +8,7 @@ import {
   deleteSession,
   getHermesConfigRecord,
   listAllProfileSessions,
-  peekConfigReadOrigin,
-  retainConfigReadOrigin,
+  type ProfileScope,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -33,10 +32,11 @@ const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 const ARCHIVED_FETCH_LIMIT = 200
 
 interface SessionsSettingsProps {
+  settingsOwner?: ProfileScope
   subpage?: string
 }
 
-export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+export function SessionsSettings({ settingsOwner, subpage }: SessionsSettingsProps = {}) {
   if (subpage === 'default-directory') {
     return (
       <SettingsContent>
@@ -45,10 +45,16 @@ export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
     )
   }
 
-  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} settingsOwner={settingsOwner} />
 }
 
-function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
+function ArchivedSessionsSettings({
+  includeDefaultDirectory,
+  settingsOwner
+}: {
+  includeDefaultDirectory: boolean
+  settingsOwner?: ProfileScope
+}) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
@@ -138,7 +144,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
     <SettingsContent>
       {includeDefaultDirectory && <DefaultProjectDirSetting />}
 
-      <AutoArchiveSetting />
+      <AutoArchiveSetting settingsOwner={settingsOwner} />
 
       <SectionHeading
         icon={Archive}
@@ -205,7 +211,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 // (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
 // just toggles the config keys, so CLI / gateway / Desktop all honour one
 // setting. Pins are exempt on the backend, so pinned chats survive regardless.
-function AutoArchiveSetting() {
+function AutoArchiveSetting({ settingsOwner }: { settingsOwner?: ProfileScope }) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
@@ -221,7 +227,11 @@ function AutoArchiveSetting() {
 
     let alive = true
 
-    void getHermesConfigRecord()
+    if (settingsOwner === null) {
+      return
+    }
+
+    void getHermesConfigRecord(settingsOwner)
       .then(record => {
         if (!alive) {
           return
@@ -240,7 +250,7 @@ function AutoArchiveSetting() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [settingsOwner])
 
   const persist = useCallback(
     async (autoArchive: boolean, archiveDays: number) => {
@@ -254,22 +264,21 @@ function AutoArchiveSetting() {
         auto_archive_days: archiveDays
       }
 
-      // Read the route at save time from the record itself, and carry it onto
-      // the replacement snapshot so the next save still targets the gateway
-      // that served the original GET.
-      const writeScope = peekConfigReadOrigin(config)
-
-      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
+      const updated = { ...config, sessions }
+      setConfig(updated)
 
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached
         // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
+        await saveHermesConfig(
+          { sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } },
+          settingsOwner
+        )
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }
     },
-    [config, s.autoArchiveFailed]
+    [config, s.autoArchiveFailed, settingsOwner]
   )
 
   if (!config) {

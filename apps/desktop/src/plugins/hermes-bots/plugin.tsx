@@ -41,6 +41,7 @@ import {
   cachedUnionRoster,
   isActiveRosterBot,
   migrateBotMeta,
+  primeRoster,
   resolveRosterMentions
 } from './data'
 import {
@@ -142,11 +143,18 @@ export default {
             connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
           }
 
-          for (const profile of profiles) {
-            if (!profile?.name || isActiveRosterBot(profile, live)) {
-              continue
-            }
+          const offered = profiles.filter(profile => profile?.name && !isActiveRosterBot(profile, live))
+          // Two rows tagging alike (two remote defaults both titled "CoS Bot")
+          // cannot share a bare tag — it would resolve to neither. Pin the
+          // ambiguous ones to their connection (#103731).
+          const tagCounts = new Map<string, number>()
 
+          for (const profile of offered) {
+            const tag = botMentionTag(profile).toLowerCase()
+            tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1)
+          }
+
+          for (const profile of offered) {
             const handle = botHandle(profile.name, profile)
             const display = displayName(profile, $botMeta.get()[profile.name])
             // Renamed bots complete on their friendly name — the tag is the
@@ -162,10 +170,12 @@ export default {
               continue
             }
 
+            const qualified = (tagCounts.get(tag.toLowerCase()) || 0) > 1 && profile.connectionId
+            const insert = qualified ? `@${tag}@${profile.connectionId}` : `@${tag}`
             const source = profile.connectionLabel ? ` · ${profile.connectionLabel}` : ''
             items.push({
-              insert: `@${tag}`,
-              display: `@${tag}`,
+              insert,
+              display: insert,
               meta: `Bot · ${display}${source}`
             })
           }
@@ -317,6 +327,18 @@ export default {
     const unbindProfileListener = bindProfileSync($focusedBotOwner)
     const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
 
+    // The composer's @ picker reads the roster cache synchronously; fill it on
+    // the first gateway open so cross-connection bots complete before the Bots
+    // pane has ever mounted (#94018). The pane owns the refresh once open.
+    const primeOnGatewayOpen = (state: unknown) => {
+      if (String(state) === 'open') {
+        void primeRoster()
+      }
+    }
+
+    primeOnGatewayOpen(host.state.gateway.get())
+    const unbindRosterPrime = host.state.gateway.listen(primeOnGatewayOpen)
+
     // #93492 root fix: the registry pushes a lifecycle event when a
     // connection is removed. The gateway store already disposes the dead
     // sockets; the persisted group-chat rosters referencing that connection
@@ -350,6 +372,10 @@ export default {
 
         if (typeof unbindGatewayListener === 'function') {
           unbindGatewayListener()
+        }
+
+        if (typeof unbindRosterPrime === 'function') {
+          unbindRosterPrime()
         }
 
         if (typeof unbindConnectionsChanged === 'function') {
@@ -729,7 +755,16 @@ export default {
             connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
           }
 
-          const cached = cachedUnionRoster()
+          let cached = cachedUnionRoster()
+
+          if (!Array.isArray(cached?.profiles)) {
+            // Cold cache (the Bots pane never ran this launch): fill it the way
+            // the pane does. The profiles.list fallback below only knows the
+            // ACTIVE gateway and drops every cross-connection target (#94018).
+            await primeRoster()
+            cached = cachedUnionRoster()
+          }
+
           const roster = Array.isArray(cached?.profiles) ? cached.profiles : null
           let mentionedBots = roster ? resolveRosterMentions(text, roster, live) : []
 

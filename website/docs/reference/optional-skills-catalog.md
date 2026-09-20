@@ -179,6 +179,7 @@ hermes skills uninstall <skill-name>
 | [**llava**](../user-guide/skills/optional/mlops/mlops-llava.md) | Vision-language chat: VQA, captioning, image dialogue. |
 | [**modal**](../user-guide/skills/optional/mlops/mlops-modal.md) | Serverless GPU cloud for ML jobs and model APIs. |
 | [**nemo-curator**](../user-guide/skills/optional/mlops/mlops-nemo-curator.md) | Curate LLM training data: dedupe, filter, PII redaction. |
+| [**nvidia-aiq-signal-discovery**](../user-guide/skills/optional/mlops/mlops-nvidia-aiq-signal-discovery.md) | Run governed NVIDIA signal research for LunaBot. |
 | [**obliteratus**](../user-guide/skills/optional/mlops/mlops-obliteratus.md) | OBLITERATUS: abliterate LLM refusals (diff-in-means). |
 | [**outlines**](../user-guide/skills/optional/mlops/mlops-inference-outlines.md) | Outlines: structured JSON/regex/Pydantic LLM generation. |
 | [**peft**](../user-guide/skills/optional/mlops/mlops-peft.md) | Fine-tune large LLMs with LoRA on limited GPU memory. |
@@ -272,6 +273,7 @@ hermes skills uninstall <skill-name>
 | [**ast-grep**](../user-guide/skills/optional/software-development/software-development-ast-grep.md) | AST-aware structural code search and rewrite via ast-grep. |
 | [**code-wiki**](../user-guide/skills/optional/software-development/software-development-code-wiki.md) | Generate wiki docs + Mermaid diagrams for any codebase. |
 | [**grill-me**](../user-guide/skills/optional/software-development/software-development-grill-me.md) | Adversarial plan interview before implementation. |
+| [**hermes-upstream-audit**](../user-guide/skills/optional/software-development/software-development-hermes-upstream-audit.md) | Audit upstream Hermes issues and PRs before repairs. |
 | [**pr-lens**](../user-guide/skills/optional/software-development/software-development-pr-lens.md) | Draw code changes as animated architecture/data-flow SVGs. |
 | [**rest-graphql-debug**](../user-guide/skills/optional/software-development/software-development-rest-graphql-debug.md) | Debug REST/GraphQL APIs: status codes, auth, schemas, repro. |
 | [**subagent-driven-development**](../user-guide/skills/optional/software-development/software-development-subagent-driven-development.md) | Execute plans via delegate_task subagents (2-stage review). |

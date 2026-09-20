@@ -347,18 +347,18 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
 # so a new provider reaches the picker, /model and every downstream consumer without edits here.
-# Auth classes whose picker selection needs bespoke UX (OAuth device flows, vendor CLIs) are
-# skipped; external_process providers are admitted because their picker row is honest —
-# `_provider_has_credentials` routes through auth.get_external_process_provider_status, which
-# reports configured only when the subprocess binary resolves, and selection rides the standard
-# model_switch pipeline.
+# Admission is by slug only: every in-tree non-api-key profile (OAuth, external-process, cloud
+# SDK) already owns a hand-written row above, so the old auth_type skip set never excluded an
+# in-tree provider — it only hid out-of-tree plugins. Visibility is gated downstream by
+# credentials, not here: ``models._provider_has_credentials`` / ``_lap_canonical_rows`` route
+# through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
+# credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
-_BESPOKE_UX_AUTH_TYPES = {"oauth_device_code", "oauth_external", "aws_sdk", "copilot", "vertex"}
 
 
 def _plugin_provider_enters_picker(pp) -> bool:
-    """Picker admission for a plugin model-provider profile."""
-    return pp.name not in _canonical_slugs and pp.auth_type not in _BESPOKE_UX_AUTH_TYPES
+    """Picker admission for a plugin model-provider profile: any slug without a built-in row."""
+    return pp.name not in _canonical_slugs
 
 
 try:

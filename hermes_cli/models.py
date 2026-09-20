@@ -1504,21 +1504,17 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     from providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
-    # external_process providers (ACP agent CLIs) have no api_key/base_url credentials:
-    # the profile's fetch_models drives its own subprocess, so let it supply the catalog.
-    if profile and profile.auth_type == "external_process":
-        # Signature tolerance: external_process profiles own their subprocess and most take no
-        # kwargs, but a profile may require keyword-only HTTP credentials (#111194 hardened
-        # discovery the same way). Probe no-args first, fall back to credential kwargs.
-        try:
-            live = profile.fetch_models()
-        except TypeError:
-            api_key, base_url = _api_key_credentials(normalized)
-            live = profile.fetch_models(
-                api_key=api_key, base_url=base_url or profile.base_url or None)
-        return list(live) if live else None
-    if not (profile and profile.auth_type == "api_key" and profile.base_url):
+    if not profile:
         return None
+    # external_process providers (ACP agent CLIs) have no api_key/base_url credentials: the
+    # profile's fetch_models drives its own subprocess (kwargs are ignored per the base contract).
+    # Every non-api-key profile falls back to its own fallback_models (OAuth plugins have no
+    # static _PROVIDER_MODELS row), exactly as api_key plugins do below.
+    if profile.auth_type == "external_process":
+        live = profile.fetch_models()
+        return list(live) if live else (list(profile.fallback_models) or None)
+    if not (profile.auth_type == "api_key" and profile.base_url):
+        return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)
     live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
     if live and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
@@ -1663,6 +1659,18 @@ def _credential_fingerprint(provider: str) -> str:
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
                 parts.append(f"{bev}={os.environ.get(bev, '')}")
+    except Exception:
+        pass
+
+    # External-process providers discover models through the launched program, so the command /
+    # argv env overrides identify the catalog the way an API key identifies an HTTP catalog.
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        if profile is not None and profile.auth_type == "external_process":
+            for ev in (*profile.process_command_env_vars, profile.process_args_env_var):
+                if ev:
+                    parts.append(f"{ev}={os.environ.get(ev, '')}")
     except Exception:
         pass
 

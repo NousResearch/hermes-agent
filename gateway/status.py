@@ -283,6 +283,30 @@ def _start_times_agree(current: Any, *recorded: Any) -> bool:
     return cur > 0 and all(r > 0 and abs(r - cur) <= 0.001 for r in map(float, recorded))
 
 
+def start_times_match(current: Any, recorded: Any, *, tolerance: int = 200) -> bool:
+    """Liveness-grade start-time comparison: same start within ±2 native units.
+
+    Different processes on one host can read the SAME pid's start time with a constant
+    ~1s disagreement (observed 2026-09-19: +1.00s drift, identical code and psutil on
+    both sides), so bit-exact compares declared live owners dead mid-execution. A
+    recycled pid's start differs from the recorded one by minutes-to-days, so reuse
+    detection stays exact at this tolerance. Raise-grade junk handling stays at the
+    call sites; this helper is for LIVENESS verdicts only — kill-permission gates
+    (``_start_times_agree`` in the force-kill path, ``pid_is_hermes``) deliberately
+    remain exact, because a refused kill is fail-safe and a wrongly permitted one is
+    not.
+
+    Widening note: ``int()`` coercion means numeric-STRING recorded values (e.g.
+    "178980170271" read from a marker/record field) match their int twin where the
+    old ``==`` compared across types and rejected them. This is intentional — mixed
+    str/int storage of start times exists in marker and pid-record fields — but any
+    non-numeric junk still fails closed (False)."""
+    try:
+        return abs(int(current) - int(recorded)) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
 def _scope_hash(identity: str) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
@@ -1333,7 +1357,7 @@ def _pid_marker_names_self(target_pid: int, target_start_time: Any) -> bool:
     if target_pid != os.getpid():
         return False
     our_start_time = _get_process_start_time(target_pid)
-    return None in (target_start_time, our_start_time) or target_start_time == our_start_time
+    return None in (target_start_time, our_start_time) or start_times_match(our_start_time, target_start_time)
 
 
 def _consume_pid_marker_for_self(path: Path, *, ttl_s: int) -> bool:
@@ -1427,7 +1451,7 @@ def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tup
     if (
         not _record_looks_like_gateway(pid_record)
         or _pid_from_record(pid_record) != owner_pid
-        or pid_record.get("start_time") != owner_start_time
+        or not start_times_match(pid_record.get("start_time"), owner_start_time)
         or not isinstance(pid_record_home, str)
         or not _same_hermes_home(pid_record_home, target_home)
     ):
@@ -1443,7 +1467,7 @@ def _scoped_lock_owner_state(owner_pid: int, owner_start_time: int) -> str:
     # A different start time means the PID was recycled; never signal the replacement.
     if live_start_time is None:
         return "unknown"
-    return "same" if live_start_time == owner_start_time else "exited"
+    return "same" if start_times_match(live_start_time, owner_start_time) else "exited"
 
 
 def _wait_for_scoped_lock_owner_exit(

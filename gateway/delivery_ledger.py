@@ -251,8 +251,11 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         except Exception:
             return False
     try:
-        return started_at is None or int(current_start) == int(started_at)
-    except (TypeError, ValueError):
+        from gateway.status import start_times_match  # lazy: tests monkeypatch gateway.status
+        if started_at is None:
+            return True
+        return start_times_match(current_start, int(started_at))
+    except Exception:  # broad on purpose: junk rows must never crash sweep_recoverable
         return True
 
 

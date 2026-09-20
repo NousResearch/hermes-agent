@@ -1,5 +1,6 @@
 """Unified tool configuration for Hermes Agent."""
 
+import ast
 import json as _json
 import logging
 import os
@@ -548,10 +549,39 @@ def _context_engine_active(config: dict) -> bool:
     return bool(name) and name != "compressor"
 
 
+def _coerce_platform_toolsets_value(value, platform: str):
+    """Read a list-literal string saved for ``platform_toolsets.<platform>`` as the list it encodes.
+
+    Older ``hermes config set`` builds stored a bare ``[...]`` argument as a plain string, so an
+    explicit selection like ``'["browser", "terminal"]'`` parses as str, not list — readers then
+    treated the platform as unconfigured and substituted the platform default, and the next save
+    overwrote the user's entries (#115866). The parser is ``ast.literal_eval``, so any Python
+    list literal (JSON-style double quotes included) is accepted. Any other non-list value is
+    warned about once (naming the expected shape) and left as-is, so the default fallback below
+    is loud rather than silent.
+    """
+    if value is None or isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip().startswith("["):
+        try:
+            parsed = ast.literal_eval(value.strip())
+        except (ValueError, SyntaxError):
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    if platform not in _warned_invalid_platform_toolsets:
+        _warned_invalid_platform_toolsets.add(platform)
+        logger.warning(
+            "platform_toolsets.%s is %r, expected a YAML list of toolset names "
+            "(e.g. [terminal, file, web]) - falling back to the platform default. "
+            "Run `hermes tools` to reconfigure.", platform, value)
+    return value
+
+
 def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_servers: bool = True) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
     platform_toolsets = config.get("platform_toolsets") or {}
-    toolset_names = platform_toolsets.get(platform)
+    toolset_names = _coerce_platform_toolsets_value(platform_toolsets.get(platform), platform)
     # An explicitly saved list (even a composite like ``hermes-discord``) is an opt-in to the platform's
     # native default-off toolsets — see _default_off_toolsets.
     # Track whether the user explicitly saved a toolset list for this platform (vs. falling back to the
@@ -603,7 +633,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         enabled_toolsets = _prune_toolsets_stripped_by_disabled(enabled_toolsets, disabled_names)
 
     if explicitly_configured and toolset_names:
-        _warn_all_invalid_platform_toolsets(platform, platform_toolsets[platform])
+        _warn_all_invalid_platform_toolsets(platform, toolset_names)
     return enabled_toolsets
 
 
@@ -692,7 +722,9 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     # unchecked selections on the next read. Saving from the picker is consent to clear the "no_mcp" sentinel
     # (no checkbox for it; users who once set it by hand could otherwise never re-enable MCP via the UI).
     drop = _configurable_keys() | plugin_keys | _platform_default_keys() | {"no_mcp"}
-    existing_toolsets = cfg_get(config, "platform_toolsets", platform, default=[])
+    existing_toolsets = _coerce_platform_toolsets_value(
+        cfg_get(config, "platform_toolsets", platform, default=[]), platform
+    )
     preserved_entries = {str(e) for e in (existing_toolsets if isinstance(existing_toolsets, list) else [])
                          if str(e) not in drop}
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)

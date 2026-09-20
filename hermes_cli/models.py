@@ -1536,11 +1536,16 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)
+    return probe_profile_catalog(normalized, profile, api_key, base_url or profile.base_url or None)
+
+
+def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base_url: Optional[str]) -> Optional[list[str]]:
+    """``profile.fetch_models`` gated on a key (no key → no doomed probe) and merged with the curated
+    list; a raising catalog override degrades like a None return — fallback_models, not an empty picker."""
     live = None
     if api_key:
-        # A raising catalog override degrades like a None return: fallback_models, not an empty picker.
         try:
-            live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None)
+            live = profile.fetch_models(api_key=api_key, base_url=base_url)
         except Exception:
             live = None
     return merge_profile_catalog(normalized, profile, live)

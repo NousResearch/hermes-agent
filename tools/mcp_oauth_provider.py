@@ -9,6 +9,7 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -78,7 +79,9 @@ class HermesProviderMixin:
       ``token_endpoint_auth_method``; the SDK then treats the client as public and the token
       endpoint rejects the exchange (looping the browser page) — coerce ``client_secret_post``.
     - ``token_user_agent`` (``oauth.user_agent``) is stamped onto token-endpoint requests only
-      (some authorization servers/WAFs reject httpx's default).
+      (some authorization servers/WAFs reject httpx's default); unset falls back to the shared
+      ``Hermes-Agent/<version>`` default, since a header-less token POST is 403'd by WAF-fronted
+      authorization servers (#115329).
     - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs."""
 
     _hermes_logger: logging.Logger = logger
@@ -122,12 +125,42 @@ class HermesProviderMixin:
 
         self.context.callback_handler = _fill_iss
 
+    async def _hermes_accept_origin_issued_metadata(self, response):
+        """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
+        it lives under (see ``metadata_issued_by_origin``); the SDK's exact-string check (RFC 8414 §3.3)
+        would reject it and park the connection on an issuer mismatch (Strava, #116233).
+
+        The SDK validates inside its Step 2 loop right after reading the response, so the document is
+        installed on the context here and the SDK is handed an empty 204: ``handle_auth_metadata_response``
+        reads that as "stop trying", leaving the installed document in place. ``auth_server_url`` is left
+        untouched, so the SEP-2352 credential binding still uses the advertised identifier (stable across
+        runs), while the RFC 9207 ``iss`` check and Hermes' refresh-token binding use the document's issuer.
+        Every other response goes back to the SDK unchanged, including its issuer check."""
+        from mcp.shared.auth import OAuthMetadata
+        from pydantic import ValidationError
+        try:
+            metadata = OAuthMetadata.model_validate_json(await response.aread())
+        except ValidationError:
+            return response
+        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+            return response
+        self._hermes_logger.info(
+            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
+            "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
+        self.context.oauth_metadata = metadata
+        return type(response)(204, request=response.request)
+
     def _prepare_token_request(self, request):
-        """Stamp the configured User-Agent onto a token/refresh request."""
+        """Stamp a token/refresh request's User-Agent: the configured ``oauth.user_agent`` when set,
+        else the shared ``Hermes-Agent/<version>`` default. These requests are built by hand — the
+        SDK's ``_exchange_token_authorization_code``/``_refresh_token`` and ``tools.mcp_oauth_device``
+        — and travel through ``client.send()``, which never merges the client's default headers, so
+        without a stamp the POST leaves with NO ``User-Agent`` at all and a WAF-fronted authorization
+        server answers 403 (#115329)."""
         ua = getattr(self, "_hermes_token_user_agent", None)  # tests build via __new__
         if ua:
             request.headers["User-Agent"] = ua
-        return request
+        return stamp_default_user_agent(request)
 
     def _coerce_client_secret_post(self) -> None:
         """Same rule as ``HermesTokenStorage._coerce_secret_auth_method``, applied to the
@@ -205,6 +238,8 @@ class HermesProviderMixin:
                         failure = _asm_discovery_failure(sent)
                         if failure:
                             discovery_failures.append(failure)
+                        elif getattr(sent, "status_code", None) == 200:
+                            sent = await self._hermes_accept_origin_issued_metadata(sent)
             finally:
                 await self._hermes_release_refresh_fence()
 
@@ -342,10 +377,16 @@ class HermesProviderMixin:
         await self.context.storage.set_tokens(token_response)
 
     async def _handle_token_response(self, response):
-        """Accept any 2xx token response; never echo the body into errors."""
+        """Accept any 2xx token response; a 2xx body (it carries the tokens) never reaches an error.
+
+        A non-2xx body carries no tokens and is the only clue to WHY the exchange failed — a WAF's
+        HTML "Request blocked" page vs the issuer's ``invalid_grant`` JSON (#115329) — so a short,
+        tag-stripped, redacted excerpt rides along with the status."""
         from mcp.client.auth.oauth2 import OAuthTokenError
         if not (200 <= response.status_code < 300):
-            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+            from tools.mcp_tool_common import _sanitize_error
+            excerpt = " ".join(re.sub(r"<[^>]+>", " ", response.text).split())[:200]
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code}): {_sanitize_error(excerpt)}".rstrip(": "))
         from httpx import HTTPError
         from mcp.client.auth.utils import handle_token_response_scopes
         try:
@@ -439,6 +480,35 @@ def _metadata_issuer(context: Any) -> str | None:
     meta = getattr(context, "oauth_metadata", None)
     issuer = getattr(meta, "issuer", None) if meta is not None else None
     return (str(issuer).rstrip("/") or None) if issuer else None
+
+
+def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Whether *metadata* may stand in for the exact-issuer match of RFC 8414 §3.3 because it is the
+    document of the path-scoped authorization server *auth_server_url* and names that server's origin.
+
+    The issuer check stops a party controlling a path or a sibling host from making the client accept
+    endpoints of a different authorization server (RFC 8414 §3.3, RFC 9728 §3.3). This narrow shape keeps
+    that boundary: *response* must be the document fetched directly (no redirect) from the RFC 8414 §3.1
+    well-known URL DERIVED from the advertised identifier, ``<origin>/.well-known/oauth-authorization-server
+    <path>`` — a location only the origin's operator controls — and its ``issuer`` must be exactly that
+    origin, i.e. the advertised server is ``issuer + path``. ``response.url`` is the URL the body was
+    actually read from (the final request after any followed redirect), so a redirected document never
+    matches. Whoever can publish that document already
+    controls the origin's well-known tree, so accepting it grants a path-controlling attacker nothing.
+    Strava's MCP connector publishes exactly this pair (#116233). Anything else (another origin, a
+    different path, the root or OIDC fallback documents, a redirect target) still goes through the
+    exact-string check."""
+    from urllib.parse import urlsplit
+    if not auth_server_url:
+        return False
+    parts = urlsplit(auth_server_url)
+    path = parts.path.rstrip("/")
+    if (not path or ".." in path.split("/") or parts.username is not None or parts.query or parts.fragment
+            or response.status_code != 200):
+        return False
+    origin = f"{parts.scheme}://{parts.netloc}"
+    derived = f"{origin}/.well-known/oauth-authorization-server{path}"
+    return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
 
 
 def bind_issuer_from_context(context: Any) -> None:

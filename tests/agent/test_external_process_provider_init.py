@@ -42,3 +42,24 @@ def test_responses_upgrade_is_skipped_by_acp_scheme_not_vendor_slug(monkeypatch)
     upgraded = _routing_agent("acme-acp", "https://api.openai.com/v1")
     _finalize_routing(upgraded, None, None)
     assert upgraded.api_mode == "codex_responses"
+
+
+def test_responses_upgrade_is_skipped_for_external_process_profile_on_any_base_url(monkeypatch):
+    """An ``<X>_ACP_BASE_URL`` override may carry an https marker, so the ACP guard must also key on
+    the profile's ``external_process`` auth_type — an ACP client never speaks the Responses API."""
+    from agent.agent_init import _finalize_routing
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(name="copilot-acp", auth_type="external_process")
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile if name == "copilot-acp" else None)
+    monkeypatch.setattr("hermes_cli.anon_auth.pin_model_for_route", lambda provider, base_url, model: model)
+
+    agent = _routing_agent("copilot-acp", "https://proxy.example.invalid/v1")
+    agent._provider_model_requires_responses_api = lambda model, provider=None: True
+    _finalize_routing(agent, None, None)
+    assert agent.api_mode == "chat_completions"
+
+    plain = _routing_agent("acme-http", "https://proxy.example.invalid/v1")
+    plain._provider_model_requires_responses_api = lambda model, provider=None: True
+    _finalize_routing(plain, None, None)
+    assert plain.api_mode == "codex_responses"

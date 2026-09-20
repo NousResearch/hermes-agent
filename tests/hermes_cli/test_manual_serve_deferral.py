@@ -85,8 +85,9 @@ def test_historical_manual_obligation_does_not_block_healthy_gateway(monkeypatch
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: [{"profile": "default", "state": "current", "code_sha": "new"}] if gateway_present else [])
     if marker:
         fleet._write_fleet_restart_pending_marker(expected_sha="new")
-    # Legacy markers cannot inherit inventory from any historical receipt, even with a nonempty current fleet.
-    pending = marker
+    # An inventory-less marker never inherits inventory from a historical receipt, but it
+    # discharges when the live fleet provably serves its expected SHA (#115638).
+    pending = marker and not gateway_present
     assert fleet._pending_fleet_restart_needed() is pending
     fleet._warn_pending_fleet_restart_on_startup()
     warning = capsys.readouterr().err
@@ -116,7 +117,7 @@ def test_stamped_manual_only_history_has_no_gateway_obligation(monkeypatch, caps
 
 
 @pytest.mark.parametrize("manual_first", [True, False])
-@pytest.mark.parametrize("unsupported", [{"kind": "serve", "supervisor": "desktop"}, {"kind": "gateway", "profile": "unknown"}, None])
+@pytest.mark.parametrize("unsupported", [{"kind": "serve"}, {"kind": "gateway", "profile": "unknown"}, None])
 def test_historical_retention_is_independent_of_plan_order(monkeypatch, capsys, manual_first, unsupported):
     manual = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": 1000.0}))
     rows = [manual, unsupported] if manual_first else [unsupported, manual]

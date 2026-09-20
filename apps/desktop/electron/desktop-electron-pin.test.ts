@@ -14,6 +14,27 @@
  * win32-x64 binding fails to ``dlopen`` on some Windows hosts
  * (``ERR_DLOPEN_FAILED loading index.win32-x64-msvc.node``).
  *
+ * The pin then sat at 40.10.2 — the last pure-JS unpacker — which kept the tree
+ * on ``extract-zip@2.0.1`` and left three high-severity advisories standing:
+ * GHSA-r4w5-6pfg-jxp5 and GHSA-9f4c-93c8-jc8g against Electron itself, plus
+ * GHSA-jmr9-qjv8-65gv (unvalidated symlink path traversal) against extract-zip,
+ * for which no patched version exists. Staying on 40.10.2 was therefore not a
+ * holding position that could be maintained indefinitely.
+ *
+ * The pin now moves forward to a supported Electron line. What changed is the
+ * native unpacker, not the decision to trust it blindly: the binding that failed
+ * shipped in ``@electron-internal/extract-zip`` 1.0.1/1.0.2 (June 2026), and
+ * every Electron >= 41.10.3 depends on ``^1.0.1``, which resolves to 1.0.5 or
+ * later. Note the corollary — the win32 exposure is IDENTICAL across every
+ * candidate Electron major, so choosing a newer major costs nothing on that axis
+ * and a bump must be validated on a real Windows host regardless of which major
+ * is chosen. The desktop E2E lane is Linux-only and cannot observe this failure.
+ *
+ * Bumping the pin again? Re-run a full ``npm ci`` (scripts enabled, so Electron's
+ * postinstall actually exercises the unpacker) followed by ``npm run pack`` on
+ * windows-latest, and confirm no ``ERR_DLOPEN_FAILED``. A green Linux CI run is
+ * not evidence about this bug class.
+ *
  * These tests lock the contract that prevents that drift, without hard-coding the
  * specific version (which is allowed to move):
  *

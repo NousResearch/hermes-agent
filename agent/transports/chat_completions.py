@@ -544,7 +544,7 @@ class ChatCompletionsTransport(ProviderTransport):
         _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))
 
         extra_body_from_profile, top_level_from_profile = profile.build_api_kwargs_extras(
-            reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
+            reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning"),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
             session_id=params.get("session_id"),
@@ -563,7 +563,7 @@ class ChatCompletionsTransport(ProviderTransport):
         # Profiles that don't own the reasoning policy leave reasoning emission to the
         # generic fallback — same logic as the non-profile legacy path above.
         if (
-            not profile.owns_reasoning_policy(supports_reasoning=params.get("supports_reasoning", False))
+            not profile.owns_reasoning_policy(supports_reasoning=params.get("supports_reasoning"))
             and params.get("supports_reasoning", False)
             and reasoning_config is not None
             and "reasoning" not in extra_body
@@ -592,7 +592,7 @@ class ChatCompletionsTransport(ProviderTransport):
         # non-reasoning Ollama endpoints) after all request overrides are merged.
         api_kwargs = profile.sanitize_request_kwargs(
             api_kwargs,
-            supports_reasoning=params.get("supports_reasoning", False),
+            supports_reasoning=params.get("supports_reasoning"),
             base_url=params.get("base_url"),
         )
         return _finish_kwargs(

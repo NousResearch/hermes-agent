@@ -14,6 +14,12 @@ merge that caused the bug.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import yaml
 
 from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
@@ -126,6 +132,61 @@ def test_adding_a_preset_still_works(tmp_path, monkeypatch):
     presets = _on_disk(home)["moa"]["presets"]
     assert set(presets) == {"keep_a", "doomed", "keep_b", "fresh"}
     assert presets["fresh"]["reference_models"][0]["model"] == "gpt-5.9"
+
+
+def test_named_map_does_not_receive_schema_default_on_load(tmp_path, monkeypatch):
+    """An explicit named map owns its names; loader defaults must not add ``default``."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _seed(home, monkeypatch, _three_presets())
+
+    from hermes_cli.config import load_config
+
+    loaded = load_config()
+    assert set(loaded["moa"]["presets"]) == {"keep_a", "doomed", "keep_b"}
+
+
+def test_named_map_stays_authoritative_in_a_fresh_process_and_backup_fallback(tmp_path, monkeypatch):
+    """A restart and last-known-good fallback must not reinsert the schema ``default``."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _seed(home, monkeypatch, _three_presets())
+
+    from hermes_cli.config import load_config
+
+    # The first valid load creates the real ``good`` backup used by a fresh process.
+    assert set(load_config()["moa"]["presets"]) == {"keep_a", "doomed", "keep_b"}
+    (home / "config.yaml").write_text("moa: [unterminated\n", encoding="utf-8")
+
+    probe = (
+        "import json; from hermes_cli.config import load_config; "
+        "print(json.dumps(sorted(load_config()['moa']['presets'])))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", probe],
+        cwd=__import__("pathlib").Path(__file__).resolve().parents[2],
+        env={**os.environ, "HERMES_HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert json.loads(result.stdout.splitlines()[-1]) == ["doomed", "keep_a", "keep_b"]
+
+
+def test_missing_moa_map_still_receives_schema_defaults(tmp_path, monkeypatch):
+    """Without a user MoA map, the built-in default remains available."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    from hermes_cli.config import DEFAULT_CONFIG, load_config
+    from hermes_cli.moa_config import normalize_moa_config
+
+    actual = normalize_moa_config(load_config()["moa"])
+    expected = normalize_moa_config(DEFAULT_CONFIG["moa"])
+    assert actual == expected
 
 
 def test_deletion_preserves_privacy_filter_and_retained_preset_metadata(tmp_path, monkeypatch):

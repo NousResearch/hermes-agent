@@ -1,6 +1,7 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import relativeDocLinks from './src/remark/relativeDocLinks';
 
 const config: Config = {
   title: 'Hermes Agent',
@@ -81,6 +82,9 @@ const config: Config = {
           routeBasePath: '/',  // Docs at the root of /docs/
           sidebarPath: './sidebars.ts',
           editUrl: 'https://github.com/NousResearch/hermes-agent/edit/main/website/',
+          // Relative `.md` links (readable on GitHub, #114428) must also resolve
+          // across the zh-Hans fallback boundary; see src/remark/relativeDocLinks.js.
+          beforeDefaultRemarkPlugins: [[relativeDocLinks, {siteDir: __dirname}]],
         },
         blog: false,
         theme: {
@@ -132,6 +136,11 @@ const config: Config = {
         {
           to: '/skills',
           label: 'Skills',
+          position: 'left',
+        },
+        {
+          to: '/plugins',
+          label: 'Plugins',
           position: 'left',
         },
         {

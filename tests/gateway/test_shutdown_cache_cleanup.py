@@ -76,7 +76,7 @@ class _FakeGateway:
         # inline in tests so the bounded-cleanup path is exercised.
         return func(*args)
 
-    async def _cleanup_agent_resources_off_loop(self, agent, *, context=""):
+    async def _cleanup_agent_resources_off_loop(self, agent, *, context="", session_key=None):
         # Mirror the real bounded helper, inline (no executor/timeout) so the
         # fake exercises the same call shape stop() now uses.
         self._cleanup_agent_resources(agent)

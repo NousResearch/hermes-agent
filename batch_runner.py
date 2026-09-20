@@ -58,6 +58,9 @@ _AGENT_PASSTHROUGH = (
     "base_url", "api_key", "ephemeral_system_prompt", "providers_allowed", "providers_ignored",
     "providers_order", "provider_sort", "openrouter_min_coding_score",
     "reasoning_config", "prefill_messages",
+    # Without this, every batch task run is attributed to the "unknown" execution
+    # surface in shared metrics even though "batch" is a first-class surface.
+    "platform",
 )
 
 
@@ -251,7 +254,11 @@ def _process_single_prompt(
             log_prefix=f"[B{batch_num}:P{prompt_index}]",
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
             skip_memory=True,  # Don't use persistent memory in batch runs
-            **{key: config.get(key) for key in _AGENT_PASSTHROUGH},
+            **{key: config.get(key) for key in _AGENT_PASSTHROUGH if key != "platform"},
+            # Batch is a first-class execution surface. Defaulting here (rather than
+            # relying on the caller's config dict) keeps task-run telemetry attributable
+            # even for callers that build a config without it.
+            platform=config.get("platform") or "batch",
         )
 
         # task_id ensures each task gets its own isolated VM
@@ -442,6 +449,9 @@ class BatchRunner:
         self.dataset_file = Path(dataset_file)
         for name in _RUNNER_FIELDS:
             setattr(self, name, params[name])
+        # Batch runs are their own execution surface; declaring it here keeps every
+        # worker's task-run telemetry attributable instead of falling back to "unknown".
+        self.platform = "batch"
 
         if not validate_distribution(distribution):
             raise ValueError(f"Unknown distribution: {distribution}. Available: {list(list_distributions().keys())}")
@@ -480,13 +490,13 @@ class BatchRunner:
 
                 try:
                     entry = json.loads(line)
-                    if 'prompt' not in entry:
-                        print(f"⚠️  Warning: Line {line_num} missing 'prompt' field, skipping")
-                        continue
-                    dataset.append(entry)
                 except json.JSONDecodeError as e:
                     print(f"⚠️  Warning: Invalid JSON on line {line_num}: {e}")
                     continue
+                if not isinstance(entry, dict) or 'prompt' not in entry:
+                    print(f"⚠️  Warning: Line {line_num} missing 'prompt' field, skipping")
+                    continue
+                dataset.append(entry)
 
         if not dataset:
             raise ValueError(f"No valid entries found in dataset file: {self.dataset_file}")
@@ -542,7 +552,7 @@ class BatchRunner:
                     for line in f:
                         try:
                             entry = json.loads(line.strip())
-                            if entry.get("failed", False):
+                            if not isinstance(entry, dict) or entry.get("failed", False):
                                 continue
                             prompt_text = _entry_prompt_text(entry)
                             if prompt_text:
@@ -712,6 +722,9 @@ class BatchRunner:
                         try:
                             data = json.loads(line)
 
+                            if not isinstance(data, dict):
+                                filtered_entries += 1
+                                continue
                             if data.get("discarded"):
                                 tombstone_entries += 1
                                 continue

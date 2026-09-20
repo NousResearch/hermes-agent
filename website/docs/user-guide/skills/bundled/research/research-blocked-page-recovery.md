@@ -21,7 +21,7 @@ Recover blocked/paywalled/WAF'd pages via archive snapshots and reader fallbacks
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Archives`, `Wayback`, `Paywall`, `WAF`, `Fallback` |
-| Related skills | [`grounded-citations`](/docs/user-guide/skills/bundled/research/research-grounded-citations) |
+| Related skills | [`grounded-citations`](./research-grounded-citations.md) |
 
 ## Reference: full SKILL.md
 
@@ -97,7 +97,7 @@ Rate-limits aggressively (429) and rotates domains, so iterate:
 
 ```bash
 for d in archive.ph archive.md archive.li archive.is; do
-  curl -sL --max-time 20 "https://$d/newest/{URL}" -o /tmp/page.html \
+  curl -sL --max-time 20 "https://$d/newest/{URL}" -o ~/.hermes/cache/scratch/page.html \
     -w "%{http_code}" && break
 done
 ```

@@ -333,6 +333,16 @@ linux_gate() {
     GATE=relaunch
     return
   fi
+  # Canonicalise both sides before the prefix compare. On some distros
+  # (e.g. Fedora/ostree) /home is a symlink to /var/home; the relaunch
+  # target is read from /proc/<pid>/exe, which the kernel canonicalises
+  # through symlinks, while INSTALL_ROOT keeps the original spelling —
+  # the raw prefix match then false-gates as "skew" and tells the user
+  # to reinstall an app that is fine. readlink -m canonicalises existing
+  # leading components without requiring the full path to exist (unlike
+  # -f); a no-op when both sides are already spelled the same.
+  unpacked="$(readlink -m -- "$unpacked")"
+  [ -n "$RELAUNCH_TARGET" ] && RELAUNCH_TARGET="$(readlink -m -- "$RELAUNCH_TARGET")"
   case "$RELAUNCH_TARGET" in
     "$unpacked"/*) ;;
     *) GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;
@@ -633,7 +643,7 @@ tcc_pick_update_invoke() { # sets UPDATE_INVOKE; safety net past a failed heal
 # ── self-tests: no update, touch nothing ────────────────────────────────────
 if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
   # Runs the REAL heal + invoke selection against --install-root and reports;
-  # tests/test_desktop_update_tcc_heal.py drives the state matrix through it.
+  # tests/scripts/desktop_update/test_desktop_update_tcc_heal.py drives the state matrix through it.
   trap - EXIT
   tcc_anchor_heal "$INSTALL_ROOT/venv/bin" || true
   tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"

@@ -9,6 +9,7 @@ crash-recovery wiring. Only the async lifecycle lives here; the child run is an 
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -17,8 +18,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from tools.daemon_pool import DaemonThreadPoolExecutor
@@ -83,69 +83,42 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
+    from hermes_cli.sqlite_util import open_db
+    # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
+    # hardening so this writer doesn't create/leave the file (and its WAL
+    # sidecars) at the process umask. See hermes_state._secure_state_db_files.
+    from hermes_state import _secure_state_db_files
+
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    try:
-        _initialize_schema(conn)
-    except Exception:
-        conn.close()  # don't leak the connection on PRAGMA/DDL failure
-        raise
+    _secure_state_db_files(path, create_main=True)
+    # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
+    conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
+                   wal=False, row_factory=None, initialize=_initialize_schema)
+    _secure_state_db_files(path)
     return conn
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state_repair import apply_durability_barriers
+    from hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)
-    conn.execute("""CREATE TABLE IF NOT EXISTS async_delegations (
-            delegation_id TEXT PRIMARY KEY,
-            origin_session TEXT NOT NULL,
-            origin_ui_session_id TEXT NOT NULL DEFAULT '',
-            parent_session_id TEXT,
-            state TEXT NOT NULL,
-            dispatched_at REAL NOT NULL,
-            completed_at REAL,
-            updated_at REAL NOT NULL,
-            event_json TEXT,
-            result_json TEXT,
-            delivery_state TEXT NOT NULL DEFAULT 'pending',
-            delivery_attempts INTEGER NOT NULL DEFAULT 0,
-            delivered_at REAL,
-            owner_pid INTEGER,
-            owner_started_at INTEGER,
-            task_json TEXT,
-            delivery_claim TEXT,
-            delivery_claimed_at REAL,
-            origin_session_id TEXT NOT NULL DEFAULT ''
-        )""")
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
-    # origin_session_id: raw api_server session id of the ORIGINATING request
-    # (wake target); without it restart-recovered completions are unroutable there.
-    for name, sql_type in (("owner_pid", "INTEGER"), ("owner_started_at", "INTEGER"), ("task_json", "TEXT"),
-                           ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT")):
-        if name not in columns:
-            conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    # Single durable-shape authority: the canonical SCHEMA_SQL drives both
+    # table creation and column backfill (reconcile_state_schema replays the
+    # canonical DDL and reuses SessionDB's declarative reconciliation). This
+    # module previously carried its own CREATE TABLE + ALTER column list,
+    # which drifted from SCHEMA_SQL — same-name columns with different
+    # nullability/defaults depending on which authority touched the database
+    # first (#94691).
+    reconcile_state_schema(conn)
 
 
-@contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it (``with conn:``
-    alone leaks the connection and WAL/SHM fds until GC).
+def _transaction():
+    from hermes_cli.sqlite_util import transaction
 
-    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back the transaction; they do not
-    close the connection. Using ``with _connect()`` alone therefore leaks a connection — and its WAL/SHM
-    file descriptors — on every durable dispatch, completion, and delivery-claim, deferring the close to the
-    garbage collector. On a long-running gateway that exhausts ``RLIMIT_NOFILE`` (the cron-ledger sibling of
-    this bug was #69567 / PR #69594).
-    """
-    conn = _connect()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    return transaction(_connect())
 
 
 def _capture_routing_origin() -> Dict[str, Any]:
@@ -514,8 +487,10 @@ def _new_delegation_id() -> str:
 
 
 def _prune_completed_locked() -> None:
-    """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``."""
-    completed = [(rid, r) for rid, r in _records.items() if r.get("status") != "running"]
+    """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``.
+    ``stalling``/``finalizing`` are still live: evicting one makes the late runner return hit
+    ``_finalize``'s missing-record path and silently drop a real result."""
+    completed = [(rid, r) for rid, r in _records.items() if r.get("status") not in _LIVE_STATES]
     completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
     for rid, _ in completed[: max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
         _records.pop(rid, None)
@@ -551,7 +526,16 @@ def _batch_status(combined: Dict[str, Any]) -> str:
     return "error" if child_results and all(r.get("status") not in ok for r in child_results) else "completed"
 
 
-def _dispatch(
+def _dispatch(**kwargs) -> Dict[str, Any]:
+    from hermes_cli.backend_retirement import retirement
+
+    with retirement.work() as admitted:
+        if not admitted:
+            return {"status": "rejected", "error": "backend is retiring; reconnect to continue"}
+        return _dispatch_admitted(**kwargs)
+
+
+def _dispatch_admitted(
     *, delegation_id: str, goal: str, goals: Optional[List[str]], context: Optional[str],
     toolsets: Optional[List[str]], role: str, model: Optional[str], session_key: str,
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
@@ -581,6 +565,9 @@ def _dispatch(
         "slot_key": slot_key or delegation_id,
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
+        # The one stale-monitor thread serves every profile and starts with an empty Context;
+        # a forced finalization runs under the dispatcher's so it settles the same state.db.
+        "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -611,10 +598,16 @@ def _dispatch(
         finally:
             _finalize(delegation_id, result, status)
 
+    from hermes_cli.backend_retirement import retirement
+
+    # The outer dispatch reservation prevents a freeze during this handoff. Retain a worker
+    # reservation too: the stall monitor may finalize its registry record before it really exits.
+    retirement.acquire()
     try:
-        # Propagate the dispatching profile so the detached child resolves get_hermes_home() correctly.
-        executor.submit(propagate_context_to_thread(_worker))
+        future = executor.submit(propagate_context_to_thread(_worker))
+        future.add_done_callback(lambda _: retirement.release())
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
+        retirement.release()
         with _records_lock:
             _records.pop(delegation_id, None)
         with _DB_LOCK, _transaction() as conn:
@@ -750,7 +743,11 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
-    _persist_completion(evt, result)
+    try:
+        _persist_completion(evt, result)
+    except Exception as exc:  # noqa: BLE001 — a lost durable row is recoverable; a lost result + leaked slot is not
+        logger.error(f"Async delegation{label} %s: durable completion write failed; delivering in-memory "
+                     "only (a restart may report this unit as unknown): %s", record.get("delegation_id"), exc)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -875,20 +872,30 @@ def _stale_monitor_loop() -> None:
                 fn = (_records.get(delegation_id) or {}).get("interrupt_fn")
             _call_interrupt(fn, "Async delegation %s stall interrupt failed: %s", delegation_id)
         for delegation_id in expired:
-            _finalize(delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
+            with _records_lock:
+                ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
+            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
         if not any_monitorable:
             return
+
+
+def _stalled_error_text(event_record: Dict[str, Any]) -> str:
+    """Human wording for a force-finalized stall. This string reaches the user (CLI timeline, Desktop
+    async-result card), so it names the task, how long it was silent, and what to do — no issue
+    numbers or worker internals (those stay in the log line and the stall_* metadata)."""
+    goal = " ".join(str(event_record.get("goal") or "").split())
+    label = f'Background task "{goal[:120]}"' if goal else "The background task"
+    quiet = float(event_record.get("_stall_quiet_seconds") or 0)
+    silence = f" after {round(quiet / 60)} min of no progress" if quiet >= 60 else ""
+    return (f"{label} stopped responding{silence} and was cancelled. Nothing else was affected; "
+            "ask me to run it again if you still need it.")
 
 
 def _stalled_result(delegation_id: str, event_record: Dict[str, Any]) -> Dict[str, Any]:
     """Synthetic terminal result for a stalling delegation whose runner never returned."""
     completed_at = event_record.get("completed_at") or time.time()
     duration = round(completed_at - (event_record.get("dispatched_at") or completed_at), 2)
-    error = (
-        f"Async delegation {delegation_id} stalled: the detached subagent stopped making progress "
-        "(no new API calls, tool activity, or streamed tokens), did not respond to interruption, and never "
-        "produced a completion event. The worker may be wedged inside a model API call — this is a known "
-        "failure mode of long-lived gateway processes (#60203). Re-dispatch the task if it is still needed.")
+    error = _stalled_error_text(event_record)
     logger.error("Async delegation %s force-finalized as stalled after %.0fs", delegation_id, duration)
     # Structured stall metadata lets parents/UIs distinguish a stall-monitor
     # kill from other failures without parsing the error string.

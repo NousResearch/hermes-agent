@@ -52,6 +52,22 @@ def desktop_env(tmp_path, monkeypatch):
             calls["builds"] += 1
             return _Result(1, stdout="Error: [stage-native-deps] boom")
 
+        @staticmethod
+        def _install_rebuilt_desktop_app(_desktop_dir):
+            return [], []
+
+        @staticmethod
+        def _desktop_packaged_executable(_desktop_dir):
+            return None
+
+        @staticmethod
+        def _desktop_dist_exists(_desktop_dir):
+            return False
+
+        @staticmethod
+        def _desktop_stamp_path():
+            return tmp_path / "home" / "desktop-build-stamp.json"
+
     monkeypatch.setattr(update_cmd, "_m", lambda: _FakeMain)
     monkeypatch.setattr(
         "hermes_constants.with_hermes_node_path", lambda: {}, raising=False
@@ -107,6 +123,26 @@ def test_appimage_update_skips_source_desktop_rebuild(desktop_env, monkeypatch, 
     assert _run(desktop_dir) is True
     assert calls["builds"] == 0
     assert "handled separately" in capsys.readouterr().out
+
+def test_lost_desktop_with_surviving_build_stamp_is_rebuilt(desktop_env, monkeypatch):
+    """#90495: a swap that lost release/ and dist/ in an EARLIER run leaves both presence terms false
+    forever; the build stamp under HERMES_HOME survived and is the proof Desktop was installed here."""
+    desktop_dir, calls = desktop_env
+    monkeypatch.setattr(
+        update_cmd._m(), "_run_logged_subprocess",
+        staticmethod(lambda cmd, cwd=None, env=None: calls.__setitem__("builds", calls["builds"] + 1) or _Result(0)),
+    )
+    stamp = update_cmd._m()._desktop_stamp_path()
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text('{"commit": "old"}', encoding="utf-8")
+
+    assert _rebuild_desktop_after_update(desktop_dir, had_desktop_app_before_update=False) is True
+    assert calls["builds"] == 1
+
+    # Control: no stamp and no artifacts = Desktop was never installed here; nothing is built.
+    stamp.unlink()
+    assert _rebuild_desktop_after_update(desktop_dir, had_desktop_app_before_update=False) is True
+    assert calls["builds"] == 1
 
 
 def test_desktop_never_installed_returns_true(tmp_path, monkeypatch):

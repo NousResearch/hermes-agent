@@ -303,6 +303,7 @@ def test_default_config_exposes_missed_message_backfill_settings():
         "window_seconds": 21600,
         "limit": 100,
         "max_dispatches": 10,
+        "max_attempts": 3,
     }
 
 
@@ -427,6 +428,27 @@ def test_final_delivery_remains_complete_after_processing_hook(adapter):
 
 
 @pytest.mark.asyncio
+async def test_unthreaded_final_reply_records_recovery_completion(adapter):
+    """The ledger anchor must survive reply_to_mode=off's visual suppression."""
+    adapter._reply_to_mode = "off"
+    channel = FakeChannel(channel_id=123)
+    channel.send = AsyncMock(return_value=SimpleNamespace(id=9005))
+    adapter._client.get_channel = lambda _channel_id: channel
+    message = make_message(message_id=92, channel=channel)
+    adapter._record_discord_message_seen(message, status="processing")
+
+    result = await adapter.send(
+        "123",
+        "Done",
+        metadata={"notify": True, "reply_to_message_id": "92"},
+    )
+
+    assert result.success is True
+    assert channel.send.await_args.kwargs["reference"] is None
+    assert adapter._discord_message_is_persistently_complete("92") is True
+
+
+@pytest.mark.asyncio
 async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(adapter, monkeypatch):
     class RealisticChannel(FakeChannel):
         def history(self, **kwargs):
@@ -458,3 +480,105 @@ async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(a
     assert got == [2, 3, 4]
 
 
+@pytest.mark.asyncio
+async def test_iter_candidates_skips_obfuscated_channel_on_explicit_ids(adapter, monkeypatch):
+    """A channel the bot lost VIEW_CHANNEL on (Discord obfuscation) is dropped even when
+    listed by explicit id — history reads on it always fail (#90154)."""
+    from gateway.platforms.helpers import DISCORD_CHANNEL_OBFUSCATED_FLAG
+
+    visible = FakeChannel(channel_id=1, history_messages=[make_message(message_id=11)])
+    hidden = FakeChannel(channel_id=2, history_messages=[make_message(message_id=22)])
+    hidden.name = "___hidden___"
+    hidden.flags = SimpleNamespace(value=DISCORD_CHANNEL_OBFUSCATED_FLAG)
+    adapter._client.get_channel = lambda channel_id: {1: visible, 2: hidden}[channel_id]
+
+    got = [msg.id async for msg in adapter._iter_missed_message_backfill_candidates({"1", "2"})]
+
+    assert got == [11]
+
+
+def test_success_outcome_completes_row_without_reply_anchor(adapter):
+    """A delivered final with no Discord reply anchor (reply_to_mode=off, streamed edit, media-only
+    reply) must still complete the ledger row, or backfill re-dispatches it on every reconnect."""
+    message = make_message(message_id=93)
+    event = MessageEvent(text=message.content, message_type=MessageType.TEXT, raw_message=message, message_id="93")
+
+    adapter._record_discord_processing_start(event, emoji_ack=False)
+    adapter._record_discord_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert adapter._discord_message_is_persistently_complete("93") is True
+
+    failed = make_message(message_id=94)
+    failed_event = MessageEvent(text=failed.content, message_type=MessageType.TEXT, raw_message=failed, message_id="94")
+    adapter._record_discord_processing_start(failed_event, emoji_ack=False)
+    adapter._record_discord_processing_complete(failed_event, ProcessingOutcome.FAILURE)
+    assert adapter._discord_message_is_persistently_complete("94") is False
+
+
+@pytest.mark.asyncio
+async def test_redispatch_of_one_message_is_bounded(adapter, monkeypatch):
+    """A row that never completes is dispatched at most max_attempts times across scans, and a scan
+    must not erase the in-flight claim of a dispatch that has not finished yet."""
+    bot_user = adapter._client.user
+    message = make_message(message_id=95, content=f"<@{bot_user.id}> please ingest", mentions=[bot_user])
+
+    async def fake_candidates(_channels):
+        yield message
+
+    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", fake_candidates)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
+    monkeypatch.setattr(adapter, "_missed_message_backfill_max_attempts", lambda: 2)
+
+    # Dispatch leaves the row 'processing' (turn still running): back-to-back scans re-offer it.
+    async def dispatch_and_stay_processing(msg, **_kwargs):
+        adapter._record_discord_message_seen(msg, status="processing")
+        return True
+
+    adapter._handle_message = AsyncMock(side_effect=dispatch_and_stay_processing)
+    for _ in range(3):
+        adapter._dedup.discard("95")
+        await adapter._run_missed_message_backfill()
+    assert adapter._handle_message.await_count == 1  # active claim survives the scan's 'discovered' write
+
+    # Claim expired (turn died): the lifetime cap still bounds total re-dispatch.
+    def _expire(conn):
+        conn.execute("UPDATE discord_messages SET status='failed' WHERE message_id='95'")
+    adapter._with_discord_recovery_db(_expire)
+    adapter._handle_message = AsyncMock(return_value=True)
+    for _ in range(4):
+        adapter._dedup.discard("95")
+        await adapter._run_missed_message_backfill()
+        adapter._with_discord_recovery_db(_expire)
+    assert adapter._handle_message.await_count == 1  # attempts: 1 (above) + 1 == max_attempts
+
+
+@pytest.mark.asyncio
+async def test_stored_cursor_cannot_widen_scan_window_or_leak_into_threads(adapter):
+    """after = max(cursor, now - window): an old cursor must not resurrect messages outside the window,
+    and a parent channel's cursor is never applied to its child threads."""
+    class RecordingChannel(FakeChannel):
+        def __init__(self, *args, threads=(), **kwargs):
+            super().__init__(*args, **kwargs)
+            self.threads = list(threads)
+            self.seen_after = []
+
+        def history(self, **kwargs):
+            self.seen_after.append(kwargs["after"])
+            return super().history(**kwargs)
+
+    thread = RecordingChannel(channel_id=456, parent_id=123)
+    channel = RecordingChannel(channel_id=123, threads=[thread])
+    window_floor = datetime.now(timezone.utc) - dt.timedelta(hours=1)
+    old_cursor = ((int((window_floor - dt.timedelta(hours=11)).timestamp() * 1000) - 1420070400000) << 22)
+    fresh_cursor = ((int((window_floor + dt.timedelta(minutes=30)).timestamp() * 1000) - 1420070400000) << 22)
+
+    adapter._advance_discord_recovery_cursor("123", str(old_cursor))
+    async for _ in adapter._iter_channel_and_thread_messages(channel, limit=10, after=window_floor, seen_channels=set()):
+        pass
+    assert channel.seen_after == [window_floor]  # stale cursor ignored
+    assert thread.seen_after == [window_floor]  # parent's cursor not inherited
+
+    adapter._advance_discord_recovery_cursor("123", str(fresh_cursor))
+    async for _ in adapter._iter_channel_and_thread_messages(channel, limit=10, after=window_floor, seen_channels=set()):
+        pass
+    assert not isinstance(channel.seen_after[-1], dt.datetime)  # newer cursor narrows (discord.Object)
+    assert thread.seen_after[-1] == window_floor

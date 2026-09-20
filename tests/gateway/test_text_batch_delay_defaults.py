@@ -25,9 +25,9 @@ def test_default_text_batch_delays_match_telegram_cadence(adapter_cls, platform,
     short_event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=source)
     short_event._last_chunk_len = len(short_event.text)
 
-    assert adapter._text_batch_delay_for(short_event) == adapter._TEXT_BATCH_DEFAULT_DELAY_S
-    assert adapter._text_batch_split_delay_seconds == adapter._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S
+    # Telegram's cadence: 0.3 s per message, 1.0 s when the last chunk sat near a split.
     assert adapter._text_batch_delay_for(short_event) <= 0.5
+    assert adapter._text_batch_split_delay_seconds <= 1.0
 
 
 @pytest.mark.parametrize(

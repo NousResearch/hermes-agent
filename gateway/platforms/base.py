@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import ipaddress
 import logging
+import math
 import os
 import random
 import re
@@ -2393,7 +2394,6 @@ class BasePlatformAdapter(ABC):
 
     def _coerce_float_extra(self, key: str, default: float, *, min_value: float = 0.0, max_value: Optional[float] = None) -> float:
         """Float from ``config.extra``; NaN/Inf/negative/unparseable → ``default``; clamped to ``[min_value, max_value]``."""
-        import math
         extra = getattr(self.config, "extra", None) or {}
         try:  # float(None) → TypeError → default
             parsed = float(extra.get(key))
@@ -2401,7 +2401,10 @@ class BasePlatformAdapter(ABC):
             parsed = float(default)
         if not math.isfinite(parsed) or parsed < 0:
             parsed = float(default)
-        return min(max(parsed, min_value), max_value) if max_value is not None else max(parsed, min_value)
+        parsed = max(parsed, min_value)
+        if max_value is not None:
+            parsed = min(parsed, max_value)
+        return parsed
 
     def _configure_text_batch_delays(self) -> None:
         """Read ``text_batch_delay_seconds`` / ``text_batch_split_delay_seconds`` from ``config.extra`` at the shared cadence."""

@@ -1226,21 +1226,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         return bool(value)
 
-    def _coerce_float_extra(
-        self, key: str, default: float, *, min_value: Optional[float] = None, max_value: Optional[float] = None) -> float:
-        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
-        if value is None:
-            return default
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return default
-        if min_value is not None:
-            parsed = max(parsed, min_value)
-        if max_value is not None:
-            parsed = min(parsed, max_value)
-        return parsed
-
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
             return {}

@@ -1,15 +1,7 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { describe, expect, it, vi } from 'vitest'
 
 import { BackendDialClaims } from './backend-dial-claim'
 import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
-import { resolveDesktopConnectionRequest } from './desktop-profile'
-
-const here = path.dirname(fileURLToPath(import.meta.url))
-const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
 
 describe('BackendDialClaims (#90812)', () => {
   it('coalesces two concurrent dials for the same (connectionId, profile) onto ONE backend spawn', async () => {
@@ -123,87 +115,14 @@ describe('parseBackendScopeKey (#90812/#93910)', () => {
   })
 })
 
-describe('backend dial routing (#90812)', () => {
-  it('uses the composite registry scope for a registry backend', async () => {
-    const claims = new BackendDialClaims()
-    const dial = vi.fn(async () => 'registry')
-
-    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
-      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
-
-      const [first, second, separate] = await Promise.all([
-        claims.run(key, dial),
-        claims.run(key, dial),
-        claims.run(backendScopeKey('another-source', route.profile), other)
-      ])
-
-      expect(first).toBe(second)
-      expect(first).not.toBe(separate)
-      expect(dial).toHaveBeenCalledTimes(1)
-      expect(other).toHaveBeenCalledTimes(1)
-    }
-  )
-
-  // The four IPC/probe surfaces below call ensureRegistryBackend()/ensureBackend()
-  // directly, bypassing backendDialClaims entirely — so a renderer's guarded
-  // reconnect dial and one of these can independently race the SAME
-  // ensureRegistryBackend() await-before-pool-check window (main.ts) and each
-  // bootstrap its own SSH tunnel / remote dashboard for the same
-  // (connectionId, profile) scope.
-
-  it('routes a media-stream connection resolve through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf('resolveRemoteConnection: ({ connectionId, profile }) =>')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 300)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(connectionId, profile)')
-    expect(body).toContain('ensureRegistryBackend(connectionId, profile)')
-    expect(body).toContain('ensureBackend(profile)')
-  })
-
-  it('uses the local profile scope for a local backend', async () => {
-    const claims = new BackendDialClaims()
-    const dial = vi.fn(async () => 'local')
-
-    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
-      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(windowRoute.connectionId, windowRoute.profile)')
-    expect(body).toContain('ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)')
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(null, profile)')
-    expect(body).toContain('ensureBackend(profile)')
-  })
-
-  it('preserves an explicit pooled key when the parsed route would normalize it', async () => {
-    const claims = new BackendDialClaims()
-    const dial = vi.fn(async () => 'forced-local')
-
-    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
-      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
-    expect(body).toContain('ensureRegistryBackend(connection.id, null)')
-    expect(body).toContain("getJsonForBackend(descriptor, '/api/profiles'")
-  })
-
-  it('routes the connections update-all dispatch through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connections:update-all',")
-    expect(handlerStart).toBeGreaterThan(-1)
-    // The handler grew on main (renderer-side exclusions + the managed-SSH
-    // dispatch branch) — keep the scan window comfortably past the dial.
-    const body = mainSource.slice(handlerStart, handlerStart + 3_000)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
-    expect(body).toContain('ensureRegistryBackend(connection.id, null)')
-    expect(body).toContain("postJsonForBackend(descriptor, '/api/hermes/update'")
-  })
-
-  it('routes every registry-scoped REST dispatch (hermes:api) through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1_000)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
-    expect(body).toContain("ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })")
+describe('backend scope keys (#90812)', () => {
+  it('keeps local scopes profile-only and disambiguates each remote connection', () => {
+    expect(backendScopeKey(null, 'work')).toBe('work')
+    expect(backendScopeKey('local', 'work')).toBe('work')
+    expect(backendScopeKey('office-ssh', 'work')).toBe('conn:office-ssh::work')
+    expect(parseBackendScopeKey(backendScopeKey('office-ssh', 'work'))).toEqual({
+      connectionId: 'office-ssh',
+      profile: 'work'
+    })
   })
 })

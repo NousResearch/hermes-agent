@@ -1293,18 +1293,21 @@ def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = 
 def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
-    include_moa: bool = False, excluded_providers: list | None = None) -> List[dict]:
+    include_moa: bool = False, excluded_providers: list | None = None,
+    non_blocking_catalogs: bool = False) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
     snapshot filtered against the live catalog) and rows left with no models are dropped — except
-    custom endpoints, where the user may supply their own model set through config."""
+    custom endpoints, where the user may supply their own model set through config.
+    ``non_blocking_catalogs`` is forwarded unchanged (cache-only catalogs, background warm)."""
     from hermes_cli.model_switch import list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
         user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
-        current_model=current_model, for_picker=True, excluded_providers=excluded_providers)
+        current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
+        non_blocking_catalogs=non_blocking_catalogs)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 

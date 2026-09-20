@@ -308,16 +308,19 @@ def _process_start_time(pid: int) -> Optional[float]:
         return None
 
 
-_OWN_START_TIME: dict[int, Optional[float]] = {}
+_OWN_START: tuple[int, float] | None = None  # (pid, create_time); published atomically, re-read after fork
 
 
 def _own_start_time() -> Optional[float]:
-    """This process's create_time, read from psutil once per pid (survives fork)."""
+    """This process's create_time, read from psutil once instead of per lease probe."""
+    global _OWN_START
     pid = os.getpid()
-    if pid not in _OWN_START_TIME:
-        _OWN_START_TIME.clear()
-        _OWN_START_TIME[pid] = _process_start_time(pid)
-    return _OWN_START_TIME[pid]
+    if _OWN_START is None or _OWN_START[0] != pid:
+        start = _process_start_time(pid)
+        if start is None:
+            return None
+        _OWN_START = (pid, start)
+    return _OWN_START[1]
 
 
 def _optional_float(value: Any) -> Optional[float]:
@@ -339,22 +342,18 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
         pid_int = 0
     if pid_int <= 0:
         return unknown_dead
-    if pid_int == os.getpid():
-        # Our own pid trivially exists; only the start-time identity check remains
-        # (a lease claiming our pid with a start we never had is a recycled pid).
-        exists = True
-    else:
+    is_self = pid_int == os.getpid()  # trivially exists; the (pid, start) identity check still applies
+    if not is_self:
         try:
             from gateway.status import _pid_exists
-            exists = bool(_pid_exists(pid_int))
+            if not _pid_exists(pid_int):
+                return False
         except Exception:
             return unknown_dead
-    if not exists:
-        return False
     expected_start = _optional_float(process_start_time)
     if expected_start is None:
         return True
-    current_start = _own_start_time() if pid_int == os.getpid() else _process_start_time(pid_int)
+    current_start = _own_start_time() if is_self else _process_start_time(pid_int)
     if current_start is None:
         return True if lenient else None
     return abs(current_start - expected_start) < 0.001
@@ -469,7 +468,7 @@ def _lease_entry(
         "session_id": str(session_id),
         "surface": str(surface),
         "pid": os.getpid(),
-        "process_start_time": _process_start_time(os.getpid()),
+        "process_start_time": _own_start_time(),
         "started_at": now,
         "updated_at": now,
     }

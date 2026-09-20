@@ -134,8 +134,9 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
 _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
-_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0  # /loop and /heartbeat share one idle-poll cadence
-_BOT_DELIVERY_POLL_SECONDS = 5.0  # idle CPU: do not probe leases on every 0.5s queue timeout
+# kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
+# every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
+_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
 
 
 def _notif_release_turn(session: dict) -> None:
@@ -649,33 +650,31 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     return started
 
 
-# A failing mailbox poll (typically the active-session registry lock unavailable under contention) retries
-# every ``queue.get`` slice; back off between attempts and log the failure once per window, not per attempt.
-_BOT_POLL_FAILURE_BACKOFF_S = 5.0
+# A failing mailbox poll (typically the active-session registry lock unavailable under contention) is
+# retried on the next ``_BOT_DELIVERY_POLL_SECONDS`` pass; log the failure once per window, not per attempt.
 _BOT_POLL_WARN_INTERVAL_S = 60.0
 
 
-def _poll_bot_live_delivery_guarded(sid: str, session: dict, now: float) -> None:
-    """One poller-loop pass of the mailbox poll: skipped while backing off after a failure; a failure is
-    logged at WARNING once per ``_BOT_POLL_WARN_INTERVAL_S`` (with the count of suppressed repeats) and at
-    DEBUG otherwise. An unthrottled poll logged ``Bot live-owner delivery poll failed`` ~2×/minute per session
-    for days, 91% of an install's WARNING output (#111719)."""
-    if now < session.get("_bot_poll_retry_at", 0.0):
-        return
+def _poll_bot_live_delivery_guarded(sid: str, session: dict, now: float) -> bool:
+    """One poller-loop pass of the mailbox poll. Returns True when a delivery turn was started, so the
+    caller can poll again at tick cadence while the mailbox is draining. A failure is logged at WARNING
+    once per ``_BOT_POLL_WARN_INTERVAL_S`` (with the count of suppressed repeats) and at DEBUG otherwise.
+    An unthrottled poll logged ``Bot live-owner delivery poll failed`` ~2×/minute per session for days,
+    91% of an install's WARNING output (#111719)."""
     try:
-        _poll_bot_live_delivery_once(sid, session)
+        started = _poll_bot_live_delivery_once(sid, session)
     except Exception:
-        session["_bot_poll_retry_at"] = now + _BOT_POLL_FAILURE_BACKOFF_S
         suppressed = int(session.get("_bot_poll_warn_suppressed", 0))
         if now - session.get("_bot_poll_warned_at", -_BOT_POLL_WARN_INTERVAL_S) < _BOT_POLL_WARN_INTERVAL_S:
             session["_bot_poll_warn_suppressed"] = suppressed + 1
             logger.debug("Bot live-owner delivery poll failed (repeat)", exc_info=True)
-            return
+            return False
         session["_bot_poll_warned_at"], session["_bot_poll_warn_suppressed"] = now, 0
         logger.warning("Bot live-owner delivery poll failed (%d repeat(s) suppressed since the last report)",
                        suppressed, exc_info=True)
-        return
+        return False
     session["_bot_poll_warn_suppressed"] = 0
+    return started
 
 
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
@@ -702,8 +701,8 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
         if now - last_bot_poll >= _BOT_DELIVERY_POLL_SECONDS:
-            last_bot_poll = now
-            _poll_bot_live_delivery_guarded(sid, session, now)
+            # A mailbox that just handed out a turn drains at tick cadence; an idle one waits the full window.
+            last_bot_poll = 0.0 if _poll_bot_live_delivery_guarded(sid, session, now) else now
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

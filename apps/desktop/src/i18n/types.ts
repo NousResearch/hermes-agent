@@ -836,6 +836,8 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      largePasteAttachTitle: string
+      largePasteAttachDesc: string
       showOptions: string
     }
     screenshot: {

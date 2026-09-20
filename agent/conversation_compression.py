@@ -2319,7 +2319,11 @@ def _durable_compaction_projection(messages: list) -> tuple[list, set[int]]:
             ):
                 source, _ = projected.pop()
                 removed_source_ids.add(id(source))
-            if projected and _role(projected[-1][1]) == _role(candidate) == "user":
+            if (
+                projected
+                and isinstance(projected[-1][1], dict)
+                and projected[-1][1].get("role") == candidate.get("role") == "user"
+            ):
                 source, previous = projected[-1]
                 previous = dict(previous)
                 separator = "\n\n" if _message_text(previous).strip() else ""
@@ -2366,7 +2370,11 @@ def _cleanup_ephemeral_todo_tail(messages: list, ephemeral_flags: tuple[str, ...
         and any(messages[-2].get(flag) for flag in ephemeral_flags)
     ):
         messages.pop(-2)
-    if len(messages) > 1 and _role(messages[-2]) == _role(messages[-1]) == "user":
+    if (
+        len(messages) > 1
+        and isinstance(messages[-2], dict)
+        and messages[-2].get("role") == messages[-1].get("role") == "user"
+    ):
         snapshot = messages[-1].get("content")
         previous = messages[-2]
         separator = "\n\n" if _message_text(previous).strip() else ""

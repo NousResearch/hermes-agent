@@ -350,6 +350,10 @@ def test_install_user_service_writes_unit_and_enables_it(tmp_path, monkeypatch):
         ["systemctl", "--user", "enable", "--now", broker.USER_SERVICE_NAME],
     ]
     assert all(call[1]["check"] is True for call in calls)
+    probe_kwargs = calls[0][1]
+    assert probe_kwargs["stdin"] is subprocess.DEVNULL
+    assert probe_kwargs["stdout"] is subprocess.DEVNULL
+    assert probe_kwargs["stderr"] is subprocess.PIPE
 
 
 @pytest.mark.linux_only
@@ -925,9 +929,7 @@ def test_install_user_service_rejects_cross_uid_allowlist(monkeypatch):
     )
 
     with pytest.raises(SystemExit):
-        broker.main(
-            ["--install-user-service", "--allow-uid", str(os.geteuid() + 1)]
-        )
+        broker.main(["--install-user-service", "--allow-uid", str(os.geteuid() + 1)])
 
 
 @pytest.mark.linux_only
@@ -2224,12 +2226,18 @@ def test_detached_launch_reply_acknowledges_protocol_and_process_identity(
         "_recv_request",
         lambda *_args: (None, False, ["/bin/true"], str(tmp_path), {}, {}, True),
     )
-    monkeypatch.setattr(broker, "_launch", lambda *_args, **_kwargs: process)
+    launched = {}
+
+    def fake_launch(*_args, **kwargs):
+        launched.update(kwargs)
+        return process
+
+    monkeypatch.setattr(broker, "_launch", fake_launch)
     monkeypatch.setattr(broker, "_process_start_time", lambda _pid: 9876)
     monkeypatch.setattr(broker, "_exited_unreaped", lambda _pid: True)
     monkeypatch.setattr(broker, "_terminate", lambda _proc: None)
 
-    broker._serve_connection(conn, str(root), HANDSHAKE_TIMEOUT, leases)
+    broker._serve_connection(conn, str(root), 0.25, leases)
 
     assert conn.replies[0] == {
         "ok": True,
@@ -2239,6 +2247,7 @@ def test_detached_launch_reply_acknowledges_protocol_and_process_identity(
         "systemd_unit": "hermes-local-exec-test.scope",
     }
     assert conn.recv_calls == 1
+    assert launched["exec_timeout"] == broker.DEFAULT_EXEC_TIMEOUT
 
 
 @pytest.mark.linux_only

@@ -121,6 +121,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_REPLY_BYTES = 65536
 MAX_SOCKET_PATH_BYTES = 107
 DEFAULT_HANDSHAKE_TIMEOUT = 10.0
+DEFAULT_EXEC_TIMEOUT = 10.0
 _SYSTEMD_LOCATORS = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
 
 _INT_SIZE = array.array("i").itemsize
@@ -296,7 +297,13 @@ def _install_user_service(
 ) -> Path:
     """Install and start the explicit systemd user-service contract."""
     # Do not leave a unit behind when this login has no reachable user manager.
-    subprocess.run(["systemctl", "--user", "show-environment"], check=True)
+    subprocess.run(
+        ["systemctl", "--user", "show-environment"],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
     service_dir.mkdir(parents=True, exist_ok=True)
     unit_path = service_dir / USER_SERVICE_NAME
     unit_path.write_text(
@@ -834,7 +841,7 @@ def _launch(
     cwd=None,
     stdio_fds=None,
     systemd_containment: _SystemdContainment | None = None,
-    exec_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT,
+    exec_timeout: float = DEFAULT_EXEC_TIMEOUT,
 ):
     """Spawn the child with everything handed over explicitly."""
     child_env = dict(env)
@@ -1347,7 +1354,7 @@ def _serve_connection(
                 cwd=cwd,
                 stdio_fds=stdio_fds,
                 systemd_containment=systemd_containment,
-                exec_timeout=handshake_timeout,
+                exec_timeout=DEFAULT_EXEC_TIMEOUT,
             )
             if detached:
                 try:

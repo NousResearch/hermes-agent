@@ -294,15 +294,76 @@ def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
         return None
 
 
+_CODE_ROOT_MAX_DEPTH = 8
+
+
+def _code_root_for_path(raw: Any) -> Optional[Path]:
+    """Return the Hermes checkout containing an absolute module or venv path."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    with suppress(Exception):
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            return None
+        for parent in [candidate, *candidate.parents][:_CODE_ROOT_MAX_DEPTH]:
+            if (parent / "hermes_cli" / "main.py").is_file():
+                return parent.resolve()
+    return None
+
+
+def _updater_code_root() -> Optional[Path]:
+    return _code_root_for_path(str(Path(__file__).resolve()))
+
+
+def _gateway_code_root(pid: int, home: Path) -> Optional[Path]:
+    """Resolve a running gateway's checkout from pid-guarded argv or process env."""
+    with suppress(Exception):
+        from gateway.status import read_runtime_status
+        record = read_runtime_status(home / "gateway_state.json") or {}
+        if int(record.get("pid")) == pid:
+            for probe in record.get("argv") or []:
+                root = _code_root_for_path(probe)
+                if root:
+                    return root
+    with suppress(Exception):
+        import psutil
+        process = psutil.Process(pid)
+        root = _code_root_for_path((process.environ() or {}).get("VIRTUAL_ENV"))
+        if root:
+            return root
+        probes = []
+        with suppress(Exception):
+            probes.append(process.exe())
+        with suppress(Exception):
+            probes.extend(process.cmdline() or [])
+        for probe in probes:
+            root = _code_root_for_path(probe)
+            if root:
+                return root
+    return None
+
+
 def _fleet_row(
     profile: str, pid: int, code_sha: Any, code_version: Any, expected_sha: Any,
     state: str = "unknown", served_profiles: Any = None,
+    code_root: Optional[Path] = None, expected_root: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if (
+        state == "unknown"
+        and code_root
+        and expected_root
+        and code_root != expected_root
+        and code_sha
+        and expected_sha
+        and str(code_sha) != str(expected_sha)
+    ):
+        state = "external"
     if state == "unknown" and code_sha and expected_sha:
         state = "current" if str(code_sha) == str(expected_sha) else "stale"
     row = {
         "profile": profile, "pid": pid, "code_sha": str(code_sha) if code_sha else None,
         "code_version": code_version, "state": state,
+        "code_root": str(code_root) if code_root else None,
     }
     # A live, identity-verified multiplexer represents every profile in this
     # list. Keep the field only when its shape is usable: callers use it to
@@ -313,6 +374,13 @@ def _fleet_row(
     ):
         row["served_profiles"] = list(dict.fromkeys(served_profiles))
     return row
+
+
+EXTERNAL_STATE = "external"
+
+
+def row_is_external(row: Any) -> bool:
+    return isinstance(row, dict) and row.get("state") == EXTERNAL_STATE
 
 
 # Runtime-status states that do not describe a gateway that should be running now — no down row.
@@ -340,6 +408,7 @@ def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> l
     _pre_restart = {int(p) for p in (pre_restart_pids or []) if isinstance(p, int)}
     results: list[dict[str, Any]] = []
     expected_sha = _code_identity(refresh=True).get("sha")
+    expected_root = _updater_code_root()
     try:
         from gateway.status import (
             live_gateway_pid_for_home,
@@ -354,6 +423,7 @@ def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> l
                 row = _fleet_row(
                     profile, pid, identity.get("code_sha"), identity.get("code_version"), expected_sha,
                     served_profiles=identity.get("served_profiles"),
+                    code_root=_gateway_code_root(pid, home), expected_root=expected_root,
                 )
                 results.append({**row, "source": "socket"})
                 continue
@@ -372,6 +442,7 @@ def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> l
                     _fleet_row(
                         profile, pid, record.get("code_sha"), record.get("code_version"), expected_sha,
                         served_profiles=record.get("served_profiles"),
+                        code_root=_gateway_code_root(pid, home), expected_root=expected_root,
                     )
                 )
                 continue
@@ -402,6 +473,7 @@ _FLEET_ROW_LINES = {
     "current": "  ✓ {profile} (pid {pid}) @ {short} — up to date",
     "stale": "  ✗ {profile} (pid {pid}) @ {short} — STALE (pre-update code)",
     "down": "  ✗ {profile} — DOWN (gateway was running before the update; pid {pid} is gone and nothing replaced it)",
+    "external": "  ◆ {profile} (pid {pid}) @ {short} — separate checkout, not updated by this run",
 }
 _FLEET_ROW_UNKNOWN = "  ? {profile} (pid {pid}) — version unknown (gateway predates version stamping; restart to enable)"
 # A gateway pid the pre-update snapshot did not know that had not published its code identity when

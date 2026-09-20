@@ -5,7 +5,7 @@ inherited ONLY across a compression fork, because "peer recovery could repoint t
 subagent's session" — but the SQL gated on the PARENT's ``end_reason`` alone.  A delegate child
 whose gateway parent had already rotated on compression (long batch, queued child, detached unit)
 therefore took the chat's ``session_key``/``chat_id``/``user_id``, leaving two live rows holding one
-routing key (NousResearch/hermes-agent#92859).
+routing key (NousResearch/hermes-agent#116322, first reported as #92859).
 
 Real ``SessionDB`` on a temp path, no mocks: the contract asserted here is the RELATIONSHIP between
 the two child kinds — a compression continuation keeps inheriting, a delegate/branch fork does not.
@@ -54,3 +54,22 @@ def test_delegate_and_branch_children_do_not_take_over_the_parent_route(db: Sess
         # The continuation IS the conversation; the worker is an internal transcript.
         assert continuation[column] == parent[column], column
         assert worker[column] is None, column
+
+
+def test_compression_continuation_of_a_branch_child_keeps_inheriting(db: SessionDB) -> None:
+    """A continuation copies model_config verbatim — the branch marker comes along — so the
+    exclusion must match the marker's VALUE against the parent id, not its mere presence."""
+    db.create_session("root", source="telegram")
+    db.create_session(
+        "branch", source="telegram", parent_session_id="root", model_config={"_branched_from": "root"},
+        session_key="agent:main:telegram:dm:42", chat_id="42", chat_type="dm", user_id="u1",
+    )
+    db.end_session("branch", "compression")
+
+    db.create_session(
+        "continuation", source="telegram", parent_session_id="branch", model_config={"_branched_from": "root"},
+    )
+
+    continuation = db.get_session("continuation")
+    assert continuation["session_key"] == "agent:main:telegram:dm:42"
+    assert continuation["chat_id"] == "42" and continuation["user_id"] == "u1"

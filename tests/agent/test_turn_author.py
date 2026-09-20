@@ -23,6 +23,10 @@ class TestParseTurnAuthor:
     def test_junk_and_authors_without_id_or_name_return_none(self, raw):
         assert parse_turn_author(raw) is None
 
+    def test_optional_platform_is_preserved_for_transport_provenance(self):
+        author = {"id": "123456", "name": "Alice", "is_bot": False, "platform": "discord"}
+        assert parse_turn_author(author) == author
+
 
 class TestEnvCarrier:
     def test_round_trip_through_env(self):

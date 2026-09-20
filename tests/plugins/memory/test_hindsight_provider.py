@@ -978,6 +978,51 @@ class TestSyncTurn:
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
         assert item["timestamp"] == event_time.isoformat(timespec="seconds")
 
+    def test_sync_turn_keeps_sender_provenance_outside_semantic_content(self, provider):
+        provider._platform = "discord"
+        provider.sync_turn(
+            "clean inbound text", "clean assistant reply",
+            turn_author={"id": "123456", "name": "Alice", "is_bot": False, "platform": "discord"},
+        )
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        content = json.loads(item["content"])
+        assert content[0][0]["content"] == "User: clean inbound text"
+        assert "123456" not in item["content"]
+        assert "Alice" not in item["content"]
+        assert item["metadata"]["turn_author_platform"] == "discord"
+        assert item["metadata"]["turn_author_id"] == "123456"
+        assert json.loads(item["metadata"]["turn_authors"]) == [{
+            "turn_index": 1, "platform": "discord", "is_bot": False,
+            "id": "123456", "name": "Alice",
+        }]
+        assert "sender:discord:123456" in item["tags"]
+
+    def test_batched_retain_keeps_each_sender_provenance(self, provider_with_config):
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        p._platform = "discord"
+        p.sync_turn(
+            "first clean text", "first reply",
+            turn_author={"id": "111", "name": "Alice", "is_bot": False, "platform": "discord"},
+        )
+        p.sync_turn(
+            "second clean text", "second reply",
+            turn_author={"id": "222", "name": "Bob", "is_bot": False, "platform": "discord"},
+        )
+        p._retain_queue.join()
+
+        items = p._client.aretain_batch.call_args.kwargs["items"]
+        assert len(items) == 2
+        assert [json.loads(item["metadata"]["turn_authors"])[0]["id"] for item in items] == ["111", "222"]
+        assert [json.loads(item["metadata"]["turn_authors"])[0]["turn_index"] for item in items] == [1, 2]
+        assert "sender:discord:111" in items[0]["tags"]
+        assert "sender:discord:222" in items[1]["tags"]
+        assert all("session:test-session" in item["tags"] for item in items)
+        contents = [json.dumps(json.loads(item["content"])) for item in items]
+        assert "first clean text" in contents[0] and "second clean text" in contents[1]
+        assert "111" not in contents[0] and "222" not in contents[1]
+
     def test_retain_timestamp_normalizes_a_naive_clock(self, provider, monkeypatch):
         event_time = datetime(2026, 8, 10, 11, 9)
         monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)

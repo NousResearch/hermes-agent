@@ -222,6 +222,40 @@ class TestRunAgentViaProxy:
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
 
+    @pytest.mark.asyncio
+    async def test_forwards_plain_text_and_structured_turn_author(self, monkeypatch):
+        """Proxy mode must not reintroduce sender framing while carrying author metadata."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source()
+        session = _FakeSession(_FakeSSEResponse(
+            status=200,
+            sse_chunks=['data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'],
+        ))
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    await runner._run_agent_via_proxy(
+                        message="hello",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="session-abc",
+                        persist_user_message="clean hello",
+                        turn_author={
+                            "id": "@user:server.org", "name": "testuser", "is_bot": False,
+                            "platform": "matrix",
+                        },
+                    )
+
+        assert session.captured_json["author"] == {
+            "id": "@user:server.org", "name": "testuser", "is_bot": False,
+            "platform": "matrix",
+        }
+        assert session.captured_json["_hermes_persist_user_message"] == "clean hello"
+        assert session.captured_json["messages"] == [{"role": "user", "content": "hello"}]
+
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):
@@ -485,4 +519,3 @@ class TestEnvVarRegistration:
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
         assert info["category"] == "messaging"
         assert info["password"] is False
-

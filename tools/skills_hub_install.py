@@ -285,8 +285,16 @@ def check_for_skill_updates(
             # instead of re-paying it on every update run (#104291).
             results.append({**row, "status": "orphaned"})
             continue
+        matching = [src for src in sources if _source_matches(src, source_name)]
+        recorded = (entry.get("metadata") or {}).get("source_revision", "")
+        if recorded and any(src.current_revision(identifier) == recorded for src in matching):
+            # Same upstream tree as at install time: the bundle bytes cannot differ, so
+            # skip downloading SKILL.md + every support blob just to re-hash them (#101454).
+            content_hash = entry.get("content_hash", "")
+            results.append({**row, "status": "up_to_date", "current_hash": content_hash, "latest_hash": content_hash})
+            continue
         bundle = None
-        for src in filter(lambda s: _source_matches(s, source_name), sources):
+        for src in matching:
             try:
                 bundle = src.fetch(identifier)
             except Exception:

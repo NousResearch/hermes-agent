@@ -286,6 +286,14 @@ class GitHubSource(SkillSource):
             trust_level=self.trust_level_for(identifier), metadata={"source_url": url, "source_revision": revision},
         )
 
+    def current_revision(self, identifier: str) -> str:
+        """Tree sha the default branch currently resolves to — one cached tree lookup per repo,
+        no blob downloads — so an update check can skip refetching unchanged skills."""
+        if (split := _split_repo_id(identifier)) is None:
+            return ""
+        self._get_repo_tree(split[0])
+        return self._tree_revisions.get(split[0], "")
+
     def _add_support_file(self, repo: str, item_path: str, rel_path: str, files: dict, shown: str, **kw) -> None:
         """Fetch one support file into ``files``; a failed fetch warns (naming ``shown``) and is skipped."""
         content = self._fetch_file_bytes(repo, item_path, **kw)

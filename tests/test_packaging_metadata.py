@@ -25,6 +25,14 @@ def _distribution_name(requirement: str) -> str:
     return spec.strip().lower()
 
 
+def test_all_extra_does_not_eager_install_mcp():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+
+    assert "hermes-agent[mcp]" not in extras["all"]
+    assert "mcp" in {_distribution_name(spec) for spec in extras["mcp"]}
+
+
 def test_packaging_declared_as_core_dependency():
     """Regression for #40503.
 

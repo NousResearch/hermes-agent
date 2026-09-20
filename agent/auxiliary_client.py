@@ -125,7 +125,7 @@ from agent.auxiliary_health import (
 )
 from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
-    nous_credential_failure_detail, record_nous_credential_failure)
+    nous_credential_failure_detail, pool_cooldown_message, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
 from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -4934,19 +4934,40 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
                        "model; pass model explicitly (e.g. model.model in config.yaml "
                        "or auxiliary.<task>.model for per-task aux routing).")
         return None, None
-    no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
         codex_token = _read_codex_access_token()
         if not codex_token:
-            logger.warning(no_token_msg)
+            _warn_codex_unavailable()
             return None, None
         base_url = _codex_base_url_override() or _CODEX_AUX_BASE_URL
         raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
                                            default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)
     client, default = _build_codex_client(model)
-    return _route_or_warn(req, client, default, no_token_msg)
+    if client is None:
+        _warn_codex_unavailable()
+        return None, None
+    return _route_client(req, client, _normalize_resolved_model(req.model or default, req.provider))
+
+
+def _warn_codex_unavailable() -> None:
+    """Warn why the Codex client could not be built, distinguishing a benched pool from a
+    missing login.
+
+    An access token parked in a 429/quota cooldown yields no client exactly like absent
+    credentials do, so one constant message told operators to re-authenticate — advice that
+    cannot lift a usage-limit cooldown and that hides the only actionable facts (the reset time,
+    or that another credential may be added). ``pool_cooldown_message`` already draws that
+    distinction for the raise sites (#56810); reuse it here, and keep the missing-credential
+    wording when it reports no cooldown.
+    """
+    cooldown = pool_cooldown_message("openai-codex")
+    if cooldown:
+        logger.warning("resolve_provider_client: %s", cooldown)
+    else:
+        logger.warning("resolve_provider_client: openai-codex requested but no Codex OAuth "
+                       "token found (run: hermes model)")
 
 
 def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:

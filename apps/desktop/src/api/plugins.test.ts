@@ -129,12 +129,10 @@ describe('pluginSocket authenticated reconnects', () => {
 
     const dispose = pluginSocket('kanban', '/events', () => {})
     await vi.advanceTimersByTimeAsync(0)
-    for (let pending = 0; pending < 10 && opened.length === 0; pending += 1) {
-      await Promise.resolve()
-    }
+    vi.useRealTimers()
+    await vi.waitFor(() => expect(opened).toHaveLength(1))
 
     expect(getConnection).toHaveBeenCalledTimes(2)
-    expect(opened).toHaveLength(1)
     expect(opened[0]).toBe('wss://gateway.example/hermes/api/plugins/kanban/events?token=long-lived')
     dispose()
   })

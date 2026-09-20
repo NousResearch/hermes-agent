@@ -80,6 +80,31 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
+it.each([
+  {
+    name: 'a page opens on the profile a link hands over',
+    embedded: false,
+    expected: { connectionId: 'homelab', profile: 'researcher' }
+  },
+  { name: 'an embedded view keeps its host pin', embedded: true, expected: { connectionId: 'pinned', profile: 'bot' } }
+])('$name', async ({ embedded, expected }) => {
+  const capabilityScope = { connectionId: 'homelab', profile: 'researcher' }
+  await act(async () => {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter
+          initialEntries={[{ pathname: '/capabilities', search: '?tab=plugins', state: { capabilityScope } }]}
+        >
+          {embedded ? <CapabilitiesView embedded fixedConnection="pinned" fixedProfile="bot" /> : <CapabilitiesView />}
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+  })
+
+  await waitFor(() => expect(getSkills).toHaveBeenLastCalledWith(expected))
+  expect(getToolsets).toHaveBeenLastCalledWith(expected)
+})
+
 async function renderSkills() {
   let result: ReturnType<typeof render>
   await act(async () => {

@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { DesktopRosterAgent } from '@/global'
@@ -46,13 +46,21 @@ export interface CapabilityScope {
  */
 export function useCapabilityScope({
   fixedConnection,
-  fixedProfile
+  fixedProfile,
+  routeScope
 }: {
   fixedConnection?: string
   fixedProfile?: string
+  /** Scope handed over through router state; the selector can still change it. */
+  routeScope?: ProfileScope
 }): CapabilityScope {
   const activeProfile = useStore($activeGatewayProfile)
   const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(null)
+
+  // Following a new link drops the selector's earlier pick.
+  useEffect(() => {
+    setScopeOverride(null)
+  }, [routeScope])
 
   const scopeProfile: ProfileScope = useMemo(
     () =>
@@ -60,8 +68,8 @@ export function useCapabilityScope({
         ? fixedConnection
           ? { connectionId: fixedConnection, profile: fixedProfile }
           : fixedProfile
-        : (scopeOverride ?? activeProfile ?? null),
-    [activeProfile, fixedConnection, fixedProfile, scopeOverride]
+        : (scopeOverride ?? routeScope ?? activeProfile ?? null),
+    [activeProfile, fixedConnection, fixedProfile, routeScope, scopeOverride]
   )
 
   const scopeKey = profileScopeKey(scopeProfile)

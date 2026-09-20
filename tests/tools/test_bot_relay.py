@@ -149,6 +149,17 @@ def test_write_reply_validates_envelope_id(root):
     assert data["reply"] == "pong" and not data["error"]
 
 
+def test_write_reply_keeps_the_first_settled_reply_for_an_envelope(root):
+    """Idempotent by envelope id: a re-offered delivery's second outcome (or a late duplicate) must
+    not displace the reply the waiter already read, so the answer never turns into an error."""
+    env_id = "a" * 32
+    first = bot_relay.write_reply(root, env_id, reply="the answer")
+    second = bot_relay.write_reply(root, env_id, error="target busy", reason="target_busy")
+    assert second == first
+    record = json.loads(first.read_text(encoding="utf-8"))
+    assert (record["reply"], record["error"], record["reason"]) == ("the answer", "", "")
+
+
 def test_write_reply_reason_passthrough_and_classification(root):
     # explicit reason is persisted verbatim
     path = bot_relay.write_reply(root, "c" * 32, error="boom", reason="delivery_timeout")

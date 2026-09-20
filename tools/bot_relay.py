@@ -53,6 +53,11 @@ DESKTOP_DELIVER_TIMEOUT_SECONDS = (
 REPLY_WAIT_SECONDS = DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
 # Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
 STALE_AFTER_SECONDS = 6 * 3600
+# A claimed envelope still unanswered this long after its claim was taken by a Desktop that died
+# before ``bot_relay.deliver``; the next drain re-offers it (once per window), while the waiter
+# (``REPLY_WAIT_SECONDS``) is still listening. Two full turn attempts: a live delivery is never in
+# flight that long without the Desktop having posted its own timeout reply.
+REOFFER_AFTER_SECONDS = 2 * TURN_ATTEMPT_TIMEOUT_SECONDS
 # Only a recent roster is authoritative for the fail-fast offline check: the
 # Desktop re-pushes roster.sync on connection-state changes.
 ROSTER_FRESH_SECONDS = 600
@@ -342,7 +347,8 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     _sweep_stale(base)
     ttl = _envelope_ttl_seconds()
     now = time.time()
-    out: list[dict] = []
+    # Re-offers first: they are the oldest mail this drain hands out.
+    out: list[dict] = _reoffer_unanswered(base, now)
     # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
     # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
     # by filename ordered them by ``uuid4().hex`` — at random.
@@ -354,10 +360,32 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         claimed = base / CLAIMED_DIR / path.name
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
+            os.utime(claimed, (now, now))  # the re-offer window counts from the claim, not the enqueue
             envelope = json.loads(claimed.read_text(encoding="utf-8"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
             out.append(envelope)
+    return out
+
+
+def _reoffer_unanswered(base: Path, now: float) -> list[dict]:
+    """``claimed/`` envelopes older than ``REOFFER_AFTER_SECONDS`` with no ``replies/<id>.json``.
+
+    The claim is the Desktop's: one that disconnects between ``outbox.drain`` and ``bot_relay.deliver``
+    leaves the envelope here with no reply, silent until the waiter's deadline and then swept, while
+    the reconnected Desktop's drains see an empty outbox (#111021, #111207). Re-offering it hands the
+    message to the next drain; the mtime bump makes that once per window."""
+    out: list[dict] = []
+    for path in sorted((base / CLAIMED_DIR).glob("*.json"), key=_queued_at):
+        if (base / REPLIES_DIR / path.name).exists():
+            continue
+        with contextlib.suppress(OSError, ValueError):
+            if now - path.stat().st_mtime < REOFFER_AFTER_SECONDS:
+                continue
+            os.utime(path, (now, now))
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(envelope, dict):
+                out.append(envelope)
     return out
 
 
@@ -368,12 +396,16 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
     safe = str(envelope_id or "").strip()
     if not re.match(r"^[0-9a-f]{32}$", safe):
         raise ValueError(f"invalid envelope id: {envelope_id!r}")
+    path = base / REPLIES_DIR / f"{safe}.json"
+    if path.exists():
+        # Idempotent by envelope id: the first settled reply is the one the waiter already read (or
+        # will). A re-offered delivery's second outcome — or a late duplicate — never displaces it.
+        return path
     err, code = str(error or ""), str(reason or "")
     if not code and err:
         from tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
-    path = base / REPLIES_DIR / f"{safe}.json"
     _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code})
     return path
 

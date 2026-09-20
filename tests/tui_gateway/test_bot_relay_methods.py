@@ -63,6 +63,35 @@ def test_outbox_drain_returns_each_envelope_once(home):
     assert second["envelopes"] == []
 
 
+def test_outbox_drain_reoffers_a_claimed_envelope_the_desktop_never_delivered(home):
+    """A Desktop that disconnects between ``outbox.drain`` and ``bot_relay.deliver`` leaves the
+    envelope in ``claimed/`` with no reply: silent until the waiter's deadline, then swept, while
+    every later drain saw an empty outbox (#111021, redo of #111207). Once it has sat unanswered
+    for ``REOFFER_AFTER_SECONDS`` the next drain hands it out again — exactly once per window — and
+    an envelope whose reply already landed is never re-offered."""
+    import os
+    import time
+
+    target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
+              "connection_label": "", "title": "", "description": ""}
+    lost = bot_relay.enqueue_envelope(home, target=target, message="lost", sender_profile="w", sender_handle="w")
+    done = bot_relay.enqueue_envelope(home, target=target, message="done", sender_profile="w", sender_handle="w")
+    drain = srv._methods["bot_relay.outbox.drain"]
+    assert sorted(e["id"] for e in _result(drain(1, {}))["envelopes"]) == sorted([lost["id"], done["id"]])
+    bot_relay.write_reply(home, done["id"], reply="answered")
+    # Fresh claims are the Desktop's for a whole window: nothing to re-offer yet.
+    assert _result(drain(2, {}))["envelopes"] == []
+    claimed_dir = bot_relay.relay_root(home) / bot_relay.CLAIMED_DIR
+    old = time.time() - bot_relay.REOFFER_AFTER_SECONDS - 1
+    for path in claimed_dir.glob("*.json"):
+        os.utime(path, (old, old))
+    reoffered = _result(drain(3, {}))["envelopes"]
+    assert [(e["id"], e["message"]) for e in reoffered] == [(lost["id"], "lost")]
+    # The re-offer opened a new window (mtime bumped): the same drain does not hand it out twice.
+    assert _result(drain(4, {}))["envelopes"] == []
+    assert (claimed_dir / f"{lost['id']}.json").stat().st_mtime > old + 1
+
+
 def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     calls = {}
 

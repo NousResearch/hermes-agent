@@ -1357,7 +1357,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send text/markdown: format, split via truncate_message(), retry transient failures."""
-        del metadata
+        reply_to = self._reply_anchor(reply_to, metadata)
         if not await self._ensure_connected():
             return self._NOT_CONNECTED
         if not content or not content.strip():
@@ -1369,10 +1369,19 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             last_result = await self._send_chunk(chat_id, chunk, reply_to)
             if not last_result.success:
                 return last_result
-            reply_to = None  # only reply_to the first chunk
         return last_result
 
     _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
+
+    @staticmethod
+    def _reply_anchor(reply_to: Optional[str], metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Resolve only the reply anchor carried by this outbound turn."""
+        anchor = reply_to
+        if not anchor and isinstance(metadata, dict):
+            anchor = metadata.get("reply_to_message_id")
+        if not anchor:
+            return None
+        return str(anchor).strip() or None
 
     async def _send_chunk(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
         last_exc: Optional[Exception] = None
@@ -1509,8 +1518,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         msg_seq = self._next_msg_seq(reply_to or "default")
         text = content[: self.MAX_MESSAGE_LENGTH]
         if self._markdown_support:
-            return {"markdown": {"content": text}, "msg_type": MSG_TYPE_MARKDOWN, "msg_seq": msg_seq}
-        body: Dict[str, Any] = {"content": text, "msg_type": MSG_TYPE_TEXT, "msg_seq": msg_seq}
+            body: Dict[str, Any] = {"markdown": {"content": text}, "msg_type": MSG_TYPE_MARKDOWN, "msg_seq": msg_seq}
+        else:
+            body = {"content": text, "msg_type": MSG_TYPE_TEXT, "msg_seq": msg_seq}
         if reply_to:
             body["message_reference"] = {"message_id": reply_to}
         return body
@@ -1521,7 +1531,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an image natively via QQ Bot API upload; URL sources fall back to text."""
-        del metadata
+        reply_to = self._reply_anchor(reply_to, metadata)
         result = await self._send_media(chat_id, image_url, MEDIA_TYPE_IMAGE, "image", caption, reply_to)
         if result.success or not self._is_url(image_url):
             return result
@@ -1530,17 +1540,21 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
 
     async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kwargs) -> SendResult:
+        reply_to = self._reply_anchor(reply_to, kwargs.get("metadata"))
         return await self._send_media(chat_id, image_path, MEDIA_TYPE_IMAGE, "image", caption, reply_to)
 
     async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kwargs) -> SendResult:
+        reply_to = self._reply_anchor(reply_to, kwargs.get("metadata"))
         return await self._send_media(chat_id, audio_path, MEDIA_TYPE_VOICE, "voice", caption, reply_to)
 
     async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kwargs) -> SendResult:
+        reply_to = self._reply_anchor(reply_to, kwargs.get("metadata"))
         return await self._send_media(chat_id, video_path, MEDIA_TYPE_VIDEO, "video", caption, reply_to)
 
     async def send_document(
         self, chat_id, file_path, caption=None, file_name=None, reply_to=None, **kwargs
     ) -> SendResult:
+        reply_to = self._reply_anchor(reply_to, kwargs.get("metadata"))
         return await self._send_media(
             chat_id, file_path, MEDIA_TYPE_FILE, "file", caption, reply_to, file_name=file_name)
 
@@ -1574,6 +1588,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 body["content"] = caption[: self.MAX_MESSAGE_LENGTH]
             if reply_to:
                 body["msg_id"] = reply_to
+                body["message_reference"] = {"message_id": reply_to}
             return await self._post_message(self._messages_path(chat_type, chat_id), body)
         except UploadDailyLimitExceededError as exc:
             # Non-retryable quota hit; give the model actionable text.

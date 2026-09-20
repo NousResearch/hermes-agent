@@ -4162,9 +4162,13 @@ class GatewayRunner(
         chat_type: Optional[str] = None, reply_to_message_id: Optional[str] = None,
         adapter: Optional[Any] = None) -> Optional[Dict[str, Any]]:
         """Build thread metadata for synthetic sends that only have routing state."""
-        if thread_id is None:
+        metadata: Dict[str, Any] = {}
+        if thread_id is not None:
+            metadata["thread_id"] = thread_id
+        if platform == Platform.QQBOT and reply_to_message_id is not None:
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
+        if not metadata:
             return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
         if self._is_telegram_dm_topic_target(
             platform, chat_id, thread_id, chat_type=chat_type, adapter=adapter):
             metadata["telegram_dm_topic_reply_fallback"] = True

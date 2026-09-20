@@ -381,23 +381,19 @@ class CLIAgentSetupMixin:
                 if _fb_api_key:
                     _fb_kwargs["explicit_api_key"] = _fb_api_key
                 runtime = resolve_runtime_provider(**_fb_kwargs)
+                # A 429/quota AuthError leaves the credentials valid; saying "auth failed" sends
+                # operators hunting for an expired token (#117482).
                 if is_rate_limited_auth_error(primary_exc):
-                    logger.warning(
-                        "Primary provider rate-limited (429): %s. Falling through to fallback: %s/%s",
-                        primary_exc, _fb_provider, _fb_model)
-                    from gateway.warning_notifications import render_notification
-                    render_notification(
-                        lambda: _cprint(
-                            f"⚠️  Primary provider quota exhausted — switching to fallback: {_fb_provider} / {_fb_model}"),
-                        platform="cli")
+                    _why_log, _why = "rate-limited (429)", "Primary provider quota exhausted"
                 else:
-                    logger.warning(
-                        "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
-                        primary_exc, _fb_provider, _fb_model)
-                    from gateway.warning_notifications import render_notification
-                    render_notification(
-                        lambda: _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}"),
-                        platform="cli")
+                    _why_log, _why = "auth failed", "Primary auth failed"
+                logger.warning(
+                    "Primary provider %s (%s). Falling through to fallback: %s/%s",
+                    _why_log, primary_exc, _fb_provider, _fb_model)
+                from gateway.warning_notifications import render_notification
+                render_notification(
+                    lambda: _cprint(f"⚠️  {_why} — switching to fallback: {_fb_provider} / {_fb_model}"),
+                    platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
                 # reasoning_config follows the swap in _ensure_runtime_credentials (the only caller).

@@ -110,10 +110,14 @@ _NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|doesn\'?t|didn\'?t|won\'?t|isn
 # Real directives are short; unbounded filler let prose (output never enters your own context)
 # and feature descriptions match.
 _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
-# Delegation guard: the recipient named right after the verb is the agent's own subagent/worker
-# ("Send subagents the minimum context they need") — an in-process handoff, not a transfer off
-# the machine. A URL or external service as the destination is still `send_to_url`.
-_NOT_DELEGATE = r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?|workers?|delegates?|children|child)\b)'
+# Delegation guard: skip only when the recipient is clearly the agent's own subagent or a
+# possessed worker ("Send subagents the minimum context they need", "Share each worker the
+# context of its own slice"). Bare "child"/"workers"/"delegates" after the verb is still
+# exfil ("Send child context to the operator"). A URL destination is still send_to_url.
+_NOT_DELEGATE = (
+    r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?)\b'
+    r'|(?:(?:the|your|each|every|all|a)\s+)(?:workers?|delegates?|children)\b)'
+)
 
 # POSIX shell names as one shared alternation, so every pipe-to-shell pattern below flags the
 # same set (the narrower `(ba)?sh` let `curl url | zsh` through while bash/sh were caught).

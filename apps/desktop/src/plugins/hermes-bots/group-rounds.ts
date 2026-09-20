@@ -458,6 +458,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.epoch = (r.epoch || 0) + 1
+    r.stoppedEpoch = r.epoch
     r.running = false
     r.turn = null
 

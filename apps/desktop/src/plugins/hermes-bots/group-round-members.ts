@@ -236,7 +236,7 @@ export async function runGroupRoundMember(
   )
 
   if (
-    (epochNow !== startEpoch && roomNow.holds?.[groupMemberKey(member)]) ||
+    (roomNow.stoppedEpoch || 0) > startEpoch ||
     !shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)
   ) {
     recordGroupActivity(context.group, {

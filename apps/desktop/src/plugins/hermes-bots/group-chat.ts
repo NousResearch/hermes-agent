@@ -1659,11 +1659,14 @@ export interface GroupHoldStamp extends GroupHold {
 }
 
 /** The room record as the coordination engine handles it: `GroupChat` plus
- *  `turn`, the runtime-only descriptor of the member currently mid-turn. Like
- *  `running`/`epoch` it never persists, so it has no place in the durable
- *  shape. Holds carry the fuller live stamp. */
+ *  runtime-only turn/cancellation state. Like `running`/`epoch` these fields
+ *  never persist, so they have no place in the durable shape. Holds carry the
+ *  fuller live stamp. */
 export interface GroupChatRoom extends GroupChat {
   holds?: Record<string, GroupHoldStamp>
+  /** Epoch minted by the latest explicit Stop action. A turn dispatched under
+   *  an older epoch is cancelled even when sticky hold detection is disabled. */
+  stoppedEpoch?: number
   turn?: GroupMember | null
 }
 

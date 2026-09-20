@@ -29,11 +29,11 @@ def _known_unsent(result) -> bool:
 
 class GatewayRestartNotificationsMixin:
     _restart_notice_lock: Optional[asyncio.Lock] = None
-    _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
     def _capture_planned_restart_notification(self) -> None:
         from gateway.run import _planned_restart_notification_path
         self._planned_restart_notification_payload = None
+        self._planned_restart_notice_progress = None
         try:
             self._planned_restart_notification_payload = _planned_restart_notification_path().read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -55,122 +55,132 @@ class GatewayRestartNotificationsMixin:
         from utils import atomic_json_write
 
         runner = cast("GatewayRunner", self)
-        if self._planned_restart_notice_lock is None:
-            self._planned_restart_notice_lock = asyncio.Lock()
-        async with self._planned_restart_notice_lock:
-            if not hasattr(self, "_planned_restart_notification_payload"):
-                self._capture_planned_restart_notification()
-            path = _planned_restart_notification_path()
+        if not hasattr(self, "_planned_restart_notification_payload"):
+            self._capture_planned_restart_notification()
+        owner = asyncio.current_task()
+        path = _planned_restart_notification_path()
 
-            def owns_marker():
-                try:
-                    return path.read_text(encoding="utf-8") == self._planned_restart_notification_payload
-                except FileNotFoundError:
-                    return False
-
-            def active():
-                return (getattr(runner, "_running", True) and not getattr(runner, "_restart_requested", False)
-                        and owns_marker())
-
-            payload = self._planned_restart_notification_payload
-            if payload is None or not active():
-                return
+        def owns_marker():
             try:
-                data = json.loads(payload)
-                delivered = {tuple(target) for target in data.get("delivered_targets", [])}
-                # An interrupted/ambiguous attempt is NOT a delivered receipt, but must not replay.
-                attempted = {tuple(target) for target in data.get("attempted_targets", [])}
-                homes = {
-                    _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id):
-                    (platform, cfg.home_channel)
-                    for platform, cfg in runner.config.platforms.items()
-                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
-                }
+                return path.read_text(encoding="utf-8") == self._planned_restart_notification_payload
+            except FileNotFoundError:
+                return False
 
-                def persist():
-                    # The planned marker's publisher runs synchronously on this same event loop.
-                    # No await between compare/write: a newer shutdown generation cannot be clobbered.
-                    if owns_marker():
-                        data["delivered_targets"] = [list(target) for target in delivered]
-                        data["attempted_targets"] = [list(target) for target in attempted]
-                        atomic_json_write(path, data, indent=0)
-                        self._planned_restart_notification_payload = path.read_text(encoding="utf-8")
+        def active():
+            return (getattr(runner, "_running", True) and not getattr(runner, "_restart_requested", False)
+                    and owns_marker())
 
-                loop = asyncio.get_running_loop()
-                deadline = loop.time() + _RESTART_NOTICE_TIMEOUT
-                message = "♻️ Gateway online — Hermes is back and ready."
-                free_tier_line = runner._free_tier_startup_line()
-                if free_tier_line:
-                    message = f"{message}\n{free_tier_line}"
+        payload = self._planned_restart_notification_payload
+        if payload is None or not active():
+            return
+        try:
+            data = json.loads(payload)
+            if self._planned_restart_notice_progress is None:
+                # Shared by concurrent boot/reconnect passes. All progress/claim mutations
+                # are synchronous on the gateway loop; no lock spans transport waits.
+                self._planned_restart_notice_progress = (
+                    {tuple(target) for target in data.get("delivered_targets", [])},
+                    {tuple(target) for target in data.get("attempted_targets", [])},
+                    set(),
+                )
+            delivered, attempted, inflight = self._planned_restart_notice_progress
+            homes = {
+                _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id):
+                (platform, cfg.home_channel)
+                for platform, cfg in runner.config.platforms.items()
+                if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
+            }
 
-                async def notify(target, platform, home):
-                    delay, send_task = 1.0, None
-                    try:
-                        while active() and target not in delivered | attempted:
-                            remaining = deadline - loop.time()
-                            if remaining <= 0:
-                                logger.warning("Planned-restart notification retry budget exhausted for %s; marker remains pending", target)
-                                return
-                            transport = resolve_delivery_transport(platform, runner.config, runner.adapters)
-                            if transport is None:
-                                return  # _install_reconnected_adapter will replay once it exists.
-                            retry_delay = delay
-                            if (getattr(transport.adapter, "is_connected", True) is not False
-                                    and getattr(transport.adapter, "send_path_degraded", False) is not True):
-                                async def dispatch():
-                                    if not active() or loop.time() >= deadline:
-                                        return SendResult(success=False, retryable=True, known_unsent=True)
-                                    attempted.add(target)
-                                    persist()  # Cancellation/crash after dispatch is ambiguous, never replay it.
-                                    return await runner._dispatch_home_channel_message(platform, home, transport, message)
+            def persist():
+                # The planned marker's publisher runs synchronously on this same event loop.
+                # No await between compare/write: a newer shutdown generation cannot be clobbered.
+                if owns_marker():
+                    data["delivered_targets"] = [list(target) for target in delivered]
+                    data["attempted_targets"] = [list(target) for target in attempted]
+                    atomic_json_write(path, data, indent=0)
+                    self._planned_restart_notification_payload = path.read_text(encoding="utf-8")
 
-                                send_task = asyncio.create_task(dispatch())
-                                done, _ = await asyncio.wait({send_task}, timeout=remaining)
-                                if not done:
-                                    logger.warning("Planned-restart notification send timed out for %s; not replaying", target)
-                                    return
-                                result = send_task.result()
-                                if not _known_unsent(result):
-                                    failed = result.get("success") is False if isinstance(result, dict) else _send_failed(result)
-                                    if not failed:
-                                        attempted.discard(target)
-                                        delivered.add(target)
-                                    else:
-                                        logger.warning("Planned-restart notification failed for %s; not replaying an ambiguous send", target)
-                                    return
-                                attempted.discard(target)
-                                persist()
-                                raw_delay = result.get("retry_after") if isinstance(result, dict) else getattr(result, "retry_after", None)
-                                if raw_delay is not None:
-                                    retry_after = float(raw_delay)
-                                    if math.isfinite(retry_after) and retry_after > 0:
-                                        retry_delay = retry_after
-                            await asyncio.sleep(min(retry_delay, max(0.0, deadline - loop.time())))
-                            delay = min(delay * 2, _RESTART_NOTICE_MAX_DELAY)
-                    except Exception:
-                        logger.warning("Planned-restart notification failed for %s", target, exc_info=True)
-                    finally:
-                        if send_task is not None:
-                            if send_task.done() and not send_task.cancelled():
-                                try:
-                                    if _known_unsent(send_task.result()):
-                                        attempted.discard(target)
-                                except Exception:
-                                    pass
-                            elif not send_task.done():
-                                send_task.cancel()
-                                send_task.add_done_callback(consume_detached_task_result)
-                        persist()
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _RESTART_NOTICE_TIMEOUT
+            message = "♻️ Gateway online — Hermes is back and ready."
+            free_tier_line = runner._free_tier_startup_line()
+            if free_tier_line:
+                message = f"{message}\n{free_tier_line}"
 
-                results = await asyncio.gather(*(notify(target, *home) for target, home in homes.items()
-                                                 if target not in delivered | attempted), return_exceptions=True)
-                if any(isinstance(result, BaseException) for result in results):
-                    logger.warning("Could not persist planned-restart notification progress; marker remains pending")
+            async def notify(target, platform, home):
+                if target in inflight:
                     return
-                if owns_marker() and homes.keys() <= delivered | attempted:
-                    path.unlink(missing_ok=True)
-            except Exception:
-                logger.warning("Planned-restart notification remains pending", exc_info=True)
+                inflight.add(target)
+                delay, send_task = 1.0, None
+                try:
+                    while active() and target not in delivered | attempted:
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            logger.warning("Planned-restart notification retry budget exhausted for %s; marker remains pending", target)
+                            return
+                        transport = resolve_delivery_transport(platform, runner.config, runner.adapters)
+                        if transport is None:
+                            return  # _install_reconnected_adapter will replay once it exists.
+                        retry_delay = delay
+                        if (getattr(transport.adapter, "is_connected", True) is not False
+                                and getattr(transport.adapter, "send_path_degraded", False) is not True):
+                            async def dispatch():
+                                # Owner cancellation can precede gather cancelling this child.
+                                if ((owner is not None and owner.cancelling())
+                                        or not active() or loop.time() >= deadline):
+                                    return SendResult(success=False, retryable=True, known_unsent=True)
+                                attempted.add(target)
+                                persist()  # Cancellation/crash after dispatch is ambiguous, never replay it.
+                                return await runner._dispatch_home_channel_message(platform, home, transport, message)
+
+                            send_task = asyncio.create_task(dispatch())
+                            done, _ = await asyncio.wait({send_task}, timeout=remaining)
+                            if not done:
+                                logger.warning("Planned-restart notification send timed out for %s; not replaying", target)
+                                return
+                            result = send_task.result()
+                            if not _known_unsent(result):
+                                failed = result.get("success") is False if isinstance(result, dict) else _send_failed(result)
+                                if not failed:
+                                    attempted.discard(target)
+                                    delivered.add(target)
+                                else:
+                                    logger.warning("Planned-restart notification failed for %s; not replaying an ambiguous send", target)
+                                return
+                            attempted.discard(target)
+                            persist()
+                            raw_delay = result.get("retry_after") if isinstance(result, dict) else getattr(result, "retry_after", None)
+                            if raw_delay is not None:
+                                retry_after = float(raw_delay)
+                                if math.isfinite(retry_after) and retry_after > 0:
+                                    retry_delay = retry_after
+                        await asyncio.sleep(min(retry_delay, max(0.0, deadline - loop.time())))
+                        delay = min(delay * 2, _RESTART_NOTICE_MAX_DELAY)
+                except Exception:
+                    logger.warning("Planned-restart notification failed for %s", target, exc_info=True)
+                finally:
+                    if send_task is not None:
+                        if send_task.done() and not send_task.cancelled():
+                            try:
+                                if _known_unsent(send_task.result()):
+                                    attempted.discard(target)
+                            except Exception:
+                                pass
+                        elif not send_task.done():
+                            send_task.cancel()
+                            send_task.add_done_callback(consume_detached_task_result)
+                    inflight.discard(target)
+                    persist()
+
+            results = await asyncio.gather(*(notify(target, *home) for target, home in homes.items()
+                                             if target not in delivered | attempted), return_exceptions=True)
+            if any(isinstance(result, BaseException) for result in results):
+                logger.warning("Could not persist planned-restart notification progress; marker remains pending")
+                return
+            if owns_marker() and not inflight and homes.keys() <= delivered | attempted:
+                path.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("Planned-restart notification remains pending", exc_info=True)
 
     def _capture_restart_notification(self) -> None:
         """Pin the boot generation BEFORE connecting adapters (which can accept /restart)."""

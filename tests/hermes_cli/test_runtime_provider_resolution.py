@@ -86,6 +86,34 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_pool_entry_without_base_url_uses_registry_default(monkeypatch):
+    """A manual credential stored without a base_url still resolves the provider endpoint.
+
+    The generic pool tail only re-resolved the URL when the row already equalled the registry
+    default, so an empty base_url came back as "" and ``switch_model`` refused to switch
+    ("no base_url resolved", #116800).
+    """
+
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self, **_kwargs):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "opencode-zen", "default": "glm-5.3"})
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-zen")
+
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+
+
 def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
     """The profile-wide Codex endpoint override must apply to pool credentials too."""
     class _Entry:

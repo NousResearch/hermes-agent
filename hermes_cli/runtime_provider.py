@@ -525,8 +525,11 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
     # Honour model.base_url only when the pool entry carries no explicit base_url (i.e. it fell
     # back to the registry default). Env var overrides win.
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/"):
-        base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+    if pconfig and base_url.rstrip("/") in ("", pconfig.inference_base_url.rstrip("/")):
+        # A row added without a base_url (manual credential) has nothing stored, so the
+        # registry default is the endpoint. Returning "" made switch_model reject the switch
+        # with "no base_url resolved" even though the provider is authenticated (#116800).
+        base_url = _config_base_url_for_provider(model_cfg, provider) or base_url or pconfig.inference_base_url
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=True), base_url
 
 

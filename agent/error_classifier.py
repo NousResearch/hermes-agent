@@ -149,7 +149,7 @@ _OVERLOADED_PATTERNS = (
     "service may be temporarily overloaded", "server is overloaded", "server overloaded",
     "server overload", "server_overload",
     "service overloaded", "service is overloaded", "upstream overloaded", "currently overloaded",
-    "upstream model provider is temporarily unavailable",
+    "upstream model provider is temporarily unavailable. please try again in a moment.",
     "at capacity", "over capacity",
 )
 

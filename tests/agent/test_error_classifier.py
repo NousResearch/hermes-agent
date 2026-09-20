@@ -1464,11 +1464,15 @@ class TestCommandCodeUpstreamUnavailable:
         assert result.reason == FailoverReason.overloaded
         assert result.should_rotate_credential is False
 
-    def test_genuine_commandcode_rate_limit_still_rotates_credential(self):
-        e = MockAPIError(
+    @pytest.mark.parametrize(
+        "message",
+        [
             "Rate limit exceeded: 200 requests per minute",
-            status_code=429,
-        )
+            "Upstream model provider is temporarily unavailable because this account is rate limited.",
+        ],
+    )
+    def test_non_outage_rate_limits_still_rotate_credential(self, message):
+        e = MockAPIError(message, status_code=429)
 
         result = classify_api_error(
             e, provider="commandcode", model="deepseek/deepseek-v4-flash"

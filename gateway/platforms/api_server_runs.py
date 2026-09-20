@@ -831,6 +831,10 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     delivery_id = record["delivery_id"]
 
     def _finish(status: str, **fields: Any) -> None:
+        if run_id in self._shutdown_interrupted_run_ids:
+            # Shutdown already published "interrupted"; the cancel that follows must not
+            # rewrite it as a plain "cancelled" (same guard as the native _execute_run).
+            status, fields = "interrupted", {"error": "Gateway shutdown interrupted the run."}
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}")
         with suppress(Exception):
             run.put_event(_run_event(run_id, f"run.{status}", **fields))

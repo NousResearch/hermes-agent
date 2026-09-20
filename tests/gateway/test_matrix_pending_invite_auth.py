@@ -31,9 +31,6 @@ def _make_adapter():
         },
     )
     adapter = MatrixAdapter(config)
-    adapter._text_batch_delay_seconds = 0
-    adapter.handle_message = AsyncMock()
-    adapter._startup_ts = time.time() - 10
     adapter._allowed_user_ids = {"@alice:example.org"}
     adapter._join_room_by_id = AsyncMock(return_value=True)
     adapter._record_dm_room = AsyncMock()

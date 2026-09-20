@@ -157,6 +157,10 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
         metadata["gateway_session_id"] = parent_session_id
     if evt.get('_automation_identities'):
         metadata['automation_identities'] = evt['_automation_identities']
+    from tools.delegation_events import internal_event_persistence
+    if projection := internal_event_persistence(evt)[1]:
+        # Presentation only: keep main's route, delivery proof and card admission unchanged.
+        metadata['delegation_event'] = {**projection, 'display_kind': 'internal_event'}
     if source.platform == Platform.LOCAL:
         # A local completion persists as the async-result card the in-process TUI wrote, and a tick
         # carries its CLI receipt; messaging rows stay internal_notification, as on main.

@@ -289,14 +289,28 @@ _DISPLAY_TEXT_LIMIT = 2000
 def automation_display_metadata(metadata):
     """Validate a producer's card (an async result, or a liveness tick's one-line receipt): both keys
     or neither, kind from the closed producer set."""
+    projection = automation_event_metadata(metadata)
     if 'display_kind' not in metadata and 'display_text' not in metadata:
-        return {}
+        return projection
     from gateway.response_filters import PRODUCER_CARD_KINDS
     kind, text = metadata.get('display_kind'), metadata.get('display_text')
     if (kind not in PRODUCER_CARD_KINDS or not isinstance(text, str) or not text.strip()
             or len(text) > _DISPLAY_TEXT_LIMIT):
         raise RuntimeStoreError('invalid_params')
-    return {'display_kind': kind, 'display_text': text}
+    return {'display_kind': kind, 'display_text': text, **projection}
+
+
+def automation_event_metadata(metadata):
+    """Closed, validated identity field on the private producer descriptor; no route or proof keys."""
+    if 'delegation_event' not in metadata:
+        return {}
+    from tools.delegation_events import internal_event_persistence
+    raw = metadata['delegation_event']
+    projection = (internal_event_persistence(raw)[1]
+                  if isinstance(raw, dict) else None)
+    if projection is None or {**projection, 'display_kind': 'internal_event'} != raw:
+        raise RuntimeStoreError('invalid_params')
+    return {'delegation_event': dict(raw)}
 
 # notification_origin / original_trigger_message_id are producer debug context (#52694) and are not
 # persisted; notification_category="diagnostic" rides the snapshot so the replayed wake still mutes,
@@ -308,7 +322,8 @@ def automation_display_metadata(metadata):
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
+    'delegation_event'})
 
 
 def admission_display(payload):

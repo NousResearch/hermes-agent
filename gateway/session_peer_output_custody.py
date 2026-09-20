@@ -7,7 +7,8 @@ import urllib.parse
 
 from gateway.hosted_room_artifacts import RoomArtifactError
 from gateway.hosted_room_output_fence import require_output_task, require_peer_output_receipt
-from tui_gateway.hosted_room_peer_artifacts import read_artifact, acknowledge_artifacts
+from tui_gateway.hosted_room_peer_artifacts import (
+    read_artifact, acknowledge_artifacts, discard_artifacts, require_discard_receipt)
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, peer_result_digest
 from hermes_state_runtime import _epoch
 
@@ -131,4 +132,20 @@ class PeerOutputCustody:
         return acknowledge_published(self.service.output_attachments, scope=scope, manifest=self.manifest, acknowledge=transmit)
 
     def discard_durably(self, scope):
-        return 0  # Input spool disposal is separate; no peer output discard route.
+        client, link, receipt = self._route(scope)
+        self._verify_remote(client, link, receipt)
+        _, current, current_receipt = self._route(scope)
+        if current != link or current_receipt != receipt:
+            raise RoomArtifactError('Group Chat output route changed before discard')
+        result = require_discard_receipt(discard_artifacts(client, run_id=receipt['run_id'],
+            result_digest=self.result['peer_result_digest'], grant=link.grant))
+        if result['removed'] != len(self.manifest['items']):
+            raise RoomArtifactError('Group Chat output retirement count changed')
+        # A lost reply is uncertain, never confirmation. Every replay visits
+        # the target and every successful reply rechecks current Home custody.
+        current_client, current, current_receipt = self._route(scope)
+        if current != link or current_receipt != receipt:
+            raise RoomArtifactError('Group Chat output route changed during discard')
+        self._verify_remote(current_client, current, current_receipt)
+        self._route(scope)
+        return result['removed']

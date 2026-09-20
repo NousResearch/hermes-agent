@@ -28,7 +28,7 @@ def inprocess_http(target, monkeypatch):
     from tui_gateway import hosted_room_peer_http, hosted_room_peer_artifacts
     loop = asyncio.get_running_loop()
     calls, replies = [], []
-    faults = SimpleNamespace(lost_ack=False, after_body=None)
+    faults = SimpleNamespace(lost_ack=False, lost_discard=False, after_body=None, after_discard=None)
     async def send(wire):
         path, method = urlsplit(wire.full_url).path, wire.get_method()
         data = wire.data or b''
@@ -43,7 +43,7 @@ def inprocess_http(target, monkeypatch):
         req._match_info = match
         async def body():
             value = json.loads(data) if data else {}
-            if faults.after_body and path.endswith('/artifacts/ack'):
+            if faults.after_body and path.endswith(('/artifacts/ack', '/artifacts/discard')):
                 faults.after_body()
             return value
         req.json = body
@@ -58,6 +58,12 @@ def inprocess_http(target, monkeypatch):
         if faults.lost_ack and path.endswith('/artifacts/ack'):
             faults.lost_ack = False
             raise TimeoutError('inert lost ACK response AFTER real target commit')
+        if path.endswith('/artifacts/discard'):
+            if faults.after_discard:
+                faults.after_discard()
+            if faults.lost_discard:
+                faults.lost_discard = False
+                raise TimeoutError('inert lost discard reply AFTER target retirement')
         return io.BytesIO(response.body)
     def open_wire(wire, **kwargs):
         if '/artifacts/' in wire.full_url:
@@ -122,7 +128,10 @@ async def peer_case(target, monkeypatch, *, defer_publication=True, resolve_queu
     claims = decode_room_grant(target.adapter._room_grant_secret(), issued['grant'], permission='artifact.ack')
     catalog = GatewayRoomCatalog.from_mapping(issued['catalog'])
     client = PeerRunsHTTPClient(base_url='http://127.0.0.1:8642', api_key='', receipt_db_path=db.db_path)
-    assert (await asyncio.to_thread(client.probe, grant=issued['grant']))['catalog'] == issued['catalog']
+    passive = (await asyncio.to_thread(client.probe, grant=issued['grant']))['catalog']
+    from gateway.hosted_room_peer import _catalog_digest
+    assert passive['attachments'] is False
+    assert _catalog_digest(dict(passive, attachments=True)) == issued['catalog']['catalog_digest']
     route = PeerMemberRoute(home_install_id=home_id, member_id='writer', target_install_id=catalog.installation_id,
         target_profile='default', capability_digest=catalog.catalog_digest, cancellation_scope_id='cancel-one',
         trace_id='trace-one', grant=issued['grant'], execution_policy_digest=catalog.execution_policy.policy_digest,

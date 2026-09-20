@@ -75,13 +75,25 @@ class CanonicalHostedOutputPublisher:
                 task_events = [e for e in task_events if e["kind"] != "message.user"
                                or int(e["seq"]) <= int(task["payload"]["source_event_seq"])]
             result, expected_output = task.get("result"), None
+            # A superseded peer result has no visible file to import or ACK.
+            # Determine that before byte reads so a lost discard reply can replay
+            # even after the target has physically removed its private output.
+            initial = discussion.plan_publication(
+                room, task_events, plan, status=status, result=result,
+                execution_generation=generation if status == "deferred" else None, local_profiles=local_profiles)
+            peer_discard = (output is not None and output[0].target_install_id != output[0].home_install_id
+                            and initial.terminal_kind in {"turn.cancelled", "turn.failed"})
             if output is not None:
                 scope, manifest, outbox = output
                 expected_output = dict(scope=scope.as_mapping(), manifest=manifest,
                                        cancel_generation=task["cancel_generation"])
                 if scope.target_install_id != scope.home_install_id:
                     expected_output["peer_custody"] = outbox
-                if existing_message:
+                if peer_discard:
+                    self.output_attachments.abort_unpublished_event(room_id=room_id, event_id=message_id)
+                    outbox.discard_durably(scope)
+                    attachments = []
+                elif existing_message:
                     attachments = existing_message["payload"]["attachments"]
                 else:
                     prepared = prepare_output(self.output_attachments, scope=scope, manifest=manifest,
@@ -106,7 +118,7 @@ class CanonicalHostedOutputPublisher:
             if output is not None:
                 if any(e.kind == "message.member" for e in publication.events):
                     self._acknowledge_output(scope, manifest, outbox)
-                else:
+                elif not peer_discard:
                     self.output_attachments.abort_unpublished_event(room_id=room_id, event_id=message_id)
                     outbox.discard_durably(scope)
             changed = True

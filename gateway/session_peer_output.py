@@ -51,12 +51,14 @@ def _require_outbox(adapter, authority, conn):
 
 
 def _registered_routes(adapter):
-    from gateway.platforms.api_server_room_artifacts import _handle_room_run_artifact, _handle_room_run_artifact_ack
+    from gateway.platforms.api_server_room_artifacts import (
+        _handle_room_run_artifact, _handle_room_run_artifact_ack, _handle_room_run_artifact_discard)
     app = getattr(adapter, '_app', None)
     if app is None:
         return False
     expected = {('GET', '/v1/runs/{run_id}/artifacts/{artifact_id}'): _handle_room_run_artifact,
-                ('POST', '/v1/runs/{run_id}/artifacts/ack'): _handle_room_run_artifact_ack}
+                ('POST', '/v1/runs/{run_id}/artifacts/ack'): _handle_room_run_artifact_ack,
+                ('POST', '/v1/runs/{run_id}/artifacts/discard'): _handle_room_run_artifact_discard}
     found = {}
     for route in app.router.routes():
         key = (route.method, route.resource.canonical)

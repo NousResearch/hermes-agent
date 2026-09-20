@@ -6,6 +6,7 @@ Home's immutable commitment, not a fictitious view of Home's journal.
 import copy
 import hashlib
 import json
+import sqlite3
 from types import MethodType
 
 from aiohttp import web
@@ -18,7 +19,8 @@ from hermes_state_runtime import _json
 
 def _http_routes(adapter):
     return [('GET', '/v1/runs/{run_id}/artifacts/{artifact_id}', MethodType(_handle_room_run_artifact, adapter)),
-            ('POST', '/v1/runs/{run_id}/artifacts/ack', MethodType(_handle_room_run_artifact_ack, adapter))]
+            ('POST', '/v1/runs/{run_id}/artifacts/ack', MethodType(_handle_room_run_artifact_ack, adapter)),
+            ('POST', '/v1/runs/{run_id}/artifacts/discard', MethodType(_handle_room_run_artifact_discard, adapter))]
 
 
 def _load_scope_and_status(adapter, request, *, permission, authority, shared, conn):
@@ -58,7 +60,8 @@ def _load_scope_and_status(adapter, request, *, permission, authority, shared, c
     saved = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?',
                                     (_RESULT_PREFIX + row['admission_id'],)).fetchone()[0])
     return dict(run_id=run_id, scope=scope.as_mapping(), row=row, result=saved['result'],
-                manifest=status['artifacts'], ack=saved.get('peer_output_ack'))
+                manifest=status['artifacts'], ack=saved.get('peer_output_ack'),
+                discard=saved.get('peer_output_discard'))
 
 
 def _snapshot(adapter, request, permission):
@@ -70,7 +73,7 @@ def _snapshot(adapter, request, permission):
 
 def _same(expected, actual):
     # ACK metadata is additive in the same retained Run result owner.
-    if {k: v for k, v in actual.items() if k != 'ack'} != {k: v for k, v in expected.items() if k != 'ack'}:
+    if {k: v for k, v in actual.items() if k not in ('ack', 'discard')} != {k: v for k, v in expected.items() if k not in ('ack', 'discard')}:
         raise ValueError('artifact Run commitment changed')
 
 
@@ -80,7 +83,7 @@ async def _handle_room_run_artifact(adapter, request):
         scope = RoomArtifactScope.from_mapping(expected['scope'])
         artifact_id = str(request.match_info['artifact_id'])
         item = next((x for x in expected['manifest']['items'] if x['artifact_id'] == artifact_id), None)
-        if item is None:
+        if item is None or expected['discard'] is not None:
             raise ValueError('artifact not found')
         metadata, data = adapter._peer_output_outbox.read(scope, artifact_id)
         if metadata != item or len(data) != item['size'] or hashlib.sha256(data).hexdigest() != item['sha256']:
@@ -93,6 +96,8 @@ async def _handle_room_run_artifact(adapter, request):
                 actual = _load_scope_and_status(adapter, request, permission='artifact.read',
                     authority=authority, shared=shared, conn=conn)
                 _same(expected, actual)
+                if actual['discard'] is not None:
+                    raise ValueError('artifact retired')
                 row = conn.execute('SELECT * FROM hosted_room_output_artifacts '
                     'WHERE scope_key=? AND artifact_id=? AND acknowledged_at IS NULL', (scope.key, artifact_id)).fetchone()
                 if row is None or adapter._peer_output_outbox._manifest(row) != item:
@@ -126,7 +131,8 @@ async def _handle_room_run_artifact_ack(adapter, request):
                 actual = _load_scope_and_status(adapter, request, permission='artifact.ack',
                     authority=authority, shared=shared, conn=conn)
                 _same(expected, actual)
-                if actual['ack'] not in (None, commitment) or (retirement and actual['ack'] != commitment):
+                if (actual['discard'] is not None or actual['ack'] not in (None, commitment)
+                        or (retirement and actual['ack'] != commitment)):
                     raise ValueError('retirement has no exact ACK commitment')
                 return actual
 
@@ -152,3 +158,72 @@ async def _handle_room_run_artifact_ack(adapter, request):
     except Exception:
         from gateway.platforms.api_server import _openai_error
         return web.json_response(_openai_error('Artifact acknowledgement was rejected.', code='invalid_artifact_ack'), status=409)
+
+
+async def _handle_room_run_artifact_discard(adapter, request):
+    """Historical artifact.ack retirement, bound to the canonical Run result."""
+    from gateway.hosted_room_output_discard import retire_exact, cleanup_exact, require_retired
+    from tui_gateway.hosted_room_peer_http import peer_result_digest
+    from tui_gateway.hosted_room_peer_artifacts import require_discard_receipt
+    from gateway.platforms.api_server import _openai_error
+    from gateway.session_peer_output import _require_outbox
+    try:
+        authority, expected = _snapshot(adapter, request, 'artifact.ack')
+        # Never suspend while holding either shared or owning writer.
+        body = await request.json()
+        if (type(body) is not dict or set(body) != {'reason', 'result_digest'}
+                or body['reason'] != 'verification_failed' or type(body['result_digest']) is not str):
+            raise ValueError('invalid retirement commitment')
+        scope = RoomArtifactScope.from_mapping(expected['scope'])
+        with grant_fence(adapter) as (owner, shared):
+            if owner is not authority:
+                raise ValueError('output owner changed')
+
+            def authorize(conn):
+                actual = _load_scope_and_status(adapter, request, permission='artifact.ack',
+                    authority=authority, shared=shared, conn=conn)
+                _same(expected, actual)
+                if (actual['ack'] is not None or body['result_digest'] != peer_result_digest(
+                        run_projection(adapter, actual['run_id'], connection=conn))):
+                    raise ValueError('output retirement commitment changed')
+                return actual, _require_outbox(adapter, authority, conn)
+
+            def retire(conn):
+                actual, outbox = authorize(conn)
+                record = actual['discard']
+                if record is None:
+                    removed = retire_exact(outbox, conn, scope, expected['manifest']['items'], authorize=authorize)
+                    record = dict(commitment=body, receipt=dict(discarded=True, removed=removed))
+                    key = _RESULT_PREFIX + expected['row']['admission_id']
+                    saved = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0])
+                    saved['peer_output_discard'] = record
+                    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(saved), key))
+                if (type(record) is not dict or set(record) != {'commitment', 'receipt'}
+                        or record['commitment'] != body):
+                    raise ValueError('retirement receipt changed')
+                require_discard_receipt(record['receipt'])
+                if record['receipt']['removed'] != len(expected['manifest']['items']):
+                    raise ValueError('retirement count changed')
+                require_retired(conn, scope)
+                return record
+
+            record = authority.db._execute_write(retire)
+            # Fence, exact receipt and cleanup intent are now durable. A failure
+            # below is NOT completed-zero: retry the same authorized commitment.
+            try:
+                def cleanup(conn):
+                    actual, outbox = authorize(conn)
+                    if actual['discard'] != record:
+                        raise ValueError('retirement receipt changed during cleanup')
+                    cleanup_exact(outbox, conn, scope, expected['manifest']['items'], authorize=authorize)
+                authority.db._execute_write(cleanup)
+            except Exception:
+                return web.json_response(_openai_error('Artifact retirement cleanup is unavailable.',
+                    code='artifact_retirement_unavailable'), status=503, headers={'Retry-After': '1'})
+        return web.json_response(record['receipt'])
+    except (sqlite3.Error, OSError):
+        return web.json_response(_openai_error('Artifact retirement storage is unavailable.',
+            code='artifact_retirement_unavailable'), status=503, headers={'Retry-After': '1'})
+    except Exception:
+        return web.json_response(_openai_error('Artifact retirement was rejected.',
+            code='invalid_artifact_retirement'), status=409)

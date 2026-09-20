@@ -1,7 +1,8 @@
 """Selected #99159 binary read/ACK methods for an existing root peer client.
 
 Source: 5ee4a941a6b64a084221d7d521ce42480bedc15c. No client executor,
-route selection, publication or discard authority is introduced here.
+route selection or publication authority is introduced here.
+Discard restores the historical artifact.ack operation with a canonical result commitment.
 """
 import re
 import time
@@ -10,7 +11,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Mapping, Sequence
 
-from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES
+from gateway.hosted_room_attachments import MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE
 from tui_gateway.hosted_room_peer_http import (
     MAX_PEER_ERROR_RESPONSE_BYTES, PeerRunsHTTPError, _PeerResponseTooLarge,
     _PeerResponseDeadlineExceeded, _read_bounded_response, _open_roomlink_url,
@@ -125,3 +126,21 @@ def acknowledge_artifacts(
         room_grant=grant,
         reject_redirects=True,
     )
+
+
+def require_discard_receipt(value):
+    """No truthiness/coercion: retirement confirmation is a closed typed record."""
+    if (type(value) is not dict or set(value) != {'discarded', 'removed'}
+            or value['discarded'] is not True or type(value['removed']) is not int
+            or not 0 <= value['removed'] <= MAX_ATTACHMENTS_PER_MESSAGE):
+        raise PeerRunsHTTPError('peer returned an invalid artifact retirement receipt')
+    return value
+
+
+def discard_artifacts(self, *, run_id, result_digest, grant):
+    _request_url(self, '')
+    value = self._request(
+        f"/v1/runs/{urllib.parse.quote(run_id, safe='')}/artifacts/discard",
+        method='POST', body=dict(reason='verification_failed', result_digest=result_digest),
+        room_grant=grant, reject_redirects=True)
+    return require_discard_receipt(value)

@@ -13,10 +13,41 @@ to have preserved one when the copy actually landed.
 import errno
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
 import hermes_cli.auth as auth
+
+
+def test_shared_profile_auth_symlink_resolves_to_one_atomic_store(tmp_path, monkeypatch):
+    """A deliberate shared auth alias must lock and replace the root store, not unlink itself.
+
+    Named profiles normally own independent credentials. Operators may explicitly make a
+    profile's ``auth.json`` a symlink to the root store when every role uses one subscription.
+    The active auth path must resolve that alias before lock/write selection so OAuth refresh
+    rotation remains one atomic transaction across the fleet.
+    """
+    root = tmp_path / "root"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    root_auth = root / "auth.json"
+    root_auth.write_text(
+        json.dumps({"version": 1, "providers": {"openai-codex": {"tokens": {"access_token": "a"}}}}),
+        encoding="utf-8",
+    )
+    profile_auth = profile / "auth.json"
+    profile_auth.symlink_to(root_auth)
+    monkeypatch.setattr(auth, "get_hermes_home", lambda: profile)
+
+    assert auth._auth_file_path() == root_auth.resolve()
+    with auth._auth_store_lock():
+        store = auth._load_auth_store()
+        store["providers"]["openai-codex"]["last_refresh"] = "rotated"
+        auth._save_auth_store(store)
+
+    assert profile_auth.is_symlink(), "atomic refresh must not replace the shared-store alias"
+    assert json.loads(root_auth.read_text(encoding="utf-8"))["providers"]["openai-codex"]["last_refresh"] == "rotated"
 
 
 @pytest.fixture

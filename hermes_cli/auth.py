@@ -445,6 +445,12 @@ def _nonempty_str(value: Any) -> bool:
 
 def _auth_file_path() -> Path:
     path = get_hermes_home() / "auth.json"
+    # A profile may explicitly opt into one fleet-wide credential store by symlinking its
+    # auth.json to the root store. Resolve before choosing the lock and atomic-write target:
+    # otherwise refresh would lock the alias separately and os.replace() would destroy the link,
+    # forking a single-use OAuth refresh-token chain across profiles.
+    if path.is_symlink():
+        path = path.resolve(strict=True)
     # Seat belt: under pytest, refuse to touch the real user's auth store (tests that forgot to
     # monkeypatch HERMES_HOME or escaped the hermetic conftest). In production: one dict lookup.
     if (os.environ.get("PYTEST_CURRENT_TEST")

@@ -389,6 +389,10 @@ def _hydrate_seed_state(agent, state) -> None:
     latch = getattr(agent, "_credits_latch", None)
     if isinstance(latch, dict) and state.used_fraction is not None:
         latch["seen_below_90"] = True  # ONLY this gate — priming seen_grant_unspent would revive the steady-state nag
+    _rerun_notice_policy(agent)
+
+
+def _rerun_notice_policy(agent) -> None:
     if callable(emit := getattr(agent, "_emit_credits_notices", None)):
         emit()
 
@@ -407,39 +411,34 @@ def _warm_nous_pricing_cache() -> None:
 
 
 def rewarm_pricing_before_depleted_notice(agent) -> bool:
-    """Depleted account, model the peek cannot vouch for, Nous catalog COLD: start a background warm
-    whose completion re-runs the policy, and return True so the caller leaves the depleted decision
-    to that re-run instead of flashing a banner the warm catalog would suppress.
-
-    Needed because the session-start warm is one-shot while the Nous catalog expires after
-    ``_NOUS_CATALOG_TTL_SECONDS`` — every inference header after that re-evaluated against a cold
-    peek and brought the banner back for a subscription-billed model. Returns False (decide now)
-    when the peek is warm, the agent is not on Nous, or a warm is already in flight — including the
-    warm's own re-run, which must decide against whatever the fetch produced (fail-open: a failed
-    fetch leaves the peek cold and the banner shows).
-    """
+    """Depleted account, model the peek cannot vouch for, Nous catalog cold: start a background warm
+    whose completion re-runs the policy and return True so the caller defers the depleted decision
+    to it — the session-start warm is one-shot but the catalog expires after
+    ``_NOUS_CATALOG_TTL_SECONDS``, and a cold peek would bring the banner back for a
+    subscription-billed model. False = decide now: peek warm, not on Nous, a warm in flight (the
+    warm's own re-run included — fail-open, a failed fetch leaves the peek cold and the banner
+    shows), or a warm already failed within the failed-catalog window (no per-turn re-spawn)."""
     base_url = getattr(agent, "base_url", "") or ""
     if getattr(agent, "provider", "") != "nous" or not base_url:
         return False
-    try:
-        from hermes_cli.models_pricing import peek_cached_pricing
+    from hermes_cli.models_pricing import _FAILED_CATALOG_TTL_SECONDS, peek_cached_pricing
 
-        if peek_cached_pricing(base_url):
-            return False
-    except Exception:
+    if peek_cached_pricing(base_url):
         return False
-    inflight = getattr(agent, "_credits_pricing_warm", None)
-    if inflight is not None and inflight.is_alive():
+    previous = getattr(agent, "_credits_pricing_warm", None)
+    if previous is not None and (
+        previous.is_alive() or time.monotonic() - previous.started_at < _FAILED_CATALOG_TTL_SECONDS
+    ):
         return False
 
     def _warm_then_rerun() -> None:
         _warm_nous_pricing_cache()
-        if callable(emit := getattr(agent, "_emit_credits_notices", None)):
-            emit()
+        _rerun_notice_policy(agent)
 
     from agent.memory_provider import spawn_context_thread
 
     thread = spawn_context_thread(_warm_then_rerun, name="credits-pricing-warm")
+    thread.started_at = time.monotonic()
     agent._credits_pricing_warm = thread
     thread.start()
     return True
@@ -472,14 +471,15 @@ def seed_credits_at_session_start(agent) -> bool:
                     # A live inference header beat us — don't clobber it, but DO re-run the policy:
                     # it evaluated against the cold cache and may be showing a banner the warm
                     # catalog now suppresses.
-                    if callable(emit := getattr(agent, "_emit_credits_notices", None)):
-                        emit()
+                    _rerun_notice_policy(agent)
                     return
                 if (state := _credits_state_from_account(info)) is not None:
                     _hydrate_seed_state(agent, state)
             except Exception:
                 logger.debug("credits ▸ session-start seed (background) failed", exc_info=True)
-        threading.Thread(target=_bg_seed, name="credits-seed", daemon=True).start()
+        from agent.memory_provider import spawn_context_thread
+
+        spawn_context_thread(_bg_seed, name="credits-seed").start()  # the warm reads the profile's auth store
         return True
     except Exception:
         logger.debug("credits ▸ session-start seed failed (fail-open)", exc_info=True)  # innermost log: diagnosable dead seed

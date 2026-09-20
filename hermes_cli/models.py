@@ -214,11 +214,16 @@ def _zero_priced(pricing: Any, keys: tuple[str, str], default: str) -> bool:
         return False
 
 
+def _is_subscription_billed(entry: Any) -> bool:
+    """The gateway bills this catalog row to a subscription the account holds, not to credits."""
+    return isinstance(entry, dict) and entry.get("billing_mode") == "subscription"
+
+
 def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
     """Return True if *model_id* costs no credits: zero-cost prompt AND completion pricing, or a row
     the gateway bills to a subscription."""
     entry = pricing.get(model_id)
-    return bool(entry) and (entry.get("billing_mode") == "subscription" or _zero_priced(entry, ("prompt", "completion"), "1"))
+    return bool(entry) and (_is_subscription_billed(entry) or _zero_priced(entry, ("prompt", "completion"), "1"))
 
 
 def partition_nous_models_by_tier(
@@ -487,7 +492,7 @@ def recommended_nous_default_model() -> dict[str, Any]:
     if free_tier:
         model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
         # Never default onto a subscription-billed row: spending that plan is the user's call.
-        model_ids = [mid for mid in model_ids if not pricing.get(mid, {}).get("billing_mode")] or model_ids
+        model_ids = [mid for mid in model_ids if not _is_subscription_billed(pricing.get(mid))] or model_ids
     return {"provider": "nous", "model": pick_silent_default_model(model_ids, provider="nous"),
             "free_tier": bool(free_tier)}
 

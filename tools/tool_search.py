@@ -246,7 +246,7 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
         return desc
     if listing_form == "groups":
         return desc + (
-            "\n\nThe servers below are connected and their tools ARE available "
+            "\n\nThe tool groups below ARE available "
             "through this bridge. For any request in these domains, search "
             "here FIRST — do not claim the capability is unavailable and do "
             "not substitute a generic tool (terminal/browser) without "
@@ -258,7 +258,7 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
         "already see the exact name).")
     if listing_form == "mixed":
         desc += (
-            " For servers marked 'names not listed', the tools exist "
+            " For groups showing only a tool count, the tools exist "
             f"too — find them with `{TOOL_SEARCH_NAME}` before "
             "concluding anything is missing.")
     return desc + "\n\n" + listing

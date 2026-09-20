@@ -236,11 +236,12 @@ def _listing_group_label(source_name: str) -> str:
 def build_catalog_listing_with_form(
     deferrable: List[Dict[str, Any]], *, max_tokens: int = 4000) -> Tuple[Optional[str], str]:
     """Render the deferred-catalog manifest: ``- name: short desc`` lines grouped per source.
-    Returns ``(text, form)``; form is ``"full"``, ``"names"``, ``"mixed"`` (oversized servers
-    collapsed to a name + count line), ``"groups"`` (every server summarized) or ``"none"``
-    (over budget even summarized -> text is None). Ordering is deterministic (sorted groups
+    Returns ``(text, form)``; form is ``"full"``, ``"names"``, ``"mixed"`` (groups at different
+    disclosure levels), ``"groups"`` (every group summarized) or ``"none"`` (empty catalog).
+    Count lines are the discovery floor, even when they exceed the budget.
+    Ordering is deterministic (sorted groups
     and tools) so the block is byte-stable — the request prefix stays cacheable. Degradation
-    is PER SERVER, largest first: one huge server must not cost a small one its listing."""
+    is per toolset, largest first: one huge group must not cost a small one its listing."""
     groups: Dict[str, List[Tuple[str, str]]] = {}
     for td in deferrable:
         fn = _fn(td)
@@ -253,11 +254,10 @@ def build_catalog_listing_with_form(
         return None, "none"
 
     def render_group(label: str, mode: str) -> str:
-        """Render one server's block. mode: 'full' | 'names' | 'summary'."""
+        """Render one toolset's block. mode: 'full' | 'names' | 'summary'."""
         tools = sorted(groups[label])
         if mode == "summary":
-            return (f"{label} ({len(tools)} tools — names not listed; "
-                    f"discover via `{TOOL_SEARCH_NAME}`)")
+            return f"{label} tools ({len(tools)})"
         lines = [f"{label} tools ({len(tools)}):"]
         if mode == "full":
             lines.extend(f"- {name}: {desc}" if desc else f"- {name}" for name, desc in tools)
@@ -266,21 +266,25 @@ def build_catalog_listing_with_form(
         return "\n".join(lines)
 
     header = ("Deferred tool catalog (call schemas via "
-              f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):")
+              f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`; "
+              f"discover unlisted names via `{TOOL_SEARCH_NAME}`):")
 
     def assemble_if_fits(modes: Dict[str, str]) -> Optional[str]:
         text = "\n".join([header] + [render_group(lbl, modes[lbl]) for lbl in sorted(groups)])
         return text if math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens else None
 
-    for mode in ("full", "names"):  # 1. everything full; 2. everything names-only
-        modes = {lbl: mode for lbl in groups}
-        text = assemble_if_fits(modes)
-        if text is not None:
-            return text, mode
-    # 3. Collapse the LARGEST rendered groups first (deterministic: size then label).
-    for lbl in sorted(groups, key=lambda lbl: (-len(render_group(lbl, "names")), lbl)):
-        modes[lbl] = "summary"
-        text = assemble_if_fits(modes)
-        if text is not None:
-            return text, "groups" if all(m == "summary" for m in modes.values()) else "mixed"
-    return None, "none"
+    modes = {lbl: "full" for lbl in groups}
+    text = assemble_if_fits(modes)
+    if text is not None:
+        return text, "full"
+    # Each group walks its own ladder, leaving smaller groups' descriptions intact.
+    for lbl in sorted(groups, key=lambda lbl: (-len(render_group(lbl, "full")), lbl)):
+        for mode in ("names", "summary"):
+            modes[lbl] = mode
+            text = assemble_if_fits(modes)
+            if text is not None:
+                forms = set(modes.values())
+                form = ("groups" if mode == "summary" else mode) if len(forms) == 1 else "mixed"
+                return text, form
+    # A budget smaller than the capability index must not erase reachable domains.
+    return "\n".join([header] + [render_group(lbl, "summary") for lbl in sorted(groups)]), "groups"

@@ -1,26 +1,10 @@
-import fs from 'node:fs'
-
-import { parse } from 'yaml'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 const DISABLED_BACKUP_MODES = new Set(['off', 'false', 'none', 'disabled'])
+const execFileAsync = promisify(execFile)
 
-export function preUpdateBackupEnabled(config: unknown): boolean {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) {
-    return true
-  }
-
-  const updates = (config as Record<string, unknown>).updates
-
-  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
-    return true
-  }
-
-  const value = (updates as Record<string, unknown>).pre_update_backup
-
-  if (value === undefined) {
-    return true
-  }
-
+export function preUpdateBackupEnabled(value: unknown): boolean {
   if (value === false || value === null) {
     return false
   }
@@ -28,12 +12,35 @@ export function preUpdateBackupEnabled(config: unknown): boolean {
   return typeof value !== 'string' || !DISABLED_BACKUP_MODES.has(value.trim().toLowerCase())
 }
 
-export function readPreUpdateBackupEnabled(configPath: string): boolean {
+export interface HermesConfigRuntime {
+  command?: string
+  args?: string[]
+  env?: NodeJS.ProcessEnv
+  shell?: boolean
+}
+
+export async function readPreUpdateBackupEnabled(
+  runtime: HermesConfigRuntime,
+  hermesHome: string,
+  run = execFileAsync
+): Promise<boolean> {
+  if (!runtime.command || !runtime.args) {
+    return true
+  }
+
   try {
-    return preUpdateBackupEnabled(parse(fs.readFileSync(configPath, 'utf8')))
+    const result = await run(runtime.command, runtime.args, {
+      encoding: 'utf8',
+      env: { ...process.env, ...runtime.env, HERMES_HOME: hermesHome },
+      shell: Boolean(runtime.shell),
+      timeout: 15_000,
+      windowsHide: true
+    })
+
+    return preUpdateBackupEnabled(JSON.parse(String(result.stdout).trim()))
   } catch {
-    // Match the Python updater: an unreadable or invalid config falls back to
-    // the safe default instead of silently disabling recovery data.
+    // A missing runtime, probe failure, or malformed response must not weaken
+    // the emergency recovery path.
     return true
   }
 }

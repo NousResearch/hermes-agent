@@ -1,60 +1,55 @@
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { preUpdateBackupEnabled, readPreUpdateBackupEnabled } from './pre-update-backup-config'
-
-const temporaryDirectories: string[] = []
-
-afterEach(() => {
-  for (const directory of temporaryDirectories.splice(0)) {
-    fs.rmSync(directory, { recursive: true, force: true })
-  }
-})
 
 describe('preUpdateBackupEnabled', () => {
   it.each([false, null, 'off', 'false', 'none', 'disabled', ' DISABLED '])(
     'disables the desktop backup for the Python updater off alias %j',
     value => {
-      expect(preUpdateBackupEnabled({ updates: { pre_update_backup: value } })).toBe(false)
+      expect(preUpdateBackupEnabled(value)).toBe(false)
     }
   )
 
   it.each([true, 'quick', 'full', 'zip', 'true', 'unexpected', 0, {}, undefined])(
     'keeps the safety backup for %j',
     value => {
-      expect(preUpdateBackupEnabled({ updates: { pre_update_backup: value } })).toBe(true)
+      expect(preUpdateBackupEnabled(value)).toBe(true)
     }
   )
-
-  it('keeps the safety backup when the updates section is absent', () => {
-    expect(preUpdateBackupEnabled({ model: { default: 'test' } })).toBe(true)
-  })
 })
 
 describe('readPreUpdateBackupEnabled', () => {
-  it('reads the nested setting from config.yaml', () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-pre-update-backup-'))
-    const configPath = path.join(directory, 'config.yaml')
-
-    temporaryDirectories.push(directory)
-    fs.writeFileSync(configPath, 'updates:\n  pre_update_backup: false\n')
-
-    expect(readPreUpdateBackupEnabled(configPath)).toBe(false)
-  })
-
-  it.each(['updates: [', 'missing-config.yaml'])('fails safe for an unreadable configuration: %s', contents => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-pre-update-backup-'))
-    const configPath = path.join(directory, 'config.yaml')
-
-    temporaryDirectories.push(directory)
-
-    if (contents !== 'missing-config.yaml') {
-      fs.writeFileSync(configPath, contents)
+  it.each([
+    ['managed false overriding user true', 'false', false],
+    ['managed true overriding user false', 'true', true],
+    ['an environment-expanded off alias', '"off"', false]
+  ])('uses the effective config result for %s', async (_name, stdout, expected) => {
+    const run = vi.fn().mockResolvedValue({ stdout })
+    const runtime = {
+      command: '/runtime/python',
+      args: ['-m', 'hermes_cli.main', 'config', 'get', 'updates.pre_update_backup', '--json'],
+      env: { PYTHONPATH: '/runtime/hermes' }
     }
 
-    expect(readPreUpdateBackupEnabled(configPath)).toBe(true)
+    await expect(readPreUpdateBackupEnabled(runtime, '/profiles/active', run)).resolves.toBe(expected)
+    expect(run).toHaveBeenCalledWith(
+      runtime.command,
+      runtime.args,
+      expect.objectContaining({
+        env: expect.objectContaining({
+          HERMES_HOME: '/profiles/active',
+          PYTHONPATH: '/runtime/hermes'
+        })
+      })
+    )
+  })
+
+  it.each([
+    ['runtime failure', vi.fn().mockRejectedValue(new Error('probe failed'))],
+    ['malformed output', vi.fn().mockResolvedValue({ stdout: 'not-json' })]
+  ])('fails safe for %s', async (_name, run) => {
+    await expect(
+      readPreUpdateBackupEnabled({ command: '/runtime/hermes', args: ['config', 'get'] }, '/profiles/active', run)
+    ).resolves.toBe(true)
   })
 })

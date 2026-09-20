@@ -650,3 +650,55 @@ def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch
 
     # The other profile's .env value stands; the process config was not applied.
     assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_local_launch_cwd_survives_repeated_dotenv_and_terminal_bridges(tmp_path, monkeypatch):
+    """A local runtime pin survives both reload and terminal fallback bridges."""
+    from hermes_cli import config as config_mod
+    from agent.runtime_cwd import resolve_agent_cwd
+    from tools.file_tools_paths import _resolve_path_for_task
+
+    launch = tmp_path / "project"
+    configured = tmp_path / "profile-cwd"
+    launch.mkdir()
+    configured.mkdir()
+    home = _seed_terminal_home(
+        tmp_path,
+        monkeypatch,
+        config_yaml=f"terminal:\n  backend: local\n  cwd: {configured}\n",
+        env_text=f"TERMINAL_CWD={configured}\n",
+    )
+    monkeypatch.setattr(config_mod, "_LOCAL_CLI_LAUNCH_CWD", None)
+    monkeypatch.chdir(launch)
+
+    config_mod.pin_local_cli_launch_cwd(str(launch))
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+    config_mod.apply_terminal_config_to_env(env=None, override=True)
+
+    assert os.environ["TERMINAL_CWD"] == str(launch)
+    assert resolve_agent_cwd() == launch
+    assert _resolve_path_for_task("probe.txt") == launch / "probe.txt"
+
+
+def test_unpinned_gateway_and_cron_keep_configured_terminal_cwd(tmp_path, monkeypatch):
+    """Gateway/cron processes without a CLI pin retain terminal.cwd semantics."""
+    from hermes_cli import config as config_mod
+
+    configured = tmp_path / "configured"
+    launch = tmp_path / "launch"
+    configured.mkdir()
+    launch.mkdir()
+    home = _seed_terminal_home(
+        tmp_path,
+        monkeypatch,
+        config_yaml=f"terminal:\n  backend: local\n  cwd: {configured}\n",
+    )
+    monkeypatch.setattr(config_mod, "_LOCAL_CLI_LAUNCH_CWD", None)
+
+    for marker in ("_HERMES_GATEWAY", "_HERMES_CRON_EXTERNAL_WORKER"):
+        monkeypatch.setenv(marker, "1")
+        monkeypatch.setenv("TERMINAL_CWD", str(launch))
+        load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+        assert os.environ["TERMINAL_CWD"] == str(configured)
+        monkeypatch.delenv(marker)

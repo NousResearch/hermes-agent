@@ -8011,12 +8011,7 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
 
 
 
-    """session.create must NOT eagerly write a DB row.
-
-    Every TUI/desktop launch opens a session here just to paint the composer;
-    eagerly creating a row left an empty "Untitled" session behind for every
-    launch the user never typed into. The row is created lazily on first prompt.
-    """
+    """session.create persists the durable id before returning it to the client."""
     created = []
 
     class _FakeDB:
@@ -8037,7 +8032,7 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
     sid = resp["result"]["session_id"]
     try:
         assert resp["result"]["stored_session_id"]
-        assert created == [], "session.create should not persist an empty DB row"
+        assert len(created) == 1
     finally:
         server._sessions.pop(sid, None)
 
@@ -16419,9 +16414,8 @@ def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
     server._sessions.pop(resp["result"]["stored_session_id"], None)
 
 
-def test_session_create_without_parent_still_defers_row(monkeypatch):
-    """Plain drafts keep the lazy-row contract: no parent + no explicit branch
-    intent means no eager persistence (the original draft-hygiene invariant)."""
+def test_session_create_without_parent_persists_row(monkeypatch):
+    """Plain drafts persist their durable id before the first prompt."""
 
     class _FakeAgent:
         def __init__(self):
@@ -16452,7 +16446,7 @@ def test_session_create_without_parent_still_defers_row(monkeypatch):
     sid = resp["result"]["session_id"]
     server._sessions[sid]["agent_ready"].wait(timeout=2.0)
 
-    assert calls["create"] == 0, "plain drafts must not persist eagerly"
+    assert calls["create"] == 1
 
     server._sessions.pop(sid, None)
 

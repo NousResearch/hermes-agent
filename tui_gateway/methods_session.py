@@ -366,22 +366,10 @@ def _(rid, params: dict) -> dict:
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
-    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
-    # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
-    # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
-    # empty session behind for every launch the user never typed into. The row is now created lazily on the
-    # first prompt (see _ensure_session_db_row + prompt.submit), and the AIAgent's own INSERT-OR-IGNORE
-    # persists it on the first turn too. EXCEPTION — seeded branch children (#93959): a desktop branch
-    # carries parent_session_id AND a seeded transcript, which is explicit user intent, not an abandoned
-    # draft. The row MUST exist immediately: the renderer's post-create resume re-fetches the child through
-    # REST + defer_history hydration, both of which read the DB — an unpersisted child 404s, the fail-latch
-    # then refuses to bind a "transcript-less" session, and the user sees an infinite spinner whose
-    # optimistic row vanishes on restart. Persisting up front also means a restart keeps the branch (both
-    # reports lost it) and the title lands in the parent's lineage instead of falling back to a
-    # message-preview name. Title mirrors the TUI /branch naming.
-    # The same holds for a seeded session WITHOUT a parent (a client opening a chat with its first turns
-    # already written): the transcript exists only in memory, so a restart before the first prompt lost it
-    # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
+    # ``stored_session_id`` is handed to the client before its first prompt, so it must already resolve
+    # after the backend's in-memory registry disappears on restart. The first prompt reuses this idempotent
+    # write to persist any deferred title/hidden state and its transcript.
+    _ensure_session_db_row(_sessions[sid])
     if parent_session_id and history:
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
     elif history:

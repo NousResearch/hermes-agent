@@ -333,18 +333,23 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
 
+    _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
+
     # Local backend: cwd is always os.getcwd(). Non-local: a placeholder is popped so
     # terminal_tool uses its per-backend default; an explicit path is kept.
     effective_backend = terminal_config.get("env_type", "local")
     if effective_backend == "local":
         terminal_config["cwd"] = os.getcwd()
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
+        if not _is_gateway:
+            from hermes_cli.config import pin_local_cli_launch_cwd
+
+            pin_local_cli_launch_cwd(terminal_config["cwd"])
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)
 
     # TERMINAL_CWD is force-exported (beats stale .env) except inside a gateway process,
     # whose config bridge already set it.
-    _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
     for config_key, env_var in _TERMINAL_ENV_MAPPINGS.items():
         if config_key not in terminal_config:
             continue

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { JsonRpcGatewayClient } from './json-rpc-gateway'
+import { GatewayConnectError, JsonRpcGatewayClient } from './json-rpc-gateway'
 
 /** EventTarget-based WebSocket stand-in that never opens, so each failure leg can be driven by hand. */
 class StuckSocket extends EventTarget {
@@ -14,6 +14,7 @@ class StuckSocket extends EventTarget {
 }
 
 const connectErrorMessage = 'Could not connect to Hermes gateway'
+const gatewayReady = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
 
 const rejection = (pending: Promise<void>): Promise<Error> =>
   pending.then(
@@ -21,11 +22,22 @@ const rejection = (pending: Promise<void>): Promise<Error> =>
     (error: Error) => error
   )
 
+const openSocket = (socket: StuckSocket): void => {
+  socket.readyState = 1
+  socket.dispatchEvent(new Event('open'))
+}
+
 const dial = (connectTimeoutMs = 1000) => {
   let socket!: StuckSocket
+  const sockets: StuckSocket[] = []
 
   const client = new JsonRpcGatewayClient({
-    socketFactory: () => (socket = new StuckSocket()) as unknown as WebSocket,
+    socketFactory: () => {
+      socket = new StuckSocket()
+      sockets.push(socket)
+
+      return socket as unknown as WebSocket
+    },
     heartbeatIntervalMs: 0,
     heartbeatDeadlineMs: 0,
     connectTimeoutMs,
@@ -35,7 +47,7 @@ const dial = (connectTimeoutMs = 1000) => {
   const pending = client.connect('ws://gateway.test/api/ws')
   pending.catch(() => {})
 
-  return { client, pending, socket }
+  return { client, pending, socket, sockets }
 }
 
 // Regression for #41566: the overlay showed the same sentence for an auth rejection, a TLS failure and a
@@ -65,5 +77,121 @@ describe('JsonRpcGatewayClient.connect failure classes', () => {
 
     expect(error.message.startsWith(connectErrorMessage)).toBe(true)
     expect(error.message).not.toBe(connectErrorMessage)
+  })
+})
+
+describe('JsonRpcGatewayClient.connect handshake option', () => {
+  it('a raw open keeps the connection pending until gateway.ready', async () => {
+    const { client, pending, socket } = dial()
+    let resolved = false
+
+    void pending.then(
+      () => {
+        resolved = true
+      },
+      () => undefined
+    )
+
+    socket.dispatchEvent(new Event('open'))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(resolved).toBe(false)
+    expect(client.connectionState).toBe('connecting')
+
+    socket.dispatchEvent(new MessageEvent('message', { data: gatewayReady }))
+    await pending
+
+    expect(resolved).toBe(true)
+    expect(client.connectionState).toBe('open')
+  })
+
+  it('handshake open resolves on open and delivers a first non-ready frame to the event hub', async () => {
+    let socket!: StuckSocket
+
+    const client = new JsonRpcGatewayClient({
+      socketFactory: () => (socket = new StuckSocket()) as unknown as WebSocket,
+      heartbeatIntervalMs: 0,
+      heartbeatDeadlineMs: 0,
+      connectTimeoutMs: 1000,
+      connectErrorMessage,
+      handshake: 'open'
+    })
+
+    const events: string[] = []
+
+    client.onEvent(event => events.push(event.type))
+
+    const pending = client.connect('ws://gateway.test/api/ws')
+    pending.catch(() => {})
+
+    socket.dispatchEvent(new Event('open'))
+    await pending
+
+    expect(client.connectionState).toBe('open')
+
+    const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'tool.start' } })
+    socket.dispatchEvent(new MessageEvent('message', { data: frame }))
+
+    expect(events).toEqual(['tool.start'])
+    expect(client.connectionState).toBe('open')
+  })
+})
+
+describe('JsonRpcGatewayClient.connect invalidation', () => {
+  it('invalidate before raw open rejects the attempt before closed listeners redial', async () => {
+    const { client, pending, socket, sockets } = dial()
+    let redial: Promise<void> | undefined
+
+    client.onState(state => {
+      if (state === 'closed') {
+        redial = client.connect('ws://gateway.test/api/ws')
+      }
+    })
+
+    client.invalidate()
+
+    expect(redial).toBeDefined()
+    expect(redial).not.toBe(pending)
+    expect(sockets).toHaveLength(2)
+
+    const error = await rejection(pending)
+    expect(error).toBeInstanceOf(GatewayConnectError)
+    expect(error.message).toBe('WebSocket closed')
+    expect(socket.readyState).toBe(3)
+    expect(client.connectionState).toBe('connecting')
+
+    const replacement = sockets[1]
+    openSocket(replacement)
+    expect(client.connectionState).toBe('connecting')
+    replacement.dispatchEvent(new MessageEvent('message', { data: gatewayReady }))
+    await redial
+
+    expect(client.connectionState).toBe('open')
+  })
+
+  it('invalidate after raw open but before gateway.ready rejects the attempt and redials', async () => {
+    const { client, pending, socket, sockets } = dial()
+    openSocket(socket)
+    expect(client.connectionState).toBe('connecting')
+
+    client.invalidate('Connection replaced')
+
+    const redial = client.connect('ws://gateway.test/api/ws')
+    expect(redial).not.toBe(pending)
+    expect(sockets).toHaveLength(2)
+
+    const error = await rejection(pending)
+    expect(error).toBeInstanceOf(GatewayConnectError)
+    expect(error.message).toBe('Connection replaced')
+    expect(socket.readyState).toBe(3)
+
+    const replacement = sockets[1]
+    openSocket(replacement)
+    expect(client.connectionState).toBe('connecting')
+    replacement.dispatchEvent(new MessageEvent('message', { data: gatewayReady }))
+    await redial
+
+    expect(client.connectionState).toBe('open')
   })
 })

@@ -69,6 +69,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const client = makeClient()
     const p = client.connect('ws://x')
     sockets[0].open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await p
 
     sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 4 } })
@@ -86,6 +88,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const first = client.connect('ws://x')
     let sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await first
 
     sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.start', session_id: 's1', seq: 1 } })
@@ -96,6 +100,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const second = client.connect('ws://x')
     sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await second
 
     // The reconnect triggered a replay fetch — flush microtasks.
@@ -116,6 +122,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const first = client.connect('ws://x')
     let sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await first
     sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 3 } })
 
@@ -123,6 +131,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const second = client.connect('ws://x')
     sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await second
 
     await vi.waitFor(async () => {
@@ -154,15 +164,23 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const client = makeClient()
     const p = client.connect('ws://x')
     sockets[0].open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await p
     // No events ever seen → close+reconnect must NOT fire a replay RPC.
     client.invalidate('drop')
     const p2 = client.connect('ws://x')
     sockets[sockets.length - 1].open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sockets[sockets.length - 1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await p2
     await new Promise(r => setTimeout(r, 20))
 
-    expect(sockets[sockets.length - 1].sent).toHaveLength(0)
+    const methods = sockets[sockets.length - 1].sent.map(
+      text => (JSON.parse(text) as { method?: string }).method
+    )
+
+    expect(methods).not.toContain('session.events.since')
     client.close()
   })
 
@@ -171,6 +189,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const first = client.connect('ws://x')
     let sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await first
     sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'status.update', session_id: 's1', seq: 10 } })
 
@@ -178,6 +198,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const second = client.connect('ws://x')
     sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await second
 
     await vi.waitFor(() => {
@@ -203,6 +225,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const first = client.connect('ws://x')
     let sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await first
     sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 1 } })
     expect(seen).toEqual(['delta']) // the pre-drop live frame
@@ -211,6 +235,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const second = client.connect('ws://x')
     sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await second
 
     await vi.waitFor(() => {
@@ -244,6 +270,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const first = client.connect('ws://x')
     let sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await first
     sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 2 } })
     expect(seen).toEqual([2]) // pre-drop live frame dispatches normally
@@ -261,6 +289,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const second = client.connect('ws://x')
     sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await second
 
     expect(openBarrier).toBeInstanceOf(Promise)
@@ -321,6 +351,7 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
 
     const first = client.connect('ws://x')
     sockets[0].open()
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await first
     sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 1 } })
 
@@ -329,6 +360,7 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     await expect(client.sessionReplayBarrier('s1')).resolves.toBe(false)
     const second = client.connect('ws://x')
     sockets[1].open()
+    sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await second
     await vi.waitFor(() => expect(sockets[1].lastRequest().method).toBe('session.events.since'))
     const oldBarrier = client.sessionReplayBarrier('s1')
@@ -338,6 +370,7 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.invalidate('second drop')
     const third = client.connect('ws://x')
     sockets[2].open()
+    sockets[2].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     const replacementBarrier = client.sessionReplayBarrier('s1')
     await third
     // A read waiting on the lost socket is abandoned; the replacement owns a new barrier.
@@ -379,13 +412,12 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
       try {
         const first = client.connect('ws://x')
         sockets[0].open()
-        await first
-
         sockets[0].serverFrame({
           jsonrpc: '2.0',
           method: 'event',
           params: { type: 'gateway.ready', payload: { replay_epoch: 'stable' } }
         })
+        await first
 
         for (const sid of ['slow', 'fast']) {
           sockets[0].serverFrame({
@@ -395,11 +427,12 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
           })
         }
 
-        seen.length = 0
         client.invalidate()
         const second = client.connect('ws://x')
         sockets[1].open()
+        sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
         await second
+        seen.length = 0
         const slow = client.sessionReplayBarrier('slow')!
         const fast = client.sessionReplayBarrier('fast')!
         expect(slow).toBeInstanceOf(Promise)
@@ -499,8 +532,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
       try {
         const first = client.connect('ws://x')
         sockets[0].open()
-        await first
         sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'A' } } })
+        await first
 
         for (const sid of ['s1', 's2']) {
           sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: sid, seq: 97 } })
@@ -509,6 +542,7 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
         client.invalidate()
         const second = client.connect('ws://x')
         sockets[1].open()
+        sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
         await second
         const barriers = ['s1', 's2'].map(sid => client.sessionReplayBarrier(sid))
         const requests = sockets[1].sent.map(text => JSON.parse(text))
@@ -521,7 +555,11 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
         if (via === 'ready') {
           sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'B' } } })
         } else {
-          sockets[1].serverFrame({ jsonrpc: '2.0', id: requests[0].id, result: { events: [], epoch: 'B' } })
+          sockets[1].serverFrame({
+            jsonrpc: '2.0',
+            id: requests.find(request => request.method === 'session.events.since')!.id,
+            result: { events: [], epoch: 'B' }
+          })
         }
 
         await expect(seenAtResolve).resolves.toEqual({ valid: [true, true], seen: [97, 97, 1] })
@@ -551,13 +589,14 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const first = client.connect('ws://x')
     let sock = sockets[sockets.length - 1]
     sock.open()
-    await first
-    // Learn epoch A and a high watermark.
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    // Learn epoch A via the same frame that settles the handshake.
     sock.serverFrame({
       jsonrpc: '2.0',
       method: 'event',
       params: { type: 'gateway.ready', payload: { replay_epoch: 'epoch-A' } }
     })
+    await first
     sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 97 } })
     expect(client.getSeqWatermarks()).toEqual({ s1: 97 })
 
@@ -568,6 +607,8 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     const second = client.connect('ws://x')
     sock = sockets[sockets.length - 1]
     sock.open()
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await second
 
     await vi.waitFor(() => {
@@ -587,6 +628,184 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     // New-epoch events build fresh watermarks from scratch.
     sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 3 } })
     expect(client.getSeqWatermarks()).toEqual({ s1: 3 })
+    client.close()
+  })
+
+  it('installs replay barriers before open listeners and sends capabilities before replay', async () => {
+    const client = makeClient()
+    const first = client.connect('ws://x')
+    sockets[0].open()
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    await first
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 1 } })
+
+    client.invalidate()
+    let barrierAtOpen: Promise<boolean> | undefined
+    client.onState(state => {
+      if (state === 'open') {
+        barrierAtOpen = client.sessionReplayBarrier('s1')
+        expect(barrierAtOpen).toBeInstanceOf(Promise)
+      }
+    })
+
+    const second = client.connect('ws://x')
+    sockets[1].open()
+    sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    await second
+
+    expect(barrierAtOpen).toBeInstanceOf(Promise)
+    expect(sockets[1].sent.map(text => JSON.parse(text).method)).toEqual([
+      'client.capabilities',
+      'session.events.since'
+    ])
+    client.close()
+  })
+
+  it('keeps history behind the barrier between raw open and gateway.ready', async () => {
+    const client = makeClient()
+    const first = client.connect('ws://x')
+    sockets[0].open()
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    await first
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 1 } })
+
+    client.invalidate()
+    const second = client.connect('ws://x')
+    sockets[1].open()
+
+    expect(client.connectionState).toBe('connecting')
+    await expect(client.sessionReplayBarrier('s1')).resolves.toBe(false)
+
+    sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    await second
+    client.close()
+  })
+
+  it('skips replay and releases installed barriers when ready announces a new epoch', async () => {
+    const client = makeClient()
+    const first = client.connect('ws://x')
+    sockets[0].open()
+    sockets[0].serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'gateway.ready', payload: { replay_epoch: 'A' } }
+    })
+    await first
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 97 } })
+
+    client.invalidate()
+    let barrierAtOpen: Promise<boolean> | undefined
+    client.onState(state => {
+      if (state === 'open') {
+        barrierAtOpen = client.sessionReplayBarrier('s1')
+      }
+    })
+
+    const second = client.connect('ws://x')
+    sockets[1].open()
+    sockets[1].serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'gateway.ready', payload: { replay_epoch: 'B' } }
+    })
+    await second
+
+    expect(barrierAtOpen).toBeInstanceOf(Promise)
+    await expect(barrierAtOpen).resolves.toBe(true)
+    expect(sockets[1].sent.map(text => JSON.parse(text).method)).toEqual(['client.capabilities'])
+    expect(client.sessionReplayBarrier('s1')).toBeUndefined()
+    expect(client.getSeqWatermarks()).toEqual({})
+    client.close()
+  })
+
+  it('delivers gateway.ready after the state becomes open', async () => {
+    const client = makeClient()
+    const states: string[] = []
+    client.onEvent(event => {
+      if (event.type === 'gateway.ready') {
+        states.push(client.connectionState)
+      }
+    })
+
+    const pending = client.connect('ws://x')
+    sockets[0].open()
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    await pending
+
+    expect(states).toEqual(['open'])
+    client.close()
+  })
+
+  it('rejects a ready attempt invalidated by an open listener without sending or delivering ready', async () => {
+    const client = makeClient()
+    const events: string[] = []
+    client.onEvent(event => events.push(event.type))
+    client.onState(state => {
+      if (state === 'open') {
+        client.invalidate()
+      }
+    })
+
+    const pending = client.connect('ws://x')
+    sockets[0].open()
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+
+    await expect(pending).rejects.toThrow('WebSocket closed')
+    expect(sockets[0].sent).toEqual([])
+    expect(events).toEqual([])
+  })
+
+  it('does not process stale ready against a replacement started by an open listener', async () => {
+    const client = makeClient()
+    const first = client.connect('ws://x')
+    sockets[0].open()
+    sockets[0].serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'gateway.ready', payload: { replay_epoch: 'A' } }
+    })
+    await first
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 3 } })
+
+    client.invalidate()
+    const events: string[] = []
+    client.onEvent(event => events.push(event.type))
+    let replacement: Promise<void> | undefined
+    client.onState(state => {
+      if (state === 'open' && !replacement) {
+        client.invalidate()
+        replacement = client.connect('ws://x')
+      }
+    })
+
+    const stale = client.connect('ws://x')
+    sockets[1].open()
+    sockets[1].serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'gateway.ready', payload: { replay_epoch: 'stale-B' } }
+    })
+
+    await expect(stale).rejects.toThrow('WebSocket closed')
+    expect(replacement).toBeInstanceOf(Promise)
+    expect(sockets[1].sent).toEqual([])
+    expect(sockets[2].sent).toEqual([])
+    expect(events).toEqual([])
+    expect(client.getSeqWatermarks()).toEqual({ s1: 3 })
+
+    sockets[2].open()
+    sockets[2].serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'gateway.ready', payload: { replay_epoch: 'A' } }
+    })
+    await replacement
+
+    expect(sockets[2].sent.map(text => JSON.parse(text).method)).toEqual([
+      'client.capabilities',
+      'session.events.since'
+    ])
+    expect(sockets[2].lastRequest().params).toEqual({ session_id: 's1', last_seen: 3 })
     client.close()
   })
 })

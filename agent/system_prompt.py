@@ -173,6 +173,69 @@ def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
     return [block] if block else []
 
 
+def _resolve_context_length(agent: Any) -> Optional[int]:
+    """Resolve the model context window used for context-file caps.
+
+    Stable for the life of the conversation, so it does not threaten prompt
+    caching. ``None`` falls back to the historical flat loader default."""
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None:
+        context_length = getattr(compressor, "context_length", None)
+        if isinstance(context_length, int) and context_length > 0:
+            return context_length
+    return None
+
+
+def resolve_identity_block(
+    agent: Any, ctx_len: Optional[int] = None
+) -> Dict[str, Any]:
+    """Resolve the identity block (slot #1) exactly as the prompt builder does.
+
+    Returns ``{"text": str, "from_soul": bool, "checkable": bool}``.
+
+    An explicit ``ctx_len`` preserves the prompt builder's context-file cap.
+    When omitted, resolve the stable context length from the agent.
+
+    ``from_soul`` preserves the builder's ``soul_loaded`` semantics (it controls
+    whether SOUL.md is injected again as project context), and it is provenance,
+    not text comparison: a SOUL.md equal to ``DEFAULT_AGENT_IDENTITY`` still
+    counts as loaded.
+
+    ``checkable`` distinguishes the legitimate default-identity states (an
+    absent or readable-empty SOUL.md) from cases where identity cannot be
+    judged safely (an unreadable SOUL.md or an absent/unmounted Hermes home).
+    Callers must fail open to reuse when it is false.
+    """
+    text = None
+    from_soul = False
+    checkable = True
+    if agent.load_soul_identity or not agent.skip_context_files:
+        home = _agent_home(agent)
+        context_length = (
+            ctx_len if ctx_len is not None else _resolve_context_length(agent)
+        )
+        soul_content = _pb.load_soul_md(context_length, home_override=home)
+        if soul_content:
+            text = soul_content
+            from_soul = True
+        else:
+            try:
+                probe_home = home or get_hermes_home()
+                if not probe_home.exists():
+                    checkable = False
+                else:
+                    soul_path = probe_home / "SOUL.md"
+                    if soul_path.exists():
+                        # A successful read distinguishes the documented
+                        # readable-empty reset state from an unreadable file.
+                        soul_path.read_text(encoding="utf-8")
+            except Exception:
+                checkable = False
+    if text is None:
+        text = DEFAULT_AGENT_IDENTITY
+    return {"text": text, "from_soul": from_soul, "checkable": checkable}
+
+
 def _session_start_like(agent: Any, now: Any) -> Any:
     """Best-known conversation start time, or ``now`` as a fallback.
     ``Conversation started:`` must be byte-stable across rebuilds (compression,
@@ -542,10 +605,10 @@ def _memory_parts(agent: Any) -> List[str]:
 def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool]:
     """SOUL.md (primary identity; cron keeps the persona while skipping cwd
     instructions, scoped to the agent's OWN home) or the default identity.
-    Returns ``(parts, soul_loaded)``."""
-    wants_soul = agent.load_soul_identity or not agent.skip_context_files
-    _soul_content = _pb.load_soul_md(ctx_len, home_override=_agent_home(agent)) if wants_soul else None
-    return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
+    Returns ``(parts, soul_loaded)``. The explicit ``ctx_len`` must reach the
+    loader unchanged to preserve the prompt builder's historical output."""
+    identity = resolve_identity_block(agent, ctx_len)
+    return [identity["text"]], identity["from_soul"]
 
 
 def _guidance_parts(agent: Any) -> List[str]:
@@ -665,8 +728,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     shared context file can remain in the longest common prefix across worktrees.
     Never re-rendered mid-session."""
     # Model context window scales the context-file caps; stable per conversation.
-    _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-    _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
+    _ctx_len = _resolve_context_length(agent)
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
     # The skill_view() pointer dangles without skill tools OR without the
@@ -750,6 +812,39 @@ def invalidate_system_prompt(agent: Any) -> None:
         del agent._plugin_system_prompt_sections_snapshot
     if agent._memory_store:
         agent._memory_store.load_from_disk()
+
+
+def stored_identity_is_stale(agent: Any, stored_prompt: str) -> bool:
+    """Return whether a stored prompt's opening identity differs from the fresh one.
+
+    Identity is slot #1. One of the two renderer-owned Hermes help-guidance
+    variants follows it, so the pair supplies the boundary that a substring
+    comparison lacks (for example, deleting only the tail of SOUL.md must still
+    be detected).
+
+    Fail open to reuse when identity is not checkable (including a failed read
+    or an absent/unmounted Hermes home), the resolver raises, or the stored
+    prompt has neither normal help-guidance anchor. Those states do not
+    establish a confident identity mismatch.
+    """
+    try:
+        identity = resolve_identity_block(agent)
+        if not (identity["checkable"] and identity["text"]):
+            return False
+        help_anchors = (
+            HERMES_AGENT_HELP_GUIDANCE.strip(),
+            HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS.strip(),
+        )
+        if not any(anchor in stored_prompt for anchor in help_anchors):
+            return False
+        identity_prefix = identity["text"].strip() + "\n\n"
+        return not any(
+            stored_prompt.startswith(identity_prefix + anchor)
+            for anchor in help_anchors
+        )
+    except Exception:
+        logger.debug("identity staleness check failed", exc_info=True)
+        return False
 
 
 def reconstruct_static_prefix(agent: Any, system_message: Optional[str] = None, *, log_label: str = "restore") -> None:

@@ -13,6 +13,16 @@ export const DEFAULT_VISIBLE_PER_PROVIDER = 50
  *  that contain a single colon, e.g. `model:tag`). */
 export const modelVisibilityKey = (provider: string, model: string): string => `${provider}::${model}`
 
+const HIDDEN_MODEL_MARKER = '__hidden__::'
+
+/** Persisted deny-list marker for an explicitly hidden model. This lets a
+ *  customized provider admit future catalog additions without restoring models
+ *  the user deliberately hid. */
+export const hiddenModelVisibilityKey = (provider: string, model: string): string =>
+  modelVisibilityKey(provider, `${HIDDEN_MODEL_MARKER}${model}`)
+
+const isHiddenModelKey = (key: string): boolean => key.includes(`::${HIDDEN_MODEL_MARKER}`)
+
 /** Sentinel key suffix stored when the user explicitly hides ALL models for a
  *  provider.  Distinguishes "user hid everything" from "never customized" so
  *  `effectiveVisibleKeys` does not re-add defaults for that provider. */
@@ -154,7 +164,17 @@ export function resolveVisibleKeys(stored: Set<string> | null, providers: readon
 
     const hasSentinel = stored.has(emptyProviderSentinelKey(provider.slug))
 
-    if (hasStoredProvider || hasSentinel) {
+    if (hasSentinel) {
+      continue
+    }
+
+    if (hasStoredProvider) {
+      for (const family of collapseModelFamilies(provider.models ?? [])) {
+        if (!stored.has(hiddenModelVisibilityKey(provider.slug, family.id))) {
+          next.add(modelVisibilityKey(provider.slug, family.id))
+        }
+      }
+
       continue
     }
 
@@ -174,7 +194,7 @@ export function effectiveVisibleKeys(
 
   // Strip sentinel keys — they are bookkeeping, not real visibility entries.
   for (const key of [...next]) {
-    if (isProviderSentinel(key)) {
+    if (isProviderSentinel(key) || isHiddenModelKey(key)) {
       next.delete(key)
     }
   }
@@ -196,13 +216,17 @@ export function toggleModelVisibility(
   // `resolveVisibleKeys` always returns a fresh Set, so we can mutate it directly.
   const next = resolveVisibleKeys(stored, providers)
   const key = modelVisibilityKey(providerSlug, model)
+  const hiddenKey = hiddenModelVisibilityKey(providerSlug, model)
   const sentinel = emptyProviderSentinelKey(providerSlug)
 
   if (next.has(key)) {
     next.delete(key)
+    next.add(hiddenKey)
 
     // Check if this was the last real model for this provider.
-    const remainingForProvider = [...next].some(k => k.startsWith(`${providerSlug}::`) && !isProviderSentinel(k))
+    const remainingForProvider = [...next].some(
+      k => k.startsWith(`${providerSlug}::`) && !isProviderSentinel(k) && !isHiddenModelKey(k)
+    )
 
     if (!remainingForProvider) {
       next.add(sentinel)
@@ -212,7 +236,18 @@ export function toggleModelVisibility(
     // set of exactly the one re-enabled model — the curated defaults are NOT
     // restored. Intentional: "you hid everything, you get back only what you
     // re-enable." (Locked in by the sentinel-clear-on-re-enable test.)
+    if (next.has(sentinel)) {
+      const provider = providers.find(candidate => candidate.slug === providerSlug)
+
+      for (const family of collapseModelFamilies(provider?.models ?? [])) {
+        if (family.id !== model) {
+          next.add(hiddenModelVisibilityKey(providerSlug, family.id))
+        }
+      }
+    }
+
     next.delete(sentinel)
+    next.delete(hiddenKey)
     next.add(key)
   }
 

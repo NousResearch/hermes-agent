@@ -1346,7 +1346,7 @@ def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
             return live
     except Exception:
         pass
-    return list(_PROVIDER_MODELS.get("copilot", [])) if normalized == "copilot-acp" else None
+    return _FallbackModelIds(_PROVIDER_MODELS.get("copilot", [])) if normalized == "copilot-acp" else None
 
 
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
@@ -1517,6 +1517,14 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 _OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
 
 
+class _FallbackModelIds(list[str]):
+    """A displayable catalog floor that must not become an authoritative disk-cache entry."""
+
+
+def _models_are_cacheable(models: list[str]) -> bool:
+    return bool(models) and not isinstance(models, _FallbackModelIds)
+
+
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
 
@@ -1607,7 +1615,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # model, flux-*, ahead of its chat models).
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized not in _MODELS_DEV_PREFERRED:
-        return curated_static
+        return _FallbackModelIds(curated_static)
     merged = _merge_with_models_dev(normalized, curated_static)
     return _xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged
 
@@ -1662,7 +1670,7 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
 
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
-        if live or (cache_key == "ollama" and _ollama_native_probe_reachable()):
+        if _models_are_cacheable(live) or (cache_key == "ollama" and _ollama_native_probe_reachable()):
             return _cache_entry(_credential_fingerprint(cache_key), live or [])
         return None
 
@@ -1878,8 +1886,8 @@ def cached_provider_model_ids(
         return []
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
-    if live:
-        _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
+    if _models_are_cacheable(live):
+        update_provider_cache_entry(normalized, live)
         return list(live)
 
     if is_ollama:
@@ -1898,7 +1906,7 @@ def cached_provider_model_ids(
     # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
         return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
-    return []
+    return list(live)
 
 
 def clear_provider_models_cache(provider: Optional[str] = None) -> None:

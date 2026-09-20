@@ -2737,6 +2737,33 @@ class TestModelRoutesAgentCreation:
         assert captured["api_key"] == "sk-session"
 
 
+class TestSessionModelProviderIdentity:
+    def test_session_model_uses_requested_provider_identity(self, monkeypatch):
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+        calls = []
+
+        def apply_runtime(runtime_kwargs, provider, *, target_model, required=False):
+            calls.append((provider, target_model))
+            runtime_kwargs.update(api_key="sk-named", base_url="https://named.example/v1", provider="custom")
+            return True
+
+        monkeypatch.setattr(adapter, "_apply_provider_runtime", apply_runtime)
+        runtime = {"provider": "custom", "requested_provider": "custom:ai-local-test-gateway", "api_key": "sk-initial", "base_url": "https://named.example/v1"}
+        adapter._select_agent_runtime(runtime, "global/model", requested_model=None, requested_provider=None, route=None, session_model="named/model", confirmed_runtime_lock=False, gateway_session_key="session", session_id=None)
+        assert calls == [("custom:ai-local-test-gateway", "named/model")]
+        assert runtime["api_key"] == "sk-named"
+
+    def test_session_model_falls_back_to_runtime_provider(self, monkeypatch):
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+        calls = []
+        monkeypatch.setattr(adapter, "_apply_provider_runtime", lambda runtime_kwargs, provider, *, target_model, required=False: calls.append(provider) or True)
+        runtime = {"provider": "openrouter", "api_key": "sk-global", "base_url": "https://openrouter.ai/api/v1"}
+        adapter._select_agent_runtime(runtime, "global/model", requested_model=None, requested_provider=None, route=None, session_model="named/model", confirmed_runtime_lock=False, gateway_session_key="session", session_id=None)
+        assert calls == ["openrouter"]
+
+
 class TestStoredSessionModelFilter:
     """A session row that persisted the advertised virtual model must read as
     "no stored model" — replaying "hermes-agent" upstream 400s. Found live

@@ -61,13 +61,16 @@ def test_kanban_list_json_includes_session_id(kanban_home):
 
 def test_kanban_show_json_includes_runtime_limit(kanban_home):
     with kbc.connect() as conn:
-        task_id = kb.create_task(
+        bounded_id = kb.create_task(
             conn, title="bounded task", max_runtime_seconds=2700
         )
+        uncapped_id = kb.create_task(conn, title="uncapped task")
 
-    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+    bounded = json.loads(kc.run_slash(f"show {bounded_id} --json"))
+    uncapped = json.loads(kc.run_slash(f"show {uncapped_id} --json"))
 
-    assert payload["task"]["max_runtime_seconds"] == 2700
+    assert bounded["task"]["max_runtime_seconds"] == 2700
+    assert uncapped["task"]["max_runtime_seconds"] is None
 
 
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):

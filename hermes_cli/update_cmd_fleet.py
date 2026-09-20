@@ -446,6 +446,23 @@ def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
     failed.extend(f"systemd-{scope} (listing unavailable)" for scope, _ in _SYSTEMD_SCOPES if scope not in answered)
 
 
+def _live_fleet_all_current() -> bool:
+    """True when the fleet probe finds at least one gateway and every row is ``current`` at the
+    checkout SHA (identity known). Any unknown/stale/down row or a failed probe -> False (restart)."""
+    checkout_sha = _current_checkout_sha()
+    if not checkout_sha:
+        return False
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Pending fleet restart: fleet probe failed: %s", exc)
+        return False
+    if not fleet or _fleet_covered_gateways(fleet) is None:
+        return False
+    return all(row.get("state") == "current" and str(row.get("code_sha")) == checkout_sha for row in fleet)
+
+
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
@@ -473,6 +490,14 @@ def _run_pending_fleet_restart() -> bool:
     except Exception as exc:
         logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
         pids = None
+
+    # A gateway this very update cold-started (or a manual `hermes gateway restart` seconds
+    # ago) already serves the checkout code; stopping it here re-kills the fleet, and on
+    # Windows the stop/start pair then reports "No gateway was running" plus a second spawn
+    # (#117051). Skip when EVERY live gateway is current on the checkout SHA.
+    if pids and _live_fleet_all_current():
+        print("  ✓ Every running gateway already serves the checkout code — nothing to restart.")
+        return True
 
     failed: list = []
     try:

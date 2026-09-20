@@ -362,6 +362,29 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     assert "Pending fleet restart completed" in capsys.readouterr().out
 
 
+def test_run_pending_restart_skips_gateways_already_on_checkout_code(monkeypatch, capsys):
+    """A gateway the update itself cold-started seconds earlier is already current on the checkout
+    SHA: the catch-up must not stop it (the Windows stop/start pair then printed "No gateway was
+    running" plus a second spawn, #117051) and must report nothing to restart."""
+    sha = "c" * 40
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: sha)
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [48096])
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 48096, "code_sha": sha, "state": "current"}],
+    )
+    stopped = []
+    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: stopped.append(k))
+    monkeypatch.setattr("hermes_cli.gateway_windows.restart", lambda: stopped.append("windows-restart"))
+    monkeypatch.setattr("hermes_cli.gateway_windows.is_installed", lambda: True)
+    monkeypatch.setattr(update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [])
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    assert stopped == []
+    assert "nothing to restart" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # cmd_update integration (mocked git / restart)
 # ---------------------------------------------------------------------------

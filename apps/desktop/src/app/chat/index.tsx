@@ -407,7 +407,16 @@ export function ChatRuntimeBoundary({
       // Submission is handled explicitly by ChatBar.
       // Keeping this no-op avoids duplicate prompt.submit calls.
     },
-    onEdit: isHistorical ? undefined : onEdit,
+    // Editing stays AVAILABLE on a history page. `isDisabled` above blocks
+    // submit/reload/branch and keeps the page static, but the rail jump is
+    // the only way into that page and it has no in-thread exit — so dropping
+    // `onEdit` left the inline composer unopenable after ANY far rail jump
+    // (the throw "Runtime does not support editing", infectious downward,
+    // healed only by the floating jump button's returnToLatest). `editMessage`
+    // already resolves its target against the live session store
+    // (use-prompt-actions), never the display page, so the edit is correct;
+    // sending one rewinds the live transcript and drops the page.
+    onEdit,
     onCancel: isHistorical ? undefined : async () => onCancel(),
     onReload: isHistorical ? undefined : onReload
   })

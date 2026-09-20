@@ -58,8 +58,21 @@ def test_typed_block_classifies_untyped_breaker_block(kanban_home, monkeypatch):
         assert len(kb.list_runs(conn, tid)) == 2
 
 
-def test_typed_block_still_refuses_typed_or_live_blocked_cards(kanban_home):
+def test_typed_block_still_refuses_typed_or_live_blocked_cards(kanban_home, monkeypatch):
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     with kbc.connect() as conn:
+        parked = kb.create_task(conn, title="parked", assignee="worker", max_runtime_seconds=1)
+        _time_out_once(conn, parked)
+        _time_out_once(conn, parked)
+        assert kb.get_task(conn, parked).status == "blocked"
+        stale_run_id = conn.execute(
+            "SELECT MAX(id) FROM task_runs WHERE task_id = ?", (parked,)).fetchone()[0]
+        assert stale_run_id is not None
+        # A worker asserting ownership of its (ended) run cannot classify a parked card.
+        assert kb.block_task(conn, parked, reason="mine", kind="needs_input",
+                             expected_run_id=stale_run_id) is False
+        assert kb.get_task(conn, parked).block_kind is None
+
         typed = kb.create_task(conn, title="typed once", assignee="worker")
         kb.claim_task(conn, typed)
         assert kb.block_task(conn, typed, reason="decision", kind="needs_input") is True

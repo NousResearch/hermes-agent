@@ -3147,9 +3147,11 @@ def block_task(
         # ``block_kind`` and no ``blocked`` event -- the policy is the
         # supervisor's, not the kernel's -- but the transition guard below only
         # matches running/ready, so that policy could never be attached later
-        # (#117363). Classify in place; never re-type or flap status.
+        # (#117363). Classify in place; never re-type or flap status. A caller
+        # asserting run ownership (``expected_run_id``) cannot own a parked
+        # card -- its run is over -- so it is refused like any stale worker.
         if cur_row["status"] == "blocked":
-            if kind is None or _row_get(cur_row, "block_kind") is not None:
+            if kind is None or expected_run_id is not None or _row_get(cur_row, "block_kind") is not None:
                 return False
             classified = conn.execute(
                 "UPDATE tasks SET block_kind = ?, block_recurrences = 1 "

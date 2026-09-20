@@ -131,6 +131,14 @@ describe.each([
 
     requestGateway.mockRejectedValueOnce(new Error('connection unavailable'))
     expect(await act(async () => result.current.injectHiddenPrompt('more context'))).toBe(false)
-    expect(updateSessionState).not.toHaveBeenCalled()
+    expect(updateSessionState).toHaveBeenCalledTimes(tile ? 0 : 1)
+
+    if (!tile) {
+      expect(updateSessionState).toHaveBeenCalledWith('recovered', expect.any(Function), 'stored')
+      const state = createClientSessionState()
+      expect(updateSessionState.mock.calls[0]![1](state)).toBe(state)
+    }
+
+    expect($messages.get()).toEqual([])
   })
 })

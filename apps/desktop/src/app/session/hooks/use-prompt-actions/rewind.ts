@@ -446,9 +446,12 @@ export function appendMidTurnUserMessage<
     pendingBranchGroup?: null | string
     streamId: null | string
   }
->(state: State, message: ChatMessage): State {
+>(state: State, message: ChatMessage, { interruptTools = true }: { interruptTools?: boolean } = {}): State {
   const liveId = state.streamId
-  const sealed = finalizeUserInterruptedMessages(state.messages, liveId)
+  // An observed steer inserts a boundary without requesting an interruption.
+  const sealed = interruptTools
+    ? finalizeUserInterruptedMessages(state.messages, liveId)
+    : finalizeInterruptedMessages(state.messages, liveId)
   const sealedLiveKept = liveId !== null && sealed.some(row => row.id === liveId)
 
   const messages = [

@@ -532,4 +532,3 @@ def test_turn_that_never_ends_is_still_a_delivery_timeout(tmp_path, monkeypatch)
     with pytest.raises(subprocess.TimeoutExpired):
         methods_bot_relay._run_delivery("ops", str(tmp), env, timeout=1)
     assert time.monotonic() - started < 8
-

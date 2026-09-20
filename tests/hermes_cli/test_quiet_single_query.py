@@ -144,4 +144,3 @@ def test_a_follow_up_turn_rewrites_the_report_with_the_answer_it_displaces(monke
     assert seen["report_before_follow_up"] == "asking the teammate"
     assert qsq.read_turn_report(str(report), os.getpid())["reply"] == "teammate says: done"
     assert ("teammate says: done",) in printed, "the report and stdout name the same answer"
-

@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import importlib
-from contextlib import contextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from hermes_cli.web_routers._common import scoped_to_thread
+
 router = APIRouter(prefix="/api/memory/providers")
+
+# Clients only ever see these states and this detail text; provider strings never cross.
+STATE_DETAIL = {
+    "idle": "",
+    "pending": "Waiting for browser consent",
+    "connected": "Connected",
+    "error": "Authorization did not complete",
+}
+AUTH_KINDS = frozenset({"oauth", "apikey"})
+_UNSUPPORTED = {"supported": False, "state": "unsupported", "connected": False, "auth": None, "detail": ""}
 
 
 def _resolve_flow(provider: str):
@@ -21,54 +32,44 @@ def _resolve_flow(provider: str):
         raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect")
 
 
-@contextmanager
-def _scope_to_profile(profile: Optional[str]):
-    """Scope config resolution to ``profile`` so the flow's eager path resolve targets that profile's
-    honcho.json. None/""/"current" leaves it untouched."""
-    requested = (profile or "").strip()
-    if not requested or requested.lower() == "current":
-        yield
-        return
+def normalize_status(raw: Any) -> dict:
+    """Reduce a hook's dict to state, connected and auth."""
+    data = raw if isinstance(raw, dict) else {}
+    state = data.get("state") if data.get("state") in STATE_DETAIL else "error"
+    status: dict = {"state": state, "detail": STATE_DETAIL[state]}
+    if data.get("connected") is True:
+        status["connected"] = True
+    if "auth" in data:
+        status["auth"] = data["auth"] if data["auth"] in AUTH_KINDS else None
+    return status
 
-    from hermes_cli import profiles as profiles_mod
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+def _oauth_response(provider: str, *, start: bool, declared: bool) -> dict:
+    from plugins.memory import find_provider_dir
 
     try:
-        profiles_mod.validate_profile_name(requested)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(requested):
-        raise HTTPException(status_code=404, detail=f"Profile '{requested}' does not exist.")
-
-    token = set_hermes_home_override(str(profiles_mod.get_profile_dir(requested)))
+        flow = _resolve_flow(provider)
+    except HTTPException:
+        if declared and find_provider_dir(provider) is not None:
+            return dict(_UNSUPPORTED)
+        raise
     try:
-        yield
-    finally:
-        reset_hermes_home_override(token)
+        # The flow resolves its config path eagerly inside this scope; its worker thread outlives it.
+        raw = flow.start_loopback_flow_background() if start else flow.get_flow_status()
+    except Exception as exc:
+        action = "start" if start else "read"
+        raise HTTPException(status_code=500, detail=f"Failed to {action} {provider} OAuth{'' if start else ' status'}: {exc}")
+    status = normalize_status(raw)
+    return {**status, "supported": True} if declared else status
 
 
 @router.post("/{provider}/oauth/start")
-async def start_memory_oauth(provider: str, profile: Optional[str] = None):
+async def start_memory_oauth(provider: str, profile: Optional[str] = None, surface: Optional[str] = None):
     """Begin a provider's zero-CLI OAuth flow (browser + loopback listener); returns immediately, poll status."""
-    flow = _resolve_flow(provider)
-    try:
-        # The flow resolves its config path eagerly inside this scope; its worker thread outlives it.
-        with _scope_to_profile(profile):
-            return flow.start_loopback_flow_background()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to start {provider} OAuth: {exc}")
+    return await scoped_to_thread(profile, lambda: _oauth_response(provider, start=True, declared=surface == "declared"))
 
 
 @router.get("/{provider}/oauth/status")
-async def memory_oauth_status(provider: str, profile: Optional[str] = None):
+async def memory_oauth_status(provider: str, profile: Optional[str] = None, surface: Optional[str] = None):
     """Poll a provider's OAuth flow: idle | pending | connected | error."""
-    flow = _resolve_flow(provider)
-    try:
-        with _scope_to_profile(profile):
-            return flow.get_flow_status()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read {provider} OAuth status: {exc}")
+    return await scoped_to_thread(profile, lambda: _oauth_response(provider, start=False, declared=surface == "declared"))

@@ -1121,19 +1121,28 @@ def _systemctl_show(properties: tuple[str, ...], *, system: bool) -> dict[str, s
     return _parse_kv_pairs(result.stdout.splitlines()) if result.returncode == 0 else {}
 
 
-def _hermes_home_pinned_by_unit(unit_path: Path) -> str | None:
-    """``HERMES_HOME`` pinned by the unit file at *unit_path*, or None when absent/unreadable."""
+def _unit_environment_value(unit_path: Path, name: str) -> str | None:
+    """Value of one ``Environment="NAME=…"`` directive in the unit file at *unit_path*, with
+    systemd's ``\\"``/``\\\\``/``%%`` quoting undone; None when the file or the key is absent."""
     try:
         text = unit_path.read_text(encoding="utf-8")
     except OSError:
         return None
     for line in text.splitlines():
         body = line.strip()
-        if body.startswith("Environment="):
-            body = body[len("Environment=") :].strip().strip('"')
-            if body.startswith("HERMES_HOME="):
-                return body.split("=", 1)[1].strip().strip('"') or None
+        if not body.startswith("Environment="):
+            continue
+        body = body[len("Environment=") :].strip()
+        if body.startswith('"') and body.endswith('"'):
+            body = body[1:-1].replace('\\"', '"').replace("\\\\", "\\").replace("%%", "%")
+        if body.startswith(f"{name}="):
+            return body.split("=", 1)[1].strip() or None
     return None
+
+
+def _hermes_home_pinned_by_unit(unit_path: Path) -> str | None:
+    """``HERMES_HOME`` pinned by the unit file at *unit_path*, or None when absent/unreadable."""
+    return _unit_environment_value(unit_path, "HERMES_HOME")
 
 
 def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
@@ -2905,6 +2914,32 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
         return str(p)
 
 
+def _systemd_env_line(name: str, value: str) -> str:
+    """One ``Environment="NAME=value"`` line: ``\\`` and ``"`` escaped for systemd's quoting, ``%``
+    doubled so specifier expansion leaves the value alone."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'Environment="{name}={escaped}"\n'
+
+
+def _installed_unit_ld_library_path(system: bool) -> str:
+    """``LD_LIBRARY_PATH`` baked into the installed unit; ``""`` when absent."""
+    return _unit_environment_value(get_systemd_unit_path(system=system), "LD_LIBRARY_PATH") or ""
+
+
+def _ld_library_path_line(system: bool, target_home_dir: str | None = None) -> str:
+    """Carry the installer's LD_LIBRARY_PATH into the unit (glibc reads it only at process start, so
+    ~/.hermes/.env is too late for CUDA libs — #14613); system units remap caller-home components.
+
+    The installed unit is the fallback source: the unit is regenerated and compared on every
+    start/restart/status, and a shell without the export (ssh, cron, ``sudo`` strips ``LD_*``)
+    must not be able to "repair" the line away."""
+    raw = os.environ.get("LD_LIBRARY_PATH", "") or _installed_unit_ld_library_path(system)
+    components = [p for p in raw.split(":") if p]
+    if target_home_dir is not None:
+        components = [_remap_path_for_user(p, target_home_dir) for p in components]
+    return _systemd_env_line("LD_LIBRARY_PATH", ":".join(components)) if components else ""
+
+
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
     """Remap the current HERMES_HOME (root's, under sudo) to the target user's equivalent:
     ``/root/.hermes[/profiles/x]`` → ``/home/alice/.hermes[/profiles/x]``; custom paths kept as-is."""
@@ -3053,13 +3088,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             f'Environment="HOME={home_dir}"\n'
             f'Environment="USER={username}"\n'
             f'Environment="LOGNAME={username}"\n'
-        )
+        ) + _ld_library_path_line(system=True, target_home_dir=home_dir)
         wanted_by = "multi-user.target"
     else:
         hermes_home = str(get_hermes_home().resolve())
         profile_arg = _profile_arg(hermes_home)
         user_home = Path.home()
-        identity_lines = env_lines = ordering_lines = ""
+        identity_lines = ordering_lines = ""
+        env_lines = _ld_library_path_line(system=False)
         wanted_by = "default.target"
 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)

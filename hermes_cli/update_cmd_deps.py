@@ -528,30 +528,51 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     if (web_dir / "package.json").is_file() and not _web_build_toolchain_ready(
         *_web_toolchain_roots(web_dir)):
         return True
-    try:
-        cache_file = _npm_lock_cache_file(hermes_root)
-        if not cache_file.exists():
-            return True
-        return cache_file.read_text(encoding="utf-8").strip() != current
-    except OSError:
-        return True
+    return not _npm_stamp_matches(hermes_root, current)
 
 
-def _npm_lock_cache_file(hermes_root: Path) -> Path:
-    """Per-checkout cache path: keyed by PROJECT_ROOT so parallel worktrees don't collide."""
+def _npm_lock_cache_file(hermes_root: Path, scope: str = "") -> Path:
+    """Per-checkout cache path: keyed by PROJECT_ROOT so parallel worktrees don't collide.
+    *scope* separates install closures that share the digest (workspace-scoped vs. full desktop)."""
     from hermes_cli.update_cmd import _m
     cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
-    return hermes_root / f".npm_lock_hash_{cache_key}"
+    return hermes_root / f".npm_lock_hash_{cache_key}{scope}"
 
 
-def _record_npm_lockfile_hash(hermes_root: Path) -> None:
+def _npm_stamp_matches(hermes_root: Path, current: str, scope: str = "") -> bool:
+    """True when the recorded digest for *scope* equals *current*; a missing/unreadable stamp never matches."""
+    try:
+        return _npm_lock_cache_file(hermes_root, scope).read_text(encoding="utf-8").strip() == current
+    except OSError:
+        return False
+
+
+def _clear_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
+    """Drop the stamp before an install attempt: it is written on success only, so a stale one must not
+    outlive a failed reinstall (or the next update would skip the repair)."""
+    with suppress(OSError):
+        _npm_lock_cache_file(hermes_root, scope).unlink()
+
+
+def _record_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
     digest = _npm_manifests_digest()
     if digest is None:
         return
     try:
-        _npm_lock_cache_file(hermes_root).write_text(digest, encoding="utf-8")
+        _npm_lock_cache_file(hermes_root, scope).write_text(digest, encoding="utf-8")
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
+
+
+# Stamp scope of the full-graph desktop install (pass 1's workspace-scoped stamp has none).
+DESKTOP_NPM_SCOPE = "_desktop"
+
+
+def _desktop_deps_changed(hermes_root: Path) -> bool:
+    """True when the manifests changed since the full-graph desktop ``npm ci`` last succeeded (#43837).
+    The caller also re-installs when Electron is missing: pass 1 prunes it whenever it runs."""
+    current = _npm_manifests_digest()
+    return current is None or not _npm_stamp_matches(hermes_root, current, DESKTOP_NPM_SCOPE)
 
 
 def _repair_node_deps_on_current_checkout(
@@ -663,6 +684,7 @@ def _update_node_dependencies() -> list[str]:
     # capturing makes a long download look hung.
     # The chatty npm-deprecation noise during `hermes update` comes from the *desktop* build, not this step;
     # that one is captured to update.log. See #18840.
+    _clear_npm_lockfile_hash(shared_hermes_root)
     result = _m()._run_npm_install_deterministic(
         npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
     if result.returncode == 0:

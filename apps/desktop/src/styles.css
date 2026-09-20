@@ -45,7 +45,8 @@
     .pet-wobble,
     .progress-slide,
     .kanban-arc,
-    .glyph-spinner__strip
+    .glyph-spinner__strip,
+    .decode-cursor-blink
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
@@ -1237,6 +1238,40 @@
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
+  }
+}
+
+/* Keyframes live here, not in per-instance <style> tags: inserting or removing an
+   @keyframes rule invalidates every animating element in the document (#99889). */
+@keyframes decode-cursor {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.decode-cursor-blink {
+  animation: decode-cursor 1s step-end infinite;
+}
+/* 0.001 start mirrors ZonesOverlay::GetAnimationAlpha's clamp(t / 200ms, 0.001, 1). */
+@keyframes hermes-zone-fade {
+  from {
+    opacity: 0.001;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes starmap-twinkle {
+  0%,
+  100% {
+    opacity: var(--o, 1);
+  }
+  50% {
+    opacity: calc(var(--o, 1) * 0.35);
   }
 }
 

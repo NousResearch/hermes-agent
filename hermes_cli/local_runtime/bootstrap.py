@@ -235,14 +235,30 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         mdir.mkdir(parents=True, exist_ok=True)
         preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
 
-        sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
-                                    models_max=int(section.get("models_max", 4)),
-                                    port=int(section.get("port", 0)) or None)
+        def _start_supervisor(runtime_dir: Path):
+            supervisor = LlamaServerSupervisor(
+                runtime_dir, mdir, preset_path=preset_path,
+                models_max=int(section.get("models_max", 4)),
+                port=int(section.get("port", 0)) or None)
+            try:
+                supervisor.start()
+            except Exception:
+                # start() can fail after the router process exists (health timeout): leaving it
+                # running unsupervised strands its VRAM behind a port nothing will clean up.
+                with suppress(Exception):
+                    supervisor.stop()
+                raise
+            return supervisor
+
+        sup = _start_supervisor(install_dir)
         try:
-            sup.start()
+            if backend == "cuda" and sup.cuda_initialization_failed():
+                logger.warning("CUDA initialization failed; restarting managed llama-server with CPU backend")
+                sup.stop()
+                backend = "cpu"
+                install_dir = ensure_runtime_installed(tag, backend)
+                sup = _start_supervisor(install_dir)
         except Exception:
-            # start() can fail after the router process exists (health timeout): leaving it
-            # running unsupervised strands its VRAM behind a port nothing will clean up.
             with suppress(Exception):
                 sup.stop()
             raise

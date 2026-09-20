@@ -301,6 +301,19 @@ def test_touch_generate_scans_reasoning_content(stub_server, tmp_path):
     assert sup.touch_generate("m") is False  # empty content, no reasoning field
 
 
+def test_cuda_initialization_failure_detection_reads_only_current_spawn(tmp_path):
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    log_path = tmp_path / "llama-server.log"
+    log_path.write_text("ggml_cuda_init: failed to initialize CUDA\n", encoding="utf-8")
+    sup = LlamaServerSupervisor(tmp_path, tmp_path, port=9999, log_path=log_path)
+    sup._log_start_offset = log_path.stat().st_size
+    assert sup.cuda_initialization_failed() is False
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write("ggml_cuda_init: failed to initialize CUDA: (null)\n")
+    assert sup.cuda_initialization_failed() is True
+
+
 def test_ensure_model_ready_unknown_model_raises(stub_server, tmp_path):
     port, handler = stub_server
     handler.models = {"data": [{"id": "present", "status": {"value": "unloaded"}}]}
@@ -957,6 +970,53 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+def test_bootstrap_restarts_with_cpu_after_cuda_initialization_failure(tmp_path, monkeypatch):
+    """A CUDA build can keep serving /health after ggml_cuda_init fails; do not retain it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(bootstrap, "staged_models", lambda: [tmp_path / "model.gguf"])
+    monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: "nvidia RTX")
+    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *args: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10964"])
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.select_backend", lambda vendor: "cuda")
+    installs = []
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        lambda tag, backend: installs.append((tag, backend)) or tmp_path / backend,
+    )
+
+    instances = []
+
+    class FakeSupervisor:
+        def __init__(self, install_dir, *args, **kwargs):
+            self.install_dir = install_dir
+            self.proc = None
+            instances.append(self)
+
+        def start(self):
+            pass
+
+        def cuda_initialization_failed(self):
+            return self.install_dir.name == "cuda"
+
+        def stop(self):
+            self.stopped = True
+
+        @property
+        def base_url(self):
+            return "http://127.0.0.1:18434/v1"
+
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", FakeSupervisor)
+
+    result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
+
+    assert [backend for _, backend in installs] == ["cuda", "cpu"]
+    assert instances[0].stopped is True
+    assert result is instances[1]
 
 
 def test_manifest_verified_tolerates_non_dict_manifest(tmp_path):

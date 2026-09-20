@@ -462,12 +462,28 @@ _WELCOME_ROUTE_COPY = {
     "anon_on_paid_host": "The Nous free tier must use its own inference host ({host}); "
                          "Hermes is pointed at the paid one. Restart Hermes to re-read the route, "
                          "or unset NOUS_INFERENCE_BASE_URL if you set it.",
-    "named_on_welcome_host": "This Nous account must use the Nous Portal inference host, "
-                             "not the free tier's. Run /model and pick the Nous row again.",
+    "named_on_welcome_host": "This Nous account needs to reconnect to its account route. "
+                             "Run /model and pick the Nous row again.",
     "tier_disabled": "The Nous free tier is switched off right now. {signin}",
 }
 _SIGNIN_CHAT = "Sign in with a Nous account for the full catalog: /login."
 _SIGNIN_TERMINAL = "Sign in with a Nous account for the full catalog: `hermes auth upgrade`."
+
+
+def friendly_wait(seconds: Any) -> str:
+    """Render a retry delay as a short, rounded duration rather than raw seconds."""
+    try:
+        value = max(0.0, float(seconds or 0))
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 15:
+        return "a few seconds"
+    if value < 90:
+        return "about a minute"
+    if value < 3600:
+        return f"about {int(round(value / 60))} minutes"
+    hours = int(round(value / 3600))
+    return "about an hour" if hours <= 1 else f"about {hours} hours"
 
 
 def parse_welcome_refusal(body: Any) -> Optional[Dict[str, Any]]:
@@ -493,28 +509,31 @@ def parse_welcome_refusal(body: Any) -> Optional[Dict[str, Any]]:
             "upgrade_url": upgrade_url if isinstance(upgrade_url, str) else ""}
 
 
-def welcome_refusal_copy(refusal: Dict[str, Any], *, model: str = "", in_chat: bool = True) -> str:
+def welcome_refusal_copy(
+    refusal: Dict[str, Any], *, model: str = "", in_chat: bool = True, door: bool = True,
+) -> str:
     """User copy for a structured welcome-tier refusal: what happened and the one way forward.
 
-    Never guest / anonymous / claim; ``in_chat`` picks ``/login`` over the terminal verb."""
-    signin = _SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL
+    Never guest / anonymous / claim; ``in_chat`` picks ``/login`` over the terminal verb.
+    ``door=False`` omits the sign-in tail when a surface renders it as a button."""
+    signin = (_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL) if door else ""
     reason = str(refusal.get("reason") or "")
     alternates = refusal.get("alternates") or []
     serves = alternates[0] if alternates else GUEST_MODEL
     retry = int(refusal.get("retry_after") or 0)
-    wait = f"Retrying in {retry}s." if retry > 0 else "Try again shortly."
+    wait = friendly_wait(retry) if retry > 0 else "a little while"
     if reason == "model_not_free":
         what = f"{model} isn't on the Nous free tier" if model else "That model isn't on the Nous free tier"
-        return f"{what}; it serves {serves} only. {signin}"
+        return f"{what}; it serves {serves} only. {signin}".rstrip()
     if reason == "feature_not_free":
-        return f"This feature isn't on the Nous free tier. {signin}"
+        return f"This feature isn't on the Nous free tier. {signin}".rstrip()
     if reason == "at_capacity":
-        return f"The Nous free tier is at capacity and briefly paused. {wait} {signin}"
+        return f"The Nous free tier is at capacity; please try again in {wait}. {signin}".rstrip()
     if reason == "admission_closed":
-        return f"The Nous free tier isn't admitting new sessions right now. {wait} {signin}"
+        return f"The Nous free tier isn't admitting new sessions right now. Try again in {wait}. {signin}".rstrip()
     if reason == "rate_limited":
-        return f"Nous free tier rate limit active \u2014 resets in {retry}s. {signin}"
-    return f"The Nous free tier refused this request ({reason}). {signin}"
+        return f"Nous free tier rate limit active \u2014 resets in {retry}s. {signin}".rstrip()
+    return f"The Nous free tier refused this request ({reason}). {signin}".rstrip()
 
 
 def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Optional[str]:

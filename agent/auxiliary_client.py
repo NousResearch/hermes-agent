@@ -2229,14 +2229,6 @@ def _describe_openrouter_unavailable(model: str = None) -> str:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
-    # Cross-session rate guard: another session's 429 means skip Nous rather than pile onto the tapped RPH bucket.
-    with contextlib.suppress(Exception):
-        from agent.nous_rate_guard import nous_rate_limit_remaining
-        _remaining = nous_rate_limit_remaining()
-        if _remaining is not None and _remaining > 0:
-            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", _remaining)
-            _mark_provider_unhealthy("nous", ttl=_remaining)
-            return None, None
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
@@ -2259,6 +2251,17 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = str(
             (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
         ).rstrip("/")
+    # Cooldowns belong to the credential sent on this request. A sign-in can replace an
+    # anonymous credential while the old allowance is still cooling down.
+    with contextlib.suppress(Exception):
+        from agent.nous_rate_guard import nous_rate_limit_remaining
+        from hermes_cli.anon_auth import is_anonymous_request
+        anonymous = is_anonymous_request("nous", api_key)
+        remaining = nous_rate_limit_remaining(anonymous=anonymous)
+        if remaining is not None and remaining > 0:
+            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", remaining)
+            _mark_provider_unhealthy("nous", ttl=min(remaining, 60.0) if anonymous else remaining)
+            return None, None
     lane = "vision" if vision else "text"
     # The free tier's host serves exactly one model, for every lane: asking it for the Portal's
     # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead.
@@ -3428,19 +3431,49 @@ def _evict_cached_client_instance(target: Any) -> bool:
     return evicted
 
 
+def _pool_credential_digest(pool: Any, entry: Any = None) -> str:
+    """Digest the selected credential, or all pool credentials when no entry is selectable."""
+    keys = [_pool_runtime_api_key(entry)] if entry is not None else []
+    if not any(keys):
+        try:
+            entries_fn = getattr(pool, "entries", None)
+            entries = entries_fn() if callable(entries_fn) else []
+        except Exception as exc:
+            logger.debug("Auxiliary client: could not list pool entries for digest: %s", exc)
+            return ""
+        keys = sorted(key for key in (_pool_runtime_api_key(item) for item in entries or ()) if key)
+    if not any(keys):
+        return ""
+    digest = hashlib.blake2b(digest_size=16)
+    for key in keys:
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _pool_cache_hint(provider: str, *, main_runtime: Optional[Dict[str, Any]] = None) -> str:
-    """Return a stable cache discriminator for pooled providers."""
+    """Return a cache discriminator that follows pooled credential rotation."""
     normalized = _normalize_aux_provider(provider)
     if normalized == "auto":
         runtime = _normalize_main_runtime(main_runtime)
         normalized = _normalize_aux_provider(runtime.get("provider") or _read_main_provider())
     if normalized in {"", "auto", "custom"}:
         return ""
-    entry = _peek_pool_entry(normalized)
-    if entry is None:
+    pool = _load_pool_with_credentials(normalized, " (cache hint)")
+    if pool is None:
         return ""
-    entry_id = str(getattr(entry, "id", "") or "").strip()
-    return f"{normalized}:{entry_id}" if entry_id else ""
+    try:
+        current_fn = getattr(pool, "current", None)
+        entry = current_fn() if callable(current_fn) else None
+        if entry is None:
+            peek_fn = getattr(pool, "peek", None)
+            entry = peek_fn() if callable(peek_fn) else None
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not peek pool entry for %s (cache hint): %s", normalized, exc)
+        entry = None
+    digest = _pool_credential_digest(pool, entry)
+    entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
+    return f"{normalized}:{entry_id}:{digest}" if entry_id or digest else ""
 
 
 # Ordered (host, provider) tables for inferring a backend from a client base URL.

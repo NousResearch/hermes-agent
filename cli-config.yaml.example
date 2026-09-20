@@ -1125,10 +1125,11 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
-  # Maximum tool-calling iterations per conversation (default: 500)
+  # Maximum tool-calling iterations per conversation (uncommented: 300;
+  # if omitted, the runtime default is unlimited)
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
-  max_turns: 500
+  max_turns: 300
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving

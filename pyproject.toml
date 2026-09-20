@@ -187,6 +187,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Native Patchright browser backend — only needed when browser.cloud_provider
+# is ``patchright`` (HERMES_BROWSER_BACKEND=patchright); most installs never
+# take the local native-browser path.
+patchright = ["patchright==1.60.1"]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452

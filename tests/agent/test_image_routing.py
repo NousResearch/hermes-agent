@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
+
+import pytest
 from unittest.mock import patch
 
 
@@ -383,11 +386,23 @@ class TestExtractImageRefs:
         assert urls == []
 
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
-        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
+        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file.
+        # Windows' expanduser reads USERPROFILE, not HOME.
         monkeypatch.setenv("HOME", str(tmp_path))
+        if os.name == "nt":
+            monkeypatch.setenv("USERPROFILE", str(tmp_path))
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")
+        assert paths == [str(img)]
+        assert urls == []
+
+    @pytest.mark.skipif(os.name != "nt", reason="drive-letter paths only exist on Windows")
+    def test_finds_windows_drive_letter_path(self, tmp_path: Path):
+        img = tmp_path / "screenshot.png"
+        img.write_bytes(_png_bytes())
+        body = f"Look at {img} and tell me what's wrong."
+        paths, urls = extract_image_refs(body)
         assert paths == [str(img)]
         assert urls == []
 

@@ -732,6 +732,20 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Worker execution plane: ``hermes`` (profile worker, default) or
+    # ``web_gemini`` (Gemini web conversation worker). Explicit only — never
+    # inferred from an assignee/profile alias.
+    execution_scope: Optional[str] = None
+    # web_gemini-scope action gate ("comment_only"); NULL = not set. Valid only
+    # when execution_scope == "web_gemini".
+    web_gemini_action_mode: Optional[str] = None
+    # Worker lifecycle bookkeeping (exit-envelope line): monotonic-ish spawn
+    # epoch (worker_start_time), ownership identity, and the sidecar receipt
+    # path the worker writes at terminal exit.
+    worker_start_time: Optional[int] = None
+    worker_owner_kind: Optional[str] = None
+    worker_owner_id: Optional[str] = None
+    worker_exit_envelope: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -762,6 +776,8 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "execution_scope", "web_gemini_action_mode",
+    "worker_start_time", "worker_owner_kind", "worker_owner_id", "worker_exit_envelope",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -1120,6 +1136,477 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _task_row_execution_scope(row: sqlite3.Row) -> Optional[str]:
+    """The ``execution_scope`` column of a dispatch lane row, tolerating legacy
+    rows/snapshots that predate the column (read as None = default plane)."""
+    try:
+        value = row["execution_scope"]
+    except (IndexError, KeyError):
+        return None
+    if value is None:
+        return None
+    scope = str(value).strip().lower()
+    return scope or None
+
+
+# ---------------------------------------------------------------------------
+# Worker exit envelopes (receipts) — ported from the 010804 autostash line.
+# A worker wrapper writes an atomic terminal receipt (provider/model/exit
+# class/redacted error) scoped to (task, run, pid) before its PID disappears;
+# the reaper below treats it as the ONLY authoritative terminal evidence.
+# ---------------------------------------------------------------------------
+_WORKER_OUTCOMES_OPERATIONAL_CLASSES = frozenset(
+    {
+        "PROVIDER_CAPACITY",
+        "PROVIDER_TRANSPORT",
+        "PROVIDER_AUTH",
+        "CONTEXT_LIMIT",
+        "TOOL_UNAVAILABLE",
+        "WORKSPACE_PROVISIONING",
+    }
+)
+_CLEAN_EXIT_PROTOCOL_VIOLATION_TEXT = (
+    "worker exited cleanly (rc=0) without calling "
+    "kanban_complete or kanban_block — protocol violation. "
+    "If the prior run already did the work, verify it and "
+    "report the result via kanban_complete; a run that ends "
+    "without a terminal kanban call counts as failed no "
+    "matter what it did."
+)
+
+
+def _matching_terminal_envelope(
+    path: Optional[str],
+    *,
+    task_id: str,
+    run_id: Optional[int],
+    worker_pid: Optional[int],
+) -> Optional[Any]:
+    """Return a receipt only when it is an exact task/run/pid match.
+
+    A stale claim is not evidence that the worker terminated. The sidecar
+    receipt is the terminal proof used by the reaper; missing, malformed, or
+    mismatched receipts deliberately fail closed instead of inferring a
+    provider outcome from log text.
+    """
+    if not path:
+        return None
+    from hermes_cli.kanban_worker_outcomes import read_exit_envelope as _read_exit_envelope
+
+    try:
+        envelope = _read_exit_envelope(path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if envelope is None or envelope.task_id != task_id:
+        return None
+    if envelope.run_id != run_id or envelope.pid != worker_pid:
+        return None
+    return envelope
+
+
+def _envelope_booking(envelope: Any, error_text: str) -> tuple[str, dict, bool, bool, bool]:
+    """Classify one matched terminal envelope for the reclaim bookkeeping.
+
+    Returns ``(event_kind, event_payload, protocol_violation,
+    operational_failure, rate_limited)``. Operational/provider classes are
+    clean releases that never charge the task-logic breaker.
+    """
+    from hermes_cli.kanban_worker_outcomes import FailureClass as _WorkerFailureClass
+
+    failure = envelope.failure_class
+    payload = envelope.to_dict()
+    fingerprint = envelope.error_fingerprint or _incident_fingerprint_text(
+        error_text,
+        failure_class=str(getattr(failure, "value", failure)),
+        provider=envelope.provider,
+        model=envelope.model,
+    )
+    if failure is _WorkerFailureClass.WORKER_PROTOCOL:
+        return (
+            "protocol_violation",
+            {
+                **payload,
+                "protocol_violation": True,
+                "real_cause": error_text[:8_000],
+                "error_fingerprint": fingerprint,
+            },
+            True,
+            False,
+            False,
+        )
+    if failure is _WorkerFailureClass.SUCCESS:
+        return (
+            "protocol_violation",
+            {
+                **payload,
+                "exit_code": envelope.exit_code or 0,
+                "protocol_violation": True,
+            },
+            True,
+            False,
+            False,
+        )
+    if getattr(failure, "name", "") in _WORKER_OUTCOMES_OPERATIONAL_CLASSES:
+        rate_limited = failure is _WorkerFailureClass.PROVIDER_CAPACITY
+        return (
+            str(getattr(failure, "value", failure)),
+            {
+                **payload,
+                "error": error_text[:8_000],
+                "real_cause": error_text[:8_000],
+                "error_fingerprint": fingerprint,
+            },
+            False,
+            True,
+            rate_limited,
+        )
+    if failure is _WorkerFailureClass.TASK_LOGIC:
+        return (
+            "crashed",
+            {
+                **payload,
+                "error": error_text[:8_000],
+                "real_cause": error_text[:8_000],
+                "error_fingerprint": fingerprint,
+            },
+            False,
+            False,
+            False,
+        )
+    # WORKER_EXIT_UNKNOWN and anything unrecognized: the matched receipt still
+    # carries stronger causal evidence than the generic no-envelope path.
+    return (
+        "worker_exit_unknown",
+        {
+            **payload,
+            "failure_class": str(getattr(_WorkerFailureClass.WORKER_EXIT_UNKNOWN, "value")),
+            "error": error_text[:8_000],
+            "real_cause": error_text[:8_000],
+            "error_fingerprint": fingerprint,
+        },
+        False,
+        False,
+        False,
+    )
+
+
+def _incident_fingerprint_text(
+    error_text: str,
+    *,
+    failure_class: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """Stable fingerprint over the redacted cause + failure class + route."""
+    from hermes_cli.kanban_worker_outcomes import incident_fingerprint as _worker_incident_fingerprint
+
+    try:
+        return _worker_incident_fingerprint(
+            error_text,
+            failure_class=failure_class,
+            provider=provider,
+            model=model,
+        )
+    except Exception:
+        return ""
+
+
+def _classify_dead_worker_with_envelope(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    pid: int,
+    *,
+    log_dir,
+    board: Optional[str] = None,
+):
+    """Book one dead worker, preferring its matched terminal exit envelope.
+
+    Without a matching envelope this is exactly the legacy classification;
+    with one, the receipt's failure class drives the booking (operational
+    releases, protocol violations, task-logic crashes, bounded-unknown)."""
+    from hermes_cli.kanban_worker_outcomes import FailureClass as _WorkerFailureClass
+
+    run_id = int(row["current_run_id"]) if row["current_run_id"] is not None else None
+    envelope = None
+    envelope_path = row["worker_exit_envelope"]
+    if not envelope_path and run_id is not None:
+        from hermes_cli.kanban_worker_outcomes import worker_exit_envelope_path as _worker_envelope_path
+
+        envelope_path = str(_worker_envelope_path(log_dir, row["id"], run_id))
+    if envelope_path:
+        envelope = _matching_terminal_envelope(
+            envelope_path,
+            task_id=str(row["id"]),
+            run_id=run_id,
+            worker_pid=pid,
+        )
+    if envelope is None:
+        return None
+
+    log_tail = read_worker_log(row["id"], tail_bytes=8_000, board=board)
+    cause = envelope.redacted_error or envelope.stderr_tail or (log_tail or "")
+    event_kind, event_payload, protocol_violation, operational, rate_limited = _envelope_booking(
+        envelope, cause or f"worker reported {getattr(envelope.failure_class, 'value', '')}"
+    )
+    # Typed run outcome: the receipt's failure class is stronger causal
+    # evidence than a generic crash label. Operational classes book the
+    # class itself (``provider_transport`` etc.); ``success`` without a
+    # terminal kanban call is a ``worker_protocol`` violation; unknown
+    # keeps ``worker_exit_unknown``; task-logic crashes stay ``crashed``.
+    from hermes_cli.kanban_worker_outcomes import FailureClass as _FC
+    if envelope.failure_class in {
+        _FC.PROVIDER_CAPACITY, _FC.PROVIDER_TRANSPORT, _FC.PROVIDER_AUTH,
+        _FC.CONTEXT_LIMIT, _FC.TOOL_UNAVAILABLE, _FC.WORKSPACE_PROVISIONING,
+    }:
+        run_outcome = envelope.failure_class.value
+    elif envelope.failure_class is _FC.WORKER_PROTOCOL:
+        run_outcome = _FC.WORKER_PROTOCOL.value
+    elif envelope.failure_class is _FC.WORKER_EXIT_UNKNOWN:
+        run_outcome = _FC.WORKER_EXIT_UNKNOWN.value
+    elif envelope.failure_class is _FC.SUCCESS:
+        run_outcome = _FC.WORKER_PROTOCOL.value
+    else:
+        run_outcome = "crashed"
+    error_text = str(event_payload.get("error") or event_payload.get("real_cause") or cause or "")
+    if envelope.failure_class is _WorkerFailureClass.SUCCESS:
+        error_text = _CLEAN_EXIT_PROTOCOL_VIOLATION_TEXT
+    elif not error_text:
+        error_text = f"worker exited with code {envelope.exit_code}"
+    event_payload.update({"pid": pid, "claimer": row["claim_lock"]})
+    return {
+        "kind": "clean_exit" if protocol_violation else "envelope",
+        "code": envelope.exit_code,
+        "error_text": error_text,
+        "event_kind": event_kind,
+        "event_payload": event_payload,
+        "protocol_violation": protocol_violation,
+        "operational": operational,
+        "rate_limited": rate_limited,
+        "run_outcome": run_outcome,
+    }
+
+
+def _worker_outcomes_pid_bookkeeping(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    pid: int,
+    *,
+    log_dir,
+    board: Optional[str] = None,
+) -> Optional[dict]:
+    """Envelope-first booking for a dead worker row; ``None`` = no receipt."""
+    return _classify_dead_worker_with_envelope(
+        conn, row, pid, log_dir=log_dir, board=board,
+    )
+
+
+def _resolve_worker_profile_route(hermes_home: Optional[str]) -> tuple[str, str]:
+    """Return the configured ``(model, provider)`` for a worker profile.
+
+    Exit envelopes are written by the dispatcher wrapper before the child
+    process has a chance to report its runtime client, so read the assigned
+    profile's effective config while the wrapper is assembled.
+    """
+    if not hermes_home:
+        return "", ""
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config
+
+        token = set_hermes_home_override(hermes_home)
+        try:
+            cfg = load_config()
+        finally:
+            reset_hermes_home_override(token)
+
+        model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+        if isinstance(model_cfg, dict):
+            model = model_cfg.get("default") or model_cfg.get("model") or model_cfg.get("name")
+            provider = model_cfg.get("provider")
+        elif isinstance(model_cfg, str):
+            model = model_cfg
+            provider = cfg.get("provider") if isinstance(cfg, dict) else None
+        else:
+            model = None
+            provider = None
+        return str(model or "").strip(), str(provider or "").strip()
+    except Exception as exc:
+        _log.debug(
+            "kanban worker: could not resolve profile route for HERMES_HOME=%r (%s)",
+            hermes_home,
+            exc,
+        )
+        return "", ""
+
+
+def _default_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+    _write_exit_envelope: bool = False,
+    _detach_worker: bool = False,
+) -> Optional[int]:
+    """Envelope-aware profile worker spawn (ported receipt-wrapper line).
+
+    Identical board-pinning/environment contract to the dispatcher spawn, but
+    when ``_write_exit_envelope`` is set the child is wrapped in
+    ``hermes_cli.kanban_worker_outcomes`` so a terminal exit receipt is written
+    atomically before the PID disappears. ``_detach_worker`` (one-shot CLI
+    dispatcher) disables kill-on-job-close on Windows so the dispatcher's
+    interpreter exit cannot reap a worker that is still initializing.
+    """
+    import subprocess as _subprocess
+
+    # Resolve the spawn fn through the kb module global so tests/plugins can
+    # patch ``kb.spawn_worker_process`` (a local import here would bypass it).
+    spawn_fn = globals().get("spawn_worker_process")
+    if spawn_fn is None:
+        from hermes_cli.kanban_worker_process import spawn_worker_process as spawn_fn
+    from hermes_cli.kanban_worker_outcomes import worker_exit_envelope_path as _worker_envelope_path
+
+    if not task.assignee:
+        raise ValueError(f"task {task.id} has no assignee")
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+    profile_arg = normalize_profile_name(task.assignee)
+
+    from agent.secret_scope import (
+        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+
+    try:
+        profile_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError:
+        profile_home = None
+
+    multiplex_active = is_multiplex_active()
+    secret_token = (
+        set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        if multiplex_active and profile_home else None)
+    try:
+        env = build_subprocess_env(
+            scrub_secrets=multiplex_active,
+            inherit_profile_home=True,
+        )
+    finally:
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+    # The dispatcher is detached from every conversation; its worker must never
+    # inherit routing mirrored by a previous gateway turn.
+    from gateway.session_context import _VAR_MAP
+    for key in _VAR_MAP:
+        env.pop(key, None)
+
+    if profile_home:
+        env["HERMES_HOME"] = profile_home
+        strip_launch_profile_env(env, profile_home)
+    if task.tenant:
+        env["HERMES_TENANT"] = task.tenant
+    env["HERMES_KANBAN_TASK"] = task.id
+    env["HERMES_KANBAN_WORKSPACE"] = workspace
+    env["HERMES_SESSION_SOURCE"] = "kanban"
+    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
+        env["TERMINAL_CWD"] = workspace
+    if task.branch_name:
+        env["HERMES_KANBAN_BRANCH"] = task.branch_name
+    if task.current_run_id is not None:
+        env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+    if task.claim_lock:
+        env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    if task.goal_mode:
+        env["HERMES_KANBAN_GOAL_MODE"] = "1"
+        if task.goal_max_turns is not None:
+            env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
+    for var in ("TERMINAL_TIMEOUT", "TERMINAL_MAX_FOREGROUND_TIMEOUT"):
+        override = _worker_terminal_timeout_env(task.max_runtime_seconds, env.get(var))
+        if override is not None:
+            env[var] = override
+    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    _retag_legacy_worker_sessions(env["HERMES_KANBAN_WORKSPACES_ROOT"])
+    env["HERMES_KANBAN_BOARD"] = _normalize_board_slug(board) or get_current_board()
+    env["HERMES_PROFILE"] = profile_arg
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    env.pop(DELEGATED_CHILD_ENV_MARKER, None)
+    env.pop("HERMES_TUI", None)
+
+    # kb-level argv build (mirrors dispatch's _worker_argv) so tests and
+    # plugins can patch the resolver helpers through the kb facade.
+    cmd = [*_resolve_hermes_argv(), "-p", profile_arg, "--cli", "--accept-hooks"]
+    for sk in task.skills or ():
+        if sk:
+            cmd.extend(["--skills", sk])
+    if task.model_override:
+        cmd.extend(["-m", task.model_override])
+        if task.provider_override:
+            cmd.extend(["--provider", task.provider_override])
+    if task.reasoning_effort:
+        cmd.extend(["--reasoning", task.reasoning_effort])
+    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+    if worker_toolsets:
+        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
+
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    exit_path: Optional[Path] = None
+    if _write_exit_envelope and task.current_run_id is not None:
+        exit_path = _worker_envelope_path(log_dir, task.id, int(task.current_run_id))
+        env["HERMES_KANBAN_EXIT_ENVELOPE"] = str(exit_path)
+        env["HERMES_KANBAN_TASK_ID"] = task.id
+        env["HERMES_KANBAN_RUN_ID"] = str(int(task.current_run_id))
+        env["HERMES_KANBAN_SESSION_ID"] = task.session_id or ""
+        profile_model, profile_provider = _resolve_worker_profile_route(env.get("HERMES_HOME"))
+        env["HERMES_KANBAN_PROVIDER"] = task.provider_override or profile_provider
+        env["HERMES_KANBAN_MODEL"] = task.model_override or profile_model
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+
+    log_f = open(log_path, "ab")
+    try:
+        wrapped_cmd = (
+            [
+                sys.executable,
+                "-m",
+                "hermes_cli.kanban_worker_outcomes",
+                "--",
+                *cmd,
+            ]
+            if _write_exit_envelope and task.current_run_id is not None
+            else cmd
+        )
+        proc = spawn_fn(
+            wrapped_cmd,
+            envelope_path=exit_path,
+            cwd=workspace if os.path.isdir(workspace) else None,
+            stdin=_subprocess.DEVNULL,
+            stdout=log_f,
+            stderr=_subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+            creationflags=_subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            kill_on_parent_exit=not _detach_worker,
+        )
+    except FileNotFoundError:
+        log_f.close()
+        raise RuntimeError(
+            "`hermes` executable not found on PATH. "
+            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+        )
+    if _IS_WINDOWS:
+        # Duck-type guard: the reaper polls ``.poll()`` on these, so only park
+        # real Popen-like handles (a test double without ``poll`` would poison
+        # ``reap_worker_zombies`` in a later test).
+        if hasattr(proc, "poll"):
+            from hermes_cli.kanban_db_dispatch import _live_worker_procs
+
+            _live_worker_procs[proc.pid] = proc
+    return proc.pid
+
+
 def _resolve_project_link(
     conn: sqlite3.Connection, project_id: Optional[str], project_source_task_id: Optional[str],
     workspace_kind: str, workspace_path: Optional[str],
@@ -1246,13 +1733,44 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+# Worker execution planes. ``hermes`` spawns a profile worker subprocess;
+# ``web_gemini`` routes the card to the Gemini web-conversation worker. The
+# scope is set explicitly at creation and never derived from an assignee or
+# profile alias — ``web_gemini`` is deliberately NOT a valid profile name.
+VALID_EXECUTION_SCOPES = ("hermes", "web_gemini")
+WEB_GEMINI_EXECUTION_SCOPE = "web_gemini"
+# Action gate for web_gemini-scope tasks: ``comment_only`` restricts the
+# worker to comments; ``full`` additionally allows terminal actions
+# (complete/block) through the ledger.
+VALID_WEB_GEMINI_ACTION_MODES = ("comment_only", "full")
+
+
+def _validate_execution_scope_column(execution_scope: Optional[str]) -> Optional[str]:
+    """Validate/normalize the tasks.execution_scope column value."""
+    if execution_scope is None:
+        return None
+    scope = str(execution_scope).strip().lower()
+    if scope not in VALID_EXECUTION_SCOPES:
+        raise ValueError(
+            f"execution_scope must be one of {sorted(VALID_EXECUTION_SCOPES)}, got {execution_scope!r}"
+        )
+    return scope
+
+
+# Sentinel for create_task's ``max_runtime_seconds``: only the genuinely-omitted
+# case resolves ``kanban.default_max_runtime_seconds``; an explicit ``None``
+# stays unbounded (preserves the historical "no cap" behavior for callers).
+_UNSET_MAX_RUNTIME_SECONDS: Any = object()
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
     workspace_kind: Optional[str] = None, workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
     parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
-    max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
+    max_runtime_seconds: Optional[int] = _UNSET_MAX_RUNTIME_SECONDS,
+    skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
@@ -1260,6 +1778,10 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    execution_scope: Optional[str] = None,
+    web_gemini_action_mode: Optional[str] = None,
+    block_kind: Optional[str] = None,
+    block_reason: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1267,7 +1789,9 @@ def create_task(
     forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
     ``idempotency_key``: an existing non-archived task with the key is returned
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
-    SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
+    SIGTERMs and re-queues. Omitted, it resolves the active profile's
+    ``kanban.default_max_runtime_seconds`` (5400s by default); an explicit
+    ``None`` stays unbounded. ``model_override``/``provider_override`` pin the
     worker model (provider requires model); ``reasoning_effort`` is independent.
     ``creator_task_id``: inherit durable session/subscriptions independently of
     dependency edges; an explicit ``session_id`` still wins.
@@ -1280,6 +1804,30 @@ def create_task(
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
+    execution_scope = _validate_execution_scope_column(execution_scope)
+    if web_gemini_action_mode is not None:
+        if execution_scope != WEB_GEMINI_EXECUTION_SCOPE:
+            raise ValueError(
+                f"web_gemini_action_mode {web_gemini_action_mode!r} requires "
+                "execution_scope='web_gemini'"
+            )
+        if web_gemini_action_mode not in VALID_WEB_GEMINI_ACTION_MODES:
+            raise ValueError(
+                "web_gemini_action_mode must be one of "
+                f"{sorted(VALID_WEB_GEMINI_ACTION_MODES)}, got {web_gemini_action_mode!r}"
+            )
+    # Typed initial-block metadata (see block_task): kind and reason travel
+    # together and only make sense on a task created straight into ``blocked``.
+    block_kind = str(block_kind).strip().lower() if block_kind is not None else None
+    block_reason = str(block_reason).strip() if block_reason is not None else None
+    if block_kind is not None and block_kind not in VALID_BLOCK_KINDS:
+        raise ValueError(f"block_kind must be one of {sorted(VALID_BLOCK_KINDS)}")
+    if block_reason is not None and not block_reason:
+        raise ValueError("block_reason must be non-empty")
+    if (block_kind is None) != (block_reason is None):
+        raise ValueError("block_kind and block_reason must be provided together")
+    if block_kind is not None and initial_status != "blocked":
+        raise ValueError("block metadata requires initial_status='blocked'")
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1325,6 +1873,12 @@ def create_task(
         if row:
             return row["id"]
 
+    # Resolve the runtime default only for a genuinely new row: idempotent
+    # lookups and existing tasks keep their original value, and an explicit
+    # ``None`` preserves the historical unbounded behavior.
+    if max_runtime_seconds is _UNSET_MAX_RUNTIME_SECONDS:
+        max_runtime_seconds = load_dispatch_config().default_max_runtime_seconds
+
     now = int(time.time())
 
     # Only persistent kinds inherit the board ``default_workdir``: a scratch
@@ -1359,8 +1913,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        execution_scope, web_gemini_action_mode, block_kind
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1370,6 +1925,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        execution_scope, web_gemini_action_mode, block_kind,
                     ),
                 )
                 for pid in parents:
@@ -1399,7 +1955,8 @@ def create_task(
                         conn,
                         task_id,
                         "blocked",
-                        {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
+                        {"reason": block_reason or "initial_status", "status": "blocked",
+                         "block_kind": block_kind, "actor": created_by or "user"},
                     )
                 if task_status == "todo":
                     # Parked behind an open parent: record why, exactly as
@@ -2439,8 +2996,9 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = _host_prefix()
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
-        "       assignee "
+        "SELECT id, claim_lock, worker_pid, worker_started_at, worker_start_time, "
+        "       worker_owner_kind, worker_owner_id, worker_exit_envelope, "
+        "       claim_expires, last_heartbeat_at, assignee "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
@@ -2459,6 +3017,10 @@ def release_stale_claims(
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
+            worker_start_time=_row_get(row, "worker_start_time"),
+            worker_owner_kind=_row_get(row, "worker_owner_kind"),
+            worker_owner_id=_row_get(row, "worker_owner_id"),
+            worker_exit_envelope=_row_get(row, "worker_exit_envelope"),
         )
         # A live worker of ours must keep its claim (else a duplicate spawns beside it).
         if _worker_survived_termination(termination):
@@ -2471,7 +3033,9 @@ def release_stale_claims(
             retry_status = _retry_status_for_run(conn, row["id"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                "worker_start_time = NULL, worker_owner_kind = NULL, "
+                "worker_owner_id = NULL, worker_exit_envelope = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (retry_status, row["id"], row["claim_lock"], now),
@@ -2561,7 +3125,9 @@ def reclaim_task(
     """Operator reclaim regardless of TTL: release the claim, restore the source
     phase, reset the failure counter. False when not running."""
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, claim_lock, worker_pid, worker_started_at, worker_start_time, "
+        "       worker_owner_kind, worker_owner_id, worker_exit_envelope "
+        "FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if not row:
         return False
@@ -2570,12 +3136,34 @@ def reclaim_task(
         return False
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
-        row["worker_pid"], prev_lock, signal_fn=signal_fn, started_at=row["worker_started_at"])
+        row["worker_pid"], prev_lock, signal_fn=signal_fn, started_at=row["worker_started_at"],
+        worker_start_time=_row_get(row, "worker_start_time"),
+        worker_owner_kind=_row_get(row, "worker_owner_kind"),
+        worker_owner_id=_row_get(row, "worker_owner_id"),
+        worker_exit_envelope=_row_get(row, "worker_exit_envelope"),
+    )
+    # Never release a claim while an owned worker tree may still be alive:
+    # the next dispatch tick retries the cleanup instead of spawning a
+    # duplicate beside the surviving tree. Rows without ownership identity
+    # (fingerprint-only) keep the human-override release — the operator may
+    # be reclaiming a wedged spawn that no registry can vouch for.
+    ownership_aware = (
+        _row_get(row, "worker_start_time") is not None
+        or bool(_row_get(row, "worker_owner_kind") and _row_get(row, "worker_owner_id"))
+    )
+    if ownership_aware and _worker_survived_termination(termination):
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, int(time.time()), termination,
+            reason="manual_reclaim_worker_alive",
+        )
+        return False
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
+            "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+            "worker_start_time = NULL, worker_owner_kind = NULL, "
+            "worker_owner_id = NULL, worker_exit_envelope = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?", (retry_status, task_id, prev_lock),
         )
@@ -4319,15 +4907,33 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,
+    _account_crashes,
+    _classify_worker_exit,
+    _classify_dead_worker,
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
+    _live_worker_procs,
     _pid_alive,
+    _record_task_failure,
+    _resolve_hermes_argv,
+    _resolve_worker_cli_toolsets,
+    _restart_safe_worker_argv,
+    _retag_legacy_worker_sessions,
+    _rotate_worker_log,
     _record_task_failure,
     _terminate_reclaimed_worker,
     _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
+    worker_log_rotation_config,
 )
+from hermes_cli.kanban_db_dispatch import (  # noqa: F401,E402
+    DEFAULT_MAX_RUNTIME_SECONDS,
+    DispatchConfig,
+    load_dispatch_config,
+)
+from hermes_cli.kanban_db_graph import decompose_triage_task  # noqa: F401,E402
+from hermes_cli.kanban_worker_process import spawn_worker_process  # noqa: E402
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
@@ -4382,6 +4988,8 @@ _PLUGIN_COMPAT_LAZY = {
     'detect_crashed_workers': ('hermes_cli.kanban_db_dispatch', 'detect_crashed_workers'),
     'detect_stale_running': ('hermes_cli.kanban_db_dispatch', 'detect_stale_running'),
     'dispatch_once': ('hermes_cli.kanban_db_dispatch', 'dispatch_once'),
+    'DispatchConfig': ('hermes_cli.kanban_db_dispatch', 'DispatchConfig'),
+    'load_dispatch_config': ('hermes_cli.kanban_db_dispatch', 'load_dispatch_config'),
     'enforce_max_runtime': ('hermes_cli.kanban_db_dispatch', 'enforce_max_runtime'),
     'has_spawnable_ready': ('hermes_cli.kanban_db_dispatch', 'has_spawnable_ready'),
     'has_spawnable_review': ('hermes_cli.kanban_db_dispatch', 'has_spawnable_review'),
@@ -4401,6 +5009,8 @@ _PLUGIN_COMPAT_LAZY = {
     'set_workspace_path': ('hermes_cli.kanban_db_workspace', 'set_workspace_path'),
     'unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'unseen_events_for_sub'),
     'worker_log_rotation_config': ('hermes_cli.kanban_db_dispatch', 'worker_log_rotation_config'),
+    '_set_worker_pid': ('hermes_cli.kanban_db_dispatch', '_set_worker_pid'),
+    'cleanup_worker_tree': ('hermes_cli.kanban_worker_process', 'cleanup_worker_tree'),
 }
 
 
@@ -4413,3 +5023,263 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+# ---------------------------------------------------------------------------
+# Envelope-aware crash reclaim (ported from the 010804 autostash line).
+# Lives in the kb module scope so tests/plugins can monkeypatch ``kb.*``
+# helpers; the module-facade indirection preserves the pre-decomposition
+# patch contract for ``kb.detect_crashed_workers`` / ``kb.spawn_worker_process``.
+# ---------------------------------------------------------------------------
+def _detect_crashed_workers_impl(
+    conn: sqlite3.Connection, *, board: Optional[str] = None,
+) -> list[str]:
+    """Envelope-first reaper.
+
+    Prefers the worker's matched terminal exit receipt; falls back to the
+    dispatcher's legacy classification when there is none. Legacy behavior
+    (host-local lock filter, grace window, survive-termination defer,
+    breaker accounting, side-channel attributes) is preserved exactly.
+
+    Helper resolution: every collaborator resolves through the kb module
+    globals (bound at the tail import) so tests/plugins can patch ``kb.*``
+    — a local ``from dispatch import ...`` here would bypass the facade
+    patch contract.
+    """
+    from hermes_cli.kanban_worker_process import worker_identity_matches
+
+    log_dir = worker_logs_dir(board=board)
+    sweep_crashed: list[str] = []
+    rate_limited: list[str] = []
+    crash_details: list[tuple[str, int, str, bool, str]] = []
+    exited_hook_payloads: list[dict] = []
+    # ``_defer_reclaim_for_live_worker`` opens its own transaction — collect
+    # deferrals here and apply them after the reclaim transaction commits.
+    deferred_reclaims: list[tuple] = []
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, worker_pid, worker_started_at, worker_start_time, "
+            "       worker_owner_kind, worker_owner_id, worker_exit_envelope, "
+            "       claim_lock, started_at, assignee, current_run_id "
+            "FROM tasks "
+            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+        ).fetchall()
+        host_prefix = _host_prefix()
+        for row in rows:
+            lock = row["claim_lock"] or ""
+            if not lock.startswith(host_prefix):
+                continue
+            started_at = _row_get(row, "started_at")
+            if started_at is not None and time.time() - started_at < _resolve_crash_grace_seconds():
+                continue
+            pid_alive = _pid_alive(row["worker_pid"])
+            pid_reused = False
+            if pid_alive:
+                if row["worker_start_time"] is None:
+                    continue
+                _, identity_matches = worker_identity_matches(
+                    int(row["worker_pid"]), int(row["worker_start_time"])
+                )
+                if identity_matches:
+                    continue
+                pid_reused = True
+
+            pid = int(row["worker_pid"])
+            dead = None
+            if not pid_reused:
+                dead = _worker_outcomes_pid_bookkeeping(
+                    conn, row, pid, log_dir=log_dir, board=board,
+                )
+            if dead is not None:
+                # Receipt matched: still attempt the ownership-aware kill; a
+                # worker that survives the signal holds its claim (no dupes).
+                termination = _terminate_reclaimed_worker(
+                    pid, row["claim_lock"], started_at=_row_get(row, "worker_started_at"),
+                    worker_start_time=_row_get(row, "worker_start_time"),
+                    worker_owner_kind=_row_get(row, "worker_owner_kind"),
+                    worker_owner_id=_row_get(row, "worker_owner_id"),
+                    worker_exit_envelope=_row_get(row, "worker_exit_envelope"),
+                )
+                if _worker_survived_termination(termination):
+                    deferred_reclaims.append(
+                        (conn, row["id"], row["claim_lock"], int(time.time()), termination)
+                    )
+                    continue
+            else:
+                # No terminal receipt: legacy classification + ownership kill.
+                if pid_reused:
+                    kind, code = "pid_reused", None
+                else:
+                    kind, code = _classify_worker_exit(pid)
+                if not pid_reused and _worker_alive(
+                    row["worker_pid"], _row_get(row, "worker_started_at")
+                ):
+                    continue
+                termination = _terminate_reclaimed_worker(
+                    pid, row["claim_lock"], started_at=_row_get(row, "worker_started_at"),
+                    worker_start_time=_row_get(row, "worker_start_time"),
+                    worker_owner_kind=_row_get(row, "worker_owner_kind"),
+                    worker_owner_id=_row_get(row, "worker_owner_id"),
+                    worker_exit_envelope=_row_get(row, "worker_exit_envelope"),
+                )
+                if _worker_survived_termination(termination):
+                    deferred_reclaims.append(
+                        (conn, row["id"], row["claim_lock"], int(time.time()), termination)
+                    )
+                    continue
+                if pid_reused:
+                    dead = {
+                        "kind": "pid_reused",
+                        "code": None,
+                        "error_text": f"worker pid {pid} was recycled; original worker is gone",
+                        "event_kind": "pid_reused",
+                        "event_payload": {"pid": pid, "claimer": row["claim_lock"], "pid_reused": True},
+                        "protocol_violation": False,
+                        "operational": False,
+                        "rate_limited": False,
+                        "run_outcome": "crashed",
+                    }
+                elif kind == "clean_exit":
+                    dead = {
+                        "kind": kind, "code": code,
+                        "error_text": _CLEAN_EXIT_PROTOCOL_VIOLATION_TEXT,
+                        "event_kind": "protocol_violation",
+                        "event_payload": {
+                            "pid": pid, "claimer": row["claim_lock"],
+                            "exit_code": code, "protocol_violation": True,
+                        },
+                        "protocol_violation": True,
+                        "operational": False, "rate_limited": False,
+                        "run_outcome": "worker_protocol",
+                    }
+                elif kind == "rate_limited":
+                    dead = {
+                        "kind": kind, "code": code,
+                        "error_text": (
+                            f"pid {pid} exited rate-limited (quota wall) — "
+                            "requeued without counting a failure"
+                        ),
+                        "event_kind": "rate_limited",
+                        "event_payload": {"pid": pid, "claimer": row["claim_lock"], "exit_code": code},
+                        "protocol_violation": False,
+                        "operational": True, "rate_limited": True,
+                    }
+                else:
+                    log_tail = read_worker_log(row["id"], tail_bytes=8_000, board=board) or ""
+                    base_text = (
+                        "worker exit unknown (no terminal exit "
+                        f"envelope; observed {kind} code {code})"
+                    )
+                    dead = {
+                        "kind": kind, "code": code,
+                        "error_text": log_tail or base_text,
+                        "event_kind": "worker_exit_unknown",
+                        "event_payload": {
+                            "pid": pid, "claimer": row["claim_lock"],
+                            "failure_class": "worker_exit_unknown",
+                            "error": (log_tail or base_text)[:8_000],
+                            "real_cause": (log_tail or base_text)[:8_000],
+                            "error_fingerprint": _incident_fingerprint_text(
+                                log_tail or base_text,
+                                failure_class="worker_exit_unknown",
+                            ),
+                            "exit_kind": kind, "exit_code": code,
+                            **({"log_tail": log_tail} if log_tail else {}),
+                        },
+                        "protocol_violation": False,
+                        "operational": False, "rate_limited": False,
+                        "run_outcome": "worker_exit_unknown",
+                    }
+
+            event_payload = dict(dead["event_payload"])
+            # Merge the termination receipt so the audit trail shows exactly
+            # how the owned tree was cleaned up (identity proof, graceful vs
+            # forced signal, tree coverage) — same shape as ``release_stale_claims``.
+            event_payload.update(termination)
+            event_payload["retry_status"] = _retry_status_for_run(conn, row["id"])
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "worker_start_time = NULL, worker_owner_kind = NULL, "
+                "worker_owner_id = NULL, worker_exit_envelope = NULL, "
+                "worker_started_at = NULL "
+                "WHERE id = ? AND status = 'running' "
+                "  AND worker_pid = ? AND claim_lock IS ?",
+                (row["id"], pid, row["claim_lock"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            # Run-outcome label: envelope receipts carry typed causal
+            # classes (``provider_transport``, ``worker_protocol``, ...) —
+            # use them; quota walls stay ``rate_limited`` (a phantom crash
+            # would misread board history); everything else is ``crashed``.
+            # Budget semantics live in consecutive_failures /
+            # last_failure_error, not the label.
+            if dead.get("rate_limited"):
+                run_outcome = "rate_limited"
+            else:
+                run_outcome = dead.get("run_outcome") or "crashed"
+            run_id = _end_run(
+                conn, row["id"],
+                outcome=run_outcome, status=run_outcome,
+                error=dead["error_text"],
+                metadata=dict(event_payload),
+            )
+            _append_event(conn, row["id"], dead["event_kind"], event_payload, run_id=run_id)
+            exited_hook_payloads.append({
+                "task_id": row["id"],
+                "assignee": row["assignee"],
+                "run_id": run_id,
+                "worker_pid": pid,
+                "exit_kind": dead["kind"],
+                "exit_code": dead["code"],
+                "outcome": run_outcome,
+                "retry_status": event_payload.get("retry_status"),
+            })
+            if dead.get("operational"):
+                conn.execute(
+                    "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                    (dead["error_text"][:500], row["id"]),
+                )
+                if dead.get("rate_limited"):
+                    rate_limited.append(row["id"])
+            else:
+                if dead.get("protocol_violation") or dead["event_kind"] == "worker_exit_unknown":
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (dead["error_text"][:500], row["id"]),
+                    )
+                sweep_crashed.append(row["id"])
+                crash_details.append(
+                    (row["id"], pid, row["claim_lock"],
+                     bool(dead.get("protocol_violation")), dead["error_text"])
+                )
+    for _defer_args in deferred_reclaims:
+        _defer_reclaim_for_live_worker(
+            *_defer_args, reason="crashed_worker_tree_alive",
+        )
+    auto_blocked = _account_crashes(conn, crash_details) if crash_details else []
+    detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
+    detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    if exited_hook_payloads and _kanban_observer_consumed("on_kanban_worker_exited"):
+        _board = get_current_board()
+        for hook_fields in exited_hook_payloads:
+            hook_fields = dict(hook_fields)
+            _fire_kanban_lifecycle_hook(
+                "on_kanban_worker_exited",
+                hook_fields.pop("task_id"),
+                board=_board,
+                **hook_fields,
+            )
+    return sweep_crashed
+
+
+def detect_crashed_workers(
+    conn: sqlite3.Connection, board: Optional[str] = None,
+) -> list[str]:
+    """Module-facade indirection over :func:`_detect_crashed_workers_impl`.
+
+    Defined in kb scope so tests/plugins can monkeypatch ``kb.*`` helpers
+    (the patch contract preserved from the pre-decomposition facade).
+    """
+    return _detect_crashed_workers_impl(conn, board=board)

@@ -600,7 +600,14 @@ def _run_browser_command(
 ) -> Dict[str, Any]:
     """Run one agent-browser CLI command against the task's session; returns its parsed JSON.
     ``timeout=None`` reads ``browser.command_timeout``; ``_engine_override`` forces an engine
-    for this call only (Lightpanda fallback retries with Chrome without touching global state)."""
+    for this call only (Lightpanda fallback retries with Chrome without touching global state).
+    Patchright mode: the native backend owns the whole surface — route before any
+    agent-browser session machinery so extracted-module call sites (lifecycle close,
+    eval policy, lightpanda pre-route) dispatch identically to facade call sites."""
+    if _bt._is_patchright_mode():
+        from tools.browser_patchright import run_browser_command as _pr_run
+        return _pr_run(task_id, command, args, timeout=timeout,
+                       _engine_override=_engine_override)
     if timeout is None:
         timeout = _bt._safe_command_timeout()
     args = args or []

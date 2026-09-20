@@ -5,6 +5,7 @@ import os
 import socket
 import sqlite3
 import stat
+import sys
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -460,6 +461,10 @@ class TestImport:
                 else:
                     zf.writestr(name, content)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX-only: gateway service auto-install path is shell/systemd-oriented",
+    )
     def test_import_auto_installs_gateway_service(self, tmp_path, monkeypatch):
         """After a restore, run_import brings the gateway service up without
         prompting — restored cron jobs and bot tokens must not sit dormant
@@ -1207,6 +1212,10 @@ class TestProfileRestoration:
                 zf.writestr(name, content)
 
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX-only: profile wrappers restore into ~/.local/bin",
+    )
     def test_import_skips_profile_dirs_without_config(self, tmp_path, monkeypatch):
         """Import doesn't create wrappers for profile dirs without config."""
         hermes_home = tmp_path / ".hermes"
@@ -1691,7 +1700,10 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        # Path-separator neutral: str(src) is backslash-separated on Windows.
+        assert any(
+            s.replace("\\", "/").endswith("boards/work/kanban.db") for s in called["db"]
+        ), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -2176,6 +2188,10 @@ class TestMemoryProviderExternalPaths:
         (outside / "leak.json").unlink()
         outside.rmdir()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX-only: asserts 0600 permission bits on restored credential files",
+    )
     def test_import_restores_external_to_home_relative_location(self, tmp_path, monkeypatch):
         """_external/ members restore to ~/<relpath>, not under HERMES_HOME,
         and credential-shaped files get 0600."""

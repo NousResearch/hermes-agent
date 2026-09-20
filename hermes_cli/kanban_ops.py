@@ -58,38 +58,27 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
-    # Honour kanban.default_assignee, kanban.max_in_progress,
-    # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
-    # semantics as the gateway dispatch path.
-    try:
-        from hermes_cli.config import load_config
-        _cfg = load_config()
-        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
-        default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
-        max_in_progress_per_profile = kbd._positive_int(
-            _kanban_cfg.get("max_in_progress_per_profile"), None
-        )
-        # Memory-derived default when unset — same fallback the gateway applies.
-        max_in_progress = kbd.resolve_max_in_progress(
-            kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
-        )
-        # CLI --max is the more explicit signal, so it wins over kanban.max_spawn.
-        cli_max = getattr(args, "max", None)
-        max_spawn = (
-            cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
-        )
-    except Exception:
-        default_assignee = max_in_progress_per_profile = max_in_progress = None
-        max_spawn = getattr(args, "max", None)
+    # kanban.* config limits flow through load_dispatch_config() so the CLI,
+    # gateway watcher, and standalone daemon interpret them identically
+    # (invalid values fail safe to the dispatcher defaults in one place).
+    # Explicit CLI flags win over config: the flag is the operator's one-off
+    # signal, config is the default.
+    cfg = kbd.load_dispatch_config()
+    cli_max = getattr(args, "max", None)
+    max_spawn = cli_max if cli_max is not None else cfg.max_spawn
+    cli_failure_limit = getattr(args, "failure_limit", None)
+    failure_limit = (
+        cli_failure_limit if cli_failure_limit is not None else cfg.failure_limit
+    )
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
             dry_run=args.dry_run,
             max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress=cfg.max_in_progress,
+            failure_limit=failure_limit,
+            default_assignee=cfg.default_assignee,
+            max_in_progress_per_profile=cfg.max_in_progress_per_profile,
         )
     if getattr(args, "json", False):
         _print_json({
@@ -134,7 +123,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
     if res.auto_assigned_default:
         print(
-            f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
+            f"Auto-assigned to kanban.default_assignee={cfg.default_assignee!r}: "
             f"{', '.join(res.auto_assigned_default)}"
         )
     if res.skipped_unassigned:
@@ -253,7 +242,9 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         kbd.run_daemon(
             interval=args.interval,
             max_spawn=args.max,
-            failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
+            # None (unset flag) → run_daemon's per-tick load_dispatch_config();
+            # an explicit --failure-limit keeps winning over config.
+            failure_limit=getattr(args, "failure_limit", None),
             on_tick=_on_tick,
         )
     finally:

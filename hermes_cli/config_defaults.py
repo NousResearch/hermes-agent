@@ -1846,6 +1846,15 @@ DEFAULT_CONFIG = {
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # External worker health gate (010804): when enabled, a dispatcher tick refuses to spawn
+        # new workers while the liveness prober reports the host's workers unhealthy. Fail-closed
+        # (block spawns on probe errors) by default once enabled.
+        "external_worker_health": {
+            "enabled": False,
+            "fail_closed": True,
+            "timeout_seconds": 5.0,
+            "cache_ttl_seconds": 30.0,
+        },
         # Profile for the root/orchestration task after Triage decomposition; "" = default profile.
         # Does not control the decomposer LLM path (see auxiliary.kanban_decomposer).
         "orchestrator_profile": "",
@@ -1870,6 +1879,16 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Per-tick spawn cap: positive int = one dispatch tick claims/spawns at most N tasks per
+        # board (a live concurrency cap — running tasks count against it, not a per-tick quota).
+        # None = uncapped (reclaim/promotion still run every tick).
+        "max_spawn": None,
+        # Seconds since the last worker heartbeat before a running task is reclaimed as stale.
+        # 0 disables staleness detection.
+        "dispatch_stale_timeout_seconds": 0,
+        # Default ``max_runtime_seconds`` stamped on tasks created without an explicit value
+        # (90 minutes). ``null`` = tasks are unbounded unless the caller sets a cap.
+        "default_max_runtime_seconds": 5400,
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

@@ -381,3 +381,62 @@ def test_review_budget_still_bounded_by_shared_cap(
 
     # Budget 2 total across both lanes, reservation notwithstanding.
     assert len(res.spawned) == 2
+
+def test_run_daemon_config_spawn_and_failure_limits_flow(kanban_home, monkeypatch):
+    """kanban.max_spawn / kanban.failure_limit reach dispatch_once from the
+    standalone daemon when the caller passes no explicit values — the daemon
+    must not be the one surface that silently ignores them."""
+    captured: dict = {}
+    stop = threading.Event()
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(kbd, "dispatch_once", fake_dispatch_once)
+    monkeypatch.setattr(kbd, "configured_max_in_progress", lambda: None)
+    monkeypatch.setattr(kbd, "derive_default_max_in_progress", lambda sample=None: 3)
+    monkeypatch.setattr(
+        kbd, "load_dispatch_config",
+        lambda *a, **kw: kbd.DispatchConfig(
+            max_spawn=4, failure_limit=5, max_in_progress=None,
+        ),
+    )
+
+    def on_tick(res):
+        stop.set()
+
+    kbd.run_daemon(interval=0.01, stop_event=stop, on_tick=on_tick)
+
+    assert captured.get("max_spawn") == 4
+    assert captured.get("failure_limit") == 5
+
+
+def test_run_daemon_explicit_args_still_win(kanban_home, monkeypatch):
+    """Explicit run_daemon(max_spawn=..., failure_limit=...) keep precedence
+    over kanban.* config (systemd units and the ops CLI pass them)."""
+    captured: dict = {}
+    stop = threading.Event()
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(kbd, "dispatch_once", fake_dispatch_once)
+    monkeypatch.setattr(kbd, "configured_max_in_progress", lambda: None)
+    monkeypatch.setattr(kbd, "derive_default_max_in_progress", lambda sample=None: 3)
+    monkeypatch.setattr(
+        kbd, "load_dispatch_config",
+        lambda *a, **kw: kbd.DispatchConfig(max_spawn=9, failure_limit=9),
+    )
+
+    def on_tick(res):
+        stop.set()
+
+    kbd.run_daemon(
+        interval=0.01, max_spawn=2, failure_limit=1,
+        stop_event=stop, on_tick=on_tick,
+    )
+
+    assert captured.get("max_spawn") == 2
+    assert captured.get("failure_limit") == 1

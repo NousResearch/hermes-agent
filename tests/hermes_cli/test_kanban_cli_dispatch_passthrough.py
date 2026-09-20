@@ -96,3 +96,51 @@ def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypat
     )
 
 
+
+def test_cli_config_failure_limit_flows_through(isolated_kanban_home, monkeypatch):
+    """kanban.failure_limit reaches dispatch_once when no --failure-limit flag
+    is given (the parser now defaults the flag to None)."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    fake_config = {"kanban": {"failure_limit": 5}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+
+    captured = {}
+    monkeypatch.setattr(
+        kbd, "dispatch_once",
+        lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
+    )
+
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=None, json=False)
+    kb_cli._cmd_dispatch(args)
+
+    assert captured.get("failure_limit") == 5, (
+        f"CLI must pass kanban.failure_limit from config when the flag is unset; "
+        f"got {captured.get('failure_limit')!r}"
+    )
+
+
+def test_cli_failure_limit_flag_overrides_config(isolated_kanban_home, monkeypatch):
+    """--failure-limit on the CLI beats kanban.failure_limit in config."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    fake_config = {"kanban": {"failure_limit": 5}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+
+    captured = {}
+    monkeypatch.setattr(
+        kbd, "dispatch_once",
+        lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
+    )
+
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=1, json=False)
+    kb_cli._cmd_dispatch(args)
+
+    assert captured.get("failure_limit") == 1, (
+        f"CLI --failure-limit=1 must override config kanban.failure_limit=5; "
+        f"got {captured.get('failure_limit')!r}"
+    )

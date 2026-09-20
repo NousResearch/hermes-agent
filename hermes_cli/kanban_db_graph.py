@@ -182,6 +182,7 @@ def _insert_decomposed_child(
     """
     from hermes_cli.kanban_db import (
         _new_task_id, _canonical_assignee, _append_event,
+        _UNSET_MAX_RUNTIME_SECONDS, load_dispatch_config,
     )
 
     root_ws_kind = root_row["workspace_kind"] or "scratch"
@@ -196,15 +197,23 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    # Per-child override wins; otherwise the configured default applies to
+    # genuinely-omitted values (an explicit ``None`` stays unbounded).
+    child_runtime = child.get("max_runtime_seconds", _UNSET_MAX_RUNTIME_SECONDS)
+    if child_runtime is _UNSET_MAX_RUNTIME_SECONDS:
+        child_runtime = load_dispatch_config().default_max_runtime_seconds
+    child_retries = child.get("max_retries")
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        " workspace_path, tenant, created_at, created_by, "
+        " max_runtime_seconds, max_retries) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
             _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
             root_row["tenant"], now, (author or "decomposer"),
+            child_runtime, child_retries,
         ),
     )
     _append_event(

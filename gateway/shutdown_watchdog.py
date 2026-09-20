@@ -135,6 +135,12 @@ def start_loop_liveness_watchdog(
             if stop_event.is_set():
                 return
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
+            _terminated = _terminate_gateway_descendants_before_hard_exit()
+            if _terminated:
+                logger.warning(
+                    "Loop liveness watchdog terminated %d gateway descendant process(es) before exit",
+                    _terminated,
+                )
             os._exit(exit_code)
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
     try:
@@ -143,6 +149,37 @@ def start_loop_liveness_watchdog(
         logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
         return None
     return _LoopLivenessWatchdogHandle(stop_event, thread)
+
+
+def _terminate_gateway_descendants_before_hard_exit() -> int:
+    """Best-effort kill of gateway descendants (kanban workers, TUI children) before an
+    unwinding ``os._exit``. A hard exit skips atexit and normal reaping, which would
+    orphan workers holding workspace locks. Returns the number of processes killed."""
+    try:
+        import psutil  # type: ignore
+
+        descendants = psutil.Process(os.getpid()).children(recursive=True)
+    except Exception:
+        logger.debug("Could not snapshot gateway descendants before hard-exit", exc_info=True)
+        return 0
+
+    terminated = 0
+    for child in reversed(descendants):
+        try:
+            if child.is_running():
+                child.kill()
+                terminated += 1
+        except Exception:
+            logger.debug(
+                "Could not terminate gateway descendant PID %s",
+                getattr(child, "pid", "?"),
+                exc_info=True,
+            )
+    try:
+        psutil.wait_procs(descendants, timeout=3.0)
+    except Exception:
+        logger.debug("Could not confirm gateway descendant cleanup", exc_info=True)
+    return terminated
 
 
 def _mark_exited_quietly(exit_code: int, reason: str) -> None:
@@ -293,6 +330,12 @@ def arm_shutdown_watchdog(
             from hermes_logging import drain_log_queue
             drain_log_queue(timeout=1.0)
         _mark_exited_quietly(exit_code, "shutdown_watchdog")
+        _terminated = _terminate_gateway_descendants_before_hard_exit()
+        if _terminated:
+            logger.warning(
+                "Shutdown watchdog terminated %d gateway descendant process(es) before exit",
+                _terminated,
+            )
         os._exit(exit_code)
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()

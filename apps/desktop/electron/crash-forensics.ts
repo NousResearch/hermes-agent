@@ -19,6 +19,15 @@ export interface CrashForensicsOptions {
   target?: CrashForensicsTarget
 }
 
+export interface BrokenPipeStream {
+  on: (event: 'error', listener: (value: unknown) => void) => unknown
+}
+
+export interface BrokenPipeTarget {
+  stdout?: BrokenPipeStream
+  stderr?: BrokenPipeStream
+}
+
 /** Render a thrown value for the log, preferring a stack over a bare message. */
 export function describeCrashReason(reason: unknown): string {
   if (reason instanceof Error) {
@@ -33,6 +42,27 @@ export function describeCrashReason(reason: unknown): string {
     return JSON.stringify(reason) ?? String(reason)
   } catch {
     return String(reason)
+  }
+}
+
+/**
+ * A desktop launched from Explorer normally has no writable parent console.
+ * If a launcher or terminal closes while Electron is still flushing a
+ * console.log, Node emits EPIPE on stdout/stderr. Without an error listener,
+ * that stream error becomes a fatal main-process exception and Electron shows
+ * its generic JavaScript error dialog.
+ */
+export function installBrokenPipeGuards(target: BrokenPipeTarget = process): void {
+  for (const stream of [target.stdout, target.stderr]) {
+    stream?.on('error', error => {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPIPE') {
+        return
+      }
+
+      // Keep non-EPIPE stream errors from becoming a second uncaught error.
+      // The normal main-process forensics handler remains responsible for
+      // application failures; this guard only protects the output channels.
+    })
   }
 }
 

@@ -12,6 +12,7 @@ remote-tracking ref. Any doubt preserves the worktree.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,10 @@ def test_cleanup_leaves_a_worktree_cwd_before_removal(
     assert not wt.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: Windows refuses to rmdir a directory that is the process cwd",
+)
 def test_cleanup_proceeds_when_cwd_was_deleted(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

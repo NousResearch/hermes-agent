@@ -837,6 +837,17 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Worker execution plane: ``hermes`` (profile worker subprocess, default)
+    # or ``web_gemini`` (Gemini web conversation worker). Explicit only —
+    # never inferred from an assignee or profile alias.
+    ("execution_scope", "execution_scope TEXT"),
+    # web_gemini-scope action gate ("comment_only"); NULL = not set.
+    ("web_gemini_action_mode", "web_gemini_action_mode TEXT"),
+    # Exit-envelope line (worker lifecycle bookkeeping).
+    ("worker_start_time", "worker_start_time INTEGER"),
+    ("worker_owner_kind", "worker_owner_kind TEXT"),
+    ("worker_owner_id", "worker_owner_id TEXT"),
+    ("worker_exit_envelope", "worker_exit_envelope TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -855,6 +866,16 @@ _TASK_RUN_COLUMNS = (
     # Spawn-time start fingerprint of the run's worker_pid (PID-reuse guard for the
     # terminal-worker reaper; NULL = legacy row, never signalled).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Registry-derived ownership identity of the run's worker tree. ``(owner_kind,
+    # owner_id)`` is the cross-process cleanup handle (Windows Job Object GUID /
+    # POSIX process group); ``worker_start_time`` is the creation-time fingerprint
+    # that proves a live PID is still the spawned worker; ``worker_exit_envelope``
+    # locates the worker's terminal exit receipt. Together they let the reaper
+    # reclaim exactly one owned tree without touching a recycled PID.
+    ("worker_start_time", "worker_start_time INTEGER"),
+    ("worker_owner_kind", "worker_owner_kind TEXT"),
+    ("worker_owner_id", "worker_owner_id TEXT"),
+    ("worker_exit_envelope", "worker_exit_envelope TEXT"),
 )
 
 
@@ -1031,11 +1052,12 @@ _REBUILD_SPECS = {
         "CREATE TABLE task_runs ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
-        " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, worker_started_at INTEGER, max_runtime_seconds INTEGER,"
-        " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
-        " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"         " worker_pid INTEGER, worker_started_at INTEGER, max_runtime_seconds INTEGER,"
+         " worker_start_time INTEGER, worker_owner_kind TEXT, worker_owner_id TEXT,"
+         " worker_exit_envelope TEXT,"
+         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
+         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
+         " error TEXT)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",

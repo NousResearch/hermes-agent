@@ -209,9 +209,25 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
         cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
+    orchestrator = _resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee)
+    default_assignee = _resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee)
+    if roster:
+        # Opt-in external-worker health gate (kanban.external_worker_health):
+        # an unhealthy optional profile drops out of the roster so fan-out
+        # never strands a child on a worker that cannot take it. The
+        # orchestrator/default anchors are protected (never filtered), and any
+        # resolver trouble leaves the roster untouched — fail-open.
+        try:
+            from hermes_cli import kanban_health
+            roster, valid_names = kanban_health.filter_roster(
+                roster, valid_names, kanban_health.load_health_policies(cfg),
+                protected_names={orchestrator, default_assignee},
+            )
+        except Exception as exc:
+            logger.warning("decompose: health-gate roster filter failed (%s); keeping roster", exc)
     return _Routing(
-        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),
-        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee),
+        orchestrator=orchestrator,
+        default_assignee=default_assignee,
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,

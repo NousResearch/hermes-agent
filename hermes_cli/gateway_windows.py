@@ -394,8 +394,17 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        # Window style 0 = hidden; keep the wrapper attached to the Gateway so
+        # one process owns restart policy even when Task Scheduler misses a
+        # nonzero exit. A clean exit (code 0) remains an intentional stop.
+        "' The wrapper is the primary supervisor; Task Scheduler RestartOnFailure is defense in depth.",
+        "Dim gateway_exit_code, restart_delay_seconds",
+        "restart_delay_seconds = 60",
+        "Do",
+        f"  gateway_exit_code = sh.Run({q(command_line)}, 0, True)",
+        "  If gateway_exit_code = 0 Then WScript.Quit 0",
+        "  WScript.Sleep restart_delay_seconds * 1000",
+        "Loop",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -1702,6 +1711,40 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     return _absent()
 
 
+def _planned_restart_notification_path() -> Path:
+    """Return the profile-scoped marker consumed by the next gateway boot."""
+    from hermes_cli.config import get_hermes_home
+
+    return Path(get_hermes_home()) / ".restart_pending.json"
+
+
+def _write_planned_restart_notification_marker() -> Path | None:
+    """Request a one-shot online message after this Windows restart.
+
+    The running gateway's Windows marker watcher can perform a graceful stop,
+    but it cannot know whether the caller will launch a replacement.  The
+    replacement therefore needs an explicit hand-off marker.  Keep this
+    separate from ``.planned_stop.json``: a plain stop must not announce that
+    the gateway came back online.
+    """
+    try:
+        from utils import atomic_json_write
+
+        path = _planned_restart_notification_path()
+        atomic_json_write(
+            path,
+            {
+                "requested_at": time.time(),
+                "via_service": False,
+                "detached": True,
+            },
+            indent=None,
+        )
+        return path
+    except Exception:
+        return None
+
+
 def restart() -> None:
     """Stop then start. Waits for the old gateway to be authoritatively gone first; otherwise
     ``start()``'s "already running" guard sees the draining process and no-ops, and nothing
@@ -1722,10 +1765,21 @@ def restart() -> None:
     from hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
 
     _wait_for_api_server_port_free()
-    start()
 
-    if not _wait_for_gateway_ready(timeout_s=15.0):
-        raise RuntimeError(
-            "Gateway restart did not produce a running gateway process. "
-            "Check logs/gateway.log and run `hermes gateway status`."
-        )
+    # The gateway already knows how to send the startup message, but only when
+    # the next boot sees this marker.  Write it after the old process is gone so
+    # a failed stop cannot make a later unrelated start claim it is a restart.
+    restart_marker = _write_planned_restart_notification_marker()
+    try:
+        start()
+        if not _wait_for_gateway_ready(timeout_s=15.0):
+            raise RuntimeError(
+                "Gateway restart did not produce a running gateway process. "
+                "Check logs/gateway.log and run `hermes gateway status`."
+            )
+    except Exception:
+        # A process launch or readiness failure must not leave a marker that a
+        # later unrelated startup could consume as a false "back online" claim.
+        if restart_marker is not None:
+            restart_marker.unlink(missing_ok=True)
+        raise

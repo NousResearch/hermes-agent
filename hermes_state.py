@@ -1583,10 +1583,14 @@ class SessionDB(
         if self.get_meta(gate) == "1":
             return 0
         def _do(conn):
+            # Children may be stored with either separator (POSIX-style roots vs
+            # Windows backslash paths), so match both: under ``ESCAPE '\'`` the
+            # doubled backslash in the second pattern is a literal separator.
             cursor = conn.execute(
                 "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, _escape_like(prefix) + "/%"),
+                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\' "
+                "OR cwd LIKE ? ESCAPE '\\')",
+                (prefix, _escape_like(prefix) + "/%", _escape_like(prefix) + "\\\\%"),
             )
             # rowcount BEFORE set_meta reuses this cursor for its INSERT.
             retagged = cursor.rowcount or 0

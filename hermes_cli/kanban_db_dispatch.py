@@ -26,6 +26,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.kanban_worker_process import cleanup_worker_tree, get_worker_receipt
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -34,6 +35,15 @@ if TYPE_CHECKING:
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
+
+# Historical alias (010804 era): the dispatcher's failure limit under its
+# pre-decomposition name. Same value, kept for the config contract.
+DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
+
+# Default ``max_runtime_seconds`` stamped on tasks created without an explicit
+# value (90 minutes). A task created with ``max_runtime_seconds=None`` stays
+# unbounded; the default applies only to the omitted case.
+DEFAULT_MAX_RUNTIME_SECONDS = 5400
 
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -80,6 +90,96 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+class DispatchConfig:
+    """Normalized limits shared by every Kanban dispatch surface."""
+
+    max_spawn: Optional[int] = None
+    max_in_progress: Optional[int] = None
+    failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT
+    stale_timeout_seconds: int = 0
+    default_assignee: Optional[str] = None
+    max_in_progress_per_profile: Optional[int] = None
+    default_max_runtime_seconds: Optional[int] = DEFAULT_MAX_RUNTIME_SECONDS
+
+
+def _optional_positive_int(value: Any) -> Optional[int]:
+    """Return a positive integer config value, or ``None`` when unset/invalid."""
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 1 else None
+
+
+def load_dispatch_config(
+    config: Optional[Mapping[str, Any]] = None,
+) -> DispatchConfig:
+    """Load and normalize the limits used by a dispatcher tick.
+
+    ``config`` is accepted so callers that already loaded runtime config (the
+    gateway watcher and CLI) do not read it twice. Dashboard and daemon
+    callers can omit it; the helper then loads the active profile's config.
+    Invalid values fail safe to the historical dispatcher defaults instead of
+    allowing one surface to interpret the same setting differently.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+    kanban_cfg = config.get("kanban", {}) if isinstance(config, Mapping) else {}
+    if not isinstance(kanban_cfg, Mapping):
+        kanban_cfg = {}
+
+    try:
+        stale_timeout_seconds = int(
+            kanban_cfg.get("dispatch_stale_timeout_seconds", 0) or 0
+        )
+    except (TypeError, ValueError):
+        stale_timeout_seconds = 0
+    stale_timeout_seconds = max(stale_timeout_seconds, 0)
+
+    raw_default_assignee = kanban_cfg.get("default_assignee")
+    default_assignee = (
+        raw_default_assignee.strip()
+        if isinstance(raw_default_assignee, str)
+        else ""
+    ) or None
+
+    raw_default_runtime = kanban_cfg.get(
+        "default_max_runtime_seconds", DEFAULT_MAX_RUNTIME_SECONDS
+    )
+    if raw_default_runtime is None:
+        default_max_runtime_seconds = None
+    else:
+        default_max_runtime_seconds = (
+            _optional_positive_int(raw_default_runtime)
+            or DEFAULT_MAX_RUNTIME_SECONDS
+        )
+
+    return DispatchConfig(
+        max_spawn=_optional_positive_int(kanban_cfg.get("max_spawn")),
+        max_in_progress=_optional_positive_int(
+            kanban_cfg.get("max_in_progress")
+        ),
+        failure_limit=(
+            _optional_positive_int(kanban_cfg.get("failure_limit"))
+            or DEFAULT_SPAWN_FAILURE_LIMIT
+        ),
+        stale_timeout_seconds=stale_timeout_seconds,
+        default_assignee=default_assignee,
+        max_in_progress_per_profile=_optional_positive_int(
+            kanban_cfg.get("max_in_progress_per_profile")
+        ),
+        default_max_runtime_seconds=default_max_runtime_seconds,
+    )
 
 
 @dataclass
@@ -146,6 +246,12 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    capacity_deferred: bool = False
+    """True when a spawnable task was withheld by a capacity cap
+    (``max_spawn`` / ``max_in_progress``) or the per-profile cap — i.e. the
+    board has work it *could* run once capacity frees up. Deliberately not
+    set for unassigned / nonspawnable / respawn-guarded skips: those need an
+    operator or a guard window, not capacity."""
 
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
@@ -440,25 +546,130 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
     started_at=None,
+    worker_start_time=None,
+    worker_owner_kind=None,
+    worker_owner_id=None,
+    worker_exit_envelope=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths. ``started_at`` is the spawn-time
-    fingerprint: when the live process no longer matches it, the PID was recycled and nothing is
-    signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True). An
-    UNVERIFIED spawn (fingerprint capture failed) that is still live is never signalled either, but
-    it is reported as surviving (``signal_refused``) so the reclaim holds the claim instead of
-    spawning a duplicate beside it."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    Workers spawned through ``spawn_worker_process`` carry registry-derived
+    ownership identity (creation-time ``worker_start_time``, ``(owner_kind,
+    owner_id)`` cleanup handle, ``worker_exit_envelope`` receipt path). For
+    those the kill routes through ``cleanup_worker_tree``: graceful stop, then
+    force-reap of the whole owned tree (Windows Job Object / POSIX process
+    group), never a bare-PID signal. A live PID whose creation fingerprint no
+    longer matches is treated as recycled and never signalled.
+
+    Legacy rows (fingerprint only) keep the single-process kill path:
+    ``started_at`` is the spawn-time fingerprint — when the live process no
+    longer matches it, the PID was recycled and nothing is signalled — the
+    worker is gone, which is what the reclaim wanted (``terminated`` = True).
+    An UNVERIFIED spawn (fingerprint capture failed) that is still live is
+    never signalled either; it is reported as surviving (``signal_refused``)
+    so the reclaim holds the claim instead of spawning a duplicate beside it.
+
+    ``signal_fn`` remains a compatibility/test hook for callers that model a
+    worker without a real subprocess. It is never used by the production
+    dispatcher."""
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "identity_verified": False,
+        "pid_reused": False,
+        "graceful_cleanup": False,
+        "forced_cleanup": False,
+        "tree_cleanup": False,
+        "unsafe_to_reclaim": False,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
     if not str(claim_lock).startswith(_kb._host_prefix()):
         return info
     info["host_local"] = True
+
+    # Preserve the old injectable path for unit tests and non-subprocess
+    # integrations. It is never used by the production dispatcher.
+    if signal_fn is not None:
+        kill = _kill_fn(signal_fn)
+        if kill is None:
+            return info
+        if started_at == UNVERIFIED_WORKER_FINGERPRINT:
+            # Never signal by bare number: a dead PID is "gone" (reclaim proceeds), a live one is held.
+            info["signal_refused"] = True
+            info["terminated"] = not _kb._pid_alive(pid)
+            return info
+        if _pid_recycled(pid, started_at):
+            info["terminated"] = True
+            info["pid_recycled"] = True
+            return info
+
+        info["termination_attempted"] = True
+        try:
+            kill(int(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            # Already gone = successful termination. Leaving terminated=False would
+            # make the reclaim guard misread a dead worker as alive and defer forever.
+            info["terminated"] = True
+            return info
+        except OSError:
+            return info
+
+        if _poll_worker_exit(pid, started_at):
+            info["terminated"] = True
+            return info
+        if _worker_alive(pid, started_at):
+            if not _sigkill(kill, pid):
+                return info
+            info["sigkill"] = True
+        info["terminated"] = not _worker_alive(pid, started_at)
+        return info
+
+    # Ownership-aware path: the row carries stamped spawn identity, so the
+    # kill must cover the whole owned tree, not just the root PID. Releasing
+    # a claim while any owned descendant survives would overlap a retry with
+    # the old tree — the duplication incident this path exists to prevent.
+    if worker_start_time is not None or (worker_owner_kind and worker_owner_id):
+        # Resolved through the kb facade so ``kb.cleanup_worker_tree`` test
+        # patches (the pre-decomposition monkeypatch surface) bind.
+        cleanup = _kb.cleanup_worker_tree(
+            int(pid),
+            start_time=(int(worker_start_time) if worker_start_time is not None else None),
+            owner_kind=worker_owner_kind,
+            owner_id=worker_owner_id,
+            envelope_path=worker_exit_envelope,
+            reason="dispatcher_reclaim",
+        )
+        tree_gone = bool(cleanup.get("tree_cleanup"))
+        info.update({
+            "identity_verified": bool(cleanup.get("identity_verified")),
+            "pid_reused": bool(cleanup.get("pid_reused")),
+            "graceful_cleanup": bool(cleanup.get("graceful_cleanup")),
+            "forced_cleanup": bool(cleanup.get("forced_cleanup")),
+            "tree_cleanup": tree_gone,
+            "terminated": tree_gone,
+            "termination_attempted": bool(
+                cleanup.get("graceful_action") or cleanup.get("forced_action")
+            ),
+            "unsafe_to_reclaim": bool(
+                cleanup.get("survived_cleanup") and not tree_gone
+            ),
+            "survived_cleanup": bool(cleanup.get("survived_cleanup")),
+            "graceful_action": cleanup.get("graceful_action"),
+            "forced_action": cleanup.get("forced_action"),
+            "already_absent": bool(cleanup.get("already_absent")),
+        })
+        if not tree_gone:
+            # No proof the owned tree is gone: hold the claim (fail closed)
+            # so the next dispatch tick retries the cleanup instead of
+            # spawning a duplicate beside a surviving descendant.
+            info["termination_attempted"] = True
+            info["terminated"] = False
+        info["sigkill"] = bool(cleanup.get("forced_cleanup"))
+        return info
 
     kill = _kill_fn(signal_fn)
     if kill is None:
@@ -468,7 +679,51 @@ def _terminate_reclaimed_worker(
         info["signal_refused"] = True
         info["terminated"] = not _kb._pid_alive(pid)
         return info
-    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
+    if not _kb._pid_alive(pid):
+        # Already gone: nothing to signal. On Windows ``os.kill`` against a
+        # dead PID raises a plain OSError (winerror 87), not
+        # ProcessLookupError, so without this short-circuit a crashed worker
+        # was reported as "survived" and its claim deferred forever.
+        info["terminated"] = True
+        return info
+    if _pid_recycled(pid, started_at):
+        info["terminated"] = True
+        info["pid_recycled"] = True
+        return info
+
+    info["termination_attempted"] = True
+    try:
+        kill(int(pid), signal.SIGTERM)
+    except ProcessLookupError:
+        # Already gone = successful termination. Leaving terminated=False would
+        # make the reclaim guard misread a dead worker as alive and defer forever.
+        info["terminated"] = True
+        return info
+    except OSError:
+        return info
+
+    if _poll_worker_exit(pid, started_at):
+        info["terminated"] = True
+        return info
+    if _worker_alive(pid, started_at):
+        if not _sigkill(kill, pid):
+            return info
+        info["sigkill"] = True
+    info["terminated"] = not _worker_alive(pid, started_at)
+    return info
+    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
+        # Never signal by bare number: a dead PID is "gone" (reclaim proceeds), a live one is held.
+        info["signal_refused"] = True
+        info["terminated"] = not _kb._pid_alive(pid)
+        return info
+    if not _kb._pid_alive(pid):
+        # Already gone: nothing to signal. On Windows ``os.kill`` against a
+        # dead PID raises a plain OSError (winerror 87), not
+        # ProcessLookupError, so without this short-circuit a crashed worker
+        # was reported as "survived" and its claim deferred forever.
+        info["terminated"] = True
+        return info
+    if _pid_recycled(pid, started_at):
         info["terminated"] = True
         info["pid_recycled"] = True
         return info
@@ -652,7 +907,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     host_prefix = _kb._host_prefix()
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_started_at, "
+        "SELECT t.id, t.worker_pid, t.worker_started_at, t.worker_start_time, "
+        "       t.worker_owner_kind, t.worker_owner_id, t.worker_exit_envelope, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -675,24 +931,48 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         pid = int(row["worker_pid"])
         tid = row["id"]
         started_at = _kb._row_get(row, "worker_started_at")
-        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
+        worker_start_time = _kb._row_get(row, "worker_start_time")
+        worker_owner_kind = _kb._row_get(row, "worker_owner_kind")
+        worker_owner_id = _kb._row_get(row, "worker_owner_id")
+        if (worker_start_time is None and not (worker_owner_kind and worker_owner_id)
+                and started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid)):
             # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
             # it is neither signalled nor released beside (duplicate). It is reclaimed once it exits.
             _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
                              "identity; not signalled", tid, pid)
             continue
-        # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
-        # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
-        # mismatch) is never signalled: the worker is already gone.
+        # Ownership-aware rows (registry-stamped identity) take the tree-kill
+        # path through ``_terminate_reclaimed_worker``: graceful stop, then
+        # force-reap of the whole owned tree. A surviving tree holds the claim
+        # so no retry overlaps the old workers. Legacy rows keep the bare-PID
+        # SIGTERM/SIGKILL path; a recycled PID is never signalled.
+        owned = worker_start_time is not None or bool(worker_owner_kind and worker_owner_id)
+        termination: Optional[dict] = None
         killed = False
-        kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
-            with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
-            # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
+        if owned:
+            termination = _terminate_reclaimed_worker(
+                pid, row["claim_lock"],
+                worker_start_time=worker_start_time,
+                worker_owner_kind=worker_owner_kind,
+                worker_owner_id=worker_owner_id,
+                worker_exit_envelope=_kb._row_get(row, "worker_exit_envelope"),
+            )
+            if _worker_survived_termination(termination):
+                _defer_reclaim_for_live_worker(
+                    conn, tid, row["claim_lock"], now, termination,
+                    reason="max_runtime_worker_alive",
+                )
+                continue
+            killed = bool(termination.get("forced_cleanup"))
+        else:
+            kill = _kill_fn(signal_fn)
+            if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    kill(pid, signal.SIGTERM)
+                # Short polling wait — no time.sleep on the write txn.
+                _poll_worker_exit(pid, started_at)
+                if _worker_alive(pid, started_at):
+                    killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
@@ -700,6 +980,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                "worker_start_time = NULL, worker_owner_kind = NULL, "
+                "worker_owner_id = NULL, worker_exit_envelope = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
@@ -713,6 +995,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
+                if termination is not None:
+                    payload.update(termination)
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
                     error=error, metadata=payload,
@@ -1455,16 +1739,46 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     emit a ``spawned`` event carrying them. The fingerprint is what lets every later liveness/kill
     decision tell OUR worker from a process that recycled the PID after a reboot. A failed capture is
     persisted as ``UNVERIFIED_WORKER_FINGERPRINT``, never NULL: NULL is the legacy pre-fingerprint row
-    whose bare-PID kill authority a new spawn must not inherit."""
+    whose bare-PID kill authority a new spawn must not inherit.
+
+    Registry-derived ownership identity (creation-time ``worker_start_time``, ``(owner_kind,
+    owner_id)`` cleanup handle, ``worker_exit_envelope`` path) is stamped from the spawned worker's
+    receipt when the spawn went through ``spawn_worker_process`` in this host process. Rows without it
+    fall back to the fingerprint-only kill path — the same fail-closed semantics as before: a live PID
+    with a fingerprint but no ownership handle is never tree-reclaimed, it is only ever signalled as a
+    single process after identity verification."""
     started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
+    receipt = get_worker_receipt(int(pid)) or {}
+    start_time = receipt.get("start_time")
+    owner_kind = receipt.get("owner_kind")
+    owner_id = receipt.get("owner_id")
+    exit_envelope = receipt.get("envelope_path")
     with _kb.write_txn(conn):
-        conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                     (int(pid), started_at, task_id))
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ?, worker_started_at = ?, "
+            "worker_start_time = ?, worker_owner_kind = ?, worker_owner_id = ?, "
+            "worker_exit_envelope = ? WHERE id = ?",
+            (int(pid), started_at, start_time, owner_kind, owner_id, exit_envelope, task_id),
+        )
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
-            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                         (int(pid), started_at, run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = ?, worker_started_at = ?, "
+                "worker_start_time = ?, worker_owner_kind = ?, worker_owner_id = ?, "
+                "worker_exit_envelope = ? WHERE id = ?",
+                (int(pid), started_at, start_time, owner_kind, owner_id, exit_envelope, run_id),
+            )
+        _kb._append_event(
+            conn, task_id, "spawned",
+            {
+                "pid": int(pid), "started_at": started_at,
+                "worker_start_time": start_time,
+                "worker_owner_kind": owner_kind,
+                "worker_owner_id": owner_id,
+                "worker_exit_envelope": exit_envelope,
+            },
+            run_id=run_id,
+        )
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -1992,10 +2306,17 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    spawn_budget: Optional[int] = None,
+    spawned_count: int = 0,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
     skip is recorded on ``result``.
+
+    ``spawn_budget``/``spawned_count`` carry the shared tick budget (010804):
+    the gate is evaluated per *spawnable* row — after the respawn guard, so a
+    guarded task reports its guard reason rather than a generic capacity hold
+    — and set ``capacity_deferred`` when a spawnable task is withheld.
     """
     task_id = row["id"]
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
@@ -2006,27 +2327,33 @@ def _dispatch_lane_task(
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
         return False
-    # Per-profile cap: one profile's local model / API quota / browser pool
-    # must not be overwhelmed by a fan-out even with global headroom.
-    if per_profile_cap is not None:
-        current = per_profile_running.get(assignee, 0)
-        if current >= per_profile_cap:
-            result.skipped_per_profile_capped.append((task_id, assignee, current))
-            return False
+    # Respawn guard BEFORE the per-profile cap (010804): an auth/quota-blocked
+    # task must surface its real guard reason instead of a generic "profile
+    # busy", and a guarded task is deferred by the guard — not by capacity —
+    # so it must not set ``capacity_deferred``.
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
-        # Honour kanban.default_assignee: when the dispatcher hits an unassigned ready task and an
-        # operator-configured fallback exists, persist the assignment and proceed. This removes the
-        # dashboard footgun where a task created without an assignee parks in 'ready' forever even though
-        # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
-        # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
-        # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
+    # Global capacity gate (010804): a spawnable task withheld by
+    # ``max_spawn`` / ``max_in_progress`` defers the tick. Unassigned /
+    # nonspawnable / guarded rows above are not capacity — they never set it.
+    if spawn_budget is not None and spawned_count >= spawn_budget:
+        result.capacity_deferred = True
+        return False
+    # Per-profile cap: one profile's local model / API quota / browser pool
+    # must not be overwhelmed by a fan-out even with global headroom. This is
+    # a capacity hold, not an operator-actionable skip, so it defers.
+    if per_profile_cap is not None:
+        current = per_profile_running.get(assignee, 0)
+        if current >= per_profile_cap:
+            result.capacity_deferred = True
+            result.skipped_per_profile_capped.append((task_id, assignee, current))
+            return False
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
@@ -2172,7 +2499,10 @@ def _tick_spawn_budget(
     if max_spawn is not None or max_in_progress is not None:
         running_count = count_running_tasks(conn)
 
-    # Both ready and review loops consume from the same budget.
+    # Both ready and review loops consume from the same budget. A cap hit at
+    # the tick level does NOT set ``capacity_deferred`` here: whether that is
+    # a capacity hold depends on whether a *spawnable* row exists, which the
+    # per-row gate in :func:`_dispatch_lane_task` knows and this helper cannot.
     if max_spawn is not None:
         if running_count >= max_spawn:
             return False, None
@@ -2212,7 +2542,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, execution_scope FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2296,8 +2626,16 @@ def _dispatch_once_locked(
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
-    if not may_spawn:
+    if result.memory_pressure == "critical":
+        # Memory pressure is a host emergency, not board capacity: record the
+        # hold and stop before any lane work (tasks stay queued).
         return result
+    if not may_spawn:
+        # Capacity exhausted (max_spawn / max_in_progress). The lanes still
+        # run so per-row skips are recorded and a genuinely spawnable row
+        # surfaces as ``capacity_deferred`` (010804); the per-row gate inside
+        # :func:`_dispatch_lane_task` refuses every spawn.
+        spawn_budget = 0
 
     ready_rows = _lane_rows(conn, "ready")
     # Review rows are enumerated up front so the budget split can see whether
@@ -2326,7 +2664,9 @@ def _dispatch_once_locked(
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
-    # one slot back.
+    # one slot back. The withheld ready rows still flow through the per-row
+    # gate (profile + respawn guard), so a genuinely spawnable one surfaces as
+    # ``capacity_deferred`` instead of vanishing silently (010804).
     ready_budget = spawn_budget
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
@@ -2340,9 +2680,61 @@ def _dispatch_once_locked(
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
+
+    # web_gemini-scope lane: spawned through the Gemini web-conversation worker,
+    # NOT a profile subprocess. Routed before the ready lane so it never hits
+    # the default-assignee fallback (an unassigned web_gemini card is a routing
+    # gap for a human, not something the dispatcher may reassign) nor the
+    # profile-existence guard in ``_dispatch_lane_task`` (``web_gemini`` is a
+    # scope, deliberately not a profile).
     for row in ready_rows:
-        if ready_budget is not None and spawned >= ready_budget:
-            break
+        wg_scope = _kb._task_row_execution_scope(row)
+        if wg_scope != _kb.WEB_GEMINI_EXECUTION_SCOPE:
+            continue
+        row_id = row["id"]
+        if not row["assignee"]:
+            result.skipped_unassigned.append(row_id)
+            continue
+        if spawn_budget is not None and spawned >= spawn_budget:
+            # A spawnable web_gemini row withheld by capacity defers the tick.
+            result.capacity_deferred = True
+            continue
+        if dry_run:
+            result.spawned.append((row_id, row["assignee"], ""))
+            spawned += 1
+            continue
+        claimed = _kb.claim_task(conn, row_id, ttl_seconds=ttl_seconds)
+        if claimed is None:
+            continue
+        try:
+            workspace = _kbw.resolve_workspace(claimed, board=board)
+        except Exception as exc:
+            if _record_task_failure(
+                conn, claimed.id, f"workspace: {exc}",
+                outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            ):
+                result.auto_blocked.append(claimed.id)
+            continue
+        _kbw.set_workspace_path(conn, claimed.id, str(workspace))
+        try:
+            pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
+            if pid:
+                _set_worker_pid(conn, claimed.id, int(pid))
+            _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
+            result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            spawned += 1
+        except Exception as exc:
+            if _record_task_failure(
+                conn, claimed.id, str(exc),
+                outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            ):
+                result.auto_blocked.append(claimed.id)
+
+    for row in ready_rows:
+        if _kb._task_row_execution_scope(row) == _kb.WEB_GEMINI_EXECUTION_SCOPE:
+            # Owned by the web_gemini lane above (spawned, skipped-unassigned,
+            # or claim-refused) — never the profile-worker path.
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee so an unassigned task doesn't
@@ -2354,7 +2746,8 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
-        if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
+        if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready",
+                               spawn_budget=ready_budget, spawned_count=spawned, **lane_kwargs):
             spawned += 1
 
     # A review agent (sdlc-review) approves (→ done) or requests changes
@@ -2362,12 +2755,11 @@ def _dispatch_once_locked(
     # checks the FULL shared ``spawn_budget`` — the reservation above caps the
     # ready lane, it grants no extra capacity here.
     for row in review_rows:
-        if spawn_budget is not None and spawned >= spawn_budget:
-            break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
+        if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review",
+                               spawn_budget=spawn_budget, spawned_count=spawned, **lane_kwargs):
             spawned += 1
     return result
 
@@ -2858,7 +3250,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Intentionally NOT closing log_f: the child keeps writing after return;
     # the OS-level FD stays open in the child until it exits.
     if _kb._IS_WINDOWS:
-        _live_worker_procs[proc.pid] = proc
+        # Duck-type guard: the reaper polls ``.poll()`` on these, so only park
+        # Popen-like handles (a patched-in fake would otherwise poison
+        # ``reap_worker_zombies`` in a later test).
+        if hasattr(proc, "poll"):
+            _live_worker_procs[proc.pid] = proc
     return proc.pid
 
 
@@ -2870,7 +3266,7 @@ def run_daemon(
     *,
     interval: float = 60.0,
     max_spawn: Optional[int] = None,
-    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    failure_limit: Optional[int] = None,
     stop_event=None,
     on_tick=None,
 ) -> None:
@@ -2878,9 +3274,12 @@ def run_daemon(
 
     Calls :func:`dispatch_once` every ``interval`` seconds; exits cleanly on
     SIGINT / SIGTERM so it is systemd-friendly. ``stop_event`` and ``on_tick``
-    are test hooks. Each tick resolves ``kanban.max_in_progress`` exactly like
-    the gateway dispatcher and ``hermes kanban dispatch`` — the standalone
-    daemon must not be the one uncapped entry point.
+    are test hooks. Each tick re-resolves ``kanban.max_in_progress`` exactly
+    like the gateway dispatcher and ``hermes kanban dispatch`` — the standalone
+    daemon must not be the one uncapped entry point. ``max_spawn`` and
+    ``failure_limit`` default from :func:`load_dispatch_config` (re-resolved
+    every tick so operator edits apply without a restart); explicit arguments
+    keep winning for callers that pass them.
     """
     import threading
 
@@ -2903,13 +3302,16 @@ def run_daemon(
         try:
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
+            cfg = load_dispatch_config()
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
-                    max_spawn=max_spawn,
+                    max_spawn=max_spawn if max_spawn is not None else cfg.max_spawn,
                     max_in_progress=max_in_progress,
-                    failure_limit=failure_limit,
+                    failure_limit=(
+                        failure_limit if failure_limit is not None else cfg.failure_limit
+                    ),
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

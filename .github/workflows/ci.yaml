@@ -89,6 +89,20 @@ jobs:
       # changed; unit-level windows_only tests always run.
       desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
 
+  # Scoped Windows smoke lane: platform-unmarked test files whose subject is
+  # Windows-reachable behavior (path separators, platform codecs, drive
+  # letters, process handles). The Linux `tests` lane collects and passes
+  # these files, and `tests-os` above runs only -m windows_only marked
+  # tests — the space in between runs nowhere, which is exactly how
+  # Windows-only bugs used to ship. Manifest-gated:
+  # scripts/ci/windows_smoke_tests.txt lists the verified-green files;
+  # growing it is a normal PR, shrinking one needs a comment.
+  windows-smoke:
+    name: Windows smoke tests
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/windows-smoke.yml
+
   lint:
     name: Python lints
     needs: detect
@@ -229,6 +243,7 @@ jobs:
       - detect
       - tests
       - tests-os
+      - windows-smoke
       - lint
       - js-tests
       - installer-tests

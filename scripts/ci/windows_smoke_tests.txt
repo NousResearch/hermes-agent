@@ -1,0 +1,47 @@
+# Windows smoke-test manifest for .github/workflows/windows-smoke.yml.
+#
+# One tracked test path per line, run in its own pytest process on
+# windows-latest. Entries are the platform-unmarked suites whose subject
+# is Windows-reachable behavior — the surfaces where Windows-only bugs
+# (path separators, platform codecs, drive letters, process handles)
+# historically shipped invisible because the Linux CI lane collects and
+# passes them and tests-os.yml only runs -m windows_only marked tests.
+#
+# Every entry was verified green (or Linux-only-skipped) on a native
+# Windows 11 dev box before being added. Grow the manifest in a normal
+# PR; shrinking one needs a comment explaining why.
+#
+# Keep comments above the entries they describe, not inline, so the
+# validator's non-# line count stays the file count.
+
+# Kanban dispatcher, board, breaker, envelope and dispatch-config surface
+# (the 010804 port): the Windows triage drove these to zero failures.
+tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+tests/hermes_cli/test_kanban_host_cap.py
+tests/hermes_cli/test_kanban_review_lifecycle.py
+tests/hermes_cli/test_kanban_dispatch_config.py
+tests/hermes_cli/test_kanban_task_defaults.py
+tests/hermes_cli/test_kanban_health.py
+tests/hermes_cli/test_kanban_decompose.py
+tests/hermes_cli/test_kanban_decompose_db.py
+tests/hermes_cli/test_kanban_core_functionality.py
+tests/hermes_cli/test_kanban_db.py
+tests/hermes_cli/test_kanban_boards.py
+tests/hermes_cli/test_kanban_worker_session_source.py
+tests/hermes_cli/test_kanban_worker_image_extraction.py
+tests/hermes_cli/test_kanban_worktree_teardown.py
+
+# External worker health gate: prober, roster filtering, capacity scaling.
+tests/plugins/test_kanban_dashboard_dispatch_capacity.py
+
+# Windows drive-letter image extraction (the unskipped win32 tests).
+tests/agent/test_image_routing.py
+
+# hermes_state on Windows — scoped to the sqlite WAL files on this branch's
+# critical path (the kanban session retag is covered via
+# test_kanban_worker_session_source.py above). The other ~120 files in the
+# directory carry pre-existing Windows-environmental failures (symlinked-home
+# fixtures, real-subprocess maintenance daemons); grow this entry per-file
+# only after verifying each file green on a native Windows host.
+tests/hermes_state/test_hermes_state_wal_fallback.py
+tests/hermes_state/test_cross_vm_fs_wal_refusal.py

@@ -470,6 +470,44 @@ export default function App() {
     () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
   );
+
+  // Keep the current destination discoverable even when the sidebar contains
+  // more entries than fit vertically. Without this, opening /kanban (or a
+  // plugin route) can leave its active access link below the fold while the
+  // user is looking at that page.
+  useEffect(() => {
+    let frame = 0;
+    let passes = 0;
+    const adjustActiveLink = () => {
+      const nav = document.querySelector<HTMLElement>("#app-sidebar nav");
+      const activeLink = [...document.querySelectorAll<HTMLAnchorElement>(
+        "#app-sidebar nav a[href]",
+      )].find((link) => link.getAttribute("href") === normalizedPath);
+      if (!nav || !activeLink) return;
+
+      const navRect = nav.getBoundingClientRect();
+      const linkRect = activeLink.getBoundingClientRect();
+      if (linkRect.top < navRect.top) {
+        nav.scrollTop -= navRect.top - linkRect.top;
+      } else if (linkRect.bottom > navRect.bottom) {
+        nav.scrollTop += linkRect.bottom - navRect.bottom;
+      } else {
+        return;
+      }
+
+      passes += 1;
+      if (passes < 4) frame = window.requestAnimationFrame(adjustActiveLink);
+    };
+
+    frame = window.requestAnimationFrame(adjustActiveLink);
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    normalizedPath,
+    pluginsLoading,
+    sidebarNav.coreItems.length,
+    sidebarNav.pluginItems.length,
+  ]);
+
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
     [builtinRoutes, manifests],

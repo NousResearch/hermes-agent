@@ -163,7 +163,7 @@ import {
   upsertConnection
 } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
-import { describeCrashReason, installCrashForensics } from './crash-forensics'
+import { describeCrashReason, installBrokenPipeGuards, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
@@ -511,6 +511,10 @@ import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
+
+// Install before any startup logging. A closed inherited stdout/stderr pipe
+// must not turn a harmless launcher shutdown into an Electron crash dialog.
+installBrokenPipeGuards()
 
 if (USER_DATA_OVERRIDE) {
   const resolvedUserData = path.resolve(USER_DATA_OVERRIDE)

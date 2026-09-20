@@ -472,6 +472,12 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="managed-systemd topology (supervised gateway + INVOCATION_ID) is "
+    "unreachable on non-Linux hosts, so the infrastructure refusal path "
+    "cannot be exercised end-to-end here",
+)
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):
@@ -722,7 +728,7 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    assert f"worktree {target.as_posix()}" in listed
     assert f"branch refs/heads/{branch}" in listed
 
 

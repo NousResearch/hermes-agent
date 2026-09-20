@@ -1,0 +1,124 @@
+name: Windows smoke tests
+
+# A scoped Windows lane for the surfaces this repo's Linux CI lane cannot
+# see: platform-unmarked tests whose subject is Windows behavior
+# (path separators, codecs, drive letters, process handles). The main
+# Python suite (.github/workflows/tests.yml) runs on ubuntu-latest and
+# .github/workflows/tests-os.yml runs only ``-m windows_only`` marked
+# tests on windows-latest — everything in between runs nowhere, and the
+# Windows-only bugs this branch fixed (charmap decode errors, backslash
+# LIKE patterns, dead-pid reclaims, leaked sqlite handles) shipped that
+# way.
+#
+# Scope: an explicit manifest (scripts/ci/windows_smoke_tests.txt) of
+# tracked test paths verified green on Windows. Each entry is
+# repo-root-relative and runs in its own pytest process, so one flaky or
+# environmental file cannot take the lane down with it. Fail loudly when
+# the manifest names a file that no longer exists (a renamed test file
+# must update the manifest — silent coverage loss is the failure mode
+# this lane exists to prevent).
+#
+# Deliberately NOT the full suite: the unmarked suite still has
+# pre-existing Windows-environmental failures on unrelated surfaces
+# (POSIX-only fixtures, service auto-install assumptions). Growing the
+# manifest is a normal PR, shrinking it needs a comment explaining why.
+#
+# Concurrency note: pytest-timeout's signal-based timer has no SIGALRM on
+# Windows; tests/conftest.py's pytest_configure already downgrades the
+# method there (same note as tests-os.yml).
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-smoke:
+    name: Windows smoke (manifest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # Pinned for the same reason as the Linux lanes: unpinned,
+          # setup-uv resolves "latest" by fetching a manifest on every job
+          # and a transient fetch failure fails the whole job.
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        # Same locked sync as the other lanes so the smoke files can import
+        # anything their Linux siblings can. No [all] here: the manifest
+        # targets surfaces whose deps resolve natively on Windows; a future
+        # entry needing more extras adds them here WITH the entry.
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra dev --extra anthropic
+
+      - name: Validate manifest
+        # A tracked-but-deleted test file must fail loudly here rather than
+        # silently shrinking coverage (mirrors tests-os.yml's zero-tests guard).
+        shell: pwsh
+        run: |
+          $missing = @()
+          Get-Content scripts/ci/windows_smoke_tests.txt | ForEach-Object {
+            $path = $_.Trim()
+            if ($path -and -not $path.StartsWith('#') -and -not (Test-Path $path)) {
+              $missing += $path
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::windows smoke manifest names missing files: $($missing -join ', ')"
+            exit 1
+          }
+          $count = (Get-Content scripts/ci/windows_smoke_tests.txt | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') }).Count
+          Write-Host "manifest OK: $count file(s)"
+
+      - name: Run manifest suites
+        # One pytest process per manifest file, results folded into one
+        # summary; each entry retries ONCE before being called a failure —
+        # the same per-file retry semantics as the Linux runner's
+        # HERMES_TEST_FILE_RETRIES, because real-subprocess fixtures
+        # (git init, worker trees) hit Windows file-lock/AV contention that
+        # a shared runner amplifies. A persistent failure fails the job.
+        shell: pwsh
+        run: |
+          $files = Get-Content scripts/ci/windows_smoke_tests.txt | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') }
+          $failed = @()
+          foreach ($f in $files) {
+            $path = $f.Trim()
+            Write-Host "::group::pytest $path"
+            uv run --no-sync python -m pytest $path -q --no-header --tb=short -p no:cacheprovider
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::warning::$path failed once — retrying (per-file retry)"
+              uv run --no-sync python -m pytest $path -q --no-header --tb=short -p no:cacheprovider
+              if ($LASTEXITCODE -ne 0) { $failed += $path }
+            }
+            Write-Host "::endgroup::"
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host "::error::windows smoke failures: $($failed -join ', ')"
+            exit 1
+          }
+        env:
+          # Belt-and-suspenders with tests/conftest.py's env blanking.
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""

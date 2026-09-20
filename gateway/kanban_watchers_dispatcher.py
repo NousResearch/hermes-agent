@@ -45,7 +45,15 @@ class _DispatcherSettings:
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
-    """Parse and log the dispatcher settings in their established order."""
+    """Parse and log the dispatcher settings in their established order.
+
+    The kanban.* limits flow through
+    :func:`hermes_cli.kanban_db_dispatch.load_dispatch_config` so the gateway,
+    ``hermes kanban dispatch`` and the standalone daemon interpret identical
+    config identically (fail-safe normalization lives in one place). Only
+    gateway-specific settings (interval, reconcile_orphans) are parsed here.
+    """
+    cfg = _kbd().load_dispatch_config({"kanban": kanban_cfg})
     try:
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
     except (ValueError, TypeError):
@@ -54,9 +62,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         interval = 60.0
     interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
-    max_spawn = kanban_cfg.get("max_spawn")
-    if max_spawn is not None:
-        logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
+    if cfg.max_spawn is not None:
+        logger.info("kanban dispatcher: max_spawn=%s", cfg.max_spawn)
 
     # Cap simultaneously running tasks so slow workers don't pile up and time
     # out. Explicit config wins; otherwise a memory-derived default (unbounded
@@ -71,40 +78,41 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
             effective_max_in_progress,
         )
 
-    raw_failure_limit = kanban_cfg.get("failure_limit", kb.DEFAULT_FAILURE_LIMIT)
-    try:
-        failure_limit = int(raw_failure_limit)
-    except (TypeError, ValueError):
-        logger.warning("kanban dispatcher: invalid kanban.failure_limit=%r; using default %d",
-                       raw_failure_limit, kb.DEFAULT_FAILURE_LIMIT)
-        failure_limit = kb.DEFAULT_FAILURE_LIMIT
-    if failure_limit < 1:
-        logger.warning("kanban dispatcher: kanban.failure_limit=%r is below 1; using default %d",
-                       raw_failure_limit, kb.DEFAULT_FAILURE_LIMIT)
-        failure_limit = kb.DEFAULT_FAILURE_LIMIT
+    # Keep the boot-time warning for a misconfigured breaker limit, but take
+    # the value from the shared loader (fail-safe to the dispatcher default).
+    raw_failure_limit = kanban_cfg.get("failure_limit")
+    if raw_failure_limit is not None:
+        try:
+            raw_ok = int(raw_failure_limit) >= 1
+        except (TypeError, ValueError):
+            raw_ok = False
+        if not raw_ok:
+            logger.warning("kanban dispatcher: invalid kanban.failure_limit=%r; using default %d",
+                           raw_failure_limit, cfg.failure_limit)
+    failure_limit = cfg.failure_limit
 
     # 0 disables stale detection.
     raw_stale = kanban_cfg.get("dispatch_stale_timeout_seconds", 0)
     try:
-        stale_timeout_seconds = int(raw_stale or 0)
+        int(raw_stale or 0)
     except (TypeError, ValueError):
         logger.warning("kanban dispatcher: invalid kanban.dispatch_stale_timeout_seconds=%r; "
                        "disabling stale detection", raw_stale)
-        stale_timeout_seconds = 0
+    stale_timeout_seconds = cfg.stale_timeout_seconds
 
     # Fallback profile for tasks created without an assignee (e.g. via the
     # dashboard). Empty (the schema default) keeps skipping them.
     # When set, the dispatcher applies it to unassigned ready tasks instead of skipping them indefinitely
     # (#27145). Empty string (the schema default) means "no fallback, keep skipping" — backward-compatible
     # with existing installs.
-    default_assignee = (kanban_cfg.get("default_assignee") or "").strip() or None
+    default_assignee = cfg.default_assignee
     if default_assignee:
         logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
                     "will route to this profile)", default_assignee)
 
     return _DispatcherSettings(
         interval=interval,
-        max_spawn=max_spawn,
+        max_spawn=cfg.max_spawn,
         max_in_progress=effective_max_in_progress,
         failure_limit=failure_limit,
         stale_timeout_seconds=stale_timeout_seconds,
@@ -114,7 +122,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         default_assignee=default_assignee,
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
-        max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        max_in_progress_per_profile=cfg.max_in_progress_per_profile,
     )
 
 

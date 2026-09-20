@@ -1105,6 +1105,16 @@ def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) ->
 
 # --- Plugin config ----------------------------------------------------------
 
+def load_config() -> dict:
+    """Runtime config for dispatch sizing (module-level so tests can patch it;
+    fail-safe to empty config so a broken config never blocks the nudge)."""
+    try:
+        from hermes_cli.config import load_config
+        return load_config() or {}
+    except Exception:
+        return {}
+
+
 def _load_config_or_empty() -> dict:
     try:
         from hermes_cli.config import load_config
@@ -1236,8 +1246,37 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
 @router.post("/dispatch")
 def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
     """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
+    cfg = load_config()
+    try:
+        dispatch_cfg = kanban_db.load_dispatch_config(cfg)
+    except Exception:
+        dispatch_cfg = kbd.load_dispatch_config(cfg)
+    # External-worker health gate (kanban.external_worker_health): a healthy
+    # optional worker scales the caps up, an unhealthy/probing one keeps the
+    # configured baseline. Resolver trouble must never block the nudge —
+    # fall back to the configured caps.
+    max_in_progress = dispatch_cfg.max_in_progress
+    max_in_progress_per_profile = dispatch_cfg.max_in_progress_per_profile
+    try:
+        from hermes_cli import kanban_health
+        max_in_progress, max_in_progress_per_profile = kanban_health.resolve_capacity_limits(
+            cfg,
+            max_in_progress=max_in_progress,
+            max_in_progress_per_profile=max_in_progress_per_profile,
+        )
+    except Exception:
+        log.exception("kanban dispatch capacity resolution failed; using configured caps")
     with _board_conn(board) as (board, conn):
-        result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board)
+        # Via the kb facade (module attribute lookup) so plugin compat shims
+        # and tests can intercept dispatch from one place.
+        result = kanban_db.dispatch_once(
+            conn,
+            dry_run=dry_run,
+            max_spawn=max_n,
+            board=board,
+            max_in_progress=max_in_progress,
+            max_in_progress_per_profile=max_in_progress_per_profile,
+        )
         try:
             return asdict(result)  # DispatchResult is a dataclass
         except TypeError:

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { describeCrashReason, installCrashForensics } from './crash-forensics'
+import { describeCrashReason, installBrokenPipeGuards, installCrashForensics } from './crash-forensics'
 
 const harness = () => {
   const listeners = new Map<string, (value: unknown) => void>()
@@ -66,5 +66,20 @@ describe('installCrashForensics', () => {
     const { listeners } = harness()
 
     expect([...listeners.keys()].sort()).toEqual(['uncaughtException', 'unhandledRejection'])
+  })
+})
+
+describe('installBrokenPipeGuards', () => {
+  it('handles EPIPE on both output streams without throwing', () => {
+    let stdoutListener: ((value: unknown) => void) | undefined
+    let stderrListener: ((value: unknown) => void) | undefined
+
+    installBrokenPipeGuards({
+      stdout: { on: (_event, listener) => { stdoutListener = listener } },
+      stderr: { on: (_event, listener) => { stderrListener = listener } }
+    })
+
+    expect(() => stdoutListener?.({ code: 'EPIPE' })).not.toThrow()
+    expect(() => stderrListener?.({ code: 'EPIPE' })).not.toThrow()
   })
 })

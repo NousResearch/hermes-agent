@@ -16,7 +16,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from hermes_cli._subprocess_compat import (
+    IS_WINDOWS,
+    harden_git_argv,
+    noninteractive_git_env,
+    windows_hide_flags,
+)
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -32,10 +37,21 @@ def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.Compl
     ``fetch``/``push`` could never be answered from a REST request, so fail fast and surface
     the real auth error in the toast. None when the process could not run at all."""
     try:
-        return subprocess.run(
-            argv, cwd=cwd, capture_output=True, text=True, encoding='utf-8',
-            errors='replace', timeout=timeout, stdin=subprocess.DEVNULL, env=env,
-        )
+        run_kwargs = {
+            "cwd": cwd,
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "timeout": timeout,
+            "stdin": subprocess.DEVNULL,
+            "env": env,
+        }
+        if IS_WINDOWS:
+            # Dashboard/git requests are noninteractive background work: never
+            # flash a console window on Windows.
+            run_kwargs["creationflags"] = windows_hide_flags()
+        return subprocess.run(argv, **run_kwargs)
     except (OSError, subprocess.SubprocessError):
         return None
 

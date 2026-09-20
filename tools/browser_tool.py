@@ -94,13 +94,84 @@ except ImportError:
 # Optional backends: Camofox (CAMOFOX_URL routes everything through its REST API)
 # and the Browser Use CLI.
 try:
-    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
+    from tools.browser_camofox import is_camofox_mode as _raw_is_camofox_mode
 except ImportError:
-    _is_camofox_mode = lambda: False  # noqa: E731
+    _raw_is_camofox_mode = lambda: False  # noqa: E731
 try:
     from tools.browser_use_cli import is_browser_use_cli_mode as _is_browser_use_cli_mode
 except ImportError:
     _is_browser_use_cli_mode = lambda: False  # noqa: E731
+try:
+    from tools.browser_patchright import is_patchright_mode as _raw_is_patchright_mode
+except ImportError:
+    _raw_is_patchright_mode = lambda: False  # noqa: E731
+
+
+def _is_patchright_mode() -> bool:
+    """Whether the native Patchright backend owns the ``browser_*`` surface:
+    ``HERMES_BROWSER_BACKEND`` env override first, else a live read of
+    ``browser.cloud_provider`` (module-attr access so tests/hot config apply)."""
+    env_value = os.getenv("HERMES_BROWSER_BACKEND", "").strip().lower()
+    if env_value in {"patchright", "patch-right"}:
+        return True
+    if env_value in {"camofox", "agent-browser", "local", "chrome"}:
+        return False
+    try:
+        from hermes_cli import config as _hermes_config
+
+        cfg = _hermes_config.read_raw_config()
+    except Exception:
+        return False
+    browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(browser_cfg, dict):
+        return False
+    provider = str(browser_cfg.get("cloud_provider", "") or "").strip().lower()
+    return provider in {"patchright", "patch-right"}
+
+
+def _is_camofox_mode() -> bool:
+    """Camofox routing is suppressed while Patchright is the selected backend."""
+    if _is_patchright_mode():
+        return False
+    return _raw_is_camofox_mode()
+
+
+def _get_cloud_provider() -> Optional[BrowserProvider]:
+    """Patchright is a local backend: while selected, no cloud provider
+    participates in routing (hybrid local-for-private-urls bypassed too)."""
+    if _is_patchright_mode():
+        return None
+    return _cloud._get_cloud_provider()
+
+
+def _find_agent_browser(*, validate: bool = True) -> str:
+    """Facade passthrough to the install module's agent-browser CLI resolver."""
+    return _install._find_agent_browser(validate=validate)
+
+
+def check_browser_requirements() -> bool:
+    """Facade availability gate: Patchright mode needs only its own runtime,
+    not the ``agent-browser`` CLI; every other mode defers to the installer."""
+    if _is_patchright_mode():
+        try:
+            from tools.browser_patchright import check_patchright_available
+        except ImportError:
+            return False
+        return check_patchright_available()
+    return _install.check_browser_requirements()
+
+
+def _run_browser_command(task_id, command, args=None, timeout=None, _engine_override=None):
+    """Patchright-first dispatch: the native backend owns the whole surface when
+    selected; otherwise the agent-browser session dispatcher runs as before.
+    (The session dispatcher re-checks Patchright so extracted-module call sites
+    route identically.)"""
+    if _is_patchright_mode():
+        from tools.browser_patchright import run_browser_command as _pr_run
+        return _pr_run(task_id, command, args, timeout=timeout,
+                       _engine_override=_engine_override)
+    return _session._run_browser_command(task_id, command, args, timeout=timeout,
+                                         _engine_override=_engine_override)
 
 logger = logging.getLogger(__name__)
 

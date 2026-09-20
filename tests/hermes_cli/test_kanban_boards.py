@@ -154,8 +154,10 @@ class TestBoardCRUD:
         # contains the resolved path, the CREATE TABLE pass is skipped and
         # downstream readers hit `no such table: task_events`.
         kb.create_board("recycle")
-        # First connect populates _INITIALIZED_PATHS for this DB.
-        with kbc.connect(board="recycle") as conn:
+        # First connect populates _INITIALIZED_PATHS for this DB. connect_closing,
+        # not `with connect()`: a Connection's __exit__ only commits, it never
+        # closes, and on Windows the open handle blocks remove_board's rename.
+        with kbc.connect_closing(board="recycle") as conn:
             kb.create_task(conn, title="t1", assignee="dev")
         db_path = kb.board_dir("recycle") / "kanban.db"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
@@ -167,7 +169,7 @@ class TestBoardCRUD:
 
         # Simulate the event-stream poll: re-open the same slug. connect()
         # recreates the directory + empty .db; the schema must be re-applied.
-        with kbc.connect(board="recycle") as conn:
+        with kbc.connect_closing(board="recycle") as conn:
             tables = {
                 row[0]
                 for row in conn.execute(

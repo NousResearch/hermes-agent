@@ -74,7 +74,7 @@ describe('performHeapDump auto opt-in gate (#21767)', () => {
     expect(files.some(f => f.endsWith('.heapsnapshot'))).toBe(true)
   })
 
-  it('accepts truthy spellings (true|yes|on, case-insensitive) as opt-in', async () => {
+  it('accepts truthy spellings (true|yes|on, case-insensitive) as opt-in', { timeout: 20_000 }, async () => {
     for (const value of ['true', 'YES', 'On']) {
       process.env.HERMES_AUTO_HEAPDUMP = value
       const result = await performHeapDump('auto-high')

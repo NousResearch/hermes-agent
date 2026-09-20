@@ -624,9 +624,82 @@ def create_board(
     return meta
 
 
+def _archived_entry_slug(d: Path) -> str:
+    """Board slug an ``boards/_archived/<dir>`` entry archives. The ``board.json``
+    inside the directory is authoritative (``slug`` is restamped from the
+    filesystem on every read, so it can never drift); a missing/``malformed``
+    file falls back to the directory name minus a trailing ``-<ts>``/``-<n>``
+    suffix — enough for restore-by-slug on hand-moved directories."""
+    meta_path = d / "board.json"
+    try:
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            try:
+                return _normalize_board_slug(raw.get("slug")) or ""
+            except ValueError:
+                pass
+    except (OSError, json.JSONDecodeError):
+        pass
+    m = re.match(r"^(.*?)(?:-\d+)?$", d.name)
+    return (m.group(1) if m else d.name) or ""
+
+
+def _archived_board_dirs() -> list[Path]:
+    """``boards/_archived/<slug>-<ts>/`` dirs holding a board, oldest first (a
+    trailing ``-<n>`` disambiguates rapid re-archives of the same slug)."""
+    archive_root = boards_root() / "_archived"
+    if not archive_root.is_dir():
+        return []
+    out: list[Path] = []
+    for child in archive_root.iterdir():
+        if not child.is_dir() or not _dir_holds_board(child):
+            continue
+        out.append(child)
+    return sorted(out, key=lambda p: p.name.lower())
+
+
+def archived_boards() -> list[dict]:
+    """Metadata for every archived board directory, oldest first. The ``slug``
+    key comes from the archive's ``board.json`` (see :func:`_archived_entry_slug`)."""
+    out: list[dict] = []
+    for d in _archived_board_dirs():
+        meta = read_board_metadata(_archived_entry_slug(d))
+        meta["slug"] = _archived_entry_slug(d)
+        meta["archived"] = True
+        meta["archived_path"] = str(d)
+        out.append(meta)
+    return out
+
+
+def find_archived_board(slug: str) -> Optional[Path]:
+    """Newest archived directory for ``slug`` (repeated archives of the same
+    slug keep every copy; restore takes the latest), or ``None``."""
+    normed = _require_slug(slug)
+    candidates = [d for d in _archived_board_dirs() if _archived_entry_slug(d) == normed]
+    return candidates[-1] if candidates else None
+
+
+def restore_board(slug: str) -> dict:
+    """Move an archived board back to ``boards/<slug>/``; refuses when a live
+    board already owns the slug. Returns ``{"slug", "action", "new_path"}``."""
+    _assert_not_delegated_child_mutation()
+    normed = _require_slug(slug)
+    src_dir = find_archived_board(normed)
+    if src_dir is None:
+        raise ValueError(f"no archived board {normed!r}")
+    target = board_dir(normed)
+    if target.exists():
+        raise ValueError(f"a live board {normed!r} already exists")
+    src_dir.rename(target)
+    _INITIALIZED_PATHS.discard(str((target / "kanban.db").resolve()))
+    return {"slug": normed, "action": "restored", "new_path": str(target)}
+
+
 def list_boards(*, include_archived: bool = True) -> list[dict]:
     """Metadata for every board: ``default`` first (always present), then
-    ``boards/<slug>/`` dirs holding a ``kanban.db`` or ``board.json``, sorted."""
+    ``boards/<slug>/`` dirs holding a ``kanban.db`` or ``board.json``, sorted.
+    With ``include_archived`` the boards parked under ``boards/_archived/``
+    (by ``boards archive`` / ``boards rm``) are listed after the live ones."""
     entries = [read_board_metadata(DEFAULT_BOARD)]
     seen = {DEFAULT_BOARD}
     root = boards_root()
@@ -645,6 +718,11 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
                 continue
             entries.append(meta)
             seen.add(normed)
+    if include_archived:
+        for meta in archived_boards():
+            if meta["slug"] not in seen:
+                entries.append(meta)
+                seen.add(meta["slug"])
     return entries
 
 

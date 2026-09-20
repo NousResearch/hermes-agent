@@ -346,3 +346,67 @@ class TestCLI:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Board archive / restore (#117542)
+# ---------------------------------------------------------------------------
+
+class TestBoardArchiveRestore:
+    def test_archive_hides_board_and_restore_recovers(self, fresh_home):
+        kb.create_board("finished")
+        with kbc.connect(board="finished") as conn:
+            kb.create_task(conn, title="done long ago", assignee="x")
+        kb.remove_board("finished", archive=True)
+
+        live = [b["slug"] for b in kb.list_boards(include_archived=False)]
+        assert "finished" not in live
+
+        all_slugs = [b["slug"] for b in kb.list_boards(include_archived=True)]
+        assert "finished" in all_slugs
+        archived_entry = next(b for b in kb.list_boards(include_archived=True) if b["slug"] == "finished")
+        assert archived_entry["archived"] is True
+        assert archived_entry["archived_path"]
+
+        res = kb.restore_board("finished")
+        assert res["action"] == "restored"
+        assert kb.board_exists("finished")
+        with kbc.connect(board="finished") as conn:
+            titles = [t.title for t in kb.list_tasks(conn)]
+        assert titles == ["done long ago"]
+
+    def test_restore_refuses_when_slug_taken(self, fresh_home):
+        kb.create_board("dup")
+        kb.remove_board("dup", archive=True)
+        kb.create_board("dup")  # same slug recreated after archiving
+        try:
+            kb.restore_board("dup")
+            raise AssertionError("restore must refuse a taken slug")
+        except ValueError as exc:
+            assert "already exists" in str(exc)
+
+    def test_restore_unknown_slug_raises(self, fresh_home):
+        try:
+            kb.restore_board("ghost")
+            raise AssertionError("restore must refuse an unknown slug")
+        except ValueError as exc:
+            assert "no archived board" in str(exc)
+
+    def test_archived_dirname_parsing(self, fresh_home):
+        """board.json's slug is authoritative; a hand-moved dir without one
+        falls back to the directory name minus the trailing ``-<n>``."""
+        root = fresh_home / "kanban" / "boards" / "_archived"
+        root.mkdir(parents=True)
+        for name in ("media-342134231", "media-342134231-1"):
+            d = root / name
+            d.mkdir()
+            (d / "board.json").write_text('{"slug": "media", "name": "Media"}', encoding="utf-8")
+        hand_moved = root / "older-7"
+        hand_moved.mkdir()
+        (hand_moved / "kanban.db").write_bytes(b"")
+        assert kb._archived_entry_slug(root / "media-342134231") == "media"
+        assert kb._archived_entry_slug(hand_moved) == "older"
+        archived = [b["slug"] for b in kb.archived_boards()]
+        assert archived == ["media", "media", "older"]
+        newest = kb.find_archived_board("media")
+        assert newest is not None and newest.name == "media-342134231-1"

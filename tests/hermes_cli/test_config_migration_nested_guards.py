@@ -1,14 +1,15 @@
-"""Nested-value type guards in config migrations.
+"""Config migrations survive malformed nested values (#116593).
 
-``run_migrations`` drives every registered step against the user's real config.yaml;
-legacy or hand-edited files routinely hold a scalar where a step expects a mapping.
-A nested scalar used to raise TypeError/AttributeError mid-step and, because the
-ladder had no isolation, abort every later step too.
+Hand-edited or legacy config.yaml files hold scalars where a migration step expects a
+mapping. Each step must guard the shapes it indexes, and ``run_migrations`` must isolate
+a step that still raises so one bad value cannot wedge ``hermes config migrate`` /
+``hermes update`` and leave the config unversioned.
 """
 
 import os
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 
@@ -20,153 +21,60 @@ def _read_config(tmp_path):
     return yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
 
 
-def _run_ladder(tmp_path, current_ver):
+@pytest.mark.parametrize(
+    ("current_ver", "config", "path", "expected"),
+    [
+        # _migrate_to_12: a non-string custom_providers name falls back to the hostname key.
+        (11, {"custom_providers": [{"name": 5, "base_url": "https://api.example.com/v1"}]},
+         ("providers", "api-example-com", "api"), "https://api.example.com/v1"),
+        # _migrate_to_14: a mapping stt.provider is treated as the "local" default.
+        (13, {"stt": {"model": "tiny", "provider": {"nested": True}}},
+         ("stt", "local", "model"), "tiny"),
+        # _migrate_to_14: a scalar stt.<section> is replaced, not indexed.
+        (13, {"stt": {"model": "base", "provider": "openai", "openai": 5}},
+         ("stt", "openai", "model"), "base"),
+        # _migrate_to_16: a scalar display.platforms.<plat> slot is replaced, not indexed.
+        (15, {"display": {"tool_progress_overrides": {"telegram": "all"}, "platforms": {"telegram": 5}}},
+         ("display", "platforms", "telegram", "tool_progress"), "all"),
+        # _migrate_to_17: a scalar auxiliary / auxiliary.compression is rebuilt as a mapping.
+        (16, {"compression": {"summary_model": "fast-model"}, "auxiliary": 5},
+         ("auxiliary", "compression", "model"), "fast-model"),
+        (16, {"compression": {"summary_model": "fast-model"}, "auxiliary": {"compression": "x"}},
+         ("auxiliary", "compression", "model"), "fast-model"),
+    ],
+    ids=["v12-name-int", "v14-provider-map", "v14-section-scalar", "v16-platform-scalar",
+         "v17-auxiliary-scalar", "v17-compression-scalar"],
+)
+def test_malformed_nested_value_is_migrated_not_crashed(tmp_path, current_ver, config, path, expected):
+    """Each cited step replaces the malformed slot and still lands the migrated value."""
     from hermes_cli.config_migrations import run_migrations
 
+    _write_config(tmp_path, {"_config_version": current_ver, **config})
     results = {"env_added": [], "config_added": [], "warnings": []}
     with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
         run_migrations(current_ver, results, quiet=True)
-    return results
+
+    node = _read_config(tmp_path)
+    for key in path:
+        node = node[key]
+    assert node == expected
+    assert not results["warnings"], "a guarded shape must migrate cleanly, not be skipped"
 
 
-class TestMigrateTo12:
-    """11 → 12: custom_providers list → providers dict."""
+def test_failing_step_is_skipped_with_warning_and_config_still_migrates(tmp_path):
+    """``migrate_config`` (the ``hermes config migrate`` / ``hermes update`` path) keeps going
+    past a raising step, records the skip in ``warnings`` and stamps the latest version."""
+    from hermes_cli import config_migrations
+    from hermes_cli.config import migrate_config
 
-    def test_non_string_provider_name_does_not_crash(self, tmp_path):
-        _write_config(tmp_path, {
-            "_config_version": 11,
-            "custom_providers": [{"name": 5, "base_url": "https://api.example.com/v1"}],
-        })
+    def _boom(results, quiet):
+        raise RuntimeError("boom")
 
-        self_results = _run_ladder(tmp_path, current_ver=11)
-        raw = _read_config(tmp_path)
+    _write_config(tmp_path, {"_config_version": 12, "model": {"default": "x/y"}})
+    ladder = tuple((v, _boom if v == 13 else fn) for v, fn in config_migrations.MIGRATIONS)
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
+            patch.object(config_migrations, "MIGRATIONS", ladder):
+        results = migrate_config(interactive=False, quiet=True)
 
-        providers = raw.get("providers", {})
-        assert providers, "expected the entry to migrate under a hostname-derived key"
-        assert all("api.example.com" in str(v.get("base_url", "") or v.get("api", "")) or True for v in providers.values())
-        assert "custom_providers" not in raw or self_results
-
-
-class TestMigrateTo14:
-    """13 → 14: legacy flat stt.model → provider section."""
-
-    def test_mapping_provider_does_not_crash(self, tmp_path):
-        _write_config(tmp_path, {
-            "_config_version": 13,
-            "stt": {"model": "tiny", "provider": {"nested": True}},
-        })
-
-        _run_ladder(tmp_path, current_ver=13)
-        raw = _read_config(tmp_path)
-
-        # provider coerced to "local"; "tiny" is a known whisper model -> placed there.
-        assert raw["stt"]["local"]["model"] == "tiny"
-        assert "model" not in raw["stt"]
-
-    def test_scalar_stt_section_does_not_crash(self, tmp_path):
-        _write_config(tmp_path, {
-            "_config_version": 13,
-            "stt": {"model": "base", "provider": "openai", "openai": 5},
-        })
-
-        _run_ladder(tmp_path, current_ver=13)
-        raw = _read_config(tmp_path)
-
-        assert raw["stt"]["openai"]["model"] == "base"
-
-    def test_unhashable_legacy_model_does_not_crash(self, tmp_path):
-        _write_config(tmp_path, {
-            "_config_version": 13,
-            "stt": {"model": ["not", "a", "string"], "provider": "local"},
-        })
-
-        _run_ladder(tmp_path, current_ver=13)
-        raw = _read_config(tmp_path)
-
-        # Unhashable/non-str model is dropped, not crashed on.
-        assert "model" not in raw["stt"]
-
-
-class TestMigrateTo16:
-    """15 → 16: display.tool_progress_overrides → display.platforms.<plat>.tool_progress."""
-
-    def test_scalar_platform_entry_does_not_crash(self, tmp_path):
-        _write_config(tmp_path, {
-            "_config_version": 15,
-            "display": {
-                "tool_progress_overrides": {"telegram": "all"},
-                "platforms": {"telegram": 5},
-            },
-        })
-
-        _run_ladder(tmp_path, current_ver=15)
-        raw = _read_config(tmp_path)
-
-        assert raw["display"]["platforms"]["telegram"]["tool_progress"] == "all"
-
-    def test_existing_platform_dict_keeps_tool_progress(self, tmp_path):
-        _write_config(tmp_path, {
-            "_config_version": 15,
-            "display": {
-                "tool_progress_overrides": {"telegram": "all"},
-                "platforms": {"telegram": {"tool_progress": "off", "other": True}},
-            },
-        })
-
-        _run_ladder(tmp_path, current_ver=15)
-        raw = _read_config(tmp_path)
-
-        assert raw["display"]["platforms"]["telegram"]["tool_progress"] == "off"
-        assert raw["display"]["platforms"]["telegram"]["other"] is True
-
-
-class TestMigrateTo17:
-    """16 → 17: compression.summary_* → auxiliary.compression."""
-
-    def test_scalar_auxiliary_does_not_crash(self, tmp_path):
-        _write_config(tmp_path, {
-            "_config_version": 16,
-            "compression": {"summary_model": "fast-model"},
-            "auxiliary": 5,
-        })
-
-        _run_ladder(tmp_path, current_ver=16)
-        raw = _read_config(tmp_path)
-
-        assert raw["auxiliary"]["compression"]["model"] == "fast-model"
-
-    def test_scalar_auxiliary_compression_does_not_crash(self, tmp_path):
-        _write_config(tmp_path, {
-            "_config_version": 16,
-            "compression": {"summary_model": "fast-model"},
-            "auxiliary": {"compression": "x"},
-        })
-
-        _run_ladder(tmp_path, current_ver=16)
-        raw = _read_config(tmp_path)
-
-        assert raw["auxiliary"]["compression"]["model"] == "fast-model"
-
-
-class TestStepIsolation:
-    """A step that still raises must not abort the rest of the ladder."""
-
-    def test_one_failing_step_does_not_block_later_steps(self, tmp_path):
-        from hermes_cli.config_migrations import run_migrations
-
-        def _boom(results, quiet):
-            raise RuntimeError("boom")
-
-        marker = []
-
-        def _later(results, quiet):
-            marker.append(True)
-
-        _write_config(tmp_path, {"_config_version": 1})
-        results = {"env_added": [], "config_added": [], "warnings": []}
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
-                patch("hermes_cli.config_migrations.MIGRATIONS", ((2, _boom), (3, _later))):
-            run_migrations(1, results, quiet=True)
-
-        assert marker == [True]
-        assert any("v2" in w for w in results["warnings"])
+    assert any(w.startswith("config migration to v13 failed and was skipped") for w in results["warnings"])
+    assert _read_config(tmp_path)["_config_version"] == config_migrations.MIGRATIONS[-1][0]

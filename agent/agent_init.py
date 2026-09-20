@@ -478,7 +478,6 @@ def _finalize_routing(agent, api_mode, credential_pool):
         api_mode is None
         and agent.api_mode == "chat_completions"
         and not is_actual_route(agent.provider, agent.base_url)
-        and agent.provider != "copilot-acp"
         and not _base_lower.startswith(("acp://", "acp+tcp://"))
         and not agent._is_azure_openai_url()
         and (

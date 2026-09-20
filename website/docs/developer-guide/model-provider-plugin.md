@@ -174,7 +174,10 @@ overriding `ProviderProfile.fetch_account_usage`. Import and return the shared
 entries); do not format output in the plugin. Returning `None`, or raising an
 exception, leaves `/usage` empty just as it does for providers without usage
 data. Built-in usage fetchers always take precedence, so this hook cannot
-replace the account-usage behavior for a built-in provider.
+replace the account-usage behavior for a built-in provider. The hook runs under a shared
+10 s deadline (`agent.account_usage.PLUGIN_USAGE_HOOK_DEADLINE_S`) on every surface; overrunning it
+renders nothing for that turn rather than stalling `/usage`, so give your own HTTP calls a shorter
+timeout.
 
 The bundled `plugins/model-providers/opencode-zen/` profile implements this hook for the
 OpenCode Go plan windows; every `/usage` surface (CLI `hermes usage` and `/usage`, the messaging
@@ -213,10 +216,12 @@ Every registered profile joins `CANONICAL_PROVIDERS` by slug (a plugin re-declar
 
 | `auth_type` | Row is listed / `authenticated` when | Model list |
 |---|---|---|
-| `external_process` | the binary resolves (`process_command` or one of `process_command_env_vars` is on `PATH`), or `base_url` is `acp+tcp://…` — the same structural gate `hermes auth status` reports | `fetch_models()` (your subprocess probe), else `fallback_models` |
-| `oauth_external` / `oauth_device_code` | `auth.json` or the credential pool holds an entry for the slug | `fallback_models` (declare at least one) |
+| `external_process` | the binary resolves (`process_command` or one of `process_command_env_vars` is on `PATH`), or `base_url` is `acp+tcp://…` — the same structural gate `hermes auth status` reports. A resolving binary is also the sign-in evidence (`auth_verified`) the Desktop model selector's explicit-only filter uses, so the row shows there like the bundled ACP provider does | `fetch_models()` (your subprocess probe), else `fallback_models` |
+| `oauth_external` / `oauth_device_code` | the credential pool holds a row for the slug with a live (non-expired) token — `hermes auth status <name>` and `list_available_providers().authenticated` both read the pool; an expired row with `refresh_token` and a `refresh_credential` hook reports `needs_refresh` | `fetch_models()` with the pooled token, else `fallback_models` (declare at least one) |
 
 The catalog cache is keyed on the profile's `process_command_env_vars` / `process_args_env_var` values, so pointing `HERMES_<X>_COMMAND` at a different binary re-discovers models. Executable discovery is not a login check: an unauthenticated CLI still lists, and the subprocess reports the failure at first use.
+
+Selecting the row in `hermes model` (and the setup wizard) runs one generic flow keyed by the profile's `auth_type`: external-process profiles are launch-checked (`resolve_external_process_provider_credentials`), OAuth profiles need a live pool row (otherwise the flow prints `hermes auth add <name>` and stops), then the merged catalog is offered and `config.model` is persisted with the profile's `base_url`/`api_mode`. No `_model_flow_*` entry in core is needed.
 
 ## Hook reference examples
 

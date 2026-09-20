@@ -257,3 +257,32 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_plugin_usage_hook_is_bounded_and_fails_open(monkeypatch):
+    """A plugin hook that overruns the shared deadline yields None within deadline+1 s on every surface
+    (gateway/TUI call ``fetch_account_usage`` with no bound of their own); built-in fetchers are untouched."""
+    import threading
+    import time
+
+    from agent import account_usage
+
+    started = threading.Event()
+
+    class _Hang(ProviderProfile):
+        def fetch_account_usage(self, *, base_url=None, api_key=None):
+            started.set()
+            time.sleep(5)
+            return AccountUsageSnapshot(provider=self.name, source="late", fetched_at=datetime.now(timezone.utc))
+
+    _register_profile(monkeypatch, _Hang(name="plugin-hang"))
+    monkeypatch.setattr(account_usage, "PLUGIN_USAGE_HOOK_DEADLINE_S", 0.3)
+    builtin_calls = []
+    monkeypatch.setattr(account_usage, "_USAGE_FETCHERS",
+                        {"openrouter": lambda base_url, api_key: builtin_calls.append(1)})
+
+    t0 = time.monotonic()
+    assert account_usage.fetch_account_usage("plugin-hang") is None
+    assert time.monotonic() - t0 < 1.3 and started.is_set()
+    account_usage.fetch_account_usage("openrouter")
+    assert builtin_calls == [1]

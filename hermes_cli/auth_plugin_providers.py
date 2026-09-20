@@ -158,3 +158,38 @@ def plugin_missing_auth_handler_error(provider: str, action: str) -> Optional[Sy
         f"Provider '{provider}' declares auth_type '{profile.auth_type}' but its plugin ships no "
         f"auth_handler, so `hermes auth {action} {provider}` cannot be handled. Add "
         "`auth_handler=` to its ProviderProfile (see the model-provider plugin guide).")
+
+
+def _pool_entry_expired(entry: Any) -> bool:
+    """A pooled OAuth row is expired when its ``expires_at_ms`` / ISO ``expires_at`` is in the past."""
+    import time
+    from hermes_cli.auth import _parse_iso_timestamp
+
+    if entry.expires_at_ms is not None:
+        return int(entry.expires_at_ms) <= int(time.time() * 1000)
+    if entry.expires_at:
+        epoch = _parse_iso_timestamp(entry.expires_at)
+        return epoch is not None and epoch <= time.time()
+    return False
+
+
+def get_plugin_oauth_auth_status(provider_id: str) -> dict[str, Any]:
+    """Status for an OAuth-shaped PLUGIN provider, read from the credential pool its ``auth_handler`` fills.
+
+    ``configured`` = the profile is registered; ``logged_in`` = a pool row carries a live token;
+    ``needs_refresh`` = every token is expired but refresh material (and a ``refresh_credential`` hook)
+    exists. Bundled OAuth providers keep their bespoke builders (``_BESPOKE_STATUS_FUNCTIONS``) — this
+    one is gated on the plugin-mirrored set so their status bytes never change.
+    """
+    if provider_id not in PLUGIN_MIRRORED_PROVIDERS:
+        return {"logged_in": False}
+    from agent.credential_pool import load_pool
+
+    entries = [e for e in load_pool(provider_id).entries() if (e.access_token or e.agent_key or "").strip()]
+    live = [e for e in entries if not _pool_entry_expired(e)]
+    refreshable = [e for e in entries if e.refresh_token] if not live and plugin_refresh_hook(provider_id) else []
+    return {
+        "configured": True, "provider": provider_id, "logged_in": bool(live),
+        "needs_refresh": bool(refreshable), "accounts": len(entries),
+        "base_url": next((e.base_url for e in live + refreshable if e.base_url), "") or "",
+        "hint": "" if live else f"Run `hermes auth add {provider_id}` to sign in."}

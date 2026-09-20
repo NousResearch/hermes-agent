@@ -1063,6 +1063,77 @@ def _model_flow_anthropic(config, current_model=""):
     _finish_model(selected, "anthropic", f"Default model set to: {selected} (via Anthropic)", drop_base_url=True, drop_api_mode=True)
 
 
+# ── Generic flow for plugin providers without a bespoke `_model_flow_*` ────────────────────────────
+# The credential step is keyed by the profile's auth_type: each returns ``(base_url, api_key)`` or
+# None when the picker must stop (the helper already printed why). ``api_key`` providers keep
+# ``_model_flow_api_key_provider``; ``hermes_cli.main`` routes every registered profile missing
+# from ``_PROVIDER_MODEL_FLOWS`` here, so an admitted plugin is never a silent no-op.
+
+def _plugin_flow_external_process(provider_id: str, profile) -> tuple[str, str] | None:
+    from hermes_cli.auth import get_external_process_provider_status, resolve_external_process_provider_credentials
+    status = get_external_process_provider_status(provider_id)
+    _say(f"  {profile.display_name or provider_id} delegates Hermes turns to a local `{status.get('command') or profile.process_command}` process.",
+         f"  Command: {status.get('resolved_command') or status.get('command') or '(not found)'}",
+         f"  Backend marker: {status.get('base_url') or profile.base_url}", "")
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        _say(f"  ⚠ {exc}")
+        return None
+    return str(creds.get("base_url") or profile.base_url or ""), ""
+
+
+def _plugin_flow_oauth(provider_id: str, profile) -> tuple[str, str] | None:
+    from hermes_cli.auth import get_auth_status
+    from hermes_cli.auth_plugin_providers import plugin_missing_auth_handler_error
+    status = get_auth_status(provider_id)
+    if not status.get("logged_in"):
+        missing = plugin_missing_auth_handler_error(provider_id, "add")
+        _say(f"  ⚠ Not signed in to {profile.display_name or provider_id}.",
+             f"  {missing.code if missing else status.get('hint') or f'Run `hermes auth add {provider_id}` to sign in.'}")
+        return None
+    from agent.credential_pool import load_pool
+    entry = load_pool(provider_id).select()
+    base_url = (entry.runtime_base_url if entry else "") or status.get("base_url") or profile.base_url or ""
+    return str(base_url), (entry.runtime_api_key if entry else "") or ""
+
+
+_PLUGIN_FLOW_CREDENTIALS = {
+    "external_process": _plugin_flow_external_process,
+    "oauth_device_code": _plugin_flow_oauth,
+    "oauth_external": _plugin_flow_oauth,
+}
+
+
+def _is_profile_plugin_flow_provider(provider_id: str) -> bool:
+    """True when *provider_id* is a registered profile whose auth_type the generic plugin flow handles."""
+    from hermes_cli.auth_plugin_providers import plugin_profile
+    profile = plugin_profile(provider_id)
+    return profile is not None and profile.auth_type in _PLUGIN_FLOW_CREDENTIALS
+
+
+def _model_flow_plugin_provider(config, provider_id, current_model=""):
+    """Generic ``hermes model`` flow for a registered plugin profile: credential step by auth_type,
+    catalog via ``merge_profile_catalog`` (live ``fetch_models()`` ⊕ ``fallback_models``), persist."""
+    from hermes_cli.auth_plugin_providers import plugin_profile
+    from hermes_cli.models import merge_profile_catalog
+    del config
+    profile = plugin_profile(provider_id)
+    creds = _PLUGIN_FLOW_CREDENTIALS[profile.auth_type](provider_id, profile)
+    if creds is None:
+        return
+    base_url, api_key = creds
+    live = None
+    with contextlib.suppress(Exception):
+        live = profile.fetch_models(api_key=api_key or None, base_url=base_url or None)
+    model_list = merge_profile_catalog(provider_id, profile, live) or []
+    selected = _pick_model_or_prompt(
+        model_list, "Model name: ", current_model=current_model, confirm_provider=provider_id,
+        confirm_base_url=base_url, confirm_api_key=api_key)
+    _finish_model(selected, provider_id, f"Default model set to: {selected} (via {profile.display_name or provider_id})",
+                  base_url=base_url or None, api_mode=profile.api_mode or None)
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).

@@ -257,7 +257,7 @@ from hermes_cli.config import (  # noqa: E402
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
 from hermes_cli.auth_plugin_providers import (  # noqa: E402
-    registry_lookup as _registry_lookup, sync_plugin_provider_registry)
+    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
 sync_plugin_provider_registry()
 
@@ -1763,14 +1763,21 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         "base_url": base_url, "logged_in": configured}
 
 
-def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[str]]:
+def _external_process_auth_evidence(provider_id: str, resolved_command: Optional[str]) -> tuple[bool, Optional[str]]:
     """Best-effort POSITIVE evidence ``(verified, source)`` that an external-process CLI is authed.
 
-    False means "not verifiable from here", NOT "signed out" (the Copilot CLI may use an OS keychain
-    Hermes can't read). Deliberately subprocess-free: spawning ``gh auth token`` from status
-    endpoints/pickers re-creates the cold-start stall copilot_auth.py avoids."""
-    if provider_id != "copilot-acp":
-        return False, None
+    False means "not verifiable from here", NOT "signed out". Subprocess-free (spawning the CLI from
+    status endpoints/pickers re-creates the cold-start stall copilot_auth.py avoids). Generic evidence
+    for any external-process profile is its binary resolving: the subprocess owns real auth and Hermes
+    has nothing else to inspect, so out-of-tree ACP rows pass credential-gated surfaces (Desktop
+    ``explicit_only`` picker) like the bundled one, whose CLI additionally exposes readable token stores."""
+    if provider_id == "copilot-acp":
+        return _copilot_acp_auth_evidence()
+    return (True, f"command: {resolved_command}") if resolved_command else (False, None)
+
+
+def _copilot_acp_auth_evidence() -> tuple[bool, Optional[str]]:
+    """Copilot CLI token stores readable without spawning it (env tokens, plaintext config, hosts.json)."""
     # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
     try:
         from hermes_cli.copilot_auth import COPILOT_ENV_VARS, validate_copilot_token
@@ -1836,7 +1843,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         return {"configured": False}
     command, args, base_url, resolved_command, _ = _external_process_spec(pconfig)
     available = bool(resolved_command or base_url.startswith("acp+tcp://"))
-    auth_verified, auth_source = _external_process_auth_evidence(provider_id)
+    auth_verified, auth_source = _external_process_auth_evidence(provider_id, resolved_command)
     return {
         "configured": available, "provider": provider_id, "name": pconfig.name, "command": command,
         "args": args, "resolved_command": resolved_command, "base_url": base_url,
@@ -1878,7 +1885,10 @@ _BESPOKE_STATUS_FUNCTIONS: Dict[str, str] = {
 _STATUS_BY_AUTH_TYPE: Dict[str, str] = {
     "external_process": "get_external_process_provider_status",
     "api_key": "get_api_key_provider_status",
-    "aws_sdk": "_get_aws_sdk_auth_status"}
+    "aws_sdk": "_get_aws_sdk_auth_status",
+    # OAuth-shaped plugin providers (their login lives in the plugin's auth_handler, tokens in the pool).
+    "oauth_device_code": "get_plugin_oauth_auth_status",
+    "oauth_external": "get_plugin_oauth_auth_status"}
 
 
 def _get_azure_foundry_auth_status() -> Dict[str, Any]:

@@ -48,6 +48,7 @@ def git_state_hint(cwd: Optional[str]) -> Optional[str]:
     def run(*args: str) -> Optional[str]:
         try:
             out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace",
                                  stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S)
         except (OSError, subprocess.SubprocessError):
             return None

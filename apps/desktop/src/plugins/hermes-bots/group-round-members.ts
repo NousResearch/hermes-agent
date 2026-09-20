@@ -1,5 +1,5 @@
 import { clearBotAttention, noteBotAttention } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   appendGroupChatEntry,
@@ -161,7 +161,7 @@ export async function runGroupRoundMember(
       return null
     }
 
-    const reason = String(error?.data?.reason || '').trim()
+    const reason = groupFailureReason(error)
     recordGroupActivity(context.group, {
       kind: 'failed',
       member: groupMemberKey(member),

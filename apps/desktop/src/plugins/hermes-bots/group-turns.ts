@@ -9,7 +9,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import {
@@ -1155,12 +1155,14 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       const failure = retainedGroupTurnError(state)
 
       if (failure !== null) {
+        const reason = groupFailureReason(failure)
         recordGroupActivity(group, {
           kind: 'failed',
           member: memberKey,
-          thread: strandedThread
+          thread: strandedThread,
+          ...(reason ? { reason } : {})
         })
-        noteBotAttention(memberKey, failure)
+        noteBotAttention(memberKey, reason || failure)
       }
     }
 

@@ -69,9 +69,18 @@ export const $nextTipAt = persistentAtom<null | number>(
 )
 export const $activeTip = atom<ActiveTip | null>(null)
 
-/** Agent tips have no catalog entry, so their content is their durable identity. */
+/** Agent tips have no catalog entry, so hash their content into a compact durable identity. */
 export function agentTipId(selector: string, text: string): string {
-  return `agent:${JSON.stringify([selector, text])}`
+  let hash = 0xcbf29ce484222325n
+  const identity = JSON.stringify([selector, text])
+
+  // Hash the tuple encoding so neither arbitrary agent copy nor selectors are persisted verbatim.
+  for (let index = 0; index < identity.length; index += 1) {
+    hash ^= BigInt(identity.charCodeAt(index))
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n)
+  }
+
+  return `agent:${hash.toString(16).padStart(16, '0')}`
 }
 
 // Off has to reach the agent, not just the renderer: the `tip` tool leaves the

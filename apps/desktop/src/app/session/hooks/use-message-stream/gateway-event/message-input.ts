@@ -65,14 +65,18 @@ export function handleMessageInputEvent(ctx: GatewayEventContext): boolean {
       return next
     }
 
-    return appendMidTurnUserMessage(next, {
-      id: `input-${ids[0]}`,
-      inputIds: ids,
-      role: 'user',
-      timestamp: occurredAt,
-      parts: display.cleanedText ? [textPart(display.cleanedText, occurredAt)] : [],
-      attachmentRefs: display.refs.length ? display.refs : undefined
-    })
+    return appendMidTurnUserMessage(
+      next,
+      {
+        id: `input-${ids[0]}`,
+        inputIds: ids,
+        role: 'user',
+        timestamp: occurredAt,
+        parts: display.cleanedText ? [textPart(display.cleanedText, occurredAt)] : [],
+        attachmentRefs: display.refs.length ? display.refs : undefined
+      },
+      { interruptTools: payload.kind === 'redirect' }
+    )
   })
 
   return true

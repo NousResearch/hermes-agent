@@ -360,7 +360,9 @@ it.each(recoveryCases)(
     await waitFor(() =>
       expect(requestGatewayForAgent).toHaveBeenCalledWith('connection-B', 'default', method, {
         session_id: 'rt-B',
-        text: 'B correction'
+        text: 'B correction',
+        input_visibility: method === 'session.redirect' ? 'visible' : 'hidden',
+        ...(method === 'session.redirect' ? { submission_ref: expect.any(String) } : {})
       })
     )
 
@@ -383,7 +385,9 @@ it.each(recoveryCases)(
     if (expiredRecovery) {
       expect(requestGatewayForAgent).toHaveBeenCalledWith('connection-B', 'default', method, {
         session_id: 'rt-B-cached',
-        text: 'B correction'
+        text: 'B correction',
+        input_visibility: method === 'session.redirect' ? 'visible' : 'hidden',
+        ...(method === 'session.redirect' ? { submission_ref: expect.any(String) } : {})
       })
       expect($activeSessionId.get()).toBe(navigation === 'before-stale-error' ? 'rt-A' : 'rt-B-cached')
     }
@@ -399,7 +403,9 @@ it.each(recoveryCases)(
 
     expect(requestGatewayForAgent).toHaveBeenCalledWith('connection-B', 'default', method, {
       session_id: 'rt-B2',
-      text: 'B correction'
+      text: 'B correction',
+      input_visibility: method === 'session.redirect' ? 'visible' : 'hidden',
+      ...(method === 'session.redirect' ? { submission_ref: expect.any(String) } : {})
     })
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
     expect(handle.cache.runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
@@ -517,7 +523,9 @@ it.each(rebuiltRuntimeCases)(
     const runtimeId = recover ? 'rt-B2' : 'rt-B-rebuilt'
     expect(requestGatewayForAgent).toHaveBeenLastCalledWith('connection-B', 'default', method, {
       session_id: runtimeId,
-      text: 'same chat correction'
+      text: 'same chat correction',
+      input_visibility: method === 'session.redirect' ? 'visible' : 'hidden',
+      ...(method === 'session.redirect' ? { submission_ref: expect.any(String) } : {})
     })
 
     if (recover) {

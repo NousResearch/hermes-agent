@@ -464,8 +464,13 @@ export function finalizeStoppedMessages(
  * user row, which made the post-correction reply a sibling of the sealed
  * partial and dropped the partial and the correction from view (#119015).
  */
-export function appendMidTurnUserMessage<State extends LiveStreamState>(state: State, message: ChatMessage): State {
-  const sealed = sealLiveStream(state)
+export function appendMidTurnUserMessage<State extends LiveStreamState>(
+  state: State,
+  message: ChatMessage,
+  { interruptTools = true }: { interruptTools?: boolean } = {}
+): State {
+  // An observed steer inserts a boundary without requesting an interruption.
+  const sealed = sealLiveStream(state, { keepRunningTools: !interruptTools })
 
   return { ...sealed, messages: [...sealed.messages, message] }
 }

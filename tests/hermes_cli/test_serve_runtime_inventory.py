@@ -245,3 +245,73 @@ def test_inventory_records_the_serve_process_incarnation(monkeypatch):
     plan = update_inventory.collect_runtime_inventory()
     serves = [r for r in plan.runtimes if r.kind == "serve"]
     assert serves and serves[0].detail["create_time"] == 1712345678.5
+
+
+# ---------------------------------------------------------------------------
+# update_inventory: launchd-owned serve/dashboard classification (#116503)
+# ---------------------------------------------------------------------------
+
+def test_inventory_classifies_launchd_job_owned_serve(monkeypatch):
+    """A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead,
+    so the spawner probe alone reads manual-serve — and the update plan then restarts it as a
+    detached argv respawn that fights the job's own KeepAlive respawn. A loaded job whose
+    ProgramArguments match the ledger argv must classify the row launchd (kickstart restart)."""
+    entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: True,  # bootstrap shell provably gone
+    )
+    jobs = [("gui/501", "ai.hermes.dashboard",
+             ["hermes", "serve", "--host", "100.94.65.93", "--port", "9119"], None)]
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=jobs), \
+         patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]):
+        plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves, "launchd-owned serve must appear in the inventory"
+    row = serves[0]
+    assert row.supervisor == "launchd"
+    assert row.restart_via == "launchd"
+    assert row.detail["launchd_domain"] == "gui/501"
+    assert row.detail["launchd_label"] == "ai.hermes.dashboard"
+
+
+def test_inventory_launchd_job_with_other_argv_leaves_manual_classification(monkeypatch):
+    entry = _ledger_entry()
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    jobs = [("gui/501", "ai.hermes.other", ["hermes", "dashboard", "--port", "8300"], 777)]
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=jobs), \
+         patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]):
+        plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves and serves[0].supervisor == "manual-serve"
+    assert "launchd_domain" not in serves[0].detail
+
+
+def test_inventory_launchd_probe_failure_degrades_to_spawner_classification(monkeypatch):
+    """The launchd probe is advisory: launchctl failing mid-inventory must degrade to the spawner
+    classification, never abort the (read-only) inventory pass."""
+    entry = _ledger_entry()
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", side_effect=OSError("launchctl busy")):
+        plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves and serves[0].supervisor == "manual-serve"
+
+
+def test_stale_serve_warning_names_the_launchd_kickstart_command(monkeypatch, capsys):
+    from hermes_cli import update_abort_recovery
+
+    monkeypatch.setattr(update_abort_recovery.sys, "platform", "darwin")
+    update_abort_recovery._warn_stale_serve_runtimes(
+        [{"pid": 4321, "kind": "dashboard", "profile": "default", "supervisor": "launchd"}])
+    out = capsys.readouterr().out
+    assert "launchctl kickstart -k gui/$UID/<label>" in out

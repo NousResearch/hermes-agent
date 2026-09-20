@@ -213,3 +213,13 @@ def test_unreadable_create_time_warning_names_identity_not_storage(monkeypatch, 
     assert "could not read the process creation time" in out
     assert "storage permissions" not in out
     assert "relaunch" in out
+
+
+def test_launchd_serve_row_never_pessimize_gateway_coverage():
+    """#116503: a launchd-owned serve/dashboard row is the post-update dashboard cleanup pass's
+    to kickstart, so it must not make the receipt's gateway coverage unverified (owed=None keeps
+    ``fleet_restart_pending`` armed with nothing gateway-side left to restart)."""
+    launchd = asdict(RuntimeRecord(
+        kind="serve", profile="work", pid=900, supervisor="launchd", restart_via="launchd", detail={}))
+    receipt = {"plan": {"runtimes": [{"kind": "gateway", "profile": "default"}, launchd]}, "fleet": []}
+    assert fleet._receipt_owed_gateways(receipt, []) == {("gateway", "default")}

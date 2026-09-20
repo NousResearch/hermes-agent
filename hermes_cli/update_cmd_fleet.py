@@ -889,6 +889,13 @@ _SERVE_SKIP_REASON = (
     " systemd unit pass when it owns a hermes-serve* unit, else left running for explicit"
     " operator restart"
 )
+# A launchd-owned backend (#116503): the fresh child has no per-label kickstart for serve/dashboard
+# jobs, but the post-update dashboard cleanup pass kickstarts the loaded job — never a detached
+# argv respawn, which would fight the job's own KeepAlive.
+_LAUNCHD_SERVE_SKIP_REASON = (
+    "launchd job owns this backend; the post-update dashboard cleanup kickstarts the job through"
+    " launchd, never a detached argv respawn that would fight its KeepAlive"
+)
 
 
 def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) -> tuple[dict[str, str], list[dict]]:
@@ -920,7 +927,12 @@ def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) 
                     continue
                 reason = _MANUAL_GATEWAY_SKIP_REASON
             elif kind in ("serve", "dashboard"):
-                reason = _DESKTOP_SERVE_SKIP_REASON if supervisor == "desktop" else _SERVE_SKIP_REASON
+                if supervisor == "desktop":
+                    reason = _DESKTOP_SERVE_SKIP_REASON
+                elif supervisor == "launchd":
+                    reason = _LAUNCHD_SERVE_SKIP_REASON
+                else:
+                    reason = _SERVE_SKIP_REASON
             else:
                 continue
             skipped.append({"profile": profile, "kind": str(kind), "supervisor": str(supervisor), "reason": reason})

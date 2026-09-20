@@ -112,8 +112,9 @@ describe('StatusRule model label', () => {
 
     expect(clamped).toContain('ultra→max')
     // Verbatim (or not-yet-stamped) wire levels make no claim.
-    expect(textContent(StatusRule({ ...baseProps, modelReasoningEffort: 'high', modelReasoningEffortWire: 'high' })))
-      .toContain('opus 4.8 high')
+    expect(
+      textContent(StatusRule({ ...baseProps, modelReasoningEffort: 'high', modelReasoningEffortWire: 'high' }))
+    ).toContain('opus 4.8 high')
     expect(textContent(StatusRule({ ...baseProps, modelReasoningEffort: 'ultra' }))).toContain('opus 4.8 ultra')
   })
 })

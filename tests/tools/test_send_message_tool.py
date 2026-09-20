@@ -1035,6 +1035,19 @@ class TestSendTelegramRichMessages:
             )
         bot.send_message.assert_not_awaited()
 
+    def test_legacy_send_failure_returns_error_dict(self, monkeypatch):
+        """Ordinary legacy/media failures stay error dicts; only rich transients propagate."""
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock()
+        bot.send_message = AsyncMock(side_effect=Exception("legacy send failed"))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "hello plain text"))
+
+        assert result == {"error": "Telegram send failed: legacy send failed"}
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Tests for Discord thread_id support

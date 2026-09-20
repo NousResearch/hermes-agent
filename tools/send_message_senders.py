@@ -286,6 +286,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     """One-shot Telegram Bot API send; rich constructs opt in via ``extra.rich_messages``."""
     extra = extra or {}
     bot = None
+    rich_transient_exc = None
     try:
         bot = _telegram_bot(token)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -305,7 +306,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         last_msg, warnings, _tg_caption = None, [], None
         rich_succeeded = False
         if policy._should_attempt_rich(message) and not _has_html and not media_files:
-            msg_id = await _telegram_try_send_rich(bot, int_chat_id, message, thread_kwargs, policy)
+            try:
+                msg_id = await _telegram_try_send_rich(bot, int_chat_id, message, thread_kwargs, policy)
+            except Exception as exc:
+                # Transient rich failures may have reached Telegram; never legacy-resend.
+                if not policy._is_rich_fallback_error(exc):
+                    rich_transient_exc = exc
+                raise
             if msg_id is not None:
                 from types import SimpleNamespace
                 last_msg = SimpleNamespace(message_id=msg_id)
@@ -348,9 +355,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
-        # Rich transient failures must propagate: the request may have reached Telegram and a
-        # legacy resend would duplicate the message.
-        if bot is not None and not _telegram_rich_policy(extra, bot)._is_rich_fallback_error(e):
+        if rich_transient_exc is not None and e is rich_transient_exc:
             raise
         return _error(f"Telegram send failed: {e}")
 

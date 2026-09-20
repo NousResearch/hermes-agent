@@ -5,11 +5,14 @@ can enter a wedged state where ``bot.send_message()`` returns a valid Message
 but nothing reaches the recipient.  ``_send_path_degraded`` short-circuits
 ``send()`` so cron's live-adapter branch falls through to standalone HTTP.
 """
+import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -74,6 +77,27 @@ async def test_send_short_flood_still_retries_inline(monkeypatch):
     assert result.success is True
     assert result.message_id == "7"
     sleep.assert_awaited_once_with(2.0)
+
+
+@pytest.mark.asyncio
+async def test_send_times_out_instead_of_hanging(monkeypatch):
+    """A shielded/hung send_message must fail on the wall-clock deadline, not pin getUpdates."""
+    adapter = _make_adapter()
+    adapter._rich_send_disabled = True
+
+    async def _hang(**_kwargs):
+        await asyncio.sleep(1000)
+
+    adapter._bot.send_message = _hang
+    monkeypatch.setattr(tg_adapter, "_TEXT_SEND_DEADLINE", 0.05)
+
+    t0 = time.monotonic()
+    result = await adapter.send("123", "hello")
+    elapsed = time.monotonic() - t0
+
+    assert result.success is False
+    assert "timed out" in (result.error or "").lower()
+    assert elapsed < 5.0
 
 
 def test_mark_connected_publishes_connected_when_healthy():

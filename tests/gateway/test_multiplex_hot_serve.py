@@ -145,6 +145,208 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_transient_start_failure_is_retried_on_next_reconcile(tmp_path, monkeypatch):
+    """A hot-added profile whose adapter start raises a transient error (secret backend
+    unreachable, a half-written config.yaml) must not be recorded as scanned: the next
+    reconcile retries it. Only the deliberate MultiplexConfigError park is acknowledged."""
+    runner, home = _runner(tmp_path, monkeypatch)
+    _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+
+        _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+        attempts = []
+        real_start = runner._start_one_profile_adapters
+
+        async def flaky(name, profile_home, claimed):
+            attempts.append(name)
+            if len(attempts) == 1:
+                raise OSError("secret backend unreachable")
+            return await real_start(name, profile_home, claimed)
+
+        runner._start_one_profile_adapters = flaky
+        first = await runner.reconcile_served_profiles()
+        assert first["added"] == ["gamma"]
+        assert attempts == ["gamma"]
+        assert Platform.DISCORD not in runner._profile_adapters.get("gamma", {})
+        # Unacknowledged: the failed scan's signature must not survive ``_note_served_profiles``.
+        assert "gamma" not in runner._served_profile_signatures
+
+        second = await runner.reconcile_served_profiles()
+        assert attempts == ["gamma", "gamma"]
+        assert second["rescanned"] == ["gamma"]
+        assert runner._profile_adapters["gamma"][Platform.DISCORD].token.strip().endswith("gamma-token")
+
+
+@pytest.mark.asyncio
+async def test_failed_rescan_of_served_profile_is_retried(tmp_path, monkeypatch):
+    """Same contract on the rescan path: a served profile whose re-scan start raises keeps
+    retrying; its old signature must not be replaced by the failed scan's."""
+    runner, home = _runner(tmp_path, monkeypatch)
+    alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        assert runner._profile_adapters["alpha"][Platform.DISCORD]
+
+        attempts = []
+        real_start = runner._start_one_profile_adapters
+
+        async def flaky(name, profile_home, claimed):
+            attempts.append(name)
+            if len(attempts) == 1:
+                raise RuntimeError("transient")
+            return await real_start(name, profile_home, claimed)
+
+        runner._start_one_profile_adapters = flaky
+        (alpha_dir / ".env").write_text(
+            "DISCORD_BOT_TOKEN=alpha-token\nTELEGRAM_BOT_TOKEN=tg\n", encoding="utf-8"
+        )
+        await runner.reconcile_served_profiles()
+        assert attempts == ["alpha"]
+        await runner.reconcile_served_profiles()
+        assert attempts == ["alpha", "alpha"]
+
+
+@pytest.mark.asyncio
+async def test_transient_startup_failure_is_retried_by_first_reconcile(tmp_path, monkeypatch):
+    """The same acknowledgement gap existed on the boot path: a profile whose start raises
+    during ``_start_secondary_profile_adapters`` must stay unsigned so the reconcile watcher
+    retries it instead of parking it adapter-less until a config edit or restart."""
+    runner, home = _runner(tmp_path, monkeypatch)
+    _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+    attempts = []
+    real_start = runner._start_one_profile_adapters
+
+    async def flaky(name, profile_home, claimed):
+        attempts.append(name)
+        if len(attempts) == 1:
+            raise OSError("secret backend unreachable")
+        return await real_start(name, profile_home, claimed)
+
+    runner._start_one_profile_adapters = flaky
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        assert attempts == ["gamma"]
+        assert "gamma" not in runner._served_profile_signatures
+
+        result = await runner.reconcile_served_profiles()
+        assert attempts == ["gamma", "gamma"]
+        assert result["rescanned"] == ["gamma"]
+        assert runner._profile_adapters["gamma"][Platform.DISCORD].token.strip().endswith("gamma-token")
+
+
+@pytest.mark.asyncio
+async def test_transient_secret_hydrate_failure_retries_through_real_start_path(tmp_path, monkeypatch):
+    """End to end through the real ``_start_one_profile_adapters``: the failure is raised inside
+    it at ``hydrate_profile_secret_sources`` (the network-dependent step of
+    ``_load_secondary_profile_config``), not at a mocked seam. The boot failure leaves the
+    profile served-but-unsigned; the next reconcile runs the real config load, profile scope,
+    adapter creation and connect to success."""
+    from types import SimpleNamespace
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    del runner._start_one_profile_adapters  # instance stub off: exercise the real method
+    runner._register_config_hooks = lambda *a, **kw: None
+    runner._configure_profile_adapter = lambda *a: None
+    runner._sync_voice_mode_state_to_adapter = lambda *a: None
+    runner._restore_secondary_completion_ledgers = lambda *a: None
+    runner._adapter_credential_claim = lambda *a: None
+    runner._adapter_listener_claim = lambda *a: None
+    runner._busy_text_modes_by_profile = {}
+    runner._busy_input_modes_by_profile = {}
+    connected = []
+
+    async def _connect(adapter, platform):
+        connected.append(platform)
+        return True
+
+    async def _noop_added(profiles):
+        pass
+
+    runner._create_adapter = lambda platform, config: SimpleNamespace(platform=platform)
+    runner._connect_initial_adapter_with_timeout = _connect
+    runner._after_profiles_added = _noop_added
+
+    import hermes_cli.env_loader as env_loader
+    hydrate_calls = []
+    real_hydrate = env_loader.hydrate_profile_secret_sources
+
+    def _flaky(home_arg):
+        hydrate_calls.append(str(home_arg))
+        if len(hydrate_calls) == 1:
+            raise OSError("secret backend unreachable")
+        return real_hydrate(home_arg)
+
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", _flaky)
+
+    gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        assert connected == []
+        assert "gamma" not in runner._served_profile_signatures
+        assert _served_record(home) == ["default", "gamma"]
+
+        result = await runner.reconcile_served_profiles()
+        assert result["rescanned"] == ["gamma"]
+        assert connected == [Platform.DISCORD]
+        assert runner._profile_adapters["gamma"][Platform.DISCORD].platform == Platform.DISCORD
+        assert runner._served_profile_signatures["gamma"] == profile_serve_signature(gamma_dir)
+
+
+@pytest.mark.asyncio
+async def test_transient_failed_profile_deleted_before_retry_is_unserved(tmp_path, monkeypatch):
+    """Degenerate state: a profile that failed transiently and is deleted before the retry must
+    be torn down cleanly; the signature slot it never got cannot KeyError the unserve."""
+    runner, home = _runner(tmp_path, monkeypatch)
+    _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+
+        async def boom(name, profile_home, claimed):
+            raise OSError("transient")
+
+        runner._start_one_profile_adapters = boom
+        await runner.reconcile_served_profiles()
+        assert "gamma" not in runner._served_profile_signatures
+
+        from hermes_constants import mark_named_profile_deleted
+        mark_named_profile_deleted(gamma_dir)
+        result = await runner.reconcile_served_profiles()
+        assert result["removed"] == ["gamma"]
+        assert "gamma" not in runner._served_profile_homes
+        assert _served_record(home) == ["default", "alpha"]
+
+
+@pytest.mark.asyncio
+async def test_config_error_park_is_not_retried_until_config_changes(tmp_path, monkeypatch):
+    """MultiplexConfigError is the deliberate park: acknowledged, not retried, until the
+    profile's signature actually changes."""
+    from gateway.run import MultiplexConfigError
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+
+        gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+        attempts = []
+
+        async def parked(name, profile_home, claimed):
+            attempts.append(name)
+            raise MultiplexConfigError("open dm_policy")
+
+        runner._start_one_profile_adapters = parked
+        await runner.reconcile_served_profiles()
+        await runner.reconcile_served_profiles()
+        assert attempts == ["gamma"]
+
+        (gamma_dir / ".env").write_text("DISCORD_BOT_TOKEN=gamma-token2\n", encoding="utf-8")
+        await runner.reconcile_served_profiles()
+        assert attempts == ["gamma", "gamma"]
+
+
+@pytest.mark.asyncio
 async def test_hot_added_profile_cannot_double_claim_a_live_secondary_token(tmp_path, monkeypatch):
     """Boot's duplicate-credential guard sees every profile at once; a hot add must see the LIVE
     secondaries' claims too, or the new profile starts a second poller on alpha's bot."""

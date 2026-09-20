@@ -471,7 +471,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if not available:
             raise RuntimeError("Hindsight local runtime is unavailable" + (f": {reason}" if reason else ""))
         _ensure_client_dependency()
-        from hindsight import HindsightEmbedded
+        from hindsight.embedded import HindsightEmbedded
         HindsightEmbedded.__del__ = lambda self: None
         cfg = self._config
         llm_provider = _daemon_llm_provider(cfg.get("llm_provider", ""))

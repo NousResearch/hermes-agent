@@ -1816,6 +1816,8 @@ class TestHermesInternalDynamicSecrets:
         assert run_env.get("GH_CONFIG_DIR") != os.devnull
         assert run_env.get("GIT_CONFIG_GLOBAL") != os.devnull
 
+        assert "GIT_TERMINAL_PROMPT" not in run_env
+
     def test_make_run_env_gateway_does_not_restore_operator_git_auth(self):
         from tools.environments.local import _make_run_env
 

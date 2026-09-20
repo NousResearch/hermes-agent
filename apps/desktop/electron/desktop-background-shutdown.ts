@@ -47,11 +47,13 @@ function runStopCommand(
       if (settled) {
         return
       }
+
       settled = true
 
       if (timer) {
         clearTimeout(timer)
       }
+
       resolve(ok)
     }
 

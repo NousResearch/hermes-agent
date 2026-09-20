@@ -1,7 +1,6 @@
 """Tests for ``hermes plugins validate`` (hermes_cli/plugin_validate.py).
 
-Static manifest checks + subprocess-isolated capability probing against a
-recording stub context.
+Static checks never execute candidate code.
 """
 
 from __future__ import annotations
@@ -136,3 +135,25 @@ class TestRequiresHermesSpec:
         assert any(
             "requires_hermes" in f and "does not parse" in f for f in report.failures
         ), report.failures
+
+
+def test_validation_never_executes_candidate_import_or_registration(tmp_path, monkeypatch):
+    marker = tmp_path / "executed"
+    monkeypatch.setenv("SECRET_PROBE_TOKEN", "should-not-leak")
+    init = f"from pathlib import Path\nimport os\nPath({str(marker)!r}).write_text(os.environ['SECRET_PROBE_TOKEN'])\ndef register(ctx):\n    Path({str(marker)!r}).write_text('registered')\n"
+    plugin = _make_plugin(tmp_path, manifest=BASE_MANIFEST, init_py=init)
+    report = validate_plugin_dir(plugin)
+    assert report.ok
+    assert not marker.exists()
+    assert any("runtime behavior" in warning for warning in report.warnings)
+
+
+def test_dynamic_registration_names_require_manual_review(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=BASE_MANIFEST,
+                          init_py="def register(ctx):\n    ctx.register_tool(ctx.get_config('name'), schema={})\n")
+    report = validate_plugin_dir(plugin)
+    assert not report.ok
+    assert any("manual capability review" in failure for failure in report.failures)
+    for body in ("f = ctx.register_tool; f(name)", "getattr(ctx, 'register_tool')(name)"):
+        (plugin / "__init__.py").write_text(f"def register(ctx):\n    {body}\n", encoding="utf-8")
+        assert not validate_plugin_dir(plugin).ok

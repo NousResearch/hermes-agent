@@ -1,7 +1,7 @@
 name: Hermes Plugin Validate
 description: >-
   Validate a Hermes Agent plugin (plugin.yaml manifest schema AND
-  declared-vs-actually-registered capabilities) using
+  declared capabilities compared with literal registration calls) using
   `hermes plugins validate`. Drop this into your plugin repo's CI:
 
     - uses: actions/checkout@<sha>
@@ -47,8 +47,8 @@ runs:
       run: |
         set -uo pipefail
         # `hermes plugins validate` checks the plugin.yaml manifest schema
-        # and loads the plugin in a scratch subprocess to verify that the
-        # capabilities it DECLARES match what it actually registers.
+        # and statically inspects literal registration calls to compare the
+        # declared capabilities with those calls. Candidate code is never executed.
         if hermes plugins validate "$_PLUGIN_PATH"; then
           echo "✅ PASS: plugin at '$_PLUGIN_PATH' validated cleanly"
         else

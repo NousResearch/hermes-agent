@@ -162,3 +162,19 @@ async def test_hot_added_profile_cannot_double_claim_a_live_secondary_token(tmp_
         await runner.reconcile_served_profiles()
     fp = GatewayRunner._adapter_credential_fingerprint(_Adapter("shared"))
     assert seen_claims["dupe"].get((Platform.DISCORD, fp)) == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_rescan_drops_removed_platform_status_and_preserves_other_profiles(tmp_path, monkeypatch):
+    from gateway.status import write_runtime_status
+    runner, home = _runner(tmp_path, monkeypatch)
+    gamma = _mkprofile(home, 'gamma', 'DISCORD_BOT_TOKEN=gamma-token\n')
+    with patch('hermes_cli.profiles.get_active_profile_name', return_value='default'):
+        await runner._start_secondary_profile_adapters()
+        write_runtime_status(platform='gamma:discord', platform_state='connected')
+        write_runtime_status(platform='alpha:discord', platform_state='connected')
+        (gamma / '.env').write_text('')
+        await runner.reconcile_served_profiles()
+    platforms = json.loads((home / 'gateway_state.json').read_text())['platforms']
+    assert 'gamma:discord' not in platforms
+    assert platforms['alpha:discord']['state'] == 'connected'

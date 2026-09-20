@@ -56,7 +56,7 @@ def home(tmp_path, monkeypatch):
     (root / ".env").write_text(_SOURCE_ENV, encoding="utf-8")
     (root / "config.yaml").write_text(yaml.safe_dump(_SOURCE_CONFIG), encoding="utf-8")
     (root / "SOUL.md").write_text("Be helpful.", encoding="utf-8")
-    monkeypatch.setattr(gm, "_installed_service", lambda home: None)
+    monkeypatch.setattr(gm, "_installed_services", lambda home: [])
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: None)
     return root
 
@@ -120,3 +120,19 @@ def test_strip_env_file_keeps_comments_and_unknown_keys_verbatim(tmp_path):
     removed = strip_channel_env_file(env)
     assert removed == {"telegram": ["TELEGRAM_BOT_TOKEN"]}
     assert env.read_text(encoding="utf-8") == "# header\nexport OPENAI_API_KEY=abc\n\nMY_CUSTOM_THING=1\n"
+
+
+def test_clone_all_discovers_source_local_channel_plugin(home, monkeypatch):
+    monkeypatch.setenv('HERMES_BUNDLED_PLUGINS', str(home / 'empty'))
+    source = home / 'profiles/source'
+    plugin = source / 'plugins/privatechat'
+    plugin.mkdir(parents=True)
+    (source / 'config.yaml').write_text('plugins:\n  enabled: [privatechat]\nprivatechat:\n  enabled: true\n  token: private-token\n')
+    (source / '.env').write_text('PRIVATECHAT_TOKEN=private-token\nOPENAI_API_KEY=provider-key\n')
+    (plugin / 'plugin.yaml').write_text('name: privatechat\nversion: 1.0.0\n')
+    (plugin / '__init__.py').write_text('def register(ctx):\n    ctx.register_platform("privatechat", "Private chat", lambda config: None, lambda: True, required_env=["PRIVATECHAT_TOKEN"])\n')
+    clone = create_profile('copy', clone_from='source', clone_all=True, no_alias=True)
+    assert (clone / 'plugins/privatechat/plugin.yaml').exists()
+    assert 'PRIVATECHAT_TOKEN' not in (clone / '.env').read_text()
+    assert 'OPENAI_API_KEY=provider-key' in (clone / '.env').read_text()
+    assert 'privatechat' not in yaml.safe_load((clone / 'config.yaml').read_text())

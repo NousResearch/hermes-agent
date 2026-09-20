@@ -66,3 +66,24 @@ describe('free-tier sign-in attempts', () => {
     expect(cancelOAuthSession).toHaveBeenCalledWith('session-a')
   })
 })
+
+it('cancels a failed polling session and ignores its other in-flight approval', async () => {
+  const { $freeTierSignIn, beginFreeTierSignIn } = await import('./free-tier-sign-in')
+  let approve!: (value: unknown) => void
+  startOAuthLogin.mockResolvedValueOnce(start('failed-session'))
+  pollOAuthSession
+    .mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          approve = resolve
+        })
+    )
+    .mockRejectedValueOnce(new Error('connection interrupted'))
+  await beginFreeTierSignIn(requestGateway)
+  await vi.advanceTimersByTimeAsync(4000)
+  expect(cancelOAuthSession).toHaveBeenCalledWith('failed-session')
+  expect($freeTierSignIn.get()).toMatchObject({ status: 'failed', message: 'connection interrupted' })
+  approve({ status: 'approved', account_email: 'late@example.com' })
+  await vi.advanceTimersByTimeAsync(1)
+  expect($freeTierSignIn.get()).toMatchObject({ status: 'failed' })
+})

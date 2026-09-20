@@ -570,10 +570,12 @@ describe('connect-on-demand sources', () => {
 
   it('drops cached rows omitted by a successfully enumerated source', async () => {
     $lastRoster.set(previouslyPainted('alias'))
+
     const rows = await mergedRoster(
       { profiles: [{ name: 'default' }] },
       localOnlyUnion([{ connectionId: 'alias', kind: 'remote', reachable: true }])
     )
+
     expect(rows.find(row => row.connectionId === 'alias')).toBeUndefined()
   })
 

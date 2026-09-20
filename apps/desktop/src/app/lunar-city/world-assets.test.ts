@@ -154,6 +154,7 @@ describe('Lunar City asset manifest', () => {
     expect(manifest.validation.tracksLodBudgets).toBe(true)
     expect(manifest.assetQuality).toHaveLength(26)
     expect(manifest.lods).toHaveLength(26)
+
     for (const asset of [...manifest.buildings, ...manifest.leaders, ...manifest.workers, ...manifest.children]) {
       expect(asset.collection).toBe(`Hero Asset - ${asset.id}`)
       const quality = manifest.assetQuality.find(entry => entry.id === asset.id)
@@ -180,6 +181,7 @@ describe('Lunar City asset manifest', () => {
         usesRawSoulContent: boolean
       }
     }
+
     const generatedManifest = JSON.parse(
       readFileSync(join(process.cwd(), 'public/lunar-city/generated-3d/generated-assets-metadata.json'), 'utf8')
     ) as {
@@ -233,6 +235,7 @@ describe('Lunar City asset manifest', () => {
       'vehicle-bus',
       'prop-break-garden'
     ]
+
     expect(referenceManifest.cards.map(card => card.id)).toEqual(expectedIds)
     expect(generatedManifest.assets.map(asset => asset.id)).toEqual(expectedIds)
 
@@ -283,6 +286,7 @@ describe('Lunar City asset manifest', () => {
       }>
       validation: Record<string, boolean>
     }
+
     const masterMetadata = JSON.parse(
       readFileSync(
         join(process.cwd(), 'public/lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-metadata.json'),
@@ -352,6 +356,7 @@ describe('Lunar City asset manifest', () => {
     expect(masterMetadata.foxLeaderCloseupPreview).toBe(
       'lunar-city/master-assets/sources/lunar-city-sculpted-master-fox-leader-closeup.png'
     )
+
     for (const preview of [
       masterMetadata.preview,
       masterMetadata.buildingPreview,
@@ -363,6 +368,7 @@ describe('Lunar City asset manifest', () => {
     ]) {
       expect(existsSync(join(process.cwd(), 'public', preview))).toBe(true)
     }
+
     expect(masterMetadata.validation.usesSingleAuthoritativeMasterScene).toBe(true)
     expect(masterMetadata.validation.usesPerAssetCollections).toBe(true)
     expect(masterMetadata.validation.allRequiredAssetsPresent).toBe(true)
@@ -396,16 +402,20 @@ describe('Lunar City asset manifest', () => {
       expect(metadata?.sourceQuality).toBe('full_resolution_high_poly_master')
       expect(metadata?.silhouetteCompletion).toBe('reference_mask_guided_plus_inferred_occluded_structure')
       expect(metadata?.evaluatedTriangleCount).toBeGreaterThanOrEqual(metadata?.minimumTriangleCount ?? 0)
+
       if (metadata?.kind === 'building') {
         expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(14)
       }
+
       if (metadata?.kind === 'leader') {
         expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(12)
         expect(metadata.anatomicalHeadMeshCount).toBeGreaterThanOrEqual(1)
       }
+
       if (metadata?.kind === 'worker' || metadata?.kind === 'child') {
         expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(3)
       }
+
       expect(asset.acceptance.sourceQuality).toBe('full_resolution_high_poly_master')
       expect(asset.acceptance.rejectIf).toContain('floating_blob')
       expect(asset.acceptance.rejectIf).toContain('simple_mascot_placeholder')
@@ -453,6 +463,7 @@ describe('Lunar City asset manifest', () => {
       productionUse: string
       reviewPreview: string
     }
+
     const masterManifest = JSON.parse(
       readFileSync(join(process.cwd(), 'public/lunar-city/master-assets/master-asset-manifest.json'), 'utf8')
     ) as {
@@ -479,6 +490,7 @@ describe('Lunar City asset manifest', () => {
 
     const statusCounts = maskManifest.masks.reduce<Record<string, number>>((counts, mask) => {
       counts[mask.generationInputStatus] = (counts[mask.generationInputStatus] ?? 0) + 1
+
       return counts
     }, {})
 

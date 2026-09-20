@@ -108,10 +108,10 @@ def plan_retry(job: Dict[str, Any]) -> bool:
 
     natural_next = _parse_aware(job.get("next_run_at"))
     if natural_next is not None and natural_next <= retry_dt:
-        # The schedule fires again sooner than the ladder would — no point consuming an
-        # attempt; the natural occurrence IS the retry.
-        clear_state(job)
-        return False
+        # The schedule fires again sooner than the ladder would — use it as the retry but
+        # consume a rung so failure notices cannot be suppressed forever.
+        job[STATE_KEY] = {"attempt": attempt + 1}
+        return True
     retry_at = retry_dt.isoformat()
     job[STATE_KEY] = {"attempt": attempt + 1}
     job["next_run_at"] = retry_at

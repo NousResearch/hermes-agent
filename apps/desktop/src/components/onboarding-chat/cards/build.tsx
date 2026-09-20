@@ -132,7 +132,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
     } catch (error) {
       return { completed: false, error: String(error) }
     }
-  }, [storedId, state?.phase])
+  }, [storedId])
 
   const error = useStore($handoffError) ?? receipt.error
   const completed = receipt.completed

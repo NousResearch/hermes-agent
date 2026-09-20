@@ -20,11 +20,14 @@ describe('Desktop background-service shutdown', () => {
 
   it('boots out the exact Hermes companion launchd job on macOS', async () => {
     const children: EventEmitter[] = []
+
     const spawnFn = vi.fn(() => {
       const child = Object.assign(new EventEmitter(), {
         kill: vi.fn(() => true)
       })
+
       children.push(child)
+
       return child
     })
 
@@ -36,6 +39,7 @@ describe('Desktop background-service shutdown', () => {
       uid: 501,
       timeoutMs: 1_000
     })
+
     expect(spawnFn).toHaveBeenCalledTimes(1)
     children[0].emit('exit', 0, null)
 

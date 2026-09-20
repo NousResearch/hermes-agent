@@ -168,3 +168,20 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.release_session("sess-A")
         assert not backend.is_unlocked()
         unlock_mod.set_current_session_id(None)
+
+
+def test_password_manager_identity_is_profile_scoped(monkeypatch):
+    from agent import secret_scope
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+    from agent.vault_backends.bitwarden import BitwardenLoginBackend
+    monkeypatch.setenv("OP_ACCOUNT", "launch-account")
+    monkeypatch.setenv("BITWARDENCLI_APPDATA_DIR", "/launch-account")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    for secrets in ({}, {"OP_ACCOUNT": "secondary", "BITWARDENCLI_APPDATA_DIR": "/secondary", "OP_LOAD_DESKTOP_APP_SETTINGS": "false"}):
+        token = secret_scope.set_secret_scope(secrets)
+        try:
+            assert OnePasswordLoginBackend()._env(None).get("OP_ACCOUNT") == secrets.get("OP_ACCOUNT")
+            assert OnePasswordLoginBackend()._env(None).get("OP_LOAD_DESKTOP_APP_SETTINGS") == secrets.get("OP_LOAD_DESKTOP_APP_SETTINGS")
+            assert BitwardenLoginBackend()._env(None).get("BITWARDENCLI_APPDATA_DIR") == secrets.get("BITWARDENCLI_APPDATA_DIR")
+        finally:
+            secret_scope.reset_secret_scope(token)

@@ -79,10 +79,6 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 logger = logging.getLogger(__name__)
 
 
-def refuse_deleted_wal_generation(db_path) -> None:
-    """Compatibility facade for the holder-owned deleted-WAL guard."""
-    return _state_holders.refuse_deleted_wal_generation(db_path)
-
 _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
 
 

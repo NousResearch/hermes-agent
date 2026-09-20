@@ -5,8 +5,6 @@ import gzip
 import io
 import logging
 import os
-import shutil
-import stat
 import tempfile
 from datetime import datetime
 from typing import Any, Dict, List
@@ -47,47 +45,63 @@ def _build_gzip_member(line: str) -> bytes:
 
 
 def _append_gzip_member_atomically(filename: str, payload: bytes) -> None:
-    """Append a complete member with a stable lock and atomic destination replace.
+    """Append with a durable rollback offset, writing only the new member.
 
-    A process can be killed at any point during a regular-file write, including
-    between short writes. Building the new file beside the destination keeps a
-    killed writer from ever publishing a partial gzip member. The sidecar lock
-    remains stable across ``os.replace`` so concurrent writers cannot split the
-    critical section when the destination inode changes.
+    The stable lock serializes writers. After a killed writer the next append
+    rolls back the incomplete member before proceeding. Ordinary gzip readers
+    must wait for that recovery if a writer died during its destination write.
     """
     directory = os.path.dirname(os.path.abspath(filename)) or "."
-    lock_name = f"{filename}.lock"
-    with open(lock_name, "a+b") as lock_file:
-        locked = False
+    journal = f"{filename}.pending"
+    with open(f"{filename}.lock", "a+b") as lock_file:
+        _lock_append_handle(lock_file, True)
         try:
-            _lock_append_handle(lock_file, True)
-            locked = True
-            existing_mode = None
-            if os.path.exists(filename):
-                existing_mode = stat.S_IMODE(os.stat(filename).st_mode)
-            fd, staged_name = tempfile.mkstemp(
-                prefix=f".{os.path.basename(filename)}.", suffix=".tmp", dir=directory
-            )
-            try:
-                with os.fdopen(fd, "wb") as staged:
-                    if os.path.exists(filename):
-                        with open(filename, "rb") as existing:
-                            shutil.copyfileobj(existing, staged)
-                    staged.write(payload)
-                    staged.flush()
-                    os.fsync(staged.fileno())
-                if existing_mode is not None:
-                    os.chmod(staged_name, existing_mode)
-                os.replace(staged_name, filename)
-            finally:
-                if os.path.exists(staged_name):
-                    os.unlink(staged_name)
-        finally:
-            if locked:
+            with open(filename, "a+b") as destination:
+                if os.path.exists(journal):
+                    with open(journal, encoding="ascii") as pending:
+                        offset = int(pending.read())
+                    if offset < 0 or offset > os.fstat(destination.fileno()).st_size:
+                        raise ValueError("invalid trajectory recovery offset")
+                    destination.truncate(offset)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                    os.unlink(journal)
+                destination.seek(0, os.SEEK_END)
+                offset = destination.tell()
+                fd, staged_name = tempfile.mkstemp(prefix=".trajectory-", dir=directory)
                 try:
-                    _lock_append_handle(lock_file, False)
-                except (OSError, ValueError):
-                    pass
+                    os.chmod(staged_name, os.fstat(destination.fileno()).st_mode & 0o777)
+                    with os.fdopen(fd, "w", encoding="ascii") as pending:
+                        pending.write(str(offset))
+                        pending.flush()
+                        os.fsync(pending.fileno())
+                    os.replace(staged_name, journal)
+                    _sync_trajectory_directory(directory)
+                    try:
+                        destination.write(payload)
+                        destination.flush()
+                        os.fsync(destination.fileno())
+                    except BaseException:
+                        destination.truncate(offset)
+                        destination.flush()
+                        os.fsync(destination.fileno())
+                        raise
+                    os.unlink(journal)
+                    _sync_trajectory_directory(directory)
+                finally:
+                    if os.path.exists(staged_name):
+                        os.unlink(staged_name)
+        finally:
+            _lock_append_handle(lock_file, False)
+
+
+def _sync_trajectory_directory(directory: str) -> None:
+    if os.name != "nt":
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):

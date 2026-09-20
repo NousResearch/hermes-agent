@@ -4201,3 +4201,19 @@ def test_protected_feedback_replay_preserves_retirement_state(tmp_path, monkeypa
     assert receipt.allowed
     rendered = json.loads(authorized["input"][1]["output"])
     assert all(rendered["json"].get(key) == value for key, value in payload.items())
+
+
+@pytest.mark.parametrize("posture", ["false", "off", "0"])
+@pytest.mark.parametrize("managed", [False, True])
+def test_yaml_false_egress_posture_is_respected(tmp_path, monkeypatch, posture, managed):
+    from agent.llm_egress_runtime import egress_enforcement_enabled
+    from hermes_cli import config, managed_scope
+    home, policy = tmp_path / "home", tmp_path / "policy"
+    home.mkdir(); policy.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(policy))
+    target = policy if managed else home
+    (target / "config.yaml").write_text(f"runtime:\n  llm_egress_enforcement: {posture}\n", encoding="utf-8")
+    config._LOAD_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+    assert egress_enforcement_enabled() is False

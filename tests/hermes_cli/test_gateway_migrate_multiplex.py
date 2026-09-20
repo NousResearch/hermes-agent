@@ -1,6 +1,6 @@
 """``hermes gateway migrate``: preflight verdicts, apply/rollback bookkeeping, and the update hook.
 
-Service layer is faked through the module's ``_installed_service`` / ``_service_op`` seams (the same
+Service layer is faked through the module's ``_installed_services`` / ``_service_op`` seams (the same
 shape ``hermes gateway install`` tests use); the default gateway boot is faked by writing the
 ``served_profiles`` record the real multiplexer writes. Blockers reuse the gateway's own credential
 fingerprint and port-binding predicates, so the tests assert verdict → effect, not internal lists.
@@ -59,7 +59,7 @@ def fleet(tmp_path, monkeypatch):
                 "served_profiles": ["default", "coder", "ops"],
             }))
 
-    monkeypatch.setattr(gm, "_installed_service", lambda home: state.services.get(_name(home)))
+    monkeypatch.setattr(gm, "_installed_services", lambda home: [state.services[_name(home)]] if _name(home) in state.services else [])
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: state.pids.get(_name(home)))
     monkeypatch.setattr(gm, "_service_op", _service_op)
     monkeypatch.setattr(gm, "_stop_gateway_process", lambda home: state.pids.pop(_name(home), None))
@@ -102,7 +102,7 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert gm.apply_migration(plan, served_wait=5.0) is True
     manifest = json.loads((fleet.root / gm.MANIFEST_NAME).read_text(encoding="utf-8"))
     assert {s["profile"] for s in manifest["secondaries"]} == {"coder", "ops"}
-    assert all(s["service"] == {"kind": "systemd", "system": False} for s in manifest["secondaries"])
+    assert all(s["services"] == [{"kind": "systemd", "system": False}] for s in manifest["secondaries"])
     assert _config_flag(fleet.root) is True
     assert "coder" not in fleet.services and "ops" not in fleet.services and fleet.pids == {}
     # The default is brought up on the SAME service manager the secondaries used.
@@ -200,3 +200,51 @@ def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_re
     assert "serves 3 profiles" in out
     # The same manifest rolls it back: flag restored, nothing to reinstall.
     assert gm.rollback_migration(fleet.root) is True and _config_flag(fleet.root) is False
+
+
+def test_failed_auto_migration_restores_secondaries_and_raises(fleet, monkeypatch):
+    monkeypatch.setattr(gm, '_wait_for_served', lambda *args: ['default'])
+    with pytest.raises(RuntimeError, match='Automatic gateway migration failed'):
+        gm.maybe_auto_migrate_after_update()
+    assert fleet.services == {'coder': ('systemd', False), 'ops': ('systemd', False)}
+    assert _config_flag(fleet.root) is False
+
+
+def test_rollback_restores_survivors_when_default_fails_and_skips_deleted(fleet, monkeypatch):
+    plan = gm.build_migration_plan()
+    assert gm.apply_migration(plan, served_wait=5)
+    from hermes_constants import mark_named_profile_deleted
+    mark_named_profile_deleted(fleet.root / 'profiles/ops')
+    monkeypatch.setattr(gm, '_restore_default_gateway', lambda *args: (_ for _ in ()).throw(RuntimeError('default failed')))
+    fleet.ops.clear()
+    assert not gm.rollback_migration(fleet.root)
+    assert ('coder', 'start') in fleet.ops
+    assert not any(name == 'ops' for name, _ in fleet.ops)
+    assert (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_migration_stops_and_records_every_secondary_service_scope(fleet, monkeypatch):
+    original = gm._installed_services
+    monkeypatch.setattr(gm, '_installed_services', lambda home: [('systemd', False), ('systemd', True)] if home.name == 'coder' else original(home))
+    plan = gm.build_migration_plan()
+    operations = []
+    original_op = gm._service_op
+    def service_op(kind, system, verb, home):
+        operations.append((home.name, system, verb))
+        original_op(kind, system, verb, home)
+    monkeypatch.setattr(gm, '_service_op', service_op)
+    assert gm.apply_migration(plan, served_wait=5)
+    assert {system for name, system, verb in operations if name == 'coder' and verb == 'uninstall'} == {False, True}
+    recorded = json.loads((fleet.root / gm.MANIFEST_NAME).read_text())['secondaries'][0]
+    assert {service['system'] for service in recorded['services']} == {False, True}
+
+
+@pytest.mark.linux_only
+def test_inventory_includes_user_and_system_units(tmp_path, monkeypatch):
+    from hermes_cli import gateway as gw
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
+    user_unit, system_unit = tmp_path / 'user.service', tmp_path / 'system.service'
+    user_unit.touch()
+    system_unit.touch()
+    monkeypatch.setattr(gw, 'get_systemd_unit_path', lambda system=False: system_unit if system else user_unit)
+    assert set(gm._installed_services(tmp_path)) == {('systemd', False), ('systemd', True)}

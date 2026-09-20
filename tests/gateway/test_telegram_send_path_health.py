@@ -100,6 +100,26 @@ async def test_send_times_out_instead_of_hanging(monkeypatch):
     assert elapsed < 5.0
 
 
+@pytest.mark.asyncio
+async def test_media_send_times_out_instead_of_hanging(monkeypatch):
+    """A hung send_photo under ``_send_media`` fails on the media deadline; the error is surfaced,
+    not swallowed, and the per-chat send lock is released so later text is not pinned behind it."""
+    adapter = _make_adapter()
+
+    async def _hang(**_kwargs):
+        await asyncio.sleep(1000)
+
+    monkeypatch.setattr(tg_adapter, "_MEDIA_SEND_DEADLINE", 0.05)
+
+    t0 = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError, match="timed out"):
+        await adapter._send_media(_hang, "123", None, None, "photo", photo=b"png")
+    assert time.monotonic() - t0 < 5.0
+
+    result = await adapter.send("123", "after the photo")
+    assert result.success is True
+
+
 def test_mark_connected_publishes_connected_when_healthy():
     """A normal connect (never degraded) still publishes platform_state=connected."""
     adapter = _make_adapter()

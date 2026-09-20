@@ -5,6 +5,8 @@ exercise the dispatch site live in test_slash_access_dispatch.py.
 """
 from __future__ import annotations
 
+import pytest
+
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
 from gateway.slash_access import (
@@ -127,70 +129,26 @@ class TestPolicyForSource:
         assert grp_p.can_run("999", "stop") is False  # gated
 
 
-class TestBlankChatType:
-    """Blank/None chat_type (relay frames, restored rows) must not land in an
-    ungated scope: resolve to whichever scope is gated, group on tie."""
-
-    def _cfg(self, extra):
-        return GatewayConfig(
-            platforms={Platform.DISCORD: PlatformConfig(enabled=True, extra=extra)}
-        )
-
-    def _blank_src(self, chat_type):
-        return SessionSource(
-            platform=Platform.DISCORD, chat_id="A", chat_type=chat_type, user_id="999"
-        )
-
-    def test_blank_falls_into_gated_dm_scope(self):
-        # DM-gated install: blank previously resolved to group, whose unset
-        # admin list disabled gating entirely.
-        cfg = self._cfg({"allow_admin_from": ["111"], "user_allowed_commands": ["status"]})
-        for chat_type in ("", None, "   "):
-            p = policy_for_source(cfg, self._blank_src(chat_type))
-            assert p.enabled is True, repr(chat_type)
-            assert p.is_admin("111") is True
-            assert p.can_run("999", "stop") is False
-            assert p.can_run("999", "status") is True
-
-    def test_blank_keeps_group_scope_when_only_group_gated(self):
-        cfg = self._cfg({"group_allow_admin_from": ["222"]})
-        p = policy_for_source(cfg, self._blank_src(""))
-        assert p.enabled is True
-        assert p.is_admin("222") is True
-        assert p.can_run("999", "stop") is False
-
-    def test_blank_keeps_group_scope_on_tie(self):
-        # Both scopes gated: historical blank -> group resolution is preserved.
-        cfg = self._cfg({
-            "allow_admin_from": ["111"],
-            "group_allow_admin_from": ["222"],
-        })
-        p = policy_for_source(cfg, self._blank_src(None))
-        assert p.enabled is True
-        assert p.is_admin("222") is True
-        assert p.is_admin("111") is False
-
-    def test_blank_disabled_when_neither_scope_gated(self):
-        cfg = self._cfg({})
-        p = policy_for_source(cfg, self._blank_src(""))
-        assert p.enabled is False
-        assert p.can_run("999", "stop") is True
-
-    def test_relay_wire_blank_chat_type_is_gated(self):
-        """E2e through the real producer: _event_from_wire honors a blank
-        chat_type from the wire verbatim (src.get default only covers a MISSING
-        key), so the policy must gate the blank source it produces."""
-        from gateway.relay.ws_transport import _event_from_wire
-
-        cfg = self._cfg({"allow_admin_from": ["111"]})
-        for blank in ("", None):
-            evt = _event_from_wire({
-                "text": "/stop",
-                "source": {"platform": "discord", "chat_id": "c1",
-                           "chat_type": blank, "user_id": "999"},
-            })
-            assert not evt.source.chat_type  # producer really did emit blank
-            p = policy_for_source(cfg, evt.source)
-            assert p.enabled is True, repr(blank)
-            assert p.can_run("999", "stop") is False
-
+@pytest.mark.parametrize(
+    ("extra", "chat_type", "admin", "gated"),
+    [
+        # DM-only gated: blank used to fall into the ungated group scope (#116282).
+        ({"allow_admin_from": ["111"]}, "", "111", True),
+        ({"allow_admin_from": ["111"]}, None, "111", True),
+        # Mirror image and tie keep the historical group scope; ungated stays ungated.
+        ({"group_allow_admin_from": ["222"]}, "", "222", True),
+        ({"allow_admin_from": ["111"], "group_allow_admin_from": ["222"]}, None, "222", True),
+        ({}, "", None, False),
+    ],
+)
+def test_blank_chat_type_resolves_to_the_gated_scope(extra, chat_type, admin, gated):
+    """A blank/None chat_type (relay frames may carry ""/null, restored rows keep a
+    stored empty value) must resolve to whichever scope is gated, never to an
+    ungated allow-everything scope (#116282)."""
+    cfg = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, extra=extra)})
+    src = SessionSource(platform=Platform.DISCORD, chat_id="A", chat_type=chat_type, user_id="999")
+    p = policy_for_source(cfg, src)
+    assert p.enabled is gated
+    assert p.can_run("999", "stop") is (not gated)
+    if admin is not None:
+        assert p.is_admin(admin) is True

@@ -720,12 +720,27 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _gateway_status_hook_suppressed(platform: Any, event_type: str, message: str) -> bool:
+    """Run the ``pre_gateway_status`` plugin hook; True when a plugin returned
+    ``{"action": "suppress"}`` (e.g. de-duplicating a repeated provider-outage error).
+    Any other result, or a hook failure, fails open (message proceeds)."""
+    try:
+        from hermes_cli.plugins import invoke_hook
+        results = invoke_hook("pre_gateway_status", platform=platform, event_type=event_type, message=message)
+    except Exception:
+        logger.debug("pre_gateway_status invocation failed", exc_info=True)
+        return False
+    return any(isinstance(r, dict) and r.get("action") == "suppress" for r in results)
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise."""
     text = str(message or "").strip()
     if not text:
+        return None
+    if _gateway_status_hook_suppressed(platform, event_type, text):
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text

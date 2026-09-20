@@ -154,9 +154,12 @@ class SessionManager:
     Sessions are held in-memory for fast access **and** persisted to the shared
     SessionDB so they survive restarts and are searchable via ``session_search``."""
 
-    def __init__(self, agent_factory=None, db=None):
+    def __init__(self, agent_factory=None, db=None, reasoning_config_override=None):
         """``agent_factory``: AIAgent-like factory (tests); default builds a real AIAgent from
-        the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
+        the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``.
+        ``reasoning_config_override``: parsed reasoning config from ``hermes acp --reasoning LEVEL``;
+        when set, it replaces the config-resolved effort for every agent this manager builds
+        (process-scoped, never persisted)."""
         self._sessions: Dict[str, SessionState] = {}
         self._lock = threading.Lock()
         # Serializes DB restores: session construction runs off the event loop, so two
@@ -164,6 +167,7 @@ class SessionManager:
         self._restore_lock = threading.Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        self._reasoning_override = reasoning_config_override  # None → config resolution unchanged
 
     # ---- public API ---------------------------------------------------------
 
@@ -415,7 +419,9 @@ class SessionManager:
             # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never
             # reaches an ACP session and the transport applies its default effort (a 400 on non-reasoning
             # models). Resolved against the session's model so per-model overrides apply.
-            "reasoning_config": resolve_reasoning_config(config, model or default_model),
+            "reasoning_config": dict(self._reasoning_override)
+            if self._reasoning_override is not None
+            else resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
         try:

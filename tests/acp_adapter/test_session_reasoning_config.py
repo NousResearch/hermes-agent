@@ -52,3 +52,23 @@ def test_acp_agent_receives_configured_reasoning(acp_env):
              "agent": {"reasoning_effort": "none", "reasoning_overrides": {"gpt-5.6": "high"}}})
     agent = sm._make_agent(session_id="s2", cwd=".", model="gpt-5.6")
     assert agent.kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
+
+
+def test_acp_reasoning_override_beats_config(acp_env):
+    """``hermes acp --reasoning LEVEL``: the process-scoped override replaces the config-resolved
+    effort for every agent the manager builds, on any model — headless clients (task runners,
+    editors) pass args after the subcommand and cannot type /reasoning mid-session."""
+    acp_env({"model": {"default": "gpt-4o-mini", "provider": "openai-api"},
+             "agent": {"reasoning_effort": "none", "reasoning_overrides": {"gpt-5.6": "high"}}})
+    sm = SessionManager(db=None, reasoning_config_override={"enabled": True, "effort": "max"})
+    sm._get_db = lambda: None
+    # Both the default model and a differently-overridden model get the launch flag value.
+    assert sm._make_agent(session_id="s1", cwd=".").kwargs["reasoning_config"] == {
+        "enabled": True, "effort": "max"}
+    assert sm._make_agent(session_id="s2", cwd=".", model="gpt-5.6").kwargs["reasoning_config"] == {
+        "enabled": True, "effort": "max"}
+    # No override → the config resolution from #85153 is untouched.
+    sm_plain = SessionManager(db=None)
+    sm_plain._get_db = lambda: None
+    assert sm_plain._make_agent(session_id="s3", cwd=".", model="gpt-5.6").kwargs["reasoning_config"] == {
+        "enabled": True, "effort": "high"}

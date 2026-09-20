@@ -96,6 +96,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--yes", "-y", action="store_true", dest="assume_yes",
                         help="Accept all prompts (currently used by --setup-browser to skip the "
                              "~400 MB Chromium download confirmation).")
+    parser.add_argument("--reasoning", dest="reasoning", default=None, metavar="LEVEL",
+                        help="Reasoning effort for every session in this ACP server "
+                             "(none/minimal/low/medium/high/xhigh/max). Overrides config.yaml "
+                             "agent.reasoning_effort / reasoning_overrides for this process.")
     return parser.parse_args(argv)
 
 
@@ -165,6 +169,15 @@ def _warm_memory_provider_import(logger: logging.Logger) -> None:
         logger.debug("memory provider not warmed (none configured or import failed; agent init reports that)")
 
 
+def _make_session_manager(reasoning_config_override: dict | None):
+    """SessionManager with the CLI ``--reasoning`` override applied, or None for the default."""
+    if reasoning_config_override is None:
+        return None  # HermesACPAgent() builds its own default SessionManager
+    from acp_adapter.session import SessionManager
+
+    return SessionManager(reasoning_config_override=reasoning_config_override)
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
@@ -181,6 +194,19 @@ def main(argv: list[str] | None = None) -> None:
 
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")
+
+    # ``--reasoning LEVEL``: parse once, apply to every session this server builds.
+    # Mirrors the CLI's one-shot override: wins over config.yaml, never persisted.
+    acp_reasoning_override = None
+    level = str(getattr(args, "reasoning", None) or "").strip()
+    if level:
+        from hermes_constants import parse_reasoning_effort
+
+        acp_reasoning_override = parse_reasoning_effort(level)
+        if acp_reasoning_override is None:
+            logger.warning("Unknown --reasoning '%s' for ACP; keeping config defaults", level)
+        else:
+            logger.info("ACP reasoning override from CLI: %s", acp_reasoning_override)
 
     # Ensure the project root is on sys.path so ``from run_agent import AIAgent`` works
     project_root = str(Path(__file__).resolve().parent.parent)
@@ -213,7 +239,9 @@ def main(argv: list[str] | None = None) -> None:
         except Exception:
             logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    agent = HermesACPAgent()
+    agent = HermesACPAgent(
+        session_manager=_make_session_manager(acp_reasoning_override)
+    )
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:

@@ -23,6 +23,29 @@ def test_main_enables_unstable_protocol(monkeypatch):
     assert calls["kwargs"]["use_unstable_protocol"] is True
 
 
+def test_main_reasoning_flag_reaches_session_manager(monkeypatch):
+    """``hermes acp --reasoning max`` builds the SessionManager with the parsed override so every
+    session in the process runs at that effort; an unknown level keeps config resolution."""
+
+    async def fake_run_agent(agent, **kwargs):
+        pass
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.start_background_mcp_discovery", lambda **_kwargs: None
+    )
+
+    entry.main(["--reasoning", "max"])
+    sm = entry._make_session_manager({"enabled": True, "effort": "max"})
+    assert sm._reasoning_override == {"enabled": True, "effort": "max"}
+
+    # Unknown level: parse_reasoning_effort → None → default SessionManager (config resolution).
+    entry.main(["--reasoning", "bogus"])
+    assert entry._make_session_manager(None) is None
+
+
 def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):
     discovery_calls = []
 

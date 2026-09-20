@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import closing
 from dataclasses import dataclass, field
 import hashlib
 import os
@@ -213,9 +214,10 @@ def _snapshot_state_db(source: Path, candidate: Path, *, timeout_seconds: float 
 
     source_uri = f"file:{source_db.as_posix()}?mode=ro"
     try:
-        with sqlite3.connect(source_uri, uri=True, timeout=0.1) as source_conn:
-            with sqlite3.connect(target_db, timeout=0.1) as target_conn:
-                source_conn.backup(target_conn, pages=256, progress=progress, sleep=0.01)
+        with closing(sqlite3.connect(source_uri, uri=True, timeout=0.1)) as source_conn:
+            with closing(sqlite3.connect(target_db, timeout=0.1)) as target_conn:
+                with source_conn, target_conn:
+                    source_conn.backup(target_conn, pages=256, progress=progress, sleep=0.01)
         return True
     except (OSError, sqlite3.Error, TimeoutError):
         target_db.unlink(missing_ok=True)

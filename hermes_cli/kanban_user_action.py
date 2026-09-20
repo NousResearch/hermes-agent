@@ -117,34 +117,30 @@ def _destination_key(destination: str) -> str:
 def claim_delivery(
     conn: sqlite3.Connection, task_id: str, provider: str, destination: str, fingerprint: str,
 ) -> Optional[dict[str, Any]]:
-    """Claim one material delivery. Acknowledged rows dedup; failed/in-flight rows retry."""
+    """Claim one material delivery. Acknowledged/in-flight rows dedup; failed rows retry."""
     from hermes_cli import kanban_db as kb
     now = int(time.time())
     destination_key = _destination_key(destination)
     with kb.write_txn(conn):
+        # The conflict predicate is the claim fence. SQLite serializes this
+        # statement across independent connections: the first claimant inserts
+        # ``pending`` (or advances a recorded failure), while every concurrent
+        # loser observes ``pending`` and gets no RETURNING row. Acknowledged
+        # deliveries remain terminal and a changed fingerprint gets a new row.
         row = conn.execute(
-            "SELECT * FROM kanban_user_action_deliveries WHERE task_id=? AND destination_key=? "
-            "AND material_fingerprint=?",
-            (task_id, destination_key, fingerprint),
+            "INSERT INTO kanban_user_action_deliveries "
+            "(task_id, provider, destination_key, material_fingerprint, attempts, result, updated_at) "
+            "VALUES (?, ?, ?, ?, 1, 'pending', ?) "
+            "ON CONFLICT(task_id, destination_key, material_fingerprint) DO UPDATE SET "
+            "provider=excluded.provider, attempts=kanban_user_action_deliveries.attempts + 1, "
+            "result='pending', provider_message_id=NULL, delivered_at=NULL, error_metadata=NULL, "
+            "updated_at=excluded.updated_at WHERE kanban_user_action_deliveries.result='delivery_failed' "
+            "RETURNING id, attempts",
+            (task_id, provider, destination_key, fingerprint, now),
         ).fetchone()
-        if row is not None and row["result"] == "acknowledged":
-            return None
-        if row is None:
-            cur = conn.execute(
-                "INSERT INTO kanban_user_action_deliveries "
-                "(task_id, provider, destination_key, material_fingerprint, attempts, result, updated_at) "
-                "VALUES (?, ?, ?, ?, 1, 'pending', ?)",
-                (task_id, provider, destination_key, fingerprint, now),
-            )
-            assert cur.lastrowid is not None
-            delivery_id, attempts = int(cur.lastrowid), 1
-        else:
-            delivery_id, attempts = int(row["id"]), int(row["attempts"]) + 1
-            conn.execute(
-                "UPDATE kanban_user_action_deliveries SET attempts=?, result='pending', updated_at=? WHERE id=?",
-                (attempts, now, delivery_id),
-            )
-    return {"id": delivery_id, "attempts": attempts, "destination_key": destination_key}
+    if row is None:
+        return None
+    return {"id": int(row["id"]), "attempts": int(row["attempts"]), "destination_key": destination_key}
 
 
 def record_delivery_result(

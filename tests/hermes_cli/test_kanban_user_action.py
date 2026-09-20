@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,49 @@ def test_delivery_ledger_dedup_retry_and_material_change(board):
     changed = kua.get_user_action(conn, tid)
     assert changed.fingerprint != state.fingerprint
     assert kua.claim_delivery(conn, tid, "telegram", "opaque-destination", changed.fingerprint)
+
+
+def test_delivery_ledger_concurrent_claim_has_exactly_one_winner(board):
+    conn, home = board
+    tid = _running(conn)
+    kb.block_task(conn, tid, kind="needs_input", reason="first", user_action=_action("first"))
+    state = kua.get_user_action(conn, tid)
+    assert state is not None
+    fingerprint = state.fingerprint
+    db_path = home / "kanban.db"
+    barrier = threading.Barrier(2)
+    claims = []
+    delivered = []
+
+    def claim_and_deliver():
+        worker_conn = kbc.connect(db_path)
+        try:
+            barrier.wait()
+            claim = kua.claim_delivery(
+                worker_conn, tid, "telegram", "opaque-destination", fingerprint,
+            )
+            claims.append(claim)
+            if claim is not None:
+                delivered.append(claim["id"])
+        finally:
+            worker_conn.close()
+
+    workers = [threading.Thread(target=claim_and_deliver) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+
+    winners = [claim for claim in claims if claim is not None]
+    assert len(winners) == 1
+    assert delivered == [winners[0]["id"]]
+    row = conn.execute(
+        "SELECT id, attempts, result FROM kanban_user_action_deliveries "
+        "WHERE task_id=? AND destination_key=? AND material_fingerprint=?",
+        (tid, winners[0]["destination_key"], fingerprint),
+    ).fetchone()
+    assert tuple(row) == (winners[0]["id"], 1, "pending")
 
 
 def test_spawn_without_pid_never_remains_running(board, monkeypatch):

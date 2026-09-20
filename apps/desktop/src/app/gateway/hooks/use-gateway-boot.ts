@@ -129,6 +129,12 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // window instead of tearing down every secondary socket on each signal (#94769).
 const WAKE_RECONNECT_HOLDOFF_MS = 15_000
 
+// A socket only counts as recovered once it has stayed open this long. A proxy
+// that ACCEPTS the upgrade and then closes on the first frame (#83134) would
+// otherwise reset the backoff on every 'open' and get redialed at attempt 0
+// forever (~150ms mean) — the reconnect storm the backoff exists to prevent.
+const RECONNECT_STABLE_OPEN_MS = 5_000
+
 // Bounded self-heal for a failed REMOTE boot (#82679): main classifies every
 // fault it can see (via getBootProgress().retryable); the renderer adds the one
 // it cannot — a valid remote WebSocket dial that fails before becoming usable.
@@ -271,6 +277,10 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Wall-clock of the current socket's 'open'; null while not open. The
+    // backoff counters above/below reset only once an open proves stable
+    // (RECONNECT_STABLE_OPEN_MS), judged when the socket closes.
+    let openedAt: number | null = null
     // Consecutive unanswered liveness probes (#95327): a busy-but-healthy
     // backend can fail one probe; only a STREAK proves a genuinely dead
     // socket while turns are in flight. Reset on any successful probe or a
@@ -281,7 +291,7 @@ export function useGatewayBoot({
     let livenessReprobeTimer: ReturnType<typeof setTimeout> | null = null
     // Wall-clock start of the current disconnect episode (first failed
     // reconnect attempt); null while healthy. Drives the time-based
-    // escalation below. Reset on a clean open or a manual/wake reconnect.
+    // escalation below. Reset on a stable open or a manual/wake reconnect.
     let reconnectFailingSince: number | null = null
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
@@ -429,8 +439,6 @@ export function useGatewayBoot({
           return
         }
 
-        reconnectAttempt = 0
-        reconnectFailingSince = null
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
         // A legacy remote primary has no registry identity to scope by; fall
@@ -967,8 +975,7 @@ export function useGatewayBoot({
 
       if (st === 'open') {
         bootSnapshotSuperseded = true
-        reconnectAttempt = 0
-        reconnectFailingSince = null
+        openedAt = Date.now()
         reauthNotified = false
         primaryReauthError = null
         escalated = false
@@ -984,10 +991,19 @@ export function useGatewayBoot({
         if (bootCompleted) {
           completeDesktopBoot()
         }
-      } else if (bootCompleted && !$gatewaySwitching.get() && (st === 'closed' || st === 'error')) {
-        // The socket dropped after a healthy boot (typically sleep/wake). Try
-        // to bring it back instead of leaving the composer stuck disabled.
-        scheduleReconnect()
+      } else if (st === 'closed' || st === 'error') {
+        if (openedAt !== null && Date.now() - openedAt >= RECONNECT_STABLE_OPEN_MS) {
+          reconnectAttempt = 0
+          reconnectFailingSince = null
+        }
+
+        openedAt = null
+
+        if (bootCompleted && !$gatewaySwitching.get()) {
+          // The socket dropped after a healthy boot (typically sleep/wake). Try
+          // to bring it back instead of leaving the composer stuck disabled.
+          scheduleReconnect()
+        }
       }
     })
 

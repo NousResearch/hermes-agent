@@ -217,6 +217,64 @@ describe('BackworkspacePage', () => {
     })
   })
 
+  describe('the place the reader left the page at', () => {
+    const editor = async () =>
+      EditorView.findFromDOM(
+        (await screen.findByLabelText('Back workspace', { selector: '.cm-content' })) as HTMLElement
+      )!
+
+    it('opens with the caret where it was, not before the first letter', async () => {
+      request.mockResolvedValue({
+        page: { content: 'first line\n\nsecond line', id: '20260920_101010_abcdef', path: '/p.md' }
+      })
+      $activeGatewayProfile.set('left-here')
+
+      renderPage()
+
+      const first = await editor()
+
+      act(() => first.dispatch({ selection: { anchor: 18 } }))
+      act(() => $backworkspaceOpen.set(false))
+      act(() => $backworkspaceOpen.set(true))
+
+      const second = await editor()
+
+      expect(second).not.toBe(first)
+      expect(second.state.selection.main.head).toBe(18)
+    })
+
+    it('keeps the caret on the same words when a reply lands above it while the window is away', async () => {
+      let answer: (text: string) => void = () => {}
+
+      request.mockImplementation(async (_connection, _profile, method) =>
+        method === 'backworkspace.open'
+          ? { page: { content: '@above what is this?\n\nnotes below', id: '20260920_101010_abcdef', path: '/p.md' } }
+          : { id: '20260920_101010_abcdef', path: '/p.md' }
+      )
+      askAgent.mockImplementation(() => new Promise<string>(resolve => (answer = resolve)))
+      $activeGatewayProfile.set('above')
+
+      renderPage()
+
+      const first = await editor()
+      const mod = /Mac/i.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }
+
+      fireEvent.keyDown(first.contentDOM, { key: 'Enter', ...mod })
+      await vi.waitFor(() => expect(askAgent).toHaveBeenCalledTimes(1))
+
+      // Back to the notes, then away; the answer arrives with no editor up.
+      act(() => first.dispatch({ selection: { anchor: first.state.doc.length } }))
+      act(() => $backworkspaceOpen.set(false))
+      await act(async () => answer('a short answer'))
+      act(() => $backworkspaceOpen.set(true))
+
+      const second = await editor()
+
+      expect(second.state.doc.toString()).toContain('a short answer')
+      expect(second.state.selection.main.head).toBe(second.state.doc.length)
+    })
+  })
+
   it('stores a pasted image beside the page and links it where the caret is', async () => {
     request.mockImplementation((_connection, _profile, method) =>
       method === 'backworkspace.attach'

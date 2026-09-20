@@ -9,7 +9,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 
 import { BackworkspaceEditor } from './editor'
 import { imagePreviews, imageTheme } from './image-previews'
-import { liveEditor } from './live-editor'
+import { liveEditor, placeLeftOn } from './live-editor'
 import {
   $backworkspacePage,
   type BackworkspacePageState,
@@ -53,6 +53,7 @@ function BackworkspaceSheet() {
   const page = useStore($backworkspacePage)
   const sheetRef = useRef<HTMLElement>(null)
   const ready = page?.status === 'ready'
+  const left = ready ? placeLeftOn(page.key, page.content.length) : null
   const mention = useMentionPopup()
   const ask = useAskAgent(page?.path ?? null)
   const paste = usePasteImage()
@@ -126,6 +127,7 @@ function BackworkspaceSheet() {
             quoteDecorationPlugin,
             quoteTheme
           ]}
+          initialSelection={left ?? undefined}
           initialValue={page.content}
           key={page.key}
           onChange={editBackworkspacePage}

@@ -61,6 +61,13 @@ const PAGE_THEME = EditorView.theme({
   // Wider than CodeMirror's 1.2px hairline: beside a hand at this size a hairline
   // reads as a rendering artefact rather than as the place the next letter goes.
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--bw-ink)', borderLeftWidth: '2px', marginLeft: '-1px' },
+  // No caret while the window turns (`TURNING_ATTRIBUTE`, store.ts). The editor
+  // is built edge-on and measures whenever it likes, and what it measures under
+  // the turn's transform is a box squashed to nothing: measured frame by frame,
+  // the caret stood out in the left margin for the whole second half and jumped
+  // home when the window landed. It is drawn once there is a flat box to place
+  // it in.
+  ':root[data-backworkspace-turning] & .cm-cursorLayer': { visibility: 'hidden' },
   '&.cm-focused.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground': {
     backgroundColor: 'var(--ui-selection-background)'
   },
@@ -92,6 +99,8 @@ interface BackworkspaceEditorProps {
   className?: string
   /** Read once at mount, like the document (the `@` list lives here). */
   extensions?: Extension
+  /** The caret or selection the page was last left with. Read once at mount. */
+  initialSelection?: { anchor: number; head: number }
   // Read once at mount, like `CodeEditor`: the view owns the document from
   // then on. To show another page, remount with a new React `key`.
   initialValue: string
@@ -103,6 +112,7 @@ export function BackworkspaceEditor({
   autoFocus = false,
   className,
   extensions,
+  initialSelection,
   initialValue,
   onChange
 }: BackworkspaceEditorProps) {
@@ -122,6 +132,7 @@ export function BackworkspaceEditor({
       parent: host,
       state: EditorState.create({
         doc: initialValue,
+        selection: initialSelection,
         extensions: [
           history(),
           drawSelection(),

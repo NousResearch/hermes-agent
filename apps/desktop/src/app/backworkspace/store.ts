@@ -5,6 +5,7 @@ import { $remoteDisplayReason } from '@/store/remote-display'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { flipSurface } from './flip'
+import { settleLiveEditors, TURNING_ATTRIBUTE } from './live-editor'
 import { flushBackworkspacePage } from './page'
 
 /** Which side of this window faces the user. Window presentation only — never persisted. */
@@ -32,6 +33,8 @@ export async function toggleBackworkspace(): Promise<void> {
     void flushBackworkspacePage()
   }
 
+  document.documentElement.setAttribute(TURNING_ATTRIBUTE, '')
+
   try {
     await flipSurface(root, () => $backworkspaceOpen.set(opening), {
       direction: opening ? 1 : -1,
@@ -40,6 +43,11 @@ export async function toggleBackworkspace(): Promise<void> {
     })
   } finally {
     flipping = false
+    // The page's editor was built mid-turn, under a transform it cannot see
+    // end. Asked first, shown second: the measurement runs before the next
+    // paint, so the caret's first frame on screen is already the right one.
+    settleLiveEditors()
+    document.documentElement.removeAttribute(TURNING_ATTRIBUTE)
   }
 
   // Back on the front: hand the caret back to wherever it was before the flip.

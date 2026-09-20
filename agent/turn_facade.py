@@ -28,6 +28,7 @@ class TurnFacadeMixin:
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
         turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None,
+        expected_conversation_epoch: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
@@ -80,6 +81,7 @@ class TurnFacadeMixin:
             admission = admit_durable_turn_lease(
                 self, session_id=session_id, relay_turn_id=relay_turn_id, task_context=task_context,
                 conversation_history=conversation_history,
+                expected_conversation_epoch=expected_conversation_epoch,
             )
             if admission.early_result is not None:
                 carry_unadmitted_user_message(
@@ -93,6 +95,10 @@ class TurnFacadeMixin:
                 return admission.early_result
             lease = admission.lease
             conversation_history = admission.conversation_history
+            if admission.conversation_epoch is None:
+                self._capture_conversation_epoch_for_turn()
+            else:
+                self._active_conversation_epoch = admission.conversation_epoch
 
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),

@@ -220,6 +220,42 @@ class GatewaySessionCommandsMixin:
         body = f"{header}\n\n{session_info}" if session_info else header
         return EphemeralReply(f"{body}{_tip_line}")
 
+    async def clear_conversation(
+        self, session_id: str, session_key: str, *, reason: str, platform: str = "", user_id: str = "",
+    ) -> int:
+        """Apply the one conversation-boundary protocol to a durable session from any gateway surface."""
+        if not session_id or not session_key:
+            raise ValueError("session_id and session_key are required")
+        self._invalidate_session_run_generation(session_key, reason=reason)
+        self._release_running_agent_state(session_key)
+        await self._cleanup_old_agent_for_reset(session_key)
+        self._evict_cached_agent(session_key)
+        self._clear_conversation_scope(session_key, reason=reason)
+        with contextlib.suppress(Exception):
+            from tools.async_delegation import interrupt_for_session
+            interrupt_for_session(session_key=session_key, reason=reason, parent_session_id=session_id)
+        _reset_process_scoped_tool_state()
+        epoch = await asyncio.to_thread(self.session_store.clear_conversation, session_id)
+        await self.hooks.emit(
+            "session:clear",
+            {"platform": platform, "user_id": user_id, "session_key": session_key,
+             "session_id": session_id, "conversation_epoch": epoch},
+        )
+        return epoch
+
+    async def _handle_clear_command(self, event: MessageEvent) -> EphemeralReply:
+        """Clear one gateway conversation in place without rotating its session id."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        entry = self.session_store._entries.get(session_key)
+        if entry is None:
+            return EphemeralReply("No active conversation to clear.")
+        await self.clear_conversation(
+            entry.session_id, session_key, reason="session_clear",
+            platform=source.platform.value if source.platform else "", user_id=str(source.user_id or ""),
+        )
+        return EphemeralReply("🧹 Conversation cleared. This session is ready for a fresh context.")
+
     async def _reset_titled_header(self, header: str, session_id: str, title_arg: str) -> str:
         """``/new <title>``: titled header on success, else the header plus a rejection note."""
         from hermes_state import SessionDB

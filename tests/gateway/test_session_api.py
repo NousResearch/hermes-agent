@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
+from gateway.slash_commands_session import GatewaySessionCommandsMixin
 from hermes_state import SessionDB
 
 
@@ -50,6 +51,8 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post("/api/sessions/{session_id}/model", adapter._handle_session_model_lock)
+    app.router.add_post("/api/sessions/{session_id}/clear", adapter._handle_clear_session)
     return app
 
 
@@ -66,6 +69,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["session_clear"] is True
     assert features["run_steer"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
@@ -76,10 +80,127 @@ async def test_capabilities_advertises_session_control_surface(adapter):
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
     }
+    assert data["endpoints"]["session_clear"] == {
+        "method": "POST",
+        "path": "/api/sessions/{session_id}/clear",
+    }
     assert data["endpoints"]["run_steer"] == {
         "method": "POST",
         "path": "/v1/runs/{run_id}/steer",
     }
+
+
+@pytest.mark.asyncio
+async def test_runner_clear_conversation_uses_boundary_funnel_without_session_store_entry():
+    """API-owned sessions have no SessionStore entry but still receive the complete clear protocol."""
+    calls = []
+
+    class _Store:
+        def clear_conversation(self, session_id):
+            calls.append(("persist", session_id))
+            return 9
+
+    class _Hooks:
+        async def emit(self, name, payload):
+            calls.append((name, payload))
+
+    class _Runner:
+        session_store = _Store()
+        hooks = _Hooks()
+
+        def _invalidate_session_run_generation(self, key, *, reason):
+            calls.append(("invalidate", key, reason))
+
+        def _release_running_agent_state(self, key):
+            calls.append(("release", key))
+
+        async def _cleanup_old_agent_for_reset(self, key):
+            calls.append(("cleanup", key))
+
+        def _evict_cached_agent(self, key):
+            calls.append(("evict", key))
+
+        def _clear_conversation_scope(self, key, *, reason):
+            calls.append(("scope", key, reason))
+
+    epoch = await GatewaySessionCommandsMixin.clear_conversation(
+        _Runner(), "api-session", "webui:api-session", reason="api_session_clear")
+
+    assert epoch == 9
+    assert calls[:6] == [
+        ("invalidate", "webui:api-session", "api_session_clear"),
+        ("release", "webui:api-session"),
+        ("cleanup", "webui:api-session"),
+        ("evict", "webui:api-session"),
+        ("scope", "webui:api-session", "api_session_clear"),
+        ("persist", "api-session"),
+    ]
+    assert calls[-1] == (
+        "session:clear",
+        {"platform": "", "user_id": "", "session_key": "webui:api-session",
+         "session_id": "api-session", "conversation_epoch": 9},
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_clear_requires_the_bound_conversation_key_and_uses_runner(auth_adapter, session_db):
+    """A browser peer may clear only its own bound conversation through the runner funnel."""
+    session_id = session_db.create_session("webui-clear", "api_server")
+    session_db.record_gateway_session_peer(session_id, source="api_server", session_key="webui:webui-clear")
+    runner = MagicMock()
+    calls = []
+
+    async def _clear(*args, **kwargs):
+        calls.append(("clear", args, kwargs))
+        return 7
+
+    runner.clear_conversation = AsyncMock(side_effect=_clear)
+    auth_adapter.gateway_runner = runner
+    auth_adapter._interrupt_session_agents = MagicMock(
+        side_effect=lambda *args, **kwargs: calls.append(("interrupt", args, kwargs)))
+
+    app = _create_session_app(auth_adapter)
+    headers = {"Authorization": "Bearer sk-test"}
+    async with TestClient(TestServer(app)) as cli:
+        unauthorized = await cli.post(f"/api/sessions/{session_id}/clear")
+        assert unauthorized.status == 401
+
+        mismatched = await cli.post(
+            f"/api/sessions/{session_id}/clear",
+            headers={**headers, "X-Hermes-Session-Key": "webui:other"})
+        assert mismatched.status == 403
+
+        response = await cli.post(
+            f"/api/sessions/{session_id}/clear",
+            headers={**headers, "X-Hermes-Session-Key": "webui:webui-clear"})
+        assert response.status == 200, await response.text()
+        payload = await response.json()
+
+    assert payload == {
+        "object": "hermes.session.clear", "session_id": session_id, "conversation_epoch": 7,
+    }
+    runner.clear_conversation.assert_awaited_once_with(
+        session_id, "webui:webui-clear", reason="api_session_clear")
+    assert calls == [
+        ("interrupt", (session_id,), {"reason": "Conversation cleared via API"}),
+        ("clear", (session_id, "webui:webui-clear"), {"reason": "api_session_clear"}),
+    ]
+
+
+def test_interrupt_session_agents_targets_only_that_session(adapter):
+    """A clear interrupts API-owned work for its session, without touching another session."""
+    target = MagicMock()
+    target.session_id = "clear-target"
+    other = MagicMock()
+    other.session_id = "other-session"
+    adapter._active_run_agents = {"run-target": target}
+    adapter._shutdown_interruptible_agents = {id(target): target, id(other): other}
+
+    with patch("gateway.platforms.api_server.request_hard_interrupt", return_value=True) as interrupt:
+        count = adapter._interrupt_session_agents("clear-target", reason="session clear")
+
+    assert count == 1
+    interrupt.assert_called_once_with(target, "session clear", tool_reason="session clear")
 
 
 @pytest.mark.asyncio
@@ -480,6 +601,62 @@ async def test_session_chat_stream_reports_interrupted_turn_as_not_completed(ada
     assert "run.cancelled" in payloads and "run.completed" not in payloads
     assert payloads["run.cancelled"]["completed"] is False
     assert next(iter(adapter._run_statuses.values()))["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_rejects_preclear_result(adapter, session_db):
+    """The non-streaming API must not return a reply that belongs to a retired epoch."""
+    session_id = session_db.create_session("clear-boundary-chat", "api_server")
+    observed = {}
+
+    async def fake_run(**kwargs):
+        observed["expected_conversation_epoch"] = kwargs.get("expected_conversation_epoch")
+        session_db.clear_conversation(session_id)
+        return {"final_response": "stale result", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "hello"})
+            payload = await response.json()
+
+    assert response.status == 409
+    assert payload["error"]["code"] == "conversation_cleared"
+    assert observed == {"expected_conversation_epoch": 0}
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_suppresses_preclear_result(adapter, session_db):
+    """A turn that crosses a clear boundary cannot publish its old completion into the new epoch."""
+    import json as _json
+
+    session_id = session_db.create_session("clear-boundary-stream", "api_server")
+    observed = {}
+
+    async def fake_run(**kwargs):
+        observed["expected_conversation_epoch"] = kwargs.get("expected_conversation_epoch")
+        session_db.clear_conversation(session_id)
+        return {"final_response": "stale result", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "hello"})
+            body = await resp.text()
+
+    payloads = {}
+    for block in body.split("\n\n"):
+        lines = block.splitlines()
+        event = next((ln[7:] for ln in lines if ln.startswith("event: ")), None)
+        data = next((ln[6:] for ln in lines if ln.startswith("data: ")), None)
+        if event and data:
+            payloads[event] = _json.loads(data)
+
+    assert "assistant.completed" not in payloads
+    assert payloads["run.cancelled"]["conversation_cleared"] is True
+    assert payloads["run.cancelled"]["conversation_epoch"] == 0
+    assert next(iter(adapter._run_statuses.values()))["status"] == "cancelled"
+    assert observed == {"expected_conversation_epoch": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -1063,6 +1240,30 @@ async def test_run_agent_forwards_author_to_run_conversation_only_when_set(adapt
     await adapter._run_agent(user_message="hello", conversation_history=[], session_id="author-run")
 
     assert calls == [{"turn_author": author}, {}]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_forwards_expected_conversation_epoch_to_agent(adapter, monkeypatch):
+    """A session route's admission epoch must reach the agent's atomic lease/write fence."""
+    calls = []
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+        session_id = "epoch-run"
+
+        def run_conversation(self, user_message, conversation_history, task_id, **kwargs):
+            calls.append(kwargs)
+            return {"final_response": "ok", "session_id": self.session_id}
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent())
+    await adapter._run_agent(
+        user_message="hello", conversation_history=[], session_id="epoch-run",
+        expected_conversation_epoch=3)
+    await adapter._run_agent(user_message="hello", conversation_history=[], session_id="epoch-run")
+
+    assert calls == [{"expected_conversation_epoch": 3}, {}]
 
 
 @pytest.mark.asyncio

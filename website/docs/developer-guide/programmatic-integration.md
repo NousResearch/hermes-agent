@@ -143,8 +143,19 @@ POST /v1/browser-control/register Register a browser controller
 GET  /v1/browser-control/ws       Browser-controller WebSocket
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
+POST /api/sessions/{id}/clear    Clear the caller's declared session in place
 GET  /health, /health/detailed
 ```
+
+### Same-session clear
+
+`POST /api/sessions/{id}/clear` starts a new empty conversation epoch without changing the durable session id or its metadata. It is a control-plane endpoint for Hermes-aware frontends, not a substitute for `DELETE /api/sessions/{id}`.
+
+The request must use the API-server bearer authentication and provide `X-Hermes-Session-Key`. Hermes resolves that key to the caller's current API-server session and rejects a different `{id}` with `403 session_scope_mismatch`; a bearer-key holder cannot clear an arbitrary session by id alone. The endpoint returns the unchanged `session_id` and the new `conversation_epoch`.
+
+A clear interrupts API-owned turns for that session before advancing the epoch. A synchronous session-chat request that crosses the boundary receives `409 conversation_cleared`; an SSE session-chat request ends with `run.cancelled` and `conversation_cleared: true` rather than publishing the old completion. SSE events carry their starting `conversation_epoch`, so a frontend can discard events from a retired generation.
+
+Keep bearer credentials server-side. A browser should call its own backend, whose server-to-server request carries the session key; never expose the API-server credential to browser JavaScript.
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 

@@ -69,7 +69,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
-    "reasoning_streaming": True,
+    "session_clear": True, "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -95,6 +95,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
     ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
+    ("session_clear", ("POST", "/api/sessions/{session_id}/clear")),
     ("browser_control_register", ("POST", "/v1/browser-control/register")),
     ("browser_control_ws", ("GET", "/v1/browser-control/ws")),
     ("artifact_upload", ("POST", "/v1/artifacts/upload")),
@@ -127,7 +128,7 @@ from gateway.platforms.base import (
     validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.redact import redact_sensitive_text
-from agent.interrupt_compat import request_hard_interrupt
+from agent.interrupt_compat import _accepts_keyword, request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
 from gateway.browser_control_artifacts import (
     ArtifactError, ArtifactRateLimiter, ArtifactStore, ArtifactTooLarge, DEFAULT_ALLOWED_MIME_TYPES,
@@ -1102,17 +1103,20 @@ class _SessionEventQueue:
     """Ordered SSE event queue for one /api/sessions/{id}/chat/stream run. ``payload`` stamps
     session_id/run_id/seq/ts; ``enqueue`` is executor-thread safe (hops onto the owning loop)."""
 
-    def __init__(self, session_id: str, run_id: str):
+    def __init__(self, session_id: str, run_id: str, *, conversation_epoch: Optional[int] = None):
         self.loop = asyncio.get_running_loop()
         self.queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
         self.session_id = session_id
         self.run_id = run_id
+        self.conversation_epoch = conversation_epoch
         self.seq = 0
 
     def payload(self, name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
         self.seq += 1
         payload.setdefault("session_id", self.session_id)
         payload.setdefault("run_id", self.run_id)
+        if self.conversation_epoch is not None:
+            payload.setdefault("conversation_epoch", self.conversation_epoch)
         payload.setdefault("seq", self.seq)
         payload.setdefault("ts", time.time())
         return name, payload
@@ -1251,6 +1255,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     interrupted += 1
             except Exception as exc:
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)
+        return interrupted
+
+    def _interrupt_session_agents(self, session_id: str, *, reason: str) -> int:
+        """Interrupt API-owned work for one durable session before its conversation boundary advances."""
+        agents = {id(agent): agent for agent in (
+            *getattr(self, "_active_run_agents", {}).values(),
+            *getattr(self, "_shutdown_interruptible_agents", {}).values())
+            if agent is not None and getattr(agent, "session_id", None) == session_id}
+        interrupted = 0
+        for agent in agents.values():
+            try:
+                if request_hard_interrupt(agent, reason, tool_reason=reason):
+                    interrupted += 1
+            except Exception as exc:
+                logger.debug("[api_server] failed interrupting session agent: %s", exc)
         return interrupted
 
     @staticmethod
@@ -1598,6 +1617,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
+            ("POST", "/api/sessions/{session_id}/clear", self._handle_clear_session),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
@@ -2803,6 +2823,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None, _error_response(f"Session not found: {session_id}", 404, code="session_not_found")
         return session, None
 
+    async def _conversation_epoch_matches(self, session_id: str, expected_epoch: int) -> bool:
+        """Whether an API turn still belongs to the durable conversation generation it started in."""
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return False
+        session = await asyncio.to_thread(db.get_session, session_id)
+        return bool(session) and int(session.get("conversation_epoch") or 0) == expected_epoch
+
     async def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
         db = await self._ensure_session_db_async()
         if db is None:
@@ -3037,6 +3065,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "returned": len(messages)}})
 
     @_require_auth
+    async def _handle_clear_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{id}/clear — clear only the caller's declared gateway conversation."""
+        session_id = request.match_info["session_id"]
+        session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        if not session_key:
+            return _error_response("X-Hermes-Session-Key is required", 400, code="missing_session_key")
+        declared_id = await asyncio.to_thread(self._declared_conversation_session, session_key)
+        if declared_id != session_id:
+            return _error_response("Session does not belong to the declared conversation", 403, code="session_scope_mismatch")
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        if runner is None:
+            return _error_response("Gateway runner unavailable", 503, code="gateway_unavailable")
+        clear = getattr(runner, "clear_conversation", None)
+        if not callable(clear):
+            return _error_response("Gateway clear control unavailable", 503, code="gateway_unavailable")
+        self._interrupt_session_agents(session_id, reason="Conversation cleared via API")
+        epoch = await clear(session_id, session_key, reason="api_session_clear")
+        return web.json_response(
+            {"object": "hermes.session.clear", "session_id": session_id, "conversation_epoch": epoch})
+
+    @_require_auth
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         source_id = request.match_info["session_id"]
@@ -3091,6 +3142,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return None, err
+        conversation_epoch = int((session or {}).get("conversation_epoch") or 0)
         body, err = await self._read_json_body(request)
         if err:
             return None, err
@@ -3140,12 +3192,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
             confirmed_runtime_lock=lock_active, turn_author=turn_author,
+            expected_conversation_epoch=conversation_epoch,
             # #98619: the client addresses this session by construction — the id is in the
             # request path (/api/sessions/{session_id}/chat) — so a wake self-post lands where
             # the client will read it. The audited native-session opt-in.
             session_history_delivery="1", **agent_overrides)
         return {
-            "gateway_session_key": gateway_session_key, "session_id": session_id, "body": body,
+            "gateway_session_key": gateway_session_key, "session_id": session_id,
+            "conversation_epoch": conversation_epoch, "body": body,
             "user_message": user_message, "runtime_request": runtime_request,
             "lock_active": lock_active, "run_kwargs": run_kwargs}, None
 
@@ -3201,8 +3255,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return err
         gateway_session_key = ctx["gateway_session_key"]
         session_id = ctx["session_id"]
+        conversation_epoch = ctx["conversation_epoch"]
         history = await self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
+        if not await self._conversation_epoch_matches(session_id, conversation_epoch):
+            return _error_response(
+                "Conversation was cleared while this turn was running", 409, code="conversation_cleared")
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id
         final_response = _resolve_media_to_data_urls(
@@ -3225,6 +3283,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err is not None:
             return err
         gateway_session_key, session_id = ctx["gateway_session_key"], ctx["session_id"]
+        conversation_epoch = ctx["conversation_epoch"]
         user_message, runtime_request = ctx["user_message"], ctx["runtime_request"]
         runtime_meta = self._sanitize_runtime_metadata(
             requested_runtime=runtime_request.get("requested"),
@@ -3232,7 +3291,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             model_lock=("accepted" if ctx["lock_active"] else ""))
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
-        events = _SessionEventQueue(session_id, run_id)
+        events = _SessionEventQueue(session_id, run_id, conversation_epoch=conversation_epoch)
         queue, _event_payload = events.queue, events.payload
         # Claim ownership inside the request's profile scope before any run-keyed state
         # exists, so /v1/runs/{id}* control is confined to the starting profile.
@@ -3270,6 +3329,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     conversation_history=history, stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
                     active_run_id=run_id, **ctx["run_kwargs"])
+                if not await self._conversation_epoch_matches(session_id, conversation_epoch):
+                    fields = {"completed": False, "interrupted": True, "conversation_cleared": True}
+                    await queue.put(_event_payload("run.cancelled", {"message_id": message_id, **fields}))
+                    self._set_run_status(
+                        run_id, "cancelled", session_id=session_id,
+                        last_event="run.cancelled", **fields)
+                    return
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3781,7 +3847,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
+        expected_conversation_epoch: Optional[int] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3840,12 +3907,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     self._shutdown_interruptible_agents[id(agent)] = agent
                     # Passed only when set: a human turn keeps today's call shape.
                     author_kwargs = {"turn_author": turn_author} if turn_author is not None else {}
-                    conversation_kwargs = dict(
+                    conversation_kwargs: Dict[str, Any] = dict(
                         user_message=user_message,
                         conversation_history=conversation_history,
                         task_id=effective_task_id,
                         **author_kwargs,
                     )
+                    if (
+                        expected_conversation_epoch is not None
+                        and _accepts_keyword(agent.run_conversation, "expected_conversation_epoch")
+                    ):
+                        conversation_kwargs["expected_conversation_epoch"] = expected_conversation_epoch
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
                     with notification_turn(agent, muted=muted, session_id=session_id or ""):

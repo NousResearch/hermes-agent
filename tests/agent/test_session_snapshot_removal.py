@@ -40,3 +40,22 @@ def test_persistence_never_snapshots_but_explicit_save_works(tmp_path, monkeypat
         assert [m["content"] for m in saved["messages"]] == [m["content"] for m in messages]
     finally:
         db.close()
+
+
+def test_turn_epoch_capture_fences_later_persistence_after_clear(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    agent = SessionPersistenceMixin()
+    agent.max_iterations = 1
+    _init_session_state(agent, "epoch-fence", db, None, None, None, False, 1, 1, 1)
+    db.create_session(agent.session_id, source="cli")
+    agent._session_db_created = True
+    try:
+        agent._capture_conversation_epoch_for_turn()
+        assert agent._active_conversation_epoch == 0
+
+        db.clear_conversation(agent.session_id)
+        assert agent._active_conversation_epoch == 0
+        assert agent._persist_session([{"role": "assistant", "content": "late worker output"}]) is None
+        assert db.get_messages_as_conversation(agent.session_id) == []
+    finally:
+        db.close()

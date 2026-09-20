@@ -356,6 +356,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     end_reason TEXT,
     message_count INTEGER DEFAULT 0,
     tool_call_count INTEGER DEFAULT 0,
+    conversation_epoch INTEGER NOT NULL DEFAULT 0,
+    conversation_cleared_at REAL,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     cache_read_tokens INTEGER DEFAULT 0,

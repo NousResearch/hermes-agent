@@ -37,7 +37,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
-| `/clear` | Clear screen and start a new session |
+| `/clear` | Clear the active conversation context while keeping the same session ID, title, workspace, and route. The prior transcript remains archived for audit/history but is excluded from future model context. |
 | `/history` | Show conversation history (respects `/timestamps`) |
 | `/save` | Save the current conversation |
 | `/prompt` (alias: `/compose`) | Compose your next prompt in `$EDITOR` (markdown) instead of the inline input — useful for long, multi-line, or carefully-formatted prompts. |

@@ -2179,6 +2179,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={
                     "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
+                expected_conversation_epoch=(event.metadata or {}).get("expected_conversation_epoch"),
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
@@ -3049,6 +3050,7 @@ class GatewayTurnMixin:
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
         turn_ctx = TurnContext(
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
+            expected_conversation_epoch=turn_params.get("expected_conversation_epoch"),
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,
@@ -4168,6 +4170,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        expected_conversation_epoch: Optional[int] = None,
         scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
@@ -4205,6 +4208,7 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            expected_conversation_epoch=expected_conversation_epoch,
             scheduled_heartbeat=scheduled_heartbeat,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(

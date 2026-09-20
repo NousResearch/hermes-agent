@@ -114,7 +114,9 @@ def flush_overflow_to_file(overflow_by_session: Dict[str, Any], *, reason: str =
     return flushed
 
 
-def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -> Optional[Path]:
+def spool_dropped_transcript_message(
+    session_id: str, message: Dict[str, Any], *, conversation_epoch: Optional[int] = None,
+) -> Optional[Path]:
     """Spool a cap-evicted transcript message; ``None`` on failure (callers degrade to drop+log).
 
     Uses the same on-disk pending spool as :func:`flush_pending_to_file` (one atomic JSON payload per
@@ -124,7 +126,7 @@ def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -
     try:
         return _write_payload(_get_flush_dir(), {
             "session_key": session_id, "reason": TRANSCRIPT_CAP_DROP_REASON, "ts": int(time.time()),
-            "seq": next(_TRANSCRIPT_SPOOL_SEQ),
+            "seq": next(_TRANSCRIPT_SPOOL_SEQ), "conversation_epoch": conversation_epoch,
             "data": {"session_id": session_id, "message": message},
         })
     except Exception as exc:
@@ -181,6 +183,30 @@ def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = 
     return replayed, remaining
 
 
+def discard_transcript_spool(session_id: str) -> int:
+    """Delete cap-drop spool files belonging to a conversation just cleared.
+
+    The clear path holds the transcript drain lock while calling this. Epoch-tagged
+    replay remains the second fence for files written by another process.
+    """
+    removed = 0
+    try:
+        candidates = list(_get_flush_dir().glob("pending-*.json"))
+    except Exception:
+        return 0
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (isinstance(payload, dict)
+                    and payload.get("reason") == TRANSCRIPT_CAP_DROP_REASON
+                    and payload.get("session_key") == session_id):
+                path.unlink(missing_ok=True)
+                removed += 1
+        except Exception:
+            logger.debug("Could not inspect transcript spool file during clear: %s", path, exc_info=True)
+    return removed
+
+
 def _json_safe(value: Any) -> bool:
     try:
         json.dumps(value)
@@ -198,6 +224,12 @@ def _serialise_value(value: Any) -> Optional[dict]:
             val = getattr(value, attr, None)
             if val is not None:
                 result[attr] = val if _json_safe(val) else str(val)
+        stamp = getattr(value, "timestamp", None)
+        if stamp is not None:
+            try:
+                result["origin_timestamp"] = float(stamp.timestamp())
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                pass
         return result
     if isinstance(value, str):  # runner-level _pending_messages
         return {"text": value}
@@ -263,9 +295,11 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
             logger.warning("Cannot recover structurally invalid transcript spool "
                            "file %s; preserved for manual inspection", path)
             return False
-        session_db.append_message(session_id=spooled_sid, role=message.get("role", "unknown"),
-                                  content=message.get("content") or "",
-                                  timestamp=message.get("timestamp") or payload.get("ts"))
+        session_db.append_message(
+            session_id=spooled_sid, role=message.get("role", "unknown"),
+            content=message.get("content") or "", timestamp=message.get("timestamp") or payload.get("ts"),
+            expected_conversation_epoch=payload.get("conversation_epoch"),
+        )
         return True
     session_key, data = payload.get("session_key", ""), payload.get("data", {})
     text = data.get("text", "")
@@ -292,8 +326,11 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
                        "session_key-to-id resolution failed. "
                        "The message text is preserved in %s", session_key, path)
         return False
-    target_db.append_message(session_id=session_id, role="user", content=text,
-                             timestamp=payload.get("ts", int(time.time())))
+    origin_timestamp = data.get("origin_timestamp", payload.get("ts", int(time.time())))
+    target_db.append_message(
+        session_id=session_id, role="user", content=text,
+        timestamp=origin_timestamp, not_after_conversation_clear=origin_timestamp,
+    )
     return True
 
 

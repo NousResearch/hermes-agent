@@ -851,7 +851,7 @@ class GatewayBusySessionMixin:
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
-        "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
+        "topic", "whoami", "platform", "stop", "clear", "reasoning", "memory", "skills", "fast",
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
@@ -887,7 +887,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "clear", "queue", "steer", "egress", "goal", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -976,6 +976,20 @@ class GatewayBusySessionMixin:
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command",
         )
         return await self._handle_reset_command(event)
+
+    async def _busy_clear_command(self, event: MessageEvent, quick_key: str, source):
+        async def _execute():
+            from gateway.run import _INTERRUPT_REASON_RESET
+            await self._interrupt_and_clear_session(
+                quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="clear_command",
+            )
+            return await self._handle_clear_command(event)
+
+        return await self._maybe_confirm_destructive_slash(
+            event=event, command="clear", title="/clear",
+            detail="This archives the active conversation context while keeping this session.",
+            execute=_execute,
+        )
 
     async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
         # Each /queue is its own full agent turn, run FIFO after the current run; never merged.

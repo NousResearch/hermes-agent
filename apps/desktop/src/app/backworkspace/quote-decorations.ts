@@ -41,7 +41,10 @@ function quoteDecorations(view: EditorView): DecorationSet {
 }
 
 export const quoteTheme = EditorView.theme({
-  '.cm-bw-quote': {
+  // `.cm-line` is named too, for the weight rather than the meaning: the page's
+  // own theme flattens every line's padding, and style modules are mounted in
+  // reverse, so an equally specific rule here would be the one that loses.
+  '.cm-line.cm-bw-quote': {
     borderLeft: '2px solid var(--ui-stroke-secondary)',
     color: 'var(--ui-text-secondary)',
     paddingLeft: '0.75rem'

@@ -27,6 +27,7 @@ function tileView(): SessionView {
     $cwd: atom('/tile/work'),
     $messages: atom(messages),
     $runtimeId: atom<null | string>(TILE_ID),
+    $storedId: atom<null | string>(null),
     kind: 'tile'
   }
 }

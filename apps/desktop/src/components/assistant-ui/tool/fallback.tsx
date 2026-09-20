@@ -427,13 +427,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   } = useSessionView()
 
   useEffect(() => {
-    if (
-      isPending ||
-      result === undefined ||
-      view.status !== 'success' ||
-      !previewTarget ||
-      !isPreviewableTarget(previewTarget)
-    ) {
+    if (view.status !== 'success' || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
@@ -441,24 +435,13 @@ function ToolEntry({ part }: ToolEntryProps) {
     // target appears, and subscribing re-rendered every tool row on any session
     // or cwd change.
     const sessionId = $sessionRuntimeId.get()
-    const dismissalSessionId = $sessionStoredId?.get() ?? sessionId
 
     // A route switch can paint the previous assistant row while these atoms
     // already describe the next chat. Only that chat's own messages may feed it.
     if (sessionId && $sessionMessages.get().some(message => message.id === messageId)) {
-      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '', dismissalSessionId ?? '')
+      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '', $sessionStoredId.get() ?? sessionId)
     }
-  }, [
-    $sessionCwd,
-    $sessionRuntimeId,
-    $sessionStoredId,
-    $sessionMessages,
-    isPending,
-    messageId,
-    previewTarget,
-    result,
-    view.status
-  ])
+  }, [$sessionCwd, $sessionRuntimeId, $sessionStoredId, $sessionMessages, messageId, previewTarget, view.status])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {

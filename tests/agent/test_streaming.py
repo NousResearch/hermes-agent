@@ -833,6 +833,58 @@ class TestStreamingFallback:
         assert agent._disable_streaming is False
         assert agent.status_callback.call_args_list == []
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_chat_wire_parse_error_retry_keeps_anthropic_only_tool_fields_out(
+        self, mock_close, mock_create, monkeypatch,
+    ):
+        """A jiter-shaped ValueError retries on EVERY wire (the predicate describes the
+        parser, not the protocol) — but ``eager_input_streaming`` is an Anthropic tool-schema
+        field, so the retry must not inject it into an OpenAI-shaped request."""
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+        calls = {"n": 0}
+
+        def _create(*_args, **_kwargs):
+            calls["n"] += 1
+            attempt = calls["n"]
+
+            def _stream():
+                if attempt == 1:
+                    raise ValueError("key must be a string at line 1 column 338")
+                yield _make_stream_chunk(content="Recovered.")
+                yield _make_stream_chunk(finish_reason="stop")
+
+            return _stream()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _create
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        tools = [{"type": "function", "function": {"name": "terminal", "parameters": {"type": "object"}}}]
+        response = agent._interruptible_streaming_api_call({"model": agent.model, "tools": tools})
+
+        assert calls["n"] == 2, "the parse error must be retried, not treated as a local bug"
+        assert response.choices[0].message.content == "Recovered."
+        sent_tools = [c.kwargs.get("tools") for c in mock_client.chat.completions.create.call_args_list]
+        assert all(t for t in sent_tools), "tools must still reach the provider on both attempts"
+        assert all("eager_input_streaming" not in t[0] for t in sent_tools), (
+            "eager_input_streaming is an Anthropic-only tool field and must never appear on the "
+            "chat_completions wire"
+        )
+
     @patch("run_agent.AIAgent._abort_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
     @patch("run_agent.AIAgent._create_request_openai_client")
@@ -1260,6 +1312,56 @@ class TestAnthropicStreamCallbacks:
         assert mock_replace.call_count == 0
         assert mock_rebuild.call_count == 0
         assert agent._anthropic_client.close.call_count >= 1
+
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @pytest.mark.parametrize("message", [
+        # Production message: the turn aborted on this one and stalled until the
+        # user sent another message. Every jiter message must retry.
+        "key must be a string at line 1 column 338",
+        "key must be a string at line 1 column 566",
+        "expected value at line 1 column 6",
+        "trailing comma at line 1 column 8",
+        "EOF while parsing an object at line 1 column 1",
+    ])
+    def test_anthropic_any_stream_parser_valueerror_retries_before_delivery(
+        self, mock_replace, mock_rebuild, monkeypatch, message,
+    ):
+        """EVERY native-parser (jiter) ValueError retries, not just the one message the
+        predicate used to hardcode — the gap that let a malformed frame from a proxy die as
+        a "local validation bug" with the reply half-streamed."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        bad_stream = _AnthropicEventStream([], ValueError(message))
+
+        final_message = SimpleNamespace(content=[], stop_reason="end_turn")
+        good_stream = MagicMock()
+        good_stream.__enter__ = MagicMock(return_value=good_stream)
+        good_stream.__exit__ = MagicMock(return_value=False)
+        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.get_final_message.return_value = final_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = [bad_stream, good_stream]
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_message, f"{message!r} must retry, not abort the turn"
+        assert agent._anthropic_client.messages.stream.call_count == 2
 
     def test_anthropic_malformed_tool_json_retries_with_buffered_tool_input(self):
         """#107830: a parser ValueError mid tool-args (after visible text) is retried on the SAME

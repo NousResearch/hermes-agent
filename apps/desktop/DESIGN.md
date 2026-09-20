@@ -139,6 +139,7 @@ renderer and Electron's first window paint.
 | `--ui-widget-surface-background` | fill for inline chat widgets (`WIDGET_SHELL_CLASS`) |
 | `--chrome-action-hover` | hover fill for quiet controls |
 | `--theme-primary`, `--ui-accent` | brand/accent |
+| `--bw-paper / -raised / -sunken`, `--bw-ink / -quiet`, `--bw-rule`, `--bw-hand`, `--bw-measure` | the back workspace page only — it is a sheet of paper, not a second chat pane, so it carries its own field, ink and hand (`styles.css`, `[data-backworkspace-page]`) |
 
 Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The white tile in
 `BrandMark` is the one sanctioned literal (the mark needs a fixed backdrop).

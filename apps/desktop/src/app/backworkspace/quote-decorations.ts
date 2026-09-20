@@ -45,13 +45,18 @@ export const quoteTheme = EditorView.theme({
   // own theme flattens every line's padding, and style modules are mounted in
   // reverse, so an equally specific rule here would be the one that loses.
   '.cm-line.cm-bw-quote': {
-    borderLeft: '2px solid var(--ui-stroke-secondary)',
-    color: 'var(--ui-text-secondary)',
+    borderLeft: '2px solid var(--bw-rule)',
+    color: 'var(--bw-ink-quiet)',
+    // Back to the reading face: the reply was typed by a machine, not written
+    // on the page, and the page should not pretend otherwise.
+    fontFamily: 'var(--dt-font-sans)',
+    fontSize: '1rem',
+    lineHeight: '1.8',
     paddingLeft: '0.75rem'
   },
-  '.cm-bw-quote-head': {
-    color: 'var(--ui-text-tertiary)',
-    fontSize: '0.8125rem'
+  '.cm-line.cm-bw-quote-head': {
+    fontSize: '0.8125rem',
+    opacity: '0.75'
   },
   '.cm-bw-quote-mark': { opacity: '0.35' }
 })

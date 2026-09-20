@@ -24,7 +24,7 @@ import { useMentionPopup } from './use-mention-popup'
 import { usePasteImage } from './use-paste-image'
 
 // The notice sits under the same centered column the editor paints (see editor.tsx).
-const TEXT_COLUMN_CLASS = 'w-full px-[max(2rem,calc((100%_-_48rem)/2))]'
+const TEXT_COLUMN_CLASS = 'w-full px-[max(2rem,calc((100%_-_var(--bw-measure))/2))]'
 
 function noticeFor(page: BackworkspacePageState | null, copy: Translations['backworkspace']): null | string {
   if (page?.status === 'unsupported') {
@@ -90,7 +90,7 @@ function BackworkspaceSheet() {
   return (
     <section
       aria-label={t.backworkspace.label}
-      className="visible fixed inset-0 z-(--z-backworkspace) flex flex-col bg-(--ui-chat-surface-background) text-(--ui-text-primary) outline-none"
+      className="visible fixed inset-0 z-(--z-backworkspace) flex flex-col bg-(--bw-paper) text-(--bw-ink) outline-none"
       data-backworkspace-page=""
       // Paints its own field under window glass, so the shell's rail seam never
       // shows through, and owns the keyboard like any overlay: the hidden
@@ -134,7 +134,7 @@ function BackworkspaceSheet() {
       {mention.popover}
       {approval.card}
       {notice && (
-        <p className={cn(TEXT_COLUMN_CLASS, 'pb-4 text-xs text-(--ui-text-tertiary)')} role="status">
+        <p className={cn(TEXT_COLUMN_CLASS, 'pb-4 text-xs text-(--bw-ink-quiet)')} role="status">
           {notice}
         </p>
       )}

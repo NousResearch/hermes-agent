@@ -18,10 +18,14 @@ const PAGE_THEME = EditorView.theme({
     height: '100%'
   },
   '&.cm-focused': { outline: 'none' },
+  // The writing is a hand; the agent's replies are not, and quote-decorations
+  // puts them back in the reading face. That is the whole distinction between
+  // the two voices on the page, and it costs one declaration each.
   '.cm-content': {
-    fontFamily: 'var(--dt-font-sans)',
-    fontSize: '0.9375rem',
-    lineHeight: '1.65',
+    color: 'var(--bw-ink)',
+    fontFamily: 'var(--bw-hand)',
+    fontSize: '1.6875rem',
+    lineHeight: '1.5',
     padding: '0 0 2rem'
   },
   '.cm-line': { padding: '0' },
@@ -33,17 +37,17 @@ const PAGE_THEME = EditorView.theme({
   // `caretFromMargin` below hands a click there to the line beside it.
   '.cm-scroller': {
     cursor: 'text',
-    fontFamily: 'var(--dt-font-sans)',
-    lineHeight: '1.65',
+    fontFamily: 'var(--bw-hand)',
+    lineHeight: '1.5',
     overflowY: 'auto',
-    paddingInline: 'max(2rem, calc((100% - 48rem) / 2))'
+    paddingInline: 'max(2rem, calc((100% - var(--bw-measure)) / 2))'
   },
   // `drawSelection` paints its own caret and selection, and CodeMirror's base
   // theme colours them for a light page (a black caret, invisible here). Both
   // take app tokens instead, so they follow light and dark with everything
   // else. `.cm-focused` is repeated to match the base rule's specificity —
   // ours is declared later, so equal specificity wins.
-  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--ui-text-primary)' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--bw-ink)' },
   '&.cm-focused.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground': {
     backgroundColor: 'var(--ui-selection-background)'
   },

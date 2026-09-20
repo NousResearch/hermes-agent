@@ -233,7 +233,9 @@ export function useApprovalCard(): { card: ReactNode; extension: Extension; noti
           className={cn(
             'w-96 max-w-[calc(100vw-2rem)] rounded-xl border p-3 outline-none',
             open.above ? 'mb-1' : 'mt-1',
-            'border-(--stroke-nous) bg-(--ui-chat-surface-background) shadow-nous'
+            // The page's own raised paper, not the chat surface: a card in the
+            // front's colours would read as the window leaking through.
+            'border-(--bw-rule) bg-(--bw-paper-raised) shadow-nous'
           )}
           data-backworkspace-approval=""
           data-glass-opaque=""
@@ -248,11 +250,11 @@ export function useApprovalCard(): { card: ReactNode; extension: Extension; noti
           role="menu"
           tabIndex={-1}
         >
-          <p className="text-xs text-(--ui-text-secondary)">{shown.description}</p>
+          <p className="text-xs text-(--bw-ink-quiet)">{shown.description}</p>
           {shown.command.trim() !== '' && (
             // The whole command, wrapped and scrollable: what is being agreed
             // to is the one thing this surface may not abbreviate.
-            <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-(--ui-bg-tertiary) p-2 font-mono text-xs break-words whitespace-pre-wrap">
+            <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-(--bw-paper-sunken) p-2 font-mono text-xs break-words whitespace-pre-wrap">
               {shown.command}
             </pre>
           )}
@@ -262,7 +264,7 @@ export function useApprovalCard(): { card: ReactNode; extension: Extension; noti
                 <button
                   className={cn(
                     'flex w-full cursor-default items-center rounded-md px-2 py-1 text-left text-sm transition-colors',
-                    index === highlighted ? 'bg-(--ui-bg-tertiary)' : 'hover:bg-(--ui-bg-tertiary)'
+                    index === highlighted ? 'bg-(--bw-paper-sunken)' : 'hover:bg-(--bw-paper-sunken)'
                   )}
                   data-approval-choice={choice}
                   onClick={() => answer(choice)}

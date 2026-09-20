@@ -1232,6 +1232,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    persist_on_release: bool = False,
     _host_local: bool = False,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
@@ -1244,6 +1245,11 @@ def terminal_tool(
     is hard rate-limited (1 notification / 15s / process) and auto-disabled
     after repeated strikes or a lifetime cap, promoting to notify_on_complete —
     use it only for rare one-shot signals on long-lived processes.
+    ``persist_on_release`` (background-only, #41225) keeps the process out of
+    agent-lifecycle cleanup: it survives session end, context compression,
+    error recovery and the max-iteration path, all of which release() the agent
+    and kill_all() its task's processes. The user can still stop it on purpose
+    via process_manage kill.
     ``_host_local`` forces the local backend for Hermes-owned control-plane
     children (kept in a separate env cache from the configured backend).
     """
@@ -1308,6 +1314,7 @@ def terminal_tool(
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                persist_on_release=persist_on_release,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
@@ -1375,6 +1382,11 @@ TERMINAL_SCHEMA = {
                     {"type": "boolean"},
                     {"type": "array", "items": {"type": "string"}}
                 ]
+            },
+            "persist_on_release": {
+                "type": "boolean",
+                "description": "With background=true: keep the process alive across agent lifecycle cleanup (session end, context compression, error recovery, max-iteration stop). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation (overnight batches, watchful daemons); it still dies with the host, and the user (or a later turn via process kill) can stop it on purpose. Default false.",
+                "default": False
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -1403,6 +1415,7 @@ def _handle_terminal(args, **kw):
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
+    persist_on_release = args.get("persist_on_release", False)
     if not args.get("background", False):
         if notify or watch_patterns or notify_on_complete:
             return tool_error(
@@ -1416,6 +1429,13 @@ def _handle_terminal(args, **kw):
                 "with via process(action='write'/'submit'), which needs a "
                 "tracked background process). Retry as terminal(command=..., "
                 "background=true, pty=true)."
+            )
+        if persist_on_release:
+            return tool_error(
+                "persist_on_release only applies to background commands (foreground "
+                "processes are awaited inline and have nothing to persist). Either "
+                "drop persist_on_release, or run as terminal(command=..., "
+                "background=true, persist_on_release=true)."
             )
     if notify is not None:
         if isinstance(notify, bool):
@@ -1439,6 +1459,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
+        persist_on_release=persist_on_release,
     )
 
 

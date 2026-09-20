@@ -519,6 +519,9 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    persist_on_release: bool = False            # Skip lifecycle cleanup (kill_all on agent release()) so
+    #                                             the process survives session end/compression/error-recovery.
+    #                                             Opt-in per spawn via terminal(persist_on_release=true) (#41225).
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
@@ -1036,10 +1039,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
-        for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
+        for interactive CLIs, falling back to a plain pipe when unavailable or failing.
+        ``persist_on_release`` keeps the process out of agent-lifecycle kill_all (#41225)."""
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
@@ -1048,6 +1053,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session.persist_on_release = bool(persist_on_release)
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1134,12 +1140,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
-        the correct sandbox context."""
+        the correct sandbox context. ``persist_on_release`` keeps the process out of
+        agent-lifecycle kill_all (#41225)."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        session.persist_on_release = bool(persist_on_release)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -2220,11 +2228,19 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def kill_all(
         self, task_id: Optional[str] = None, *, exclude_ids: frozenset = frozenset(),
         source: str = "kill_all", consume_output: bool = False) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+        """Kill all running processes, optionally filtered by task_id. Returns count killed.
+
+        Sessions with persist_on_release=True are skipped by lifecycle cleanup: a kill_all
+        with the default source (agent release()) must not terminate an explicitly
+        persisted background job. A DIRECT source ("process.kill" via process_manage, or
+        any explicit operator-driven source) still reaches them so the user can always
+        stop a persisted process on purpose."""
+        lifecycle = source == "kill_all"
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and s.id not in exclude_ids and not s.exited
+                if (task_id is None or s.task_id == task_id) and s.id not in exclude_ids
+                and not s.exited and not (lifecycle and s.persist_on_release)
             ]
         return sum(
             self.kill_process(s.id, source=source, consume_output=consume_output).get("status")

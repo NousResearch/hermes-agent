@@ -192,6 +192,42 @@ class TestTerminalSchema:
             _, kwargs = mock_tt.call_args
             assert kwargs["notify_on_complete"] is True
 
+    def test_handler_passes_persist_on_release(self):
+        """_handle_terminal passes persist_on_release through to terminal_tool
+        on a background call (#41225)."""
+        from tools.terminal_tool import _handle_terminal
+        with patch("tools.terminal_tool.terminal_tool", return_value='{"ok":true}') as mock_tt:
+            _handle_terminal(
+                {"command": "echo hi", "background": True, "persist_on_release": True},
+                task_id="t1",
+            )
+            _, kwargs = mock_tt.call_args
+            assert kwargs["persist_on_release"] is True
+            # and the default stays opt-in
+            _handle_terminal({"command": "echo hi", "background": True}, task_id="t1")
+            _, kwargs = mock_tt.call_args
+            assert kwargs["persist_on_release"] is False
+
+    def test_handler_rejects_persist_on_release_on_foreground(self):
+        """persist_on_release is a background-only modifier: a foreground call
+        fails with the corrected call instead of being silently ignored (same
+        treatment as notify/pty)."""
+        from tools.terminal_tool import _handle_terminal
+        result = json.loads(
+            _handle_terminal({"command": "echo hi", "persist_on_release": True}, task_id="t1")
+        )
+        assert result.get("error")
+        assert "persist_on_release only applies to background commands" in result["error"]
+
+    def test_schema_advertises_persist_on_release(self):
+        """The model schema advertises persist_on_release with a safe default
+        of false (#41225)."""
+        from tools.terminal_tool import TERMINAL_SCHEMA
+        props = TERMINAL_SCHEMA["parameters"]["properties"]
+        assert "persist_on_release" in props
+        assert props["persist_on_release"]["type"] == "boolean"
+        assert props["persist_on_release"]["default"] is False
+
 
 # =========================================================================
 # Code execution blocked params

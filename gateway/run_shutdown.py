@@ -2021,7 +2021,13 @@ class GatewayShutdownMixin:
             self._update_runtime_status("stopped", self._exit_reason)
         try:
             from gateway.status import flush_runtime_status_async
-            if not await flush_runtime_status_async(timeout=2.0):
+            # Never outlive the launchd exit budget (``_launchd_exit_timeout_s`` is set by the
+            # supervised-restart path when it exists; a plain 2 s bound otherwise).
+            flush_timeout = 2.0
+            budget = getattr(self, "_launchd_exit_timeout_s", None)
+            if isinstance(budget, (int, float)) and budget > 0:
+                flush_timeout = max(0.0, min(flush_timeout, budget - ctx.elapsed()))
+            if not await flush_runtime_status_async(timeout=flush_timeout):
                 logger.warning("Timed out flushing terminal gateway runtime status")
         except Exception:
             logger.debug("Failed to flush terminal gateway runtime status", exc_info=True)

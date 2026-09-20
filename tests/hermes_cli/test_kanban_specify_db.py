@@ -80,3 +80,29 @@ def test_specify_records_audit_comment_only_when_author_given(kanban_home):
     assert comments2 == []
 
 
+def test_specify_event_extra_merges_into_single_specified_event(kanban_home):
+    with kbc.connect() as conn:
+        tid = _create_triage(conn, title="rough")
+        kb.specify_triage_task(
+            conn, tid, title="Refined", body="b",
+            event_extra={"auto_promoted": True, "router_model": "typesafe/jev-latest"},
+        )
+        events = kb.list_events(conn, tid)
+    specified = [e for e in events if e.kind == "specified"]
+    assert len(specified) == 1
+    assert specified[0].payload["auto_promoted"] is True
+    assert specified[0].payload["router_model"] == "typesafe/jev-latest"
+    assert specified[0].payload["changed_fields"] == ["title", "body"]
+
+
+def test_specify_without_event_extra_unaffected(kanban_home):
+    """Existing callers (event_extra=None) keep today's exact payload shape."""
+    with kbc.connect() as conn:
+        tid = _create_triage(conn, title="rough")
+        kb.specify_triage_task(conn, tid, title="Refined", body="b")
+        events = kb.list_events(conn, tid)
+    specified = [e for e in events if e.kind == "specified"]
+    assert len(specified) == 1
+    assert specified[0].payload == {"changed_fields": ["title", "body"]}
+
+

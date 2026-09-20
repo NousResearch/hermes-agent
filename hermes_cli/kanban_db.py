@@ -3484,10 +3484,16 @@ def invalidate_descendants_for_parent_reopen(
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
+    event_extra: Optional[dict] = None,
 ) -> bool:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+
+    ``event_extra``: extra fields merged into the single ``specified`` event's
+    payload (e.g. the triage router tags auto-promoted tasks with
+    ``auto_promoted``/``router_model``). ``None`` for every existing caller —
+    this never creates a second event.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3528,10 +3534,10 @@ def specify_triage_task(
                 "Specified — updated " + ", ".join(changed_fields) + " and promoted to todo.",
                 int(time.time()),
             )
-        _append_event(
-            conn, task_id, "specified",
-            {"changed_fields": changed_fields} if changed_fields else None,
-        )
+        payload = {"changed_fields": changed_fields} if changed_fields else {}
+        if event_extra:
+            payload.update(event_extra)
+        _append_event(conn, task_id, "specified", payload or None)
     # Own IMMEDIATE txn (outside the one above): a parent-free specified task
     # flips to 'ready' now instead of idling until the next tick.
     recompute_ready(conn)

@@ -248,6 +248,15 @@ def _source_matches(source: SkillSource, source_name: str) -> bool:
     return source.source_id() == _SOURCE_ID_ALIASES.get(source_name, source_name)
 
 
+
+def _current_revision_or_empty(src, identifier: str) -> str:
+    """A probe failure must degrade one row to the full-fetch path, not abort the whole check."""
+    try:
+        return src.current_revision(identifier)
+    except Exception:
+        logger.debug("current_revision probe failed for %s", identifier, exc_info=True)
+        return ""
+
 def check_for_skill_updates(
     name: Optional[str] = None, *, lock: Optional[HubLockFile] = None,
     sources: Optional[List[SkillSource]] = None, auth: Optional[GitHubAuth] = None,
@@ -287,7 +296,7 @@ def check_for_skill_updates(
             continue
         matching = [src for src in sources if _source_matches(src, source_name)]
         recorded = (entry.get("metadata") or {}).get("source_revision", "")
-        if recorded and any(src.current_revision(identifier) == recorded for src in matching):
+        if recorded and any(_current_revision_or_empty(src, identifier) == recorded for src in matching):
             # Same upstream tree as at install time: the bundle bytes cannot differ, so
             # skip downloading SKILL.md + every support blob just to re-hash them (#101454).
             content_hash = entry.get("content_hash", "")

@@ -722,6 +722,24 @@ class TestCheckForSkillUpdates:
         if expected_status == "up_to_date":
             assert results[0]["current_hash"] == results[0]["latest_hash"] == "installed-hash"
 
+    def test_bundle_with_a_failed_blob_fetch_records_no_revision(self):
+        """A transient blob failure installs with a gap; the lock must NOT carry the tree sha, or the
+        revision short-circuit would report the gap ``up_to_date`` forever instead of re-fetching."""
+        calls: dict = {}
+        source = self._github_source_with_tree("a" * 40, calls)
+        good_bytes = source._fetch_file_bytes
+        source._fetch_file_bytes = (
+            lambda repo, path, **kw: None if path.endswith("notes.md") else good_bytes(repo, path, **kw))
+
+        bundle = source.fetch("owner/repo/demo-skill")
+
+        assert bundle is not None and "references/notes.md" not in bundle.files
+        assert bundle.metadata["source_revision"] == ""
+        # and a clean fetch of the same tree does record it
+        assert source.fetch("owner/repo/demo-skill") is not None
+        source._fetch_file_bytes = good_bytes
+        assert source.fetch("owner/repo/demo-skill").metadata["source_revision"] == "a" * 40
+
 class TestCreateSourceRouter:
 
     def test_url_source_runs_before_github_source(self):

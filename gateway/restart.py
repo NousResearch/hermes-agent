@@ -159,16 +159,10 @@ def resolve_launchd_capped_drain(
     """
 
     drain = _seconds(drain_timeout)
-    if launchd_exit_timeout_s is None:
-        return drain
-    try:
-        budget = float(launchd_exit_timeout_s)
-    except (TypeError, ValueError):
-        return drain
+    budget = _seconds(launchd_exit_timeout_s)  # None / non-numeric → 0.0 → no budget applies
     if budget <= 0.0:
         return drain
-    cap = max(budget - _seconds(cleanup_reserve_s), 0.0)
-    return min(drain, cap)
+    return min(drain, max(budget - _seconds(cleanup_reserve_s), 0.0))
 
 
 def effective_stop_drain_timeout(runner: object) -> float:

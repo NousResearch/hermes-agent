@@ -289,3 +289,41 @@ def test_onepassword_service_account_refusals_name_the_real_cause(fake_op_servic
     assert all(json.loads(a)[:2] != ["item", "get"] for a in log.read_text(encoding="utf-8-sig").splitlines())
     with pytest.raises(RuntimeError, match="DecodeSACredentials"):
         new_backend().resolve_password("op:item-c")
+
+
+def test_persisted_session_key_unlocks_fresh_process_without_prompting(fake_bw, monkeypatch):
+    """persist_session_key: a fresh backend instance in a fresh unlock table reuses the 0600 key file;
+    default (no flag) must NOT read or write the file — upstream memory-only posture."""
+    from agent.vault_backends.bitwarden import _persisted_key_path
+    keyfile = _persisted_key_path()
+    exe, log = fake_bw
+
+    # 1. Opt-in backend persists the token minted by unlock().
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe), "persist_session_key": True})
+    backend.unlock("correct horse")
+    assert backend.is_unlocked()
+    assert keyfile.is_file(), "opt-in unlock must persist the session key"
+    assert stat.S_IMODE(keyfile.stat().st_mode) == 0o600, "key file must be 0600"
+    # Unlock table torn down (simulates a fresh process): the persisted key still unlocks.
+    unlock_mod.lock("bitwarden")
+    assert backend.is_unlocked(), "persisted key must keep a fresh process unlocked"
+    fresh = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe), "persist_session_key": True})
+    assert fresh.is_unlocked()
+
+    # 2. Default backend (no flag): locked table = locked backend, and no key file appears.
+    keyfile.unlink()
+    default = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
+    assert not default.is_unlocked()
+    default.unlock("correct horse")
+    assert default.is_unlocked()
+    unlock_mod.lock("bitwarden")
+    assert not default.is_unlocked(), "default posture is memory-only: table lock must re-lock"
+    assert not keyfile.is_file(), "default unlock must not persist the key file"
+
+    # 3. Group/other-readable key file is refused, not loaded.
+    backend2 = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe), "persist_session_key": True})
+    backend2._persisted_key = None
+    keyfile.write_text("SESSION-TOKEN-123\n")
+    keyfile.chmod(0o644)
+    b3 = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe), "persist_session_key": True})
+    assert not b3.is_unlocked(), "world-readable key file must be ignored"

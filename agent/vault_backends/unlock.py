@@ -19,7 +19,7 @@ import threading
 import time
 from typing import Callable, Dict, Optional
 
-_IDLE_TTL_S = 30 * 60
+_IDLE_TTL_S = 365 * 24 * 60 * 60  # effectively never — matches user's Bitwarden vaultTimeout=never
 
 _lock = threading.Lock()
 _sessions: dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, backend) → (token, last_used)

@@ -127,7 +127,8 @@ def test_resolve_stdio_command_absent_path_is_a_miss(tmp_path, monkeypatch):
 
     command, _env = _resolve_stdio_command("some-mcp-server", {"OTHER": "1"})
 
-    assert command == "some-mcp-server"  # absent child PATH: honest miss, not an ambient hit
+    # absent child PATH: honest miss, not an ambient hit
+    assert command == "some-mcp-server"
 
     with patch.dict("os.environ", {"PATH": str(parent_bin)}):
         command, _env = _resolve_stdio_command("node", {"OTHER": "1"})

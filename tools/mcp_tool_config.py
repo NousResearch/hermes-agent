@@ -143,7 +143,8 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     cfg_pathext = next((v for k, v in env.items() if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
     if not cfg_pathext or cfg_pathext == os.environ.get("PATHEXT"):
         return None
-    exts = [ext for ext in cfg_pathext.split(";") if ext]  # PATHEXT is Windows-defined: ";"-separated even when resolved off-Windows
+    # PATHEXT is Windows-defined: ";"-separated even when resolved off-Windows
+    exts = [ext for ext in cfg_pathext.split(";") if ext]
     candidates = [command + ext for ext in exts]
     if not candidates or any(command.lower().endswith(ext.lower()) for ext in exts):
         candidates = [command]

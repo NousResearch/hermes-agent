@@ -1433,8 +1433,40 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return ("discord_intents_required", guidance, False)
         return ("discord_connect_error", f"Discord startup failed: {error}", True)
 
+    def _log_admission_refusal(self, message: Any, reason: str, *, level: int = logging.DEBUG) -> None:
+        """One structured, content-free refusal receipt per dropped ordinary message (#91919).
+
+        Stable IDs only — never the message text, display names, or secrets.
+        """
+        author = getattr(message, "author", None)
+        channel = getattr(message, "channel", None)
+        logger.log(
+            level,
+            "[%s] admission refused: reason=%s actor=%s user_id=%s guild_id=%s "
+            "channel_id=%s parent_id=%s message_id=%s",
+            "Discord",
+            reason,
+            "bot" if getattr(author, "bot", False) else "human",
+            getattr(author, "id", None),
+            getattr(getattr(message, "guild", None), "id", None),
+            getattr(channel, "id", None),
+            self._get_parent_channel_id(channel) if channel is not None else None,
+            getattr(message, "id", None),
+        )
+
     def _discord_message_admission(self, message: Any, *, claim: bool) -> tuple[bool, bool]:
-        """Return ``(admitted, role_authorized)`` for one Discord event."""
+        """Return ``(admitted, role_authorized)`` for one Discord event.
+
+        Every refused ordinary message leaves one receipt via ``_log_admission_refusal``
+        — except duplicates (their first evaluation already logged; a second receipt is
+        exactly what #91919 asks to avoid), self-echoes, and non-ordinary message types.
+        ``claim=False`` previews (recovery scans) never log: the live claim will.
+        """
+        def _refuse(reason: str, *, level: int = logging.DEBUG) -> tuple[bool, bool]:
+            if claim:
+                self._log_admission_refusal(message, reason, level=level)
+            return False, False
+
         message_id = str(getattr(message, "id", ""))
         if claim:
             if self._dedup.is_duplicate(message_id):
@@ -1450,19 +1482,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             allow_bots = self._get_allow_bots()
             bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
             if allow_bots == "none":
-                return False, False
+                return _refuse("bot_disabled")
             if (
                 allow_bots == "mentions"
                 and not self._self_is_explicitly_mentioned(message)
                 and not bot_tag_continuation
             ):
-                return False, False
+                return _refuse("bot_mention_required")
             if (
                 self._discord_bots_require_inline_mention()
                 and not self._self_is_raw_mentioned(message)
                 and not bot_tag_continuation
             ):
-                return False, False
+                return _refuse("bot_inline_mention_required")
         else:
             msg_guild = getattr(message, "guild", None)
             is_dm = isinstance(message.channel, discord.DMChannel) or msg_guild is None
@@ -1477,7 +1509,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 channel_ids=msg_channel_ids,
             ):
                 self._warn_if_fail_closed_default()
-                return False, False
+                return _refuse("user_not_allowed", level=logging.WARNING)
             role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
         raw_self_mention = self._self_is_explicitly_mentioned(message)
         if not isinstance(message.channel, discord.DMChannel) and (
@@ -1488,7 +1520,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 for mentioned in message.mentions
             )
             if other_bots_mentioned and not raw_self_mention:
-                return False, False
+                return _refuse("addressed_to_other_bot")
             ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
                 # A thread the bot joined is not someone else's conversation, and the other two
@@ -1504,14 +1536,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     free_channels = self._discord_free_response_channels()
                     channel_keys = self._discord_channel_keys(message, parent_id)
                     if "*" not in free_channels and not (channel_keys & free_channels):
-                        # Every other silent return in this function is at least guessable from
-                        # the outside; this one is not, and an operator seeing no log line cannot
-                        # tell it apart from the gateway never receiving the event.
-                        logger.debug(
-                            "[%s] admission: dropping message %s — mentions others, not self, "
-                            "not a bot thread, channel not free-response",
-                            self.name, getattr(message, "id", "?"))
-                        return False, False
+                        return _refuse("mention_required")
         return True, role_authorized
 
     async def _dispatch_discord_message(self, message: Any) -> bool:

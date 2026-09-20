@@ -232,7 +232,10 @@ class HostedRoomAuthorityRPC:
 
     async def _discard(self, params):
         generation = params['execution_generation']
-        if type(generation) is not int or generation < 1:
+        source_digest = params.pop('_source_discard_digest', None)
+        if (type(generation) is not int or generation < 1
+                or not isinstance(source_digest, str) or len(source_digest) != 64
+                or any(ch not in '0123456789abcdef' for ch in source_digest)):
             raise RuntimeStoreError('invalid_params')
         matches = [(row, task) for row, task, hosted_generation in self._rows()
                    if (row['status'] == 'unknown' or (row['status'] == 'terminal' and row['outcome'] == 'interrupted'))
@@ -282,9 +285,11 @@ class HostedRoomAuthorityRPC:
     def interrupt(self, *, profile, session_id, source, expected_task_id):
         return self._call('interrupt', profile=profile, session_id=session_id, source=source, expected_task_id=expected_task_id)
 
-    def discard(self, *, profile, session_id, source, expected_task_id, execution_generation):
+    def discard(self, *, profile, session_id, source, expected_task_id, execution_generation,
+                _source_discard_digest):
         return self._call('discard', profile=profile, session_id=session_id, source=source,
-                          expected_task_id=expected_task_id, execution_generation=execution_generation)
+                          expected_task_id=expected_task_id, execution_generation=execution_generation,
+                          _source_discard_digest=_source_discard_digest)
 
     def approve(self, *, session_id, request_id, choice):
         return self._call('approve', session_id=session_id, request_id=request_id, choice=choice)

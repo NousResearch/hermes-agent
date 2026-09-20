@@ -36,13 +36,13 @@ _CAPS = frozenset({'session:create', 'session:read', 'session:submit',
 
 
 def _output_owner_module():
+    import importlib
     try:
-        from gateway import session_hosted_output_rpc
+        return importlib.import_module('gateway.session_hosted_output_rpc')
     except ModuleNotFoundError as exc:
         if exc.name != 'gateway.session_hosted_output_rpc':
             raise
         return None
-    return session_hosted_output_rpc
 
 
 def owner_request(home, verb, params, *, timeout=30):
@@ -254,6 +254,10 @@ def install_hosted_transport(server, authority, loop, *, attest):
                 peer_subject=peer_subject, operation=operation, params=params,
                 attested=attested)
         binding['owner'] = attested['owner']
+        if operation == 'discard':
+            digest = params.get('_source_discard_digest')
+            if attested.get('source_discard_digest') != digest:
+                raise RuntimeStoreError('permission_denied')
         principal = _principal(authority, binding)
         # Authorization already happened: every operation, including each attachment
         # chunk, is re-attested at the SOURCE owner above before anything runs here, so

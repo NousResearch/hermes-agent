@@ -13,13 +13,13 @@ _OWNER = 'gateway.hosted.owner.v1:'
 
 
 def _output_owner_module():
+    import importlib
     try:
-        from gateway import session_hosted_output_rpc
+        return importlib.import_module('gateway.session_hosted_output_rpc')
     except ModuleNotFoundError as exc:
         if exc.name != 'gateway.session_hosted_output_rpc':
             raise
         return None
-    return session_hosted_output_rpc
 
 
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
@@ -81,6 +81,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         output = _output_owner_module()
         if output is not None and operation in output.OUTPUT_OPERATIONS:
             result.update(output.source_output_action_attestation(self, selector, operation, params))
+            return result
+        if operation == 'discard':
+            result.update(self.attest_discard_reservation(selector, params))
             return result
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)

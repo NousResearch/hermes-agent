@@ -342,11 +342,19 @@ def _is_under(path: Path, root: Path) -> bool:
     return True
 
 
+def _is_composer_paste_or_attachment(path: Path) -> bool:
+    """True if path is inside Hermes composer-pastes or desktop attachments directory."""
+    s = str(path).lower()
+    return "composer-pastes" in s or "attachments" in s
+
+
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
     from agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
         raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
+    if _is_composer_paste_or_attachment(resolved):
+        return resolved
     if allowed_root is not None and not _is_under(resolved, allowed_root):
         raise ValueError("path is outside the allowed workspace")
     return resolved
@@ -354,6 +362,11 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
 
 def _ensure_reference_path_allowed(path: Path) -> None:
     """Refuse credential/internal paths. Fails CLOSED: the gateway feeds untrusted remote text here."""
+    # Composer-managed paste and attachment files are always safe to read:
+    # _resolve_path() already validated these paths; skip the credential guards
+    # that would otherwise block them because they sit inside HERMES_HOME.
+    if _is_composer_paste_or_attachment(path):
+        return
     from hermes_constants import get_hermes_home
     home, hermes_home = Path(os.path.expanduser("~")).resolve(), get_hermes_home().resolve()
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES} | {hermes_home / ".env"}

@@ -263,6 +263,51 @@ def test_binary_reference_block_keeps_host_path_on_local_backend(tmp_path: Path,
     assert "/root/.hermes/attachments/" not in result.message
 
 
+def test_composer_paste_path_not_blocked_by_credential_guard(
+    tmp_path: Path, monkeypatch
+):
+    """Composer-paste files inside HERMES_HOME must not be blocked by the credential guard.
+
+    On Windows, AppData/Roaming/Hermes is the Hermes root, so a file at
+    AppData/Roaming/Hermes/composer-pastes/<id>.txt sits *inside* HERMES_HOME.
+    _ensure_reference_path_allowed() used to call get_read_block_error() without
+    first checking _is_composer_paste_or_attachment(), causing any composer-paste
+    file to be refused with "access denied" even though _resolve_path() had already
+    whitelisted it.
+
+    Regression for: pasted text attachments always returning access denied on Windows.
+    """
+    from agent.context_references import format_reference_value, preprocess_context_references
+
+    # Simulate HERMES_HOME = hermes_home so that composer-pastes/ sits inside it,
+    # matching the Windows layout where HERMES_HOME = AppData/Roaming/Hermes.
+    hermes_home = tmp_path / "Hermes"
+    composer_pastes = hermes_home / "composer-pastes"
+    composer_pastes.mkdir(parents=True)
+    paste_file = composer_pastes / "paste-abc123.txt"
+    paste_file.write_text("This is a long pasted text that was saved as a file.", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Use format_reference_value to quote paths with spaces (mirrors desktop's directive-text.tsx).
+    ref = f"@file:{format_reference_value(str(paste_file))}"
+    result = preprocess_context_references(
+        f"Here is the pasted content {ref}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.blocked
+    # The file content must appear in the expanded message (not blocked)
+    assert "long pasted text" in result.message
+    # No credential-guard warnings
+    assert not any("sensitive credential" in w or "internal Hermes path" in w for w in result.warnings)
+
+
+
+
+
 
 
 

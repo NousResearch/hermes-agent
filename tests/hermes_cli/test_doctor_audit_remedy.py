@@ -59,4 +59,3 @@ def test_clean_tree_reports_no_known_vulnerabilities(capsys):
     out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json())
     assert "no known vulnerabilities" in out
     assert issues == []
-

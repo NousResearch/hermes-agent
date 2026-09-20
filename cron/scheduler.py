@@ -2589,7 +2589,11 @@ def run_one_job(
                     _running_fire_owners.pop(job["id"], None)
 
 
-_OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."
+_OWNERSHIP_LOST_INTERRUPTED = (
+    "Run interrupted: fire-claim ownership lost before terminal completion. "
+    "Causes include gateway shutdown, a lost/duplicate fire handoff, or a "
+    "transport-level cancellation — not necessarily a host shutdown."
+)
 
 
 def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], execution_id: str) -> None:

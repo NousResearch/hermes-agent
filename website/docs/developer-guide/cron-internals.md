@@ -174,9 +174,10 @@ counts: only a confirmed loss cancels the in-flight run. Even then the run's
 outcome is decided against the store at completion, not against that latch —
 a claim the store still validates records the run's real result (`ok`, or the
 real error), while a genuinely re-owned claim discards the stale result and
-never writes over the new owner. `Interrupted by shutdown before terminal
-completion.` is therefore recorded only when a real transport cancel (gateway
-drain) stops a run that still holds its claim.
+never writes over the new owner. `Run interrupted: fire-claim ownership lost
+before terminal completion.` is therefore recorded only when the run was
+cancelled before reaching a terminal state — a gateway drain/transport cancel
+being the intended trigger, with lost fire handoffs the other observed cause.
 
 ### Gateway Integration
 

@@ -276,6 +276,14 @@ class TestEmailConnectClassification:
 # ── Gateway: needs_attention escalation ────────────────────────────────
 
 
+def _set_attention_after(value) -> None:
+    """Write ``agent.reconnect_attention_after`` into the test's isolated HERMES_HOME config."""
+    import yaml
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text(
+        yaml.safe_dump({"agent": {"reconnect_attention_after": value}}), encoding="utf-8")
+
+
 class TestReconnectNeedsAttention:
     def test_fresh_entry_is_not_flagged_and_gets_stamped(self):
         # In-flight upgrade path: entries queued before queued_at existed are
@@ -290,14 +298,14 @@ class TestReconnectNeedsAttention:
         info = {"queued_at": now - 60}
         assert _reconnect_needs_attention(info, now) is False
 
-    def test_past_threshold_is_flagged(self, monkeypatch):
-        monkeypatch.setenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "10")
+    def test_past_threshold_is_flagged(self):
+        _set_attention_after(10)
         now = time.monotonic()
         info = {"queued_at": now - 11}
         assert _reconnect_needs_attention(info, now) is True
 
-    def test_zero_threshold_disables_escalation(self, monkeypatch):
-        monkeypatch.setenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "0")
+    def test_zero_threshold_disables_escalation(self):
+        _set_attention_after(0)
         info = {"queued_at": time.monotonic() - 999999}
         assert _reconnect_needs_attention(info, time.monotonic()) is False
 
@@ -338,8 +346,8 @@ class TestWatcherAttentionEscalation:
             lambda platform, **kw: status_writes.append((platform, kw)),
         )
 
-        monkeypatch.setenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "10")
         threshold = 10
+        _set_attention_after(threshold)
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 40,
@@ -381,8 +389,8 @@ class TestWatcherAttentionEscalation:
             lambda platform, **kw: status_writes.append((platform, kw)),
         )
 
-        monkeypatch.setenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "10")
         threshold = 10
+        _set_attention_after(threshold)
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 40,

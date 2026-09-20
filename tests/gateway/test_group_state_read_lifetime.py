@@ -110,7 +110,7 @@ def test_state_reads_only_pinned_lifetime(case, tmp_path, monkeypatch, gate):
         if gate in {'healthy', 'drain', 'same_store_service', 'uninstalled_service'}:
             assert reply['result']['room']['room_id'] == 'room', reply
             if gate != 'healthy':
-                assert not any(a['kind'] in {'retry', 'discard', 'approve'}
+                assert not any(a['kind'] in {'retry', 'discard', 'approval'}
                     for a in reply['result']['driver_status']['pending_actions'])
         else:
             assert reply.get('error', {}).get('data', {}).get('reason') in {

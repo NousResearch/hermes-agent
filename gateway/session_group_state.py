@@ -81,9 +81,14 @@ class GroupStateRead:
         from gateway.session_hosted_peer_retry import _require_retry_owner
         try:
             _require_retry_owner(self.service, self.owner.authority, self.owner.runtime)
-            return 'session:control' in self.actor.capabilities
+            return True
         except RuntimeStoreError:
             return False
+
+    def action_permitted(self, kind):
+        capability = {'approval': 'session:approve', 'retry': 'session:control',
+                      'discard': 'session:control'}.get(kind)
+        return capability in self.actor.capabilities
 
 
 def read_group_state(owner, authority, actor, params):
@@ -110,7 +115,10 @@ def read_group_state(owner, authority, actor, params):
                 scope = GroupStateRead(owner, service, actor, room, conn)
                 result = {'room': room}
                 if service is not None and room.get('disbanded_at') is None:
-                    runtime = service.runtime.status()
+                    # A replaced S.runtime withdraws controls, not the original
+                    # owner's informational snapshot. Only installation of a
+                    # new service above may bind a new request runtime.
+                    runtime = owner.runtime.status()
                     if runtime['running'] and not runtime['stopping']:
                         result['driver_status'] = service.status(room_id, state_read=scope)
                 scope.authorize()
@@ -118,10 +126,12 @@ def read_group_state(owner, authority, actor, params):
                 conn.rollback()
             # Recheck lifetime/room authorization outside the historical view.
             scope.authorize()
-            if 'driver_status' in result and not scope.actions_available():
+            if 'driver_status' in result:
+                available = scope.actions_available()
                 result['driver_status']['pending_actions'] = [
                     a for a in result['driver_status']['pending_actions']
-                    if a['kind'] in {'output_retry', 'output_cleanup'}]
+                    if a['kind'] in {'output_retry', 'output_cleanup'}
+                    or (available and scope.action_permitted(a['kind']))]
             return result
 
 
@@ -137,11 +147,15 @@ def driver_status(service, room_id, scope):
     rows = tasks._tasks_in_order(conn, room_id, None)
     pending = [tasks._task_from_row(row) for row in rows]
     counts = Counter(task['status'] for task in pending)
-    runtime = service.runtime.status()
+    runtime_owner = scope.owner.runtime
+    runtime = runtime_owner.status()
     actions = []
-    if scope.actions_available():
+    available = scope.actions_available()
+    if available:
         actions.extend(dict(action) for (room, _), action in service._pending_actions.items()
-                       if room == room_id and action['kind'] != 'retry')
+                       if room == room_id and action['kind'] != 'retry'
+                       and scope.action_permitted(action['kind']))
+    if available and scope.action_permitted('retry'):
         binding = HostedRoomBinding(room_id, scope.room['authority_gateway_id'], scope.room['authority_epoch'])
         peers = {m['member_id'] for m in scope.room['members'] if m.get('target', {}).get('kind') == 'peer'}
         for task in pending:
@@ -151,10 +165,10 @@ def driver_status(service, room_id, scope):
             if member in peers:
                 try:
                     _validate(service, task, binding, conn)
-                    lease = service.runtime._leases.get(room_id)
+                    lease = runtime_owner._leases.get(room_id)
                     if lease is None:
                         continue
-                    tasks._require_active_lease(conn, lease, now=service.runtime.clock())
+                    tasks._require_active_lease(conn, lease, now=runtime_owner.clock())
                 except (RuntimeStoreError, ValueError):
                     continue
             actions.append(dict(kind='discard' if task['status'] == 'indeterminate' else 'retry',

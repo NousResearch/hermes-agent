@@ -20,8 +20,8 @@ from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.environments.local_env_policy import (
-    _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+from tools.environments.local_env_policy import (  # noqa: F401 — _HERMES_PROVIDER_ENV_BLOCKLIST stays importable from here
+    _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
 from tools.environments.local_gitbash_probe import (

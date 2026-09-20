@@ -10,8 +10,8 @@ from providers.base import ProviderProfile
 
 
 class _UsageProfile(ProviderProfile):
-    def __init__(self, snapshot=None, error=None):
-        super().__init__(name="plugin-usage")
+    def __init__(self, snapshot=None, error=None, name="plugin-usage"):
+        super().__init__(name=name)
         self.snapshot = snapshot
         self.error = error
         self.calls = 0
@@ -110,22 +110,30 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
-def test_fetch_account_usage_uses_provider_profile_hook(monkeypatch):
+def _register_profile(monkeypatch, profile):
+    import providers
+
+    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
+    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    providers.register_provider(profile)
+
+
+def test_fetch_account_usage_reaches_registered_plugin_profile_and_fails_open(monkeypatch):
+    """A profile registered through the public registry (as a plugin does) feeds /usage; a profile
+    without the hook, or one whose hook raises, is indistinguishable from today's empty block."""
     snapshot = AccountUsageSnapshot(
         provider="plugin-usage", source="plugin", fetched_at=datetime.now(timezone.utc),
         details=("Credit: 10/100",),
     )
     profile = _UsageProfile(snapshot)
-    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+    _register_profile(monkeypatch, profile)
+    _register_profile(monkeypatch, ProviderProfile(name="plugin-silent"))
+    _register_profile(monkeypatch, _UsageProfile(error=RuntimeError("nope"), name="plugin-broken"))
 
     assert fetch_account_usage("plugin-usage", base_url="https://plugin.test", api_key="key") is snapshot
     assert profile.calls == 1
-
-
-def test_fetch_account_usage_profile_hook_fails_open(monkeypatch):
-    monkeypatch.setattr("providers.get_provider_profile", lambda name: _UsageProfile(error=RuntimeError("nope")))
-
-    assert fetch_account_usage("plugin-usage") is None
+    assert fetch_account_usage("plugin-silent") is None
+    assert fetch_account_usage("plugin-broken") is None
 
 
 def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
@@ -133,10 +141,11 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
         provider="openrouter", source="builtin", fetched_at=datetime.now(timezone.utc),
     )
     profile = _UsageProfile(
-        AccountUsageSnapshot(provider="openrouter", source="plugin", fetched_at=datetime.now(timezone.utc))
+        AccountUsageSnapshot(provider="openrouter", source="plugin", fetched_at=datetime.now(timezone.utc)),
+        name="openrouter",
     )
     monkeypatch.setattr("agent.account_usage._USAGE_FETCHERS", {"openrouter": lambda base_url, api_key: builtin})
-    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+    _register_profile(monkeypatch, profile)
 
     assert fetch_account_usage("openrouter") is builtin
     assert profile.calls == 0

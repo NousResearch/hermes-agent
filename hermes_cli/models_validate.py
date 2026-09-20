@@ -437,18 +437,6 @@ def _nous_portal_recommended_names() -> set[str]:
         return set()
 
 
-def _profile_owns_catalog(normalized: str) -> bool:
-    """True when the registered profile's catalog is not the generic ``{base_url}/models`` listing —
-    it overrides ``fetch_models`` or points ``models_url`` elsewhere — so that listing is not
-    authoritative for it (a relay may 200 with a different product catalog, #101705)."""
-    from providers import get_provider_profile
-    from providers.base import ProviderProfile
-
-    profile = get_provider_profile(normalized)
-    return profile is not None and (
-        type(profile).fetch_models is not ProviderProfile.fetch_models or bool(profile.models_url))
-
-
 def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     """The managed llama.cpp runtime: the staged library on disk is the source of truth, not the
     live listing. The router's model list is spawn-only (a GGUF landed after its start is
@@ -469,23 +457,27 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     return None
 
 
-def _profile_owned_catalog(normalized: str) -> Optional[list[str]]:
-    """The profile's catalog when the profile serves it from an endpoint of its own —
-    ``models_url`` pointing somewhere other than the generic ``{base_url}/models``.
-    For such relays that generic listing is a different product line (#101705), so it
-    must not validate models the profile's catalog excludes (#116667). ``None`` when
-    the profile has no separate endpoint (a bare ``fetch_models`` override may just
-    re-shape the generic listing) or its catalog is unavailable — those keep the
-    generic listing as their validator."""
+def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
+    """``(catalog, authoritative)`` for a profile whose catalog is not the generic
+    ``{base_url}/models`` listing — it overrides ``fetch_models`` or points ``models_url``
+    elsewhere — so that listing is not authoritative for it (a relay may 200 with a different
+    product catalog, #101705). The catalog is *authoritative* (a miss is a reject, never an
+    acceptance by the generic listing, #116667) when the profile serves it from an endpoint of
+    its own and it is available; a bare ``fetch_models`` override may just re-shape the generic
+    listing, and an unavailable/empty catalog keeps the generic listing as the validator.
+    ``([], False)`` for profiles without a catalog of their own."""
     from providers import get_provider_profile
+    from providers.base import ProviderProfile
 
     profile = get_provider_profile(normalized)
-    if profile is None or not profile.models_url:
-        return None
+    if profile is None:
+        return [], False
     generic = (profile.base_url or "").rstrip("/") + "/models"
-    if profile.models_url.rstrip("/") == generic:
-        return None
-    return _static_catalog(normalized) or None
+    own_endpoint = bool(profile.models_url) and profile.models_url.rstrip("/") != generic
+    if not own_endpoint and type(profile).fetch_models is ProviderProfile.fetch_models:
+        return [], False
+    catalog = _static_catalog(normalized)
+    return catalog, own_endpoint and bool(catalog)
 
 
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
@@ -494,17 +486,17 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
-    owned = _profile_owned_catalog(req.normalized)
-    if owned is not None:
-        # The catalog endpoint the profile declares decides: a miss there is a reject, never an
-        # acceptance by the generic listing, which for such relays lists a different product line.
-        match = _match_in_catalog(req.lookup, owned, suggest_query=req.requested)
+    catalog, authoritative = _profile_catalog(req.normalized)
+    if catalog:
+        match = _match_in_catalog(req.lookup, catalog, suggest_query=req.requested)
         if match.exact:
             return _accept()
-        return _reject(
-            f"Model `{req.requested}` was not found in this provider's catalog.{match.suggestion_text}")
-    if _profile_owns_catalog(req.normalized) and _match_in_catalog(req.lookup, _static_catalog(req.normalized)).exact:
-        return _accept()
+        if authoritative:
+            # The catalog endpoint the profile declares decides: a miss there is a reject, never
+            # an acceptance by the generic listing, which for such relays lists a different
+            # product line.
+            return _reject(
+                f"Model `{req.requested}` was not found in this provider's catalog.{match.suggestion_text}")
     api_models = _m.fetch_api_models(req.api_key, req.base_url)
     if api_models is None:
         return None

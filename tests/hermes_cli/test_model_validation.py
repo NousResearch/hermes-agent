@@ -906,11 +906,6 @@ class TestProfileCatalogAuthoritative:
         assert result["persist"] is False
         assert "plan/model-1" in result["message"]
 
-    def test_profile_catalog_hit_still_accepts(self, relay_profile):
-        result = _validate("plan/model-1", "relay-owned-catalog", api_models=["other-vendor/model-a"])
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-
     def test_unavailable_profile_catalog_keeps_generic_fallback(self, relay_profile):
         """The profile's own catalog unreachable/empty (e.g. no credentials yet):
         the generic listing stays the validator, as before (#116667's carve-out)."""

@@ -213,17 +213,25 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     return resp
 
 
-# --- Public: RFC 8252 native-app authorization (system browser + loopback + PKCE)
+# --- Public: RFC 8252 native-app authorization (system browser + PKCE)
 
-def _validate_loopback_redirect_uri(raw: str) -> str:
-    """Accept only ``http://127.0.0.1[:port]/…`` / ``http://[::1][:port]/…``. Security boundary:
-    the route is public, so a non-loopback host would make the callback an open redirect leaking
-    a live code. ``localhost`` is rejected (RFC 8252 §8.3)."""
+_HERMES_IOS_REDIRECT_URI = "cool.n0thing.hermes:/oauth/callback"
+
+
+def _validate_native_redirect_uri(raw: str) -> str:
+    """Accept desktop loopback or the exact Hermes iOS callback.
+
+    This public route mints a live one-time code, so the mobile callback is a literal allowlist
+    entry rather than a general custom-scheme rule. PKCE still binds the code to its initiating
+    app instance. Desktop keeps RFC 8252 IP-literal loopback behavior; ``localhost`` is rejected.
+    """
     if not raw:
         raise _http(400, "redirect_uri required")
+    if raw == _HERMES_IOS_REDIRECT_URI:
+        return raw
     parsed = urlparse(raw)
     if parsed.scheme != "http":
-        raise _http(400, "native redirect_uri must be http:// on the loopback interface")
+        raise _http(400, "native redirect_uri is not an allowed app callback or loopback URI")
     if (parsed.hostname or "").lower() not in ("127.0.0.1", "::1"):
         raise _http(400, "native redirect_uri host must be a loopback IP literal (127.0.0.1 / ::1)")
     return raw
@@ -251,7 +259,7 @@ async def auth_native_authorize(
         raise _http(400, "code_challenge_method must be S256")
     if not code_challenge:
         raise _http(400, "code_challenge required")
-    _validate_loopback_redirect_uri(redirect_uri)
+    _validate_native_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
     if p is None and not provider:
         candidates = list_session_providers()

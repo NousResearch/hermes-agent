@@ -336,11 +336,10 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
 
 def _auth_gate_status() -> Dict[str, Any]:
     """Dashboard auth gate readout: gate engaged, registered providers, and the RFC 8252
-    native-app capability advertisement ``auth_flows`` the desktop reads to pick the
-    system-browser + loopback + PKCE flow over the embedded-webview cookie flow. "cookie" is
-    always available in gated mode; "native_pkce" when at least one interactive session
-    provider is registered (token-only credentials such as drain don't count). Missing
-    "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically."""
+    native-app capability advertisement ``auth_flows``. "cookie" is always available in gated
+    mode; an interactive session provider adds desktop ``native_pkce`` and the exact-callback iOS
+    ``native_ios_pkce`` flow (token-only credentials such as drain don't count). Missing either
+    capability means that client must not start the corresponding flow."""
     auth_required = bool(getattr(app.state, "auth_required", False))
     auth_providers: list[str] = []
     auth_flows: list[str] = []
@@ -351,7 +350,7 @@ def _auth_gate_status() -> Dict[str, Any]:
         if auth_required:
             auth_flows.append("cookie")
             if _list_session_providers():
-                auth_flows.append("native_pkce")
+                auth_flows.extend(("native_pkce", "native_ios_pkce"))
     except Exception:
         # Module not importable yet (early startup) — leave as [].
         pass

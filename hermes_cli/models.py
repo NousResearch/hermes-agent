@@ -2636,11 +2636,10 @@ def fetch_api_models(
 # cache: a pin validation is a rare user action, the public endpoints response
 # changes at most a few times a day. Only successes are cached — a failed probe
 # must not pin a "no endpoints" answer for an hour. Concurrent first lookups of
-# the same model coalesce onto one HTTP fetch via a per-key in-flight Event.
+# the same model may issue parallel fetches; the cache absorbs the duplicates.
 _OPENROUTER_ENDPOINT_SLUGS_TTL: float = 3600.0
 _openrouter_endpoint_slugs_cache: dict[str, tuple[float, list[str]]] = {}
 _openrouter_endpoint_slugs_lock = threading.Lock()
-_openrouter_endpoint_slugs_inflight: dict[str, threading.Event] = {}
 
 
 def _openrouter_endpoint_slugs_uncached(base: str, *, timeout: float) -> Optional[list[str]]:
@@ -2650,12 +2649,18 @@ def _openrouter_endpoint_slugs_uncached(base: str, *, timeout: float) -> Optiona
     fetch/parse failure or when the model exposes no endpoints."""
     from hermes_constants import OPENROUTER_BASE_URL
 
-    url = f"{OPENROUTER_BASE_URL}/models/{urllib.parse.quote(base, safe='')}/endpoints"
+    # The id separator (vendor/model) must stay literal: the endpoints route
+    # matches on the unescaped slug and 404s on %2F (verified live). ``base``
+    # is already a parsed ``vendor/model`` pair, so only stray specials need
+    # escaping — keep ``/`` safe.
+    url = f"{OPENROUTER_BASE_URL}/models/{urllib.parse.quote(base, safe='/')}/endpoints"
     try:
         data = _get_json(url, timeout=timeout, headers={"User-Agent": _HERMES_USER_AGENT})
         endpoints = ((data or {}).get("data") or {}).get("endpoints") or []
-        slugs = sorted({str(e["tag"]).strip() for e in endpoints if isinstance(e, dict) and e.get("tag")})
-    except Exception:
+        slugs = sorted({e["tag"].strip() for e in endpoints
+                        if isinstance(e, dict) and isinstance(e.get("tag"), str) and e["tag"].strip()})
+    except Exception as exc:
+        logger.debug("OpenRouter endpoints probe failed for %s: %s", base, exc)
         return None
     return slugs or None
 
@@ -2671,37 +2676,20 @@ def fetch_openrouter_endpoint_slugs(
     Returns the sorted slug list, or None when the API is unreachable or yields
     no endpoints (callers fall through to their existing verdict path).
     Successful results are cached for ``_OPENROUTER_ENDPOINT_SLUGS_TTL`` seconds;
-    failures are deliberately not cached. Concurrent lookups of the same model
-    share one in-flight HTTP fetch instead of stampeding the API."""
+    failures are deliberately not cached."""
     base = (base_model_id or "").strip().strip(":")
     if not base or "/" not in base:
         return None
     key = base.lower()
-    while True:
+    with _openrouter_endpoint_slugs_lock:
+        cached = _openrouter_endpoint_slugs_cache.get(key)
+        if cached and (time.monotonic() - cached[0]) < _OPENROUTER_ENDPOINT_SLUGS_TTL:
+            return list(cached[1])
+    slugs = _openrouter_endpoint_slugs_uncached(base, timeout=timeout)
+    if slugs:
         with _openrouter_endpoint_slugs_lock:
-            cached = _openrouter_endpoint_slugs_cache.get(key)
-            if cached and (time.monotonic() - cached[0]) < _OPENROUTER_ENDPOINT_SLUGS_TTL:
-                return list(cached[1])
-            event = _openrouter_endpoint_slugs_inflight.get(key)
-            if event is None:
-                # Nobody else is fetching this key — we own the HTTP call.
-                _openrouter_endpoint_slugs_inflight[key] = threading.Event()
-                break
-        # Another thread is fetching this key: wait for it, then re-check the
-        # cache. If that fetch failed, the next iteration makes us the fetcher.
-        event.wait(timeout=timeout + 1.0)
-    try:
-        slugs = _openrouter_endpoint_slugs_uncached(base, timeout=timeout)
-        if slugs:
-            with _openrouter_endpoint_slugs_lock:
-                _openrouter_endpoint_slugs_cache[key] = (time.monotonic(), slugs)
-            return list(slugs)
-        return None
-    finally:
-        with _openrouter_endpoint_slugs_lock:
-            done = _openrouter_endpoint_slugs_inflight.pop(key, None)
-        if done:
-            done.set()
+            _openrouter_endpoint_slugs_cache[key] = (time.monotonic(), slugs)
+    return slugs
 
 
 def _custom_endpoint_fingerprint(

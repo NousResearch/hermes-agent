@@ -719,6 +719,16 @@ class TestValidateOpenRouterProviderPinSuffixes:
     _LISTING = ["z-ai/glm-5.3-flash", "x-ai/grok-4.6"]
     _SLUGS = ["deepinfra/fp4", "wafer", "z-ai/fp8"]
 
+    @pytest.fixture(autouse=True)
+    def _clear_slugs_cache(self):
+        """The process-lifetime slug cache would leak between tests."""
+        import hermes_cli.models as _m
+
+        cache = _m._openrouter_endpoint_slugs_cache
+        cache.clear()
+        yield
+        cache.clear()
+
     def _validate(self, model, slugs=_SLUGS, api_models=None):
         return _validate(model, "openrouter", api_models=api_models or self._LISTING,
                          endpoint_slugs=slugs)
@@ -789,6 +799,53 @@ class TestValidateOpenRouterProviderPinSuffixes:
             )
         assert result["accepted"] is True
         assert result.get("corrected_model") is None
+
+
+class TestOpenRouterEndpointsProbeTransport:
+    """The HTTP probe itself, via the real transport (not by stubbing
+    fetch_openrouter_endpoint_slugs). Pins the URL shape: the vend/model
+    separator must stay literal — the endpoints route 404s on %2F."""
+
+    def test_url_keeps_model_id_separator(self):
+        from hermes_cli.models import fetch_openrouter_endpoint_slugs
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": {"endpoints": [{"tag": "wafer"}, {"tag": "deepinfra/fp4"}]}}'
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request",
+                   return_value=_Resp()) as mock_urlopen:
+            slugs = fetch_openrouter_endpoint_slugs("z-ai/glm-5.3-flash")
+
+        req = mock_urlopen.call_args[0][0]
+        # %2F would 404 against the live API (verified); the separator stays.
+        assert req.full_url == "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints"
+        assert slugs == ["deepinfra/fp4", "wafer"]
+
+    def test_non_string_tag_skipped(self):
+        """A malformed (non-string) tag must not become a bogus slug."""
+        from hermes_cli.models import fetch_openrouter_endpoint_slugs
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": {"endpoints": [{"tag": "wafer"}, {"tag": {"bad": 1}}]}}'
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+            slugs = fetch_openrouter_endpoint_slugs("vendor/malformed-tag-model")
+
+        assert slugs == ["wafer"]
 
 
 class TestOpenRouterSlugSuffixParser:

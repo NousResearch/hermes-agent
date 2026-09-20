@@ -22,6 +22,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import {
+  $parkedTileStoredIds,
   $sessionStates,
   $sessionTiles,
   isSessionInForeground,
@@ -107,8 +108,9 @@ export function useSessionStateCache({
           .get()
           .some(
             tile =>
-              tile.runtimeId === runtimeId ||
-              (state.storedSessionId !== null && tile.storedSessionId === state.storedSessionId)
+              !$parkedTileStoredIds.get().has(tile.storedSessionId) &&
+              (tile.runtimeId === runtimeId ||
+                (state.storedSessionId !== null && tile.storedSessionId === state.storedSessionId))
           ),
       // A connection death mid-turn leaves snapshots whose frozen busy flags
       // will never settle (the respawned backend re-mints runtime ids), which

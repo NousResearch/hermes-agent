@@ -1289,6 +1289,53 @@ def _run_no_agent_job(
     except Exception:
         logger.debug("Job '%s': no_agent .env reload failed", job_id, exc_info=True)
 
+    # Best-effort SessionDB for recording runs in the cron history.
+    # Lightweight import (just SQLite wrapper), no AIAgent payload.
+    _na_session_db = None
+    _na_session_id = None
+    try:
+        from hermes_state import SessionDB
+
+        _na_session_db = SessionDB()
+        _na_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+        _na_session_db.create_session(
+            session_id=_na_session_id,
+            source="cron",
+        )
+    except Exception as e:
+        logger.debug("Job '%s' (no_agent): session store not available: %s", job_id, e)
+        _na_session_db = None
+
+    def _na_write_session(status: str, status_label: str, body: str):
+        """Best-effort: record the run outcome into the cron session.
+
+        Creates a lightweight session record so the job's run-history
+        endpoint has something to return. The session title carries a
+        short status summary; the full output lives in the cron output
+        directory (the ``doc`` returned by this function).
+        """
+        if not _na_session_db or not _na_session_id:
+            return
+        try:
+            _title_base = " ".join(job_name.split())[:40].strip() or f"cron {job_id}"
+            _ts = _hermes_now().strftime('%b %d %H:%M:%S')
+            _preview = body.strip()[:80].replace("\n", " ")
+            _na_session_db.set_session_title(
+                _na_session_id,
+                f"{_title_base} · {_ts} [{status_label}]",
+            )
+            _na_session_db.end_session(_na_session_id, status)
+        except Exception as e2:
+            logger.debug("Job '%s' (no_agent): failed to record session: %s", job_id, e2)
+        finally:
+            # Always close the DB — even if set_session_title raised on a
+            # duplicate title (e.g. two runs in the same second), the
+            # connection must be released.
+            try:
+                _na_session_db.close()
+            except Exception:
+                pass
+
     script_path = job.get("script")
     # Legacy/hand-edited no_agent job without a script: pause it, or it re-fires every tick.
     if not str(script_path or "").strip():
@@ -1315,18 +1362,26 @@ def _run_no_agent_job(
             f"{output}\n\n"
             f"Time: {now_iso}"
         )
-        return False, f"{header}**Status:** script failed\n\n{output}\n", alert, output
+        doc = f"{header}**Status:** script failed\n\n{output}\n"
+        _na_write_session("script_failed", "失败", doc)
+        return False, doc, alert, output
 
     # wakeAgent=false is a silent signal, same as empty stdout.
     if not _parse_wake_gate(output):
         logger.info("Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id)
-        return True, f"{header}**Status:** silent (wakeAgent=false)\n", SILENT_MARKER, None
+        silent_doc = f"{header}**Status:** silent (wakeAgent=false)\n"
+        _na_write_session("cron_complete", "静默", silent_doc)
+        return True, silent_doc, SILENT_MARKER, None
 
     if not output.strip():
         logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
-        return True, f"{header}**Status:** silent (empty output)\n", SILENT_MARKER, None
+        silent_doc = f"{header}**Status:** silent (empty output)\n"
+        _na_write_session("cron_complete", "静默", silent_doc)
+        return True, silent_doc, SILENT_MARKER, None
 
-    return True, f"{header}\n---\n\n{output}\n", output, None
+    doc = f"{header}\n---\n\n{output}\n"
+    _na_write_session("cron_complete", "成功", doc)
+    return True, doc, output, None
 
 
 def _apply_monitor_gate(

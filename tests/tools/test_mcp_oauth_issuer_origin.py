@@ -24,12 +24,19 @@ PATH_DOC = "/.well-known/oauth-authorization-server/mcp-issuer"
 
 
 @pytest.mark.asyncio
-async def test_origin_issued_metadata_shim_does_not_read_mcp_resource_response():
+@pytest.mark.parametrize("url", [
+    pytest.param(RESOURCE, id="mcp-resource"),
+    pytest.param(f"{AS_ORIGIN}/proxy/.well-known/oauth-authorization-server", id="unrelated-prefix"),
+    pytest.param(f"{AS_ORIGIN}/.well-known/oauth-authorization-server-extra", id="suffix-lookalike"),
+    pytest.param(f"{RESOURCE}?next=/.well-known/oauth-authorization-server", id="query"),
+    pytest.param(f"{RESOURCE}#/.well-known/openid-configuration", id="fragment"),
+])
+async def test_origin_issued_metadata_shim_does_not_read_non_discovery_response(url):
     from tools.mcp_oauth_provider import HermesProviderMixin
 
     class ResourceResponse:
         status_code = 200
-        request = SimpleNamespace(url=RESOURCE)
+        request = SimpleNamespace(url=url)
 
         async def aread(self):
             raise AssertionError("normal MCP resource response must not be consumed as OAuth metadata")

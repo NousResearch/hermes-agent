@@ -189,23 +189,6 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
-def test_handle_approve_reports_record_it_could_not_remove(hermes_home, monkeypatch):
-    """An applied write whose pending record survives must be named, not counted as clean:
-    the next `approve all` would replay it (duplicate memory entry / stale skill patch)."""
-    from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import MemoryStore
-    from tools import write_approval as wa
-    store = MemoryStore(); store.load_from_disk()
-    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
-                         summary="a", origin="foreground")
-    monkeypatch.setattr(wa, "discard_pending", lambda subsystem, pending_id: False)
-    out = handle_pending_subcommand(wa.MEMORY, ["approve", rec["id"]], memory_store=store)
-    assert "Approved 1" in out
-    assert rec["id"] in out and "could not be removed" in out and "reject" in out
-    assert len(store.user_entries) == 1
-    assert wa.pending_count("memory") == 1
-
-
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
@@ -322,3 +305,61 @@ class TestSkillGist:
         assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
         assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
         assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"
+
+
+def test_handle_approve_reports_record_it_could_not_remove(hermes_home, monkeypatch):
+    """An applied write whose pending record survives must be named, not counted as clean:
+    the next `approve all` would replay it (duplicate memory entry / stale skill patch)."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
+                         summary="a", origin="foreground")
+    monkeypatch.setattr(wa, "discard_pending", lambda subsystem, pending_id: False)
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", rec["id"]], memory_store=store)
+    assert "Approved 1" in out
+    assert rec["id"] in out and "could not be removed" in out and "reject" in out
+    assert len(store.user_entries) == 1
+    assert wa.pending_count("memory") == 1
+
+
+def test_handle_approve_does_not_warn_when_record_was_already_gone(hermes_home, monkeypatch):
+    """discard_pending is False for "no such record" too (another surface removed it first);
+    nothing is left to replay, so no "could not be removed" warning."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
+                         summary="a", origin="foreground")
+    real_discard = wa.discard_pending
+
+    def _gone_before_discard(subsystem, pending_id):
+        real_discard(subsystem, pending_id)  # someone else already dropped it
+        return False
+    monkeypatch.setattr(wa, "discard_pending", _gone_before_discard)
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", rec["id"]], memory_store=store)
+    assert out == "Approved 1 memory write(s)."
+    assert len(store.user_entries) == 1
+    assert wa.pending_count("memory") == 0
+
+
+def test_handle_reject_distinguishes_stuck_record_from_missing(hermes_home, monkeypatch):
+    """The remedy `approve` advertises must not answer "no such write" while the record is still
+    queued: a failed removal is reported as such, both for one id and for `reject all`."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
+                         summary="a", origin="foreground")
+    real_discard = wa.discard_pending
+    monkeypatch.setattr(wa, "discard_pending", lambda subsystem, pending_id: False)
+    out = handle_pending_subcommand(wa.MEMORY, ["reject", rec["id"]])
+    assert "Could not remove" in out and rec["id"] in out and "No pending" not in out
+    out = handle_pending_subcommand(wa.MEMORY, ["reject", "all"])
+    assert "Rejected 0" in out and "Could not remove" in out and rec["id"] in out
+    assert wa.pending_count("memory") == 1
+    monkeypatch.setattr(wa, "discard_pending", real_discard)  # undo() would also drop hermes_home
+    assert handle_pending_subcommand(wa.MEMORY, ["reject", "nope"]) == "No pending memory write with id 'nope'."
+    assert handle_pending_subcommand(wa.MEMORY, ["reject", rec["id"]]).startswith("Rejected pending")
+    assert wa.pending_count("memory") == 0

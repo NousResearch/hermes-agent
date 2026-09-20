@@ -126,6 +126,15 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     return False
 
 
+def pending_exists(subsystem: str, pending_id: str) -> bool:
+    """True while the record file is still on disk — whether or not it parses. Lets a caller
+    tell "discard_pending returned False because nothing was there" from "it could not unlink"."""
+    try:
+        return _pending_path(subsystem, pending_id).exists()
+    except Exception:  # pragma: no cover
+        return False
+
+
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
     d = _pending_path(subsystem, "").parent

@@ -183,31 +183,6 @@ class TestShouldExclude:
         assert not _should_exclude(Path("profiles/sage/cache/citations/ledger.json"))
         assert not _should_exclude(Path("skills/example/cache/notes.md"))
 
-    def test_excludes_browser_use_cli_profiles(self):
-        """Browser Use CLI writes HERMES_HOME/browser_profiles/ (underscore).
-        Match at profile-home roots only; a skill's same-named dir is user data."""
-        from hermes_cli.backup import (
-            LOCAL_RUNTIME_ROOT_DIRS,
-            _EXCLUDED_BACKUP_ROOT_DIRS,
-            _EXCLUDED_DIRS,
-            _EXCLUDED_ROOT_DIRS,
-            _should_exclude,
-        )
-        assert "browser_profiles" not in _EXCLUDED_DIRS
-        assert "browser_profiles" in _EXCLUDED_BACKUP_ROOT_DIRS
-        assert _EXCLUDED_ROOT_DIRS is LOCAL_RUNTIME_ROOT_DIRS
-        assert _should_exclude(Path("browser_profiles/browser-use-default/Default/Login Data"))
-        assert _should_exclude(
-            Path("browser_profiles/browser-use-default/Default/Network/Cookies")
-        )
-        assert _should_exclude(
-            Path("profiles/coder/browser_profiles/browser-use-default/Default/Cookies")
-        )
-        assert not _should_exclude(Path("skills/example/browser_profiles/notes.md"))
-        # Hyphen forms stay any-depth (pre-existing).
-        assert _should_exclude(Path("browser-profile/chrome/Default/Cookies"))
-        assert _should_exclude(Path("browser-profiles/Default/Cookies"))
-
     def test_keeps_nested_dirs_named_like_runtime_trees(self):
         """A deeper directory that happens to be called models/ or node/ is
         user data (a skill's assets, project files) and must survive."""
@@ -268,6 +243,27 @@ class TestIterBackupFiles:
         assert rel_nested in selected
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
+
+    def test_prunes_browser_use_cli_profiles_at_home_roots_only(self, tmp_path):
+        """The Browser Use CLI backend writes ``HERMES_HOME/browser_profiles/`` (underscore) — a
+        live Chromium user-data dir holding Login Data / Cookies. It must never enter an archive,
+        at the root or under ``profiles/<name>/``; a skill's same-named dir is user data (#117346)."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        files = {
+            "browser_profiles/browser-use-default/Default/Login Data": False,
+            "browser_profiles/browser-use-default/Default/Network/Cookies": False,
+            "profiles/coder/browser_profiles/browser-use-default/Default/Cookies": False,
+            "skills/example/browser_profiles/notes.md": True,
+        }
+        for rel in files:
+            f = root / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("x")
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert {rel for rel in files if str(Path(rel)) in selected} == {rel for rel, keep in files.items() if keep}
 
     def test_prunes_regenerable_caches_but_keeps_durable_and_nested(self, tmp_path):
         from hermes_cli.backup import _iter_backup_files

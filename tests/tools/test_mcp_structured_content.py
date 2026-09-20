@@ -243,41 +243,33 @@ class TestContentStructuredArbitration:
         data = json.loads(handler({}))
         assert data == {"result": json.dumps(payload)}
 
-    def test_dual_emit_key_order_insensitive(self, _patch_mcp_server):
-        """A server's serializer may order keys differently than json.dumps; the
-        dual-emit check parses the text, so re-ordered verbatim JSON still dedupes."""
+    def test_dual_emit_forwards_one_copy(self, _patch_mcp_server):
+        """The dual-emit check compares parsed JSON per text block: a re-ordered,
+        indented, ASCII-escaped copy next to a status line still dedupes. An over-cap
+        payload next to usable text is also dropped — forwarding its truncated
+        stand-in as well would double the #56059 ceiling."""
         session = _patch_mcp_server
-        payload = {"a": 1, "b": 2}
+        payload = {"a": "héllo", "b": 2}
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
-                content=[_FakeContentBlock('{"b": 2, "a": 1}')],
+                content=[_FakeContentBlock(json.dumps({"b": 2, "a": "héllo"}, indent=2)), _FakeContentBlock("done")],
                 structuredContent=payload,
             )
         )
         handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
-        assert data == {"result": '{"b": 2, "a": 1}'}
-
-    def test_prose_summary_keeps_structured(self, _patch_mcp_server):
-        """Summary-style content no longer suppresses structuredContent (#115430):
-        the structured payload rides alongside — it may be the only machine-readable result."""
-        session = _patch_mcp_server
+        assert set(data) == {"result"} and data["result"].count('"b"') == 1
+        assert data["result"].endswith("done")
+        big = {"k": "z" * (_mcp_content._MCP_HARD_RESULT_CAP_CHARS + 10)}
         session.call_tool = AsyncMock(
-            return_value=_FakeCallToolResult(
-                content=[_FakeContentBlock("3 item(s) found")],
-                structuredContent={"items": [1, 2, 3]},
-            )
+            return_value=_FakeCallToolResult(content=[_FakeContentBlock("done")], structuredContent=big)
         )
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
-        data = json.loads(handler({}))
-        assert data == {
-            "result": "3 item(s) found",
-            "structuredContent": {"items": [1, 2, 3]},
-        }
+        assert json.loads(handler({})) == {"result": "done"}
 
     def test_summary_plus_data_keeps_structured(self, _patch_mcp_server):
         """#115430 reproducer shape: a status summary in content with the real data
-        (the jid needed by follow-up calls) only in structuredContent."""
+        (the jid needed by follow-up calls) only in structuredContent. A text-only
+        result is unchanged (control)."""
         session = _patch_mcp_server
         structured = {
             "data": [{"jid": "12345@s.whatsapp.net", "name": "Contact"}],
@@ -294,6 +286,8 @@ class TestContentStructuredArbitration:
         assert data["result"] == "Retrieved 1 chats (offset 0, limit 1)"
         assert data["structuredContent"] == structured
         assert data["structuredContent"]["data"][0]["jid"] == "12345@s.whatsapp.net"
+        session.call_tool = AsyncMock(return_value=_FakeCallToolResult(content=[_FakeContentBlock("just text")]))
+        assert handler({}) == '{"result": "just text"}'
 
     def test_whitespace_only_content_falls_back(self, _patch_mcp_server):
         """Whitespace-only text is not usable content — fallback fires."""

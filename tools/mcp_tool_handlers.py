@@ -457,13 +457,8 @@ def _capped_structured_content(result):
     """``structuredContent`` (or None); over the hard cap it degrades to the head+tail
     truncated JSON string (multi-MB JSON flood guard)."""
     # Hard-cap pathological payloads before they propagate (#56059); ordinary large results pass untouched
-    # to the spillover layer.
-    # Duplicate-guarding (ported from MoonshotAI/kimi-code#3234) is narrowed to the deterministic case:
-    # the spec's verbatim dual-emit, where content is the serialized JSON of structuredContent (see
-    # _text_is_verbatim_structured_json). Any other usable text (prose summary, faithful reorganisation)
-    # keeps structuredContent alongside it (#115430) — summary-only content must not destroy the only
-    # machine-readable result. structuredContent fills in when the content blocks rendered effectively
-    # empty, which keeps structuredContent-only servers working. Server-level `_meta` is also surfaced (ported from
+    # to the spillover layer. Arbitration against ``content`` lives in _render_call_tool_result.
+    # Server-level `_meta` is also surfaced (ported from
     # MoonshotAI/kimi-code#2596): servers return namespaced metadata there (validated contracts,
     # browser-handoff payloads, ...) that was previously invisible to the agent. Protocol-reserved keys are
     # dropped first (kimi-code#2600) — per the MCP spec's key-name rules a prefix is reserved when a
@@ -479,35 +474,46 @@ def _capped_structured_content(result):
     return _truncate_mcp_text_result(as_json) if len(as_json) > _MCP_HARD_RESULT_CAP_CHARS else structured
 
 
-def _text_is_verbatim_structured_json(text_result: str, structured) -> bool:
-    """True when the rendered text is exactly the structured payload serialized as JSON — the
-    spec's backwards-compat dual-emit ("a tool that returns structured content SHOULD also return
-    the serialized JSON in a TextContent block"). Parsing the text yields the same data, which is
-    a deterministic equality, not a richness heuristic: prose summaries and faithful
-    reorganisations fail it, so their ``structuredContent`` survives (#115430 — a summary-only
-    ``content`` must not destroy the only machine-readable result)."""
-    try:
-        return json.loads(text_result) == structured
-    except (TypeError, ValueError):
-        return False
+def _content_dual_emits_structured(result, structured) -> bool:
+    """True when some text block is ``structuredContent`` serialized as JSON — the spec's
+    backwards-compat dual-emit ("a tool that returns structured content SHOULD also return the
+    serialized JSON in a TextContent block"). Compared as parsed JSON so whitespace, indent, key
+    order and ``ensure_ascii`` escaping do not matter; checked per block because the spec puts the
+    copy in *a* block and a server may add a status line next to it. Deterministic equality, not a
+    richness heuristic: a prose summary or a reorganised rendering fails it and keeps its
+    ``structuredContent`` (#115430)."""
+    for block in (result.content or []):
+        text = getattr(block, "text", None)
+        if not text:
+            continue
+        try:
+            if json.loads(text) == structured:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _render_call_tool_result(result, server_name: str) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON. Duplicate-guarding from kimi-code#3234 still
-    applies, narrowed to the deterministic case: when the text is the spec's verbatim dual-emit
-    of the structured payload, only the text is kept. Any other usable text (prose summary,
-    faithful reorganisation) now keeps ``structuredContent`` alongside it (#115430): servers that
-    put a status summary in ``content`` and the real data in ``structuredContent`` were losing
-    that data irreversibly. structuredContent still fills in when the blocks rendered effectively
-    empty, keeping structuredContent-only servers working. ``_meta`` minus reserved keys is
-    always surfaced."""
+    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
+    forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
+    (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
+    would reach the model twice (kimi-code#3234). Any other usable text — a status line, a prose
+    summary, a reorganised rendering — keeps ``structuredContent`` alongside it (#115430): the
+    earlier "content wins whenever it rendered anything" rule irreversibly lost servers whose
+    data lived only in ``structuredContent``, while the residual duplicate for a faithful
+    reorganisation costs only tokens, so data-preservation wins. No richness or size heuristic is
+    used. ``structuredContent`` fills ``result`` when the blocks rendered effectively empty
+    (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
     text_result, usable_parts = _render_content_blocks(result, server_name)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
-    if structured is not None and usable_parts > 0 and _text_is_verbatim_structured_json(text_result, structured):
-        structured = None  # verbatim dual-emit: content already carries the structured data
+    # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
+    # usable text it would be a second multi-MB copy — the flood #56059 caps — so it only fills an empty result.
+    if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):
+        structured = None
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.

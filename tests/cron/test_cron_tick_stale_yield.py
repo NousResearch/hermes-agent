@@ -43,14 +43,26 @@ def _wait_until(predicate, timeout=10.0, interval=0.005):
     return predicate()
 
 
-def _gate_mocks(monkeypatch, *, owns: bool, active: bool, skew=SKEW):
-    """Point the yield gate's three probes at fixed answers."""
+def _gate_mocks(
+    monkeypatch, *, owns: bool, active: bool, skew=SKEW,
+    holder_sha: str | None = SKEW[1], holder_status_stale: bool = False,
+):
+    """Point the yield gate's process and holder-status probes at fixed answers."""
     from gateway import status as gateway_status
 
     monkeypatch.setattr(scheduler_mod, "_detect_gateway_code_skew", lambda: skew)
     monkeypatch.setattr(gateway_status, "owns_gateway_runtime_lock", lambda: owns)
     monkeypatch.setattr(
         gateway_status, "is_gateway_runtime_lock_active", lambda lock_path=None: active
+    )
+    monkeypatch.setattr(gateway_status, "get_running_pid", lambda **_kwargs: 4321)
+    monkeypatch.setattr(
+        gateway_status,
+        "read_runtime_status",
+        lambda: {"pid": 4321, "code_sha": holder_sha},
+    )
+    monkeypatch.setattr(
+        gateway_status, "runtime_status_is_stale", lambda _record: holder_status_stale
     )
 
 
@@ -91,6 +103,24 @@ class TestTickYieldGate:
         """(c) skew + no gateway alive (desktop-standalone) → proceed:
         yielding would silently kill the user's only ticker."""
         _gate_mocks(monkeypatch, owns=False, active=False)
+        assert scheduler_mod.tick(verbose=False) == 0
+
+    @pytest.mark.parametrize(
+        ("holder_sha", "holder_status_stale"),
+        [(SKEW[0], False), (SKEW[1], True)],
+        ids=["holder-is-stale-code", "holder-heartbeat-is-stale"],
+    )
+    def test_skew_plus_unfit_lock_holder_proceeds(
+        self, monkeypatch, tmp_path, holder_sha, holder_status_stale
+    ):
+        """A lock alone never proves another ticker can dispatch this occurrence."""
+        _gate_mocks(
+            monkeypatch,
+            owns=False,
+            active=True,
+            holder_sha=holder_sha,
+            holder_status_stale=holder_status_stale,
+        )
         assert scheduler_mod.tick(verbose=False) == 0
 
     def test_no_fingerprint_proceeds(self, monkeypatch, tmp_path):

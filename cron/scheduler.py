@@ -160,10 +160,10 @@ class CronTickYielded(RuntimeError):
     """A stale-code ticker yielded this tick to a fresh gateway.
 
     Raised by ``tick()`` BEFORE the tick lock when boot fingerprint ≠ disk, this process does NOT
-    own the runtime lock and a fresh process holds it — the stale process must stay out of the
-    dispatch race (contention would starve the fresh ticker). Skew ``None`` never yields (fail
-    open). Raised, not returned, so ``record_ticker_error`` sees it and ``hermes cron status``
-    isn't green.
+    own the runtime lock and its live holder reports the disk revision — the stale process must
+    stay out of the dispatch race (contention would starve the fresh ticker). Skew ``None`` never
+    yields (fail open). Raised, not returned, so ``record_ticker_error`` sees it and ``hermes cron
+    status`` isn't green.
     """
 
     def __init__(self, boot_rev: str, disk_rev: str) -> None:
@@ -182,8 +182,9 @@ _last_yield_log: dict[str, object] = {}
 
 def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` when this tick must yield to a fresher gateway, else None. Yields
-    only when ALL hold: code skew, we don't own the runtime lock, another process holds it. Every
-    probe failure returns None — yielding is a certainty claim, never a guess."""
+    only when ALL hold: code skew, we don't own the runtime lock, another process holds it, and
+    that holder's live status reports the disk revision. Every probe failure returns None —
+    yielding is a certainty claim, never a guess."""
     skew = _detect_gateway_code_skew()
     if skew is None:
         return None
@@ -195,6 +196,16 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
         if _gateway_status.owns_gateway_runtime_lock():
             return None
         if not _gateway_status.is_gateway_runtime_lock_active():
+            return None
+        holder_pid = _gateway_status.get_running_pid(cleanup_stale=False)
+        holder_status = _gateway_status.read_runtime_status()
+        if (
+            holder_pid is None
+            or not isinstance(holder_status, dict)
+            or holder_status.get("pid") != holder_pid
+            or _gateway_status.runtime_status_is_stale(holder_status)
+            or holder_status.get("code_sha") != skew[1]
+        ):
             return None
     except Exception:
         return None

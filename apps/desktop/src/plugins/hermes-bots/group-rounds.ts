@@ -512,11 +512,9 @@ export async function stopGroupThread(group: string, thread: null | string, memb
     // Same hold shape applyGroupHoldDirective mints for "@all stop" — the
     // held-skip path (watermark consume + 'held' activity note) and every
     // release gesture apply unchanged. An existing hold keeps its stamp.
-    const holds: Record<string, GroupHoldStamp> = {
-      ...(r.holds || {})
-    }
+    const holds: Record<string, GroupHoldStamp> = r.holdDetection === false ? {} : { ...(r.holds || {}) }
 
-    for (const member of roster) {
+    for (const member of r.holdDetection === false ? [] : roster) {
       const key = groupMemberKey(member)
 
       if (key && !holds[key]) {
@@ -868,17 +866,20 @@ export function sendToGroupChat(
     // explicit "stop @member" sets a sticky hold; "@member resume" (or
     // @all resume, or any direct non-stop mention of the held member)
     // releases it. Bot replies never flow through this function.
-    room.holds = applyGroupHoldDirective(
-      room.holds,
-      parseGroupChatMentions(trimmed, members),
-      trimmed,
-      {
-        at: sent?.at,
-        byMessageId: sent?.id,
-        thread: target
-      },
-      members.map((member: GroupMember) => groupMemberKey(member))
-    )
+    room.holds =
+      room.holdDetection === false
+        ? {}
+        : applyGroupHoldDirective(
+            room.holds,
+            parseGroupChatMentions(trimmed, members),
+            trimmed,
+            {
+              at: sent?.at,
+              byMessageId: sent?.id,
+              thread: target
+            },
+            members.map((member: GroupMember) => groupMemberKey(member))
+          )
 
     return room
   })

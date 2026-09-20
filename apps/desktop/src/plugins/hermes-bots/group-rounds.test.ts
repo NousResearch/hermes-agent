@@ -1241,6 +1241,37 @@ describe('member holds (#93129)', () => {
     // Unset watermark treated as 0.
     expect(heldMemberWatermarkAdvance(undefined, 2)).toBe(2)
   })
+
+  it('replays messages consumed by a hold into the released member next turn', async () => {
+    const room = await loadRoom()
+    const member = [{ name: 'research', title: '' }]
+
+    room.rounds.sendToGroupChat('Held', member, 'stop @research — remember TRIGGER_TEXT')
+    await settle(room, 'Held')
+    expect(room.gateway.calls).toHaveLength(0)
+    expect(room.chat.$groupChats.get().Held.heldMessages?.research).toHaveLength(1)
+
+    room.rounds.sendToGroupChat('Held', member, '@research resume with the context')
+    await settle(room, 'Held')
+
+    expect(room.gateway.calls[0].prompt).toMatch(/TRIGGER_TEXT[\s\S]*resume with the context/)
+    expect(room.chat.$groupChats.get().Held.heldMessages?.research).toBeUndefined()
+  })
+
+  it('lets a room disable text hold detection without weakening the Stop action', async () => {
+    const room = await loadRoom()
+    const member = [{ name: 'research', title: '' }]
+    room.chat.updateGroupChat('No holds', state => ({ ...state, holdDetection: false }))
+
+    room.rounds.sendToGroupChat('No holds', member, 'stop @research but answer this')
+    await settle(room, 'No holds')
+
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.chat.$groupChats.get()['No holds'].holds).toEqual({})
+    await room.rounds.stopGroupThread('No holds', null, member)
+    expect(room.chat.$groupChats.get()['No holds'].holds).toEqual({})
+    expect(room.chat.$groupChats.get()['No holds'].running).toBe(false)
+  })
 })
 
 // #91868/#94569: a REAL stop path for group-chat rounds. Before

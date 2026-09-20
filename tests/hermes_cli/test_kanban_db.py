@@ -529,6 +529,100 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
 
 
 
+def _seed_blocker_auth_failure(conn: sqlite3.Connection, title: str, ended_at: int) -> str:
+    """A ready card whose latest run died on a provider auth error.
+
+    The stamped text is the vocabulary ``agent/error_classifier.py`` recognizes
+    as an auth failure, so ``_RESPAWN_BLOCKER_RE`` matches it the way production
+    does.
+    """
+    tid = kb.create_task(conn, title=title, assignee="a")
+    kb.claim_task(conn, tid)
+    run_id = kb.get_task(conn, tid).current_run_id
+    assert run_id is not None
+    conn.execute(
+        "UPDATE task_runs SET outcome='crashed', status='crashed', "
+        "ended_at=? WHERE id=?",
+        (ended_at, run_id),
+    )
+    conn.execute(
+        "UPDATE tasks SET status='ready', current_run_id=NULL, "
+        "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+        "last_failure_error=? WHERE id=?",
+        ("worker exited 1: provider auth failed, token expired", tid),
+    )
+    conn.commit()
+    return tid
+
+
+def test_respawn_guard_blocker_auth_hold_expires(kanban_home, monkeypatch):
+    """A quota/auth blocker is a cooldown, not a permanent park.
+
+    The knob is read through the real loader from a temp ``HERMES_HOME``: with no
+    ``kanban.blocker_auth_cooldown_seconds`` set the default window applies, and
+    once it elapses the next tick gets a real probe instead of the card sitting
+    parked on error text that never changes by itself.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  review_dispatch: true\n", encoding="utf-8",
+    )
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = _seed_blocker_auth_failure(conn, "auth-blocked", now)
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+        # The window is the default, closing exactly at its edge.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 899)
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+        monkeypatch.setattr(
+            _kb.time, "time",
+            lambda: now + kbd.DEFAULT_BLOCKER_AUTH_COOLDOWN_SECONDS,
+        )
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+@pytest.mark.parametrize(
+    "configured, expected",
+    [
+        ("0", 0),
+        ("120", 120),
+        ("-5", 0),
+        ("soon", kbd.DEFAULT_BLOCKER_AUTH_COOLDOWN_SECONDS),
+    ],
+)
+def test_respawn_guard_blocker_auth_cooldown_follows_config(
+    kanban_home, monkeypatch, configured, expected,
+):
+    """``kanban.blocker_auth_cooldown_seconds`` is the knob, read through the
+    real loader against a temp ``HERMES_HOME``: 0 or a negative value disables
+    the hold so the card retries on the next tick, a positive value sets the
+    window, and an unparsable value falls back to the default."""
+    import hermes_cli.kanban_db as _kb
+
+    (kanban_home / "config.yaml").write_text(
+        f"kanban:\n  blocker_auth_cooldown_seconds: {configured}\n",
+        encoding="utf-8",
+    )
+    assert kbd._resolve_blocker_auth_cooldown_seconds() == expected
+
+    now = 5_000_000
+    with kbc.connect() as conn:
+        tid = _seed_blocker_auth_failure(conn, "auth-blocked-configured", now)
+        monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+        if expected <= 0:
+            assert kbd.check_respawn_guard(conn, tid) is None
+            return
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+        monkeypatch.setattr(_kb.time, "time", lambda: now + expected)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 # ---------------------------------------------------------------------------
 # Complete / block / unblock / archive / assign
 # ---------------------------------------------------------------------------

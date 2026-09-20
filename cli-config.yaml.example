@@ -372,6 +372,9 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Hold a ready card this many seconds after its last run died on a provider
+  # auth/quota error, before the dispatcher probes it again. 0 disables the hold.
+  # blocker_auth_cooldown_seconds: 900
 
 # =============================================================================
 # Terminal Tool Configuration

@@ -73,6 +73,12 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+# Cooldown after a quota/auth (``blocker_auth``) failure before a ready card may
+# be probed again; the stamped error text never changes on its own, so without
+# this the card is parked for good. ``kanban.blocker_auth_cooldown_seconds``,
+# 0 disables. Measured from the latest run's ``ended_at``.
+DEFAULT_BLOCKER_AUTH_COOLDOWN_SECONDS = 900  # 15 minutes
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -1482,6 +1488,19 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _resolve_blocker_auth_cooldown_seconds() -> int:
+    """``kanban.blocker_auth_cooldown_seconds`` else the default; 0 disables."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("blocker_auth_cooldown_seconds")
+    except Exception:
+        raw = None
+    try:
+        return max(0, int(raw)) if raw is not None else DEFAULT_BLOCKER_AUTH_COOLDOWN_SECONDS
+    except (TypeError, ValueError):
+        return DEFAULT_BLOCKER_AUTH_COOLDOWN_SECONDS
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1542,10 +1561,21 @@ def check_respawn_guard(
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.
+    # 2. Quota / auth blocker: retrying immediately will not help, but it is a
+    #    cooldown, not a permanent park. Measured from the latest run's
+    #    ``ended_at``: inside the window hold the card, after it return None so
+    #    the next tick gets a real probe. The ``consecutive_failures`` breaker
+    #    stays the backstop for a credential that never recovers.
     err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+        ba_cooldown = _resolve_blocker_auth_cooldown_seconds()
+        if ba_cooldown <= 0:
+            return None
+        ended_at = latest_run["ended_at"] if latest_run is not None else None
+        # No measurable run, or inside the window: hold the card.
+        if ended_at is None or (now - int(ended_at)) < ba_cooldown:
+            return "blocker_auth"
+        return None
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.

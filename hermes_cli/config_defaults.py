@@ -1894,6 +1894,10 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Cooldown after a quota/auth ("blocker_auth") failure before a ready card may be probed
+        # again. The stamped error text never changes on its own, so without this the card is
+        # parked for good. Measured from the latest run's ended_at. 0 disables the hold.
+        "blocker_auth_cooldown_seconds": 900,
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

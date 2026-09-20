@@ -83,11 +83,13 @@ class TurnFacadeMixin:
                 conversation_history=conversation_history, gateway_system_event=gateway_system_event,
             )
             if admission.early_result is not None:
-                carry_unadmitted_user_message(
-                    admission.early_result, user_message, persist_user_message,
-                    timestamp=persist_user_timestamp, display_kind=persist_user_display_kind,
-                    display_metadata=persist_user_display_metadata, platform_id=persist_user_platform_id,
-                )
+                # Only human input may carry forward as a user row; typed events were not admitted.
+                if gateway_system_event is None:
+                    carry_unadmitted_user_message(
+                        admission.early_result, user_message, persist_user_message,
+                        timestamp=persist_user_timestamp, display_kind=persist_user_display_kind,
+                        display_metadata=persist_user_display_metadata, platform_id=persist_user_platform_id,
+                    )
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )

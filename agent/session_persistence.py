@@ -325,6 +325,15 @@ class SessionPersistenceMixin:
 
         dropped_scaffolding = False
         while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
+            from agent.conversation_compression import _retain_durable_todo_from_ephemeral
+            if _retain_durable_todo_from_ephemeral(messages[-1]):
+                while (
+                    len(messages) > 1
+                    and isinstance(messages[-2], dict)
+                    and messages[-2].get("_empty_recovery_synthetic")
+                ):
+                    messages.pop(-2)
+                return
             messages.pop()
             dropped_scaffolding = True
         if not dropped_scaffolding:

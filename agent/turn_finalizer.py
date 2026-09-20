@@ -84,10 +84,14 @@ def _record_kanban_budget_exhausted(
 def _drop_verification_continuation_scaffolding(messages) -> None:
     """Remove verification-continuation nudges in place; only the synthetic nudges carry
     these flags, so the real attempted final answer persisted to state.db survives."""
-    messages[:] = [
-        m for m in messages
-        if not (isinstance(m, dict) and any(m.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS))
-    ]
+    from agent.conversation_compression import _retain_durable_todo_from_ephemeral
+    retained = []
+    for message in messages:
+        if not (isinstance(message, dict) and any(message.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS)):
+            retained.append(message)
+        elif _retain_durable_todo_from_ephemeral(message):
+            retained.append(message)
+    messages[:] = retained
 
 
 def _clone_background_review_messages(messages):

@@ -2055,6 +2055,73 @@ def _todo_snapshot_is_only_content(content: Any, stripped: Any) -> bool:
     return False
 
 
+_EPHEMERAL_TODO_SCAFFOLDING_FLAGS = (
+    "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic",
+    "_dropped_toolcall_nudge",
+)
+
+
+def _retain_durable_todo_from_ephemeral(message: Any) -> bool:
+    """Detach a folded TODO snapshot from ephemeral scaffolding in ``message``.
+
+    Folding keeps strict role alternation while a retry/verification nudge is live. At a cleanup or
+    persistence boundary the nudge must disappear without taking the durable snapshot with it.
+    """
+    if not (
+        isinstance(message, dict)
+        and message.get("_todo_snapshot_synthetic")
+        and any(message.get(flag) for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS)
+    ):
+        return False
+    from tools.todo_tool import TODO_INJECTION_HEADER
+    content = message.get("content")
+    snapshot = None
+    if isinstance(content, str):
+        marker = content.find(TODO_INJECTION_HEADER)
+        if marker >= 0:
+            snapshot = content[marker:].strip()
+    elif isinstance(content, list):
+        for part in content:
+            text = str(part.get("text") or "") if isinstance(part, dict) and part.get("type") == "text" else ""
+            marker = text.find(TODO_INJECTION_HEADER)
+            if marker >= 0:
+                snapshot = text[marker:].strip()
+                break
+    if not snapshot:
+        return False
+    _replace_message_content(message, snapshot)
+    for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS:
+        message.pop(flag, None)
+    return True
+
+
+def _durable_compaction_projection(messages: list) -> tuple[list, set[int]]:
+    """Return durable TODO-only rows plus source ids of adjacent ephemeral rows removed."""
+    projected: list[tuple[Any, Any]] = []
+    removed_source_ids: set[int] = set()
+    changed = False
+    for message in messages:
+        candidate = dict(message) if isinstance(message, dict) else message
+        if _retain_durable_todo_from_ephemeral(candidate):
+            while (
+                projected
+                and isinstance(projected[-1][0], dict)
+                and any(projected[-1][0].get(flag) for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS)
+            ):
+                source, _ = projected.pop()
+                removed_source_ids.add(id(source))
+            projected.append((message, candidate))
+            changed = True
+        else:
+            projected.append((message, message))
+    return ([value for _, value in projected] if changed else messages), removed_source_ids
+
+
+def _durable_compaction_messages(messages: list) -> list:
+    """Project ephemeral+TODO carriers to their durable TODO-only form without mutating live context."""
+    return _durable_compaction_projection(messages)[0]
+
+
 def _replace_message_content(message: dict, content: Any) -> None:
     """Rewrite message content without allowing an old API sidecar to replay."""
     from agent.turn_context import drop_stale_api_content
@@ -3008,8 +3075,9 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
 
 
 def _publish_rotated_compaction(
-    agent: Any, messages: list, compressed: list, *, new_system_prompt: str, lease: _CompressionLease,
-    old_session_id: str, compressed_user_turn_outcome: str,
+    agent: Any, messages: list, compressed: list, *, durable_compressed: list,
+    new_system_prompt: str, lease: _CompressionLease, old_session_id: str,
+    compressed_user_turn_outcome: str,
 ) -> None:
     """Rotate the session: flush the parent, publish the child, re-point the agent.
     Flushes current-turn msgs to the OLD session, passing the durable prefix (messages[:persist idx]) so
@@ -3046,7 +3114,7 @@ def _publish_rotated_compaction(
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,
-        model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
+        model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=durable_compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
@@ -3345,6 +3413,7 @@ def _commit_compaction(
                 return _CommitOutcome(
                     compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
                 )
+            durable_compressed, removed_durable_source_ids = _durable_compaction_projection(compressed)
             if in_place:
                 # In-place compaction: same session_id; soft-archive old turns (active=0, still
                 # searchable) + insert `compressed` atomically; no pre-flush (tail already in).
@@ -3352,9 +3421,13 @@ def _commit_compaction(
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
                 agent._session_db.archive_and_compact(
-                    agent.session_id, compressed, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
+                    agent.session_id, durable_compressed,
+                    model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=lease.watermark, lock_holder=lease.holder,
-                    tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
+                    tail_count=sum(
+                        1 for m in compressed
+                        if id(m) in _tail_tagged_ids and id(m) not in removed_durable_source_ids
+                    ),
                 )
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next
@@ -3385,7 +3458,8 @@ def _commit_compaction(
                 # instead of leaving the failed attempt's compacted snapshot in place.
                 old_session_id = agent.session_id
                 _publish_rotated_compaction(
-                    agent, messages, compressed, new_system_prompt=new_system_prompt, lease=lease,
+                    agent, messages, compressed, durable_compressed=durable_compressed,
+                    new_system_prompt=new_system_prompt, lease=lease,
                     old_session_id=old_session_id, compressed_user_turn_outcome=compressed_user_turn_outcome,
                 )
                 split_status = "rotated_committed"

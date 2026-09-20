@@ -29,6 +29,7 @@ import pytest
 from agent.context_compressor import ContextCompressor, _DB_PERSISTED_MARKER
 from agent.conversation_compression import (
     CompressionCommitFence,
+    _durable_compaction_messages,
     _fold_todo_snapshot,
     _is_real_user_message,
 )
@@ -1551,9 +1552,10 @@ class TestTodoSnapshotScaffoldingTails:
         )
         return agent
 
-    def test_repeated_snapshot_fold_preserves_role_alternation(self, tmp_path: Path):
-        """A persisted synthetic tail keeps one user row and durable provenance."""
+    def test_ephemeral_tail_cleanup_preserves_durable_snapshot(self, tmp_path: Path):
+        """Persistence and final cleanup drop the retry nudge, not its folded TODO snapshot."""
         from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+        from agent.session_persistence import SessionPersistenceMixin
         from tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
@@ -1566,31 +1568,88 @@ class TestTodoSnapshotScaffoldingTails:
         agent._todo_store.has_items.return_value = True
         compressed = [
             {
+                "role": "assistant",
+                "content": "(empty)",
+                "_empty_recovery_synthetic": True,
+            },
+            {
                 "role": "user",
                 "content": _EMPTY_TOOL_RESPONSE_NUDGE,
                 "_empty_recovery_synthetic": True,
-            }
+            },
         ]
+
+        _fold_todo_snapshot(agent, compressed)
+        _fold_todo_snapshot(agent, compressed)
+
+        assert len(compressed) == 2
+        assert str(compressed[-1]["content"]).count(TODO_INJECTION_HEADER) == 1
+        assert _EMPTY_TOOL_RESPONSE_NUDGE in str(compressed[-1]["content"])
+        assert compressed[-1]["_empty_recovery_synthetic"] is True
+        assert compressed[-1]["_todo_snapshot_synthetic"] is True
+        assert not any(
+            previous.get("role") == current.get("role") == "user"
+            for previous, current in zip(compressed, compressed[1:])
+        )
+
+        db.archive_and_compact(session_id, _durable_compaction_messages(compressed))
+        reloaded = db.get_messages_as_conversation(session_id)
+
+        assert len(reloaded) == 1
+        assert TODO_INJECTION_HEADER in str(reloaded[0]["content"])
+        assert _EMPTY_TOOL_RESPONSE_NUDGE not in str(reloaded[0]["content"])
+        assert ContextCompressor._transcript_has_real_user_turn(reloaded) is False
+
+        SessionPersistenceMixin._drop_trailing_empty_response_scaffolding(agent, compressed)
+
+        assert len(compressed) == 1
+        assert TODO_INJECTION_HEADER in str(compressed[0]["content"])
+        assert _EMPTY_TOOL_RESPONSE_NUDGE not in str(compressed[0]["content"])
+        assert not compressed[0].get("_empty_recovery_synthetic")
+        assert compressed[0]["_todo_snapshot_synthetic"] is True
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            pytest.param(
+                {"role": "user", "content": "retry", "_empty_recovery_synthetic": True},
+                id="flagged_scaffold",
+            ),
+            pytest.param(
+                {"role": "user", "content": "[System: Your previous response was truncated; continue.]"},
+                id="prefix_only_scaffold",
+            ),
+            pytest.param(
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                id="compressor_classified_scaffold",
+            ),
+        ],
+    )
+    def test_snapshot_fold_covers_synthetic_tail_categories(self, tail: dict):
+        """Every synthetic user-tail category absorbs one snapshot without becoming human intent."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        original_text = str(tail["content"])
+        original_flags = {key: value for key, value in tail.items() if key.startswith("_")}
+        agent = MagicMock()
+        agent._todo_store.format_for_injection.return_value = (
+            f"{TODO_INJECTION_HEADER}\n- [ ] t1. task A (pending)"
+        )
+        agent._todo_store.has_items.return_value = True
+        compressed = [dict(tail)]
 
         _fold_todo_snapshot(agent, compressed)
         _fold_todo_snapshot(agent, compressed)
 
         assert len(compressed) == 1
         assert str(compressed[0]["content"]).count(TODO_INJECTION_HEADER) == 1
-        assert _EMPTY_TOOL_RESPONSE_NUDGE in str(compressed[0]["content"])
-        assert compressed[0]["_empty_recovery_synthetic"] is True
-        assert compressed[0]["_todo_snapshot_synthetic"] is True
+        assert original_text in str(compressed[0]["content"])
+        assert all(compressed[0].get(key) == value for key, value in original_flags.items())
+        assert not _is_real_user_message(compressed[0])
         assert not any(
             previous.get("role") == current.get("role") == "user"
             for previous, current in zip(compressed, compressed[1:])
         )
-
-        db.archive_and_compact(session_id, compressed)
-        reloaded = db.get_messages_as_conversation(session_id)
-
-        assert len(reloaded) == 1
-        assert TODO_INJECTION_HEADER in str(reloaded[0]["content"])
-        assert ContextCompressor._transcript_has_real_user_turn(reloaded) is False
 
 
 

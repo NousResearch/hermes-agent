@@ -2130,8 +2130,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._fallback_activated = True
 
             _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
-            from agent.client_lifecycle import _swap_fallback_clients
-            _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
+            if fb_provider == "moa":
+                from agent.moa_loop import bind_moa_runtime
+                bind_moa_runtime(agent, fb_model)
+                fb_model, fb_base_url, fb_api_mode = agent.model, agent.base_url, agent.api_mode
+            else:
+                from agent.client_lifecycle import _swap_fallback_clients
+                _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
 
             from agent.agent_runtime_helpers import sync_credential_pool_entry_id
             sync_credential_pool_entry_id(agent)

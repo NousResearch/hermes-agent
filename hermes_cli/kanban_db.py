@@ -2296,16 +2296,19 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     the circuit breaker or by direct DB manipulation) — preserves the pre-#28712 auto-recover semantics for
     that path.
     """
-    row = conn.execute(
-        "SELECT kind, payload FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked', 'gave_up') "
+    explicit = conn.execute(
+        "SELECT id, kind FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    if not row:
-        return False
-    if row["kind"] in {"blocked", "unblocked"}:
-        return row["kind"] == "blocked"
-    return bool(_json_dict(_row_get(row, "payload")).get("sticky"))
+    breaker = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'gave_up' ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    breaker_sticky = bool(breaker and _json_dict(_row_get(breaker, "payload")).get("sticky"))
+    if breaker_sticky and (not explicit or breaker["id"] > explicit["id"]):
+        return True
+    return bool(explicit and explicit["kind"] == "blocked")
 
 
 def _latest_event(

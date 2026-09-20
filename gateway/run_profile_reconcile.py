@@ -117,6 +117,8 @@ class GatewayProfileReconcileMixin:
                 result["removed"].append(name)
             claimed = self._live_resource_claims(active)
             for name in added + changed:
+                if name in changed:
+                    await self._reset_profile_adapters_for_rescan(name)
                 # Only acknowledge the configuration observed before connecting;
                 # a setup save during an awaited handshake needs another scan.
                 scan_signature = profile_serve_signature(current[name])

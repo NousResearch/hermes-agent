@@ -88,3 +88,39 @@ def test_remote_http_uses_bearer_auth_and_preserves_transport_settings(monkeypat
     assert calls["http"]["port"] == 9000
     assert calls["http"]["streamable_http_path"] == "/remote-mcp"
     assert calls["http"]["transport_security"].allowed_hosts == ["mcp.example.com:*"]
+
+
+def test_authenticated_http_brackets_ipv6_resource_host(monkeypatch):
+    import mcp_serve
+
+    calls = {}
+
+    class Bridge:
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    class Server:
+        async def run_streamable_http_async(self, **kwargs):
+            calls["http"] = kwargs
+
+    def create_server(**kwargs):
+        calls["create"] = kwargs
+        return Server()
+
+    monkeypatch.setenv("TEST_MCP_TOKEN", "secret")
+    monkeypatch.setattr(mcp_serve, "EventBridge", Bridge)
+    monkeypatch.setattr(mcp_serve, "create_mcp_server", create_server)
+
+    mcp_serve.run_mcp_server(
+        transport="http",
+        host="::1",
+        port=9000,
+        token_env="TEST_MCP_TOKEN",
+    )
+
+    assert calls["create"]["bearer_token"] == "secret"
+    assert calls["create"]["resource_url"] == "http://[::1]:9000/mcp"
+    assert calls["http"]["host"] == "::1"

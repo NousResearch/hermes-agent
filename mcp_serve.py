@@ -781,7 +781,10 @@ def run_mcp_server(
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, stream=sys.stderr)
     bridge = EventBridge()
     bridge.start()
-    resource_url = public_url or f"http://{'localhost' if host in {'0.0.0.0', '::'} else host}:{port}{path}"
+    resource_host = "localhost" if host in {"0.0.0.0", "::"} else host
+    if ":" in resource_host:
+        resource_host = f"[{resource_host}]"
+    resource_url = public_url or f"http://{resource_host}:{port}{path}"
     server = create_mcp_server(
         event_bridge=bridge,
         bearer_token=bearer_token or None,

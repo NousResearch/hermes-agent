@@ -32,6 +32,11 @@ if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")
 
+# Lost-scope override resolutions already warned about, keyed by the override
+# name-set (see _scoped_operator_override). Process-static condition: repeated
+# resolutions of the same name-set log at DEBUG instead of WARNING.
+_LOST_SCOPE_WARNED: set[tuple[str, ...]] = set()
+
 _UNUSABLE_JWT_RELOGIN = "Re-authenticate with: hermes auth add nous"
 
 
@@ -168,8 +173,10 @@ def _scoped_operator_override(*names: str) -> Optional[str]:
     route on the launch profile's value — returning the ambient env there would send a secondary's
     tokens to the launch profile's Portal or inference host — so the override is simply absent.
     Absent is not free: default routing then applies, so a non-production deployment's token is
-    spent against the production hosts. One WARNING per lost-scope event names the override; the
-    downstream "ignoring invalid portal_base_url" line never says which caller lost its scope.
+    spent against the production hosts. One WARNING per override name-set per process names the
+    event; the same unbound caller re-raises on every request, so repeats log at DEBUG (see
+    ``_LOST_SCOPE_WARNED``). The downstream "ignoring invalid portal_base_url" line never says
+    which caller lost its scope.
     """
     from agent.secret_scope import UnscopedSecretError, get_secret
     try:
@@ -179,6 +186,19 @@ def _scoped_operator_override(*names: str) -> Optional[str]:
                 return value
         return None
     except UnscopedSecretError:
+        # One WARNING per override name-set per process. The same unbound caller
+        # (cron tickers, adapters, aux/summarization calls) re-raises on every
+        # request, and when the override is not configured anywhere the condition
+        # is process-static — repeating the WARNING per event (~600/day observed)
+        # drowns errors.log without adding signal. The first occurrence keeps the
+        # WARNING; repeats for the same name-set log at DEBUG.
+        if names in _LOST_SCOPE_WARNED:
+            logger.debug(
+                "nous: %s unreadable — no profile secret scope on a multiplexed call; treating the "
+                "override as absent (default routing applies). The caller needs a profile scope binding.",
+                "/".join(names))
+            return None
+        _LOST_SCOPE_WARNED.add(names)
         logger.warning(
             "nous: %s unreadable — no profile secret scope on a multiplexed call; treating the "
             "override as absent (default routing applies). The caller needs a profile scope binding.",

@@ -1180,7 +1180,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       })
     }
 
-    const fieldItems = [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
+    const fieldItems = [...settingsCatalog.subpageEntries, ...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
 
     if (fieldItems.length > 0) {
       result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
@@ -1302,7 +1302,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     if (search.trim()) {
       result.push({
         heading: cc.settingsFields,
-        items: [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
+        items: [...settingsCatalog.subpageEntries, ...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
       })
 
       if (settingsCatalog.credentialEntries.length > 0) {

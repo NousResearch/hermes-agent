@@ -159,6 +159,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
+        self._heartbeat_ack_event = asyncio.Event()
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
@@ -446,16 +447,25 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 raise RuntimeError("WebSocket closed")
 
     async def _heartbeat_loop(self) -> None:
-        """Send op 1 heartbeats with the latest seq at 80% of the Hello interval."""
-        with contextlib.suppress(asyncio.CancelledError):
-            while self._running:
-                await asyncio.sleep(self._heartbeat_interval)
-                if not self._ws or self._ws.closed:
-                    continue
-                try:
-                    await self._ws.send_json({"op": 1, "d": self._last_seq})
-                except Exception as exc:
-                    logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
+        """Send heartbeats and close the socket when QQ misses an ACK."""
+        while self._running:
+            await asyncio.sleep(self._heartbeat_interval)
+            ws = self._ws
+            if not ws or ws.closed:
+                continue
+            self._heartbeat_ack_event.clear()
+            try:
+                await ws.send_json({"op": 1, "d": self._last_seq})
+                await asyncio.wait_for(
+                    self._heartbeat_ack_event.wait(), timeout=self._heartbeat_interval)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning("[%s] Heartbeat ACK timeout; closing WebSocket", self._log_tag)
+                with contextlib.suppress(Exception):
+                    await ws.close()
+            except Exception as exc:
+                logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
 
     async def _send_ws_auth(self, name: str, payload: Dict[str, Any], sent_msg: str, *log_args) -> bool:
         """Send an Identify/Resume payload; returns False if the send raised."""
@@ -533,7 +543,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             else:
                 logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
         elif op == 11:  # Heartbeat ACK
-            pass
+            self._heartbeat_ack_event.set()
         elif op == 7:  # Server Reconnect
             logger.info("[%s] Server requested reconnect (op 7)", self._log_tag)
             self._close_ws_soon()

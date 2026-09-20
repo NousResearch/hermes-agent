@@ -1,6 +1,7 @@
 """Tests for the QQ Bot platform adapter."""
 
 import asyncio
+import contextlib
 import os
 from types import SimpleNamespace
 from unittest import mock
@@ -376,6 +377,65 @@ class TestReadyHandling:
             "d": {"session_id": "sess_abc123"},
         })
         assert adapter._session_id == "sess_abc123"
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat ACK watchdog
+# ---------------------------------------------------------------------------
+
+class TestHeartbeatAckWatchdog:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_missing_ack_closes_socket_for_listener_reconnect(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._heartbeat_interval = 0.01
+        ws = mock.AsyncMock(closed=False)
+        adapter._ws = ws
+
+        task = asyncio.create_task(adapter._heartbeat_loop())
+        await asyncio.sleep(0.04)
+        adapter._running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert ws.send_json.await_count >= 1
+        assert ws.close.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_ack_prevents_close_and_reconnect_does_not_spawn_heartbeat(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        adapter._heartbeat_interval = 0.01
+        ws = mock.AsyncMock(closed=False)
+        adapter._ws = ws
+
+        async def acknowledge(_payload):
+            adapter._heartbeat_ack_event.set()
+        ws.send_json.side_effect = acknowledge
+
+        task = asyncio.create_task(adapter._heartbeat_loop())
+        await asyncio.sleep(0.025)
+        adapter._running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert ws.close.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_task_cancellation_is_clean(self):
+        adapter = self._make_adapter()
+        adapter._running = True
+        task = asyncio.create_task(adapter._heartbeat_loop())
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
 
 
 # ---------------------------------------------------------------------------

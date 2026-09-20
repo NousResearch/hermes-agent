@@ -3,12 +3,26 @@ sibling of ``tour`` (same ``data-tour`` handles) with no scrim/spotlight/paging.
 Fire-and-forget: a tip is not a question, so blocking on a round-trip would stall the
 reply. Lives in ``desktop_ui`` and withdraws itself when the user turns tips off."""
 
+import hashlib
 import json
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
 
 SIDES = ("top", "right", "bottom", "left")
+
+
+def _tip_id(selector: str, text: str) -> str:
+    """Stable identity for an agent-authored tip.
+
+    The renderer retires a ✕'d tip by id, and an agent tip has no catalog
+    entry to key on — so the id is the content: same selector+text, same id,
+    whichever conversation sends it. The ``agent:`` prefix keeps it out of the
+    catalog/campaign id namespace, and the hash (not the raw text) is what
+    rides the payload into the renderer's persistent ledgers.
+    """
+    digest = hashlib.sha256(f"{selector}\0{text}".encode()).hexdigest()[:16]
+    return f"agent:{digest}"
 
 
 def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
@@ -22,7 +36,7 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
                           "what's on screen and prefer a target reporting stable: true.")
     if side and side not in SIDES:
         return tool_error(f"side must be one of: {', '.join(SIDES)}.")
-    payload = {"selector": selector, "text": text,
+    payload = {"selector": selector, "text": text, "tip_id": _tip_id(selector, text),
                **{k: v for k, v in (("title", title), ("side", side)) if v}}
     try:
         ok = desktop_ui.emit("tip.show", payload)

@@ -49,7 +49,9 @@ export interface ActiveTip {
    *  tip follows an element that re-renders and leaves when it goes away. */
   targets: readonly string[]
   text: string
-  /** Catalog id. Absent for an agent-authored tip, which has nothing to retire. */
+  /** Catalog or campaign id — or an agent tip's content id (`agent:<hash>`,
+   *  derived by the tool from its selector+text). Whatever its source, the ✕
+   *  retires it; absent only for a legacy agent event with no id. */
   tipId?: string
   title?: string
 }
@@ -142,8 +144,10 @@ export function dismissTip(): void {
   $activeTip.set(null)
 }
 
-/** Hard close (the ✕): retire the catalog tip behind the bubble for good. An
- *  agent tip has no catalog entry, so it just closes. */
+/** Hard close (the ✕): retire the tip behind the bubble for good — catalog,
+ *  campaign, or agent content id alike. The show sites (rotation, campaigns,
+ *  the agent bridge) check the ledger before offering, so a retired id never
+ *  comes back until Settings → Reset. */
 export function retireActiveTip(): void {
   const tipId = $activeTip.get()?.tipId
 

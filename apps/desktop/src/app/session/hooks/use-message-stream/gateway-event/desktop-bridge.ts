@@ -3,7 +3,7 @@ import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
-import { $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
+import { $retiredTips, $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
 
 import type { GatewayEventContext } from './types'
 
@@ -37,16 +37,24 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     // screen (desktop AGENTS.md: offer, don't hijack).
     const selector = typeof payload?.selector === 'string' ? payload.selector : ''
     const text = typeof payload?.text === 'string' ? payload.text : ''
+    // The tool derives the id from selector+text, so it is stable across
+    // conversations — the handle the ✕ retires an agent tip by. Without one
+    // (an older backend), the tip is simply ephemeral, as it always was.
+    const tipId = typeof payload?.tip_id === 'string' ? payload.tip_id : ''
 
     // A tip with nothing to point at is just a notification, and the app
     // already has those. Dropping it here also stops a malformed event from
     // replacing a rotation tip with a bubble that dismisses itself a frame
-    // later.
-    if ($tipsEnabled.get() && isActiveEvent && selector && text) {
+    // later. Retired content is refused the same way: the ✕ said "never
+    // again", and this is the show site, where every campaign offer makes
+    // the same check before it puts its bubble up.
+    if ($tipsEnabled.get() && isActiveEvent && selector && text
+      && !(tipId && $retiredTips.get().includes(tipId))) {
       showTip({
         side: (payload?.side as ActiveTip['side']) ?? 'top',
         targets: [selector],
         text,
+        tipId: tipId || undefined,
         title: typeof payload?.title === 'string' ? payload.title : undefined
       })
     }

@@ -343,6 +343,27 @@ def _iter_if_expressions(job: object):
             yield cond
 
 
+def test_every_file_the_lint_job_reads_rearms_the_lane_that_gates_it():
+    """hadolint's rules live in a file the workflow pins — editing them must run hadolint.
+
+    ``ci.yaml`` gates the ``docker-lint`` job solely on ``docker_meta``, and
+    ``all-checks-pass`` counts a skipped job as success, so any input the job reads that the
+    classifier does not route to that lane is a permanently silent skip: the rules file can
+    loosen an ignore, or be renamed out of existence, and every PR stays green (root rubric:
+    the classifier must fail open, never closed).
+    """
+    steps = _yaml(".github/workflows/docker-lint.yml")["jobs"]["hadolint"]["steps"]
+    pinned = next(
+        step["with"]
+        for step in steps
+        if "hadolint-action" in str(step.get("uses", ""))
+    )
+    for path in (pinned["dockerfile"], pinned["config"]):
+        assert classify([path])["docker_meta"] is True, (
+            f"{path} is consumed by the hadolint step but does not re-arm the docker_meta lane"
+        )
+
+
 def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
     assert ci_review_files([
         "apps/desktop/src/app.tsx",

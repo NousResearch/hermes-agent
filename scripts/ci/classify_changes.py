@@ -13,7 +13,8 @@ Lanes:
   run the product (Desktop E2E backend, Docker image) but never import the
   test suite. A tests-only PR keeps ``python`` (pytest must run) while
   skipping those product jobs.
-* ``docker_meta`` — Dockerfiles etc.
+* ``docker_meta`` — the container lint inputs: ``Dockerfile``, ``docker/``, and
+  ``.hadolint.yaml`` (the rules ``docker-lint`` reads — see its ``config:`` pin).
 * ``docker`` — any product change + docker meta
 * ``nix``         — ``nix flake check``: the flake inputs and any product change.
 * ``frontend``    — TS typecheck matrix + desktop build.
@@ -70,7 +71,7 @@ _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 # Shipped page outside those packages, exercised by the desktop Electron suite.
 _FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
-_DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
+_DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages

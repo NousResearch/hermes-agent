@@ -142,7 +142,8 @@ def refresh_local_runtime() -> bool:
         return False
 
 
-def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
+def _generate_presets(mdir: Path, preset_path: Path,
+                      section: dict | None = None) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -157,7 +158,13 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     from hermes_cli.local_runtime.presets import generate_presets
 
     try:
-        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path):
+        configured_window = (section or {}).get("context_window")
+        if (not isinstance(configured_window, int) or isinstance(configured_window, bool)
+                or configured_window <= 0):
+            configured_window = None
+        for entry in generate_presets(
+                mdir, probe_budget(planning=True), preset_path,
+                context_window=configured_window):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -233,7 +240,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
         mdir = models_dir()
         mdir.mkdir(parents=True, exist_ok=True)
-        preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
+        preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", section)
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),

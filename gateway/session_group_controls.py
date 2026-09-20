@@ -177,33 +177,8 @@ def _group(authority, actor, home, method, params, *, state_owner=None):
                 name=params.get('name'), members=normalized, authority_gateway_id=gateway_id)}
 
     def disband():
-        from gateway.session_group_retirement import require_room_retired
-        from gateway.hosted_room_driver import list_tasks
-        from gateway.hosted_room_link_records import begin_room_link_retirement, list_room_link_records
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        if state.get('disbanded_at') is None:
-            if service is not None:
-                service.begin_room_disband(params.get('room_id'))
-            else:
-                begin_room_link_retirement(db_path, room_id=params.get('room_id'),
-                    authority_gateway_id=gateway_id, authority_epoch=state['authority_epoch'])
-        if service is not None and state.get('disbanded_at') is None:
-            service.stop_room(params.get('room_id'),
-                              cancel_id=params.get('cancel_id') or 'room-disbanded',
-                              require_acknowledged=True)
-            with authority.db._read_ctx() as conn:
-                require_room_retired(conn, params.get('room_id'))
-            service.revoke_room_routes(params.get('room_id'))
-        # Metadata control must not bypass accepted work or exact credential retirement.
-        if service is None and (any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
-               for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred'))
-               or list_room_link_records(db_path, room_id=params.get('room_id'))):
-            raise RuntimeStoreError('runtime_coordination_required')
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
-                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'],
-                authorize_retirement=lambda conn: require_room_retired(
-                    conn, params.get('room_id'), unavailable=service is None))}
+        from gateway.session_group_disband import disband as canonical_disband
+        return canonical_disband(authority, actor, service, params, state_owner)
 
     def state():
         room = rooms.room_state(db_path, **params)

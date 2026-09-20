@@ -1313,19 +1313,23 @@ def _disband_replay(conn: sqlite3.Connection, room_id: str, room: sqlite3.Row | 
 
 
 def disband_room(
-    db_path: DbPath, *, room_id: Any, expected_gateway_id: Any, expected_epoch: Any, now: float | None = None
+    db_path: DbPath, *, room_id: Any, expected_gateway_id: Any, expected_epoch: Any,
+    now: float | None = None, authorize_retirement=None, conn=None
 ) -> dict[str, Any]:
     """Tombstone a room id permanently and idempotently."""
     room_id = _room_id(room_id)
     expected_gateway_id = _actor_id(expected_gateway_id, "expected_gateway_id")
     _require_positive_int(expected_epoch, "expected_epoch")
     now = _now(now)
-    with _transaction(db_path, immediate=True) as conn:
+    from contextlib import nullcontext
+    with (nullcontext(conn) if conn is not None else _transaction(db_path, immediate=True)) as conn:
         room = conn.execute("""SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes, disbanded_at
                 FROM hosted_rooms WHERE room_id=?""", (room_id,)).fetchone()
         if (replay := _disband_replay(conn, room_id, room)) is not None:
             return replay
         _require_authority(room, expected_gateway_id, expected_epoch, "stale hosted room authority")
+        if authorize_retirement is not None:
+            authorize_retirement(conn)
         disband_bytes = _insert_event(
             conn, room, room_id, int(room["next_seq"]), "system:room-disbanded", "room.disbanded",
             _system_actor_json("room-control"), int(room["authority_epoch"]), _payload_json({"room_id": room_id}), now,

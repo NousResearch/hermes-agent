@@ -11,6 +11,7 @@ keeps resolving.
 
 import json
 import logging
+import os
 import re
 import shlex
 import stat
@@ -139,6 +140,109 @@ def _foreground_background_guidance(command: str) -> str | None:
         return None
     unquoted = _strip_quotes(command)
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
+
+
+_GREP_RECURSIVE_FLAG_RE = re.compile(
+    r"(?:^|[\s;|&])(?:grep|egrep|fgrep)\s+-[A-Za-z]*[rR][A-Za-z]*\b"
+    r"|(?:^|[\s;|&])(?:grep|egrep|fgrep)\s+[^\n]*?--recursive\b"
+)
+_RG_BIN_RE = re.compile(r"(?:^|[\s;|&])(?:rg|ripgrep)\b")
+_FIND_BIN_RE = re.compile(r"(?:^|[\s;|&])find\b")
+_DENIED_SEARCH_ERROR = (
+    "Blocked: recursive search of {root}. Use a seeded repo path."
+)
+
+
+def _denied_search_root_paths(home: Path | None = None) -> tuple[Path, ...]:
+    """Filesystem roots a recursive grep/rg/find must not use as the search root."""
+    home_path = (home or Path.home()).expanduser()
+    try:
+        home_path = home_path.resolve()
+    except OSError:
+        pass
+    roots = [Path("/"), Path("/tmp"), Path("/private/tmp"), home_path]
+    parent = home_path.parent
+    if parent in (Path("/Users"), Path("/home")):
+        roots.append(parent)
+    return tuple(roots)
+
+
+def _looks_like_recursive_search(command: str) -> bool:
+    """True for grep -r, rg (recursive by default), or find."""
+    if _looks_like_help_or_version_command(command):
+        return False
+    unquoted = _strip_quotes(command)
+    if _GREP_RECURSIVE_FLAG_RE.search(unquoted):
+        return True
+    if _RG_BIN_RE.search(unquoted):
+        return True
+    if _FIND_BIN_RE.search(unquoted):
+        return True
+    return False
+
+
+def _expand_search_token(token: str) -> str:
+    return os.path.expandvars(os.path.expanduser(token))
+
+
+def _path_is_denied_search_root(raw: str, *, cwd: str | None, denied: tuple[Path, ...]) -> Path | None:
+    """Return the denied root *raw* names, else None. Subdirs of home are allowed."""
+    expanded = _expand_search_token(raw)
+    if not expanded or expanded.startswith("-"):
+        return None
+    path = Path(expanded)
+    if not path.is_absolute():
+        if cwd:
+            path = Path(cwd) / path
+        else:
+            return None
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    for root in denied:
+        try:
+            root_res = root.resolve()
+        except OSError:
+            root_res = root
+        if resolved == root_res:
+            return root_res
+    return None
+
+
+def recursive_search_root_block(
+    command: str,
+    *,
+    cwd: str | None = None,
+    home: Path | None = None,
+) -> str | None:
+    """Refuse recursive grep/rg/find whose search root is $HOME, /, /tmp, or /private/tmp.
+
+    Project subdirectories under home remain allowed. Returns the JSON error
+    envelope when blocked, else None.
+    """
+    if not _looks_like_recursive_search(command):
+        return None
+    denied = _denied_search_root_paths(home)
+    try:
+        tokens = shlex.split(_strip_quotes(command), posix=True)
+    except ValueError:
+        tokens = command.split()
+    # Relative "." / empty path list uses cwd as the search root.
+    if cwd:
+        hit = _path_is_denied_search_root(".", cwd=cwd, denied=denied)
+        has_explicit_path = any(
+            (t.startswith("/") or t.startswith("~") or t.startswith("$") or t.startswith("."))
+            and not t.startswith("-")
+            for t in tokens[1:]
+        )
+        if hit is not None and not has_explicit_path:
+            return _blocked_json(_DENIED_SEARCH_ERROR.format(root=str(hit)), "blocked")
+    for token in tokens:
+        hit = _path_is_denied_search_root(token, cwd=cwd, denied=denied)
+        if hit is not None:
+            return _blocked_json(_DENIED_SEARCH_ERROR.format(root=str(hit)), "blocked")
+    return None
 
 
 def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes: int) -> Optional[str]:

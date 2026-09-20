@@ -135,6 +135,7 @@ const route = {
 const STORED_ID = '20260920_122038_661ec0'
 
 beforeEach(() => {
+  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   mocks.releaseRoute.mockClear()
   mocks.releaseTurn.mockClear()
   mocks.requestGatewayForAgent.mockReset()
@@ -257,5 +258,29 @@ describe('host.submitToSession', () => {
     // No turn started, so no terminal session event will ever release this hold.
     expect(mocks.releaseTurn).toHaveBeenCalledOnce()
     expect(result).toEqual({ runtimeSessionId: 'runtime-4', status: null })
+  })
+
+  it('refuses an ambiguous profile-only route before retaining the local route', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getAgentRoster: vi.fn(async () => ({
+        agents: [
+          { connectionId: 'source-a', profile: 'worker' },
+          { connectionId: 'source-b', profile: 'worker' }
+        ],
+        sources: [
+          { connectionId: 'source-a', kind: 'remote', label: 'A' },
+          { connectionId: 'source-b', kind: 'remote', label: 'B' }
+        ]
+      }))
+    }
+
+    await expect(host.submitToSession('worker', { storedSessionId: STORED_ID, text: 'hello' })).rejects.toThrow(
+      /route descriptor/i
+    )
+
+    // The refusal must be the whole outcome: holding the local route on the way
+    // to rejecting the route would dial a backend the caller never named.
+    expect(mocks.retainGatewayForAgent).not.toHaveBeenCalled()
+    expect(mocks.requestGatewayForAgent).not.toHaveBeenCalled()
   })
 })

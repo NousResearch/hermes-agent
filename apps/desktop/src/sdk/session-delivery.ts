@@ -22,6 +22,14 @@ export interface PluginSessionSubmitResult {
   status: PluginSessionSubmitStatus
 }
 
+/** The exact (connection, profile) pair a route resolves to. A null
+ *  connectionId is the legacy local/sole-source route. */
+export interface PluginRouteTarget {
+  connectionId: null | string
+  profile: string
+  targetProfile: string
+}
+
 /** `prompt.submit`'s reply: a typed status once a turn starts, or the
  *  typed-stop-phrase acknowledgement (`voice_stopped`), which starts none. */
 interface PluginPromptSubmitReply {
@@ -31,38 +39,19 @@ interface PluginPromptSubmitReply {
 
 /** The SDK primitives the sequence composes. */
 export interface PluginSessionDeliveryDeps {
+  /** Canonical route resolution — `sdk/index.ts::resolvePluginProfileTarget`.
+   *  Injected rather than re-derived here so the string overload's ambiguity
+   *  policy stays in one place, and called BEFORE the route is retained so a
+   *  refused route never holds a socket. */
+  resolveRoute: (route: PluginProfileRoute | string) => Promise<PluginRouteTarget>
   /** One JSON-RPC call on the exact route — `host.requestProfile`. */
   request: <T>(route: PluginProfileRoute | string, method: string, params: Record<string, unknown>) => Promise<T>
   /** Hold a route's pooled socket across the sequence —
-   *  `store/gateway::retainGatewayForAgent`. A null connectionId is the legacy
-   *  local/sole-source route. */
+   *  `store/gateway::retainGatewayForAgent`. */
   retainRoute: (connectionId: null | string, profile: string) => Promise<() => void>
   /** Hold a routed runtime until its turn's terminal session event —
    *  `store/gateway::retainGatewayForSessionTurn`. */
   retainTurn: (connectionId: null | string, profile: string, runtimeSessionId: string) => Promise<() => void>
-}
-
-interface ResolvedPluginRoute {
-  connectionId: null | string
-  profile: string
-  targetProfile: string
-}
-
-/** Translate the caller's route into the three identities the sequence needs.
- *  A descriptor stays connection-qualified; a bare profile is the legacy
- *  local-only overload. Null means unusable, refused before dialing. */
-function resolvePluginRoute(route: PluginProfileRoute | string): null | ResolvedPluginRoute {
-  if (typeof route === 'string') {
-    const profile = route.trim()
-
-    return profile ? { connectionId: null, profile, targetProfile: profile } : null
-  }
-
-  const connectionId = route?.connectionId?.trim() ?? ''
-  const profile = route?.profile?.trim() ?? ''
-  const targetProfile = route?.targetProfile?.trim() ?? ''
-
-  return connectionId && profile && targetProfile ? { connectionId, profile, targetProfile } : null
 }
 
 /** Submit one turn to one exact stored session on one exact route.
@@ -74,12 +63,6 @@ export async function submitToPluginSession(
   route: PluginProfileRoute | string,
   input: PluginSessionSubmitInput
 ): Promise<PluginSessionSubmitResult> {
-  const target = resolvePluginRoute(route)
-
-  if (!target) {
-    throw new Error('Profile route must include connectionId, profile, and targetProfile')
-  }
-
   const storedSessionId = input?.storedSessionId?.trim() ?? ''
 
   if (!storedSessionId) {
@@ -91,6 +74,11 @@ export async function submitToPluginSession(
   if (!text.trim()) {
     throw new Error('submitToSession requires non-empty text')
   }
+
+  // Resolved before the route is retained: in a multi-source Desktop an
+  // ambiguous profile-only route is refused here, not after the local route's
+  // socket has already been held.
+  const target = await deps.resolveRoute(route)
 
   // Each requestProfile call is its own request lease: a secondary socket at
   // refcount 0 closes between the RPCs and the gateway reaps the runtime it

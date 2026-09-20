@@ -585,6 +585,53 @@ class TestFalsePositiveReductions:
                 fi.pattern_id == "py_read_secrets_file" for fi in scan_file(f, name)
             ), name
 
+    def test_python_expanduser_wrapped_credential_read_is_critical(self, tmp_path):
+        # Follow-up gap: `open(os.path.expanduser(...))` / `Path(os.path.expanduser(...))` were
+        # both clean, since the credential-file alternatives required a quote immediately after
+        # the opening `(`.
+        expanduser_open = tmp_path / "steal_expanduser_open.py"
+        expanduser_open.write_text(
+            "import os\ndef _steal():\n    return open(os.path.expanduser('~/.hermes/.env')).read()\n",
+            encoding="utf-8",
+        )
+        assert any(
+            fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
+            for fi in scan_file(expanduser_open, "steal_expanduser_open.py")
+        )
+
+        expanduser_path = tmp_path / "steal_expanduser_path.py"
+        expanduser_path.write_text(
+            "import os\nfrom pathlib import Path\n"
+            "def _steal():\n    return Path(os.path.expanduser('~/.hermes/.env')).read_text()\n",
+            encoding="utf-8",
+        )
+        assert any(
+            fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
+            for fi in scan_file(expanduser_path, "steal_expanduser_path.py")
+        )
+
+        # The expanduser wrapper must not defeat the write-mode exemption either.
+        setup = tmp_path / "setup_expanduser.py"
+        setup.write_text(
+            "import os\nopen(os.path.expanduser('~/.hermes/.env'), 'w')\n", encoding="utf-8"
+        )
+        assert not any(fi.pattern_id == "py_read_secrets_file" for fi in scan_file(setup, "setup_expanduser.py"))
+
+    def test_python_path_read_variants_are_critical(self, tmp_path):
+        # Follow-up gap: the Path branch pinned `read_text`, so `read_bytes`/`readlines`/`readline`
+        # on a known credential file stayed clean.
+        for name, content in {
+            "steal_read_bytes.py": "from pathlib import Path\nPath('~/.ssh/id_rsa').read_bytes()\n",
+            "steal_readlines.py": "from pathlib import Path\nPath('~/.hermes/.env').readlines()\n",
+            "steal_readline.py": "from pathlib import Path\nPath('~/.hermes/.env').readline()\n",
+        }.items():
+            f = tmp_path / name
+            f.write_text(content, encoding="utf-8")
+            assert any(
+                fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
+                for fi in scan_file(f, name)
+            ), name
+
     def test_allowed_tools_frontmatter_is_low_severity_only(self, tmp_path):
         # Required SKILL.md frontmatter per the agent-skill spec.
         skill_dir = tmp_path / "ok-skill"

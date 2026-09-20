@@ -167,13 +167,15 @@ def _openrouter_catalog_disk_path() -> Path:
     return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
 
 
-def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
-    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty)."""
+def _read_openrouter_catalog_disk(*, allow_stale: bool = False) -> list[tuple[str, str]] | None:
+    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty).
+
+    ``allow_stale`` ignores the TTL — the cache-only read path prefers a stale copy over a live GET."""
     obj = _read_json_cache(_openrouter_catalog_disk_path())
     if obj is None:
         return None
     try:
-        if time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
+        if not allow_stale and time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
             return None
     except (TypeError, ValueError):
         return None
@@ -542,8 +544,10 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 
 
 def fetch_openrouter_models(
-    timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
+    timeout: float = 8.0, *, force_refresh: bool = False, cache_only: bool = False) -> list[tuple[str, str]]:
+    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible.
+
+    ``cache_only`` never opens a socket: memory, then disk (stale accepted), then the in-repo snapshot."""
     # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
     # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
     from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
@@ -560,6 +564,8 @@ def fetch_openrouter_models(
         if disk:
             profile_slot_set(_me, "_openrouter_catalog_cache", disk)
             return list(disk)
+    if cache_only:
+        return list(_read_openrouter_catalog_disk(allow_stale=True) or OPENROUTER_MODELS)
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.

@@ -22,8 +22,8 @@ auth:
       required: true
       secret: true
 
-# Only the read-only web search and webpage parsing tools are preselected; the
-# remaining tools stay opt-in through `hermes mcp configure agent-toolkit`.
+# Only the web search and webpage parsing tools are preselected; the remaining
+# tools stay opt-in through `hermes mcp configure agent-toolkit`.
 tools:
   default_enabled:
     - websearch_search

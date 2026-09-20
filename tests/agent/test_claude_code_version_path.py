@@ -17,11 +17,6 @@ import agent.anthropic_adapter as adapter
 from agent.anthropic_adapter import _CLAUDE_CODE_VERSION_FALLBACK, _detect_claude_code_version
 
 
-@pytest.fixture(autouse=True)
-def _fresh_cache(monkeypatch):
-    monkeypatch.setattr(adapter, "_claude_code_version_cache", None)
-
-
 def _install(directory, name: str) -> str:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name

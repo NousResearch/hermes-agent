@@ -136,7 +136,20 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     if started_at is None:
         return pid == os.getpid()
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    if current is None:
+        # The pid exists but its start time could not be read. Per the fail-safe
+        # above, an unprobeable process is not proven dead — treating None as
+        # death reaped six live mid-flight executions on 2026-09-19.
+        return True
+    # Same-host fingerprints drift between processes by up to ~1s (observed
+    # 2026-09-19: one process read its own start time exactly +1.00s later than
+    # every other probe of the same pid; the bit-exact compare below declared
+    # live owners dead and recover_interrupted_executions marked their in-flight
+    # executions unknown). PID reuse shifts the start time by minutes to days,
+    # so a 2s tolerance keeps reuse detection exact while being immune to
+    # probe drift. Native units: centiseconds on macOS, clock ticks on Linux
+    # (both ≈ 1/100 s).
+    return abs(current - int(started_at)) <= 200
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:

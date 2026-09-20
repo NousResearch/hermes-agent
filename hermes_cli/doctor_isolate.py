@@ -15,7 +15,12 @@ from typing import Any, Callable
 
 import yaml
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import (
+    get_hermes_home,
+    hermes_home_key,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 
 
 _SCHEMA_VERSION = 1
@@ -198,7 +203,7 @@ def _snapshot_state_db(source: Path, candidate: Path, *, timeout_seconds: float 
     """Take a bounded online backup, including committed WAL state, without writing source."""
     source_db = source / "state.db"
     if not source_db.exists():
-        return True
+        return not any((source / name).exists() for name in ("state.db-wal", "state.db-shm"))
     target_db = candidate / "state.db"
     deadline = monotonic() + timeout_seconds
 
@@ -244,6 +249,8 @@ def _prepare_candidate(
     label: str,
     disk_config: dict[str, Any],
     included_slices: list[str],
+    state_snapshot: Path | None,
+    state_ready: bool,
 ) -> tuple[Path, bool]:
     candidate = parent / label
     candidate.mkdir()
@@ -251,8 +258,10 @@ def _prepare_candidate(
     for slice_id in included_slices:
         for relative in _SLICE_ROOTS.get(slice_id, ()):
             _copy_entry(source, candidate, relative)
-    state_ready = "session_state" not in included_slices or _snapshot_state_db(source, candidate)
-    return candidate, state_ready
+    includes_state = "session_state" in included_slices
+    if includes_state and state_ready and state_snapshot is not None:
+        shutil.copy2(state_snapshot, candidate / "state.db", follow_symlinks=False)
+    return candidate, not includes_state or state_ready
 
 
 def _default_probe(config: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
@@ -270,7 +279,23 @@ def _probe_candidate(
     try:
         return probe(candidate, config, runtime)
     finally:
-        reset_hermes_home_override(token)
+        try:
+            from hermes_cli.mcp_startup import (
+                clear_mcp_discovery_for_current_home,
+                join_mcp_discovery,
+            )
+            from hermes_cli.plugins import evict_plugin_manager
+            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+
+            if not join_mcp_discovery(timeout=30.0):
+                raise RuntimeError("candidate MCP discovery did not stop")
+            try:
+                shutdown_mcp_servers(scope=hermes_home_key(candidate))
+            finally:
+                clear_mcp_discovery_for_current_home(timeout=0.0)
+                evict_plugin_manager(candidate)
+        finally:
+            reset_hermes_home_override(token)
 
 
 def _probe_status(payload: dict[str, Any], control: dict[str, Any] | None = None) -> str:
@@ -332,9 +357,12 @@ def run_isolation_diagnostic(
     disk_effective = copy.deepcopy(disk_minimal)
     included_slices: list[str] = []
     unresolved = False
+    state_snapshot: Path | None = None
+    state_ready = True
     try:
         candidate, _ = _prepare_candidate(
-            candidate_parent, source, "00-control", disk_effective, included_slices
+            candidate_parent, source, "00-control", disk_effective, included_slices,
+            state_snapshot, state_ready,
         )
         control = _probe_candidate(candidate, effective, runtime, probe)
         control_status = _probe_status(control)
@@ -347,12 +375,20 @@ def run_isolation_diagnostic(
             included_slices.append(slice_id)
             effective.update(_slice_config(safe_effective, slice_id))
             disk_effective.update(_slice_config(safe_raw, slice_id))
+            if slice_id == "session_state":
+                snapshot_dir = candidate_parent / ".state-snapshot"
+                snapshot_dir.mkdir()
+                state_ready = _snapshot_state_db(source, snapshot_dir)
+                snapshot_path = snapshot_dir / "state.db"
+                state_snapshot = snapshot_path if snapshot_path.exists() else None
             candidate, state_ready = _prepare_candidate(
                 candidate_parent,
                 source,
                 f"{index:02d}-{slice_id}",
                 disk_effective,
                 included_slices,
+                state_snapshot,
+                state_ready,
             )
             if not state_ready:
                 report.slices.append(SliceResult(slice_id, "needs_quiescence"))

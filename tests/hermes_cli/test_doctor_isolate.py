@@ -43,6 +43,8 @@ def _source_profile(tmp_path: Path) -> Path:
 
 
 def test_isolate_preserves_source_excludes_secrets_and_discovers_each_fresh_slice(tmp_path, monkeypatch):
+    from hermes_cli import mcp_startup, plugins
+
     source = _source_profile(tmp_path)
     monkeypatch.setenv("ISOLATE_SECRET", "expanded-secret")
     config = yaml.safe_load((source / "config.yaml").read_text(encoding="utf-8"))
@@ -52,12 +54,21 @@ def test_isolate_preserves_source_excludes_secrets_and_discovers_each_fresh_slic
     before = _tree_hash(source)
     candidates: list[Path] = []
     candidate_configs: list[str] = []
+    plugin_homes_before = set(plugins._plugin_managers_by_home)
+    mcp_homes_before = set(mcp_startup._mcp_discovery_started)
+    shutdown_scopes: list[str | None] = []
+    monkeypatch.setattr(
+        "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
+        lambda *, scope=None, names=None: shutdown_scopes.append(scope),
+    )
 
     def probe(candidate, config, runtime):
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_constants import hermes_home_key
 
         candidates.append(candidate)
         candidate_configs.append((candidate / "config.yaml").read_text(encoding="utf-8"))
+        mcp_startup._mcp_discovery_started.add(hermes_home_key())
         discover_plugins()
         discovered = {item["name"] for item in get_plugin_manager().list_plugins()}
         if "poisoned" in discovered:
@@ -90,6 +101,10 @@ def test_isolate_preserves_source_excludes_secrets_and_discovers_each_fresh_slic
     assert ".env" not in repr(payload) and "state.db-wal" not in repr(payload)
     assert "never-report-me" not in repr(payload)
     assert all("expanded-secret" not in text and "literal-secret" not in text for text in candidate_configs)
+    assert set(plugins._plugin_managers_by_home) == plugin_homes_before
+    assert set(mcp_startup._mcp_discovery_started) == mcp_homes_before
+    from hermes_constants import hermes_home_key
+    assert shutdown_scopes == [hermes_home_key(candidate) for candidate in candidates]
 
 
 def test_isolate_snapshots_sqlite_and_ignores_concurrent_runtime_writers(tmp_path, monkeypatch):
@@ -100,11 +115,17 @@ def test_isolate_snapshots_sqlite_and_ignores_concurrent_runtime_writers(tmp_pat
         conn.execute("insert into evidence values ('closed')")
 
     seen_values: list[str] = []
+    committed_after_session = False
 
     def probe(candidate, config, runtime):
+        nonlocal committed_after_session
         if (candidate / "state.db").exists():
             with sqlite3.connect(candidate / "state.db") as conn:
                 seen_values.extend(row[0] for row in conn.execute("select value from evidence"))
+            if candidate.name.endswith("session_state") and not committed_after_session:
+                with sqlite3.connect(source / "state.db") as concurrent:
+                    concurrent.execute("insert into evidence values ('later')")
+                committed_after_session = True
         logs = source / "logs"
         logs.mkdir(exist_ok=True)
         (logs / "gateway.log").write_text(str(len(seen_values)), encoding="utf-8")
@@ -120,14 +141,23 @@ def test_isolate_snapshots_sqlite_and_ignores_concurrent_runtime_writers(tmp_pat
 
     assert report.classification == "healthy"
     assert {"closed", "wal"}.issubset(seen_values)
+    assert "later" not in seen_values
     assert next(item for item in report.slices if item.id == "session_state").status == "pass"
 
-    monkeypatch.setattr("hermes_cli.doctor_isolate._snapshot_state_db", lambda *args, **kwargs: False)
-    unresolved = run_isolation_diagnostic(
-        source=source, probe=probe, runtime_override={"provider": "custom", "api_key": "secret"}
-    )
+    with monkeypatch.context() as snapshot_patch:
+        snapshot_patch.setattr("hermes_cli.doctor_isolate._snapshot_state_db", lambda *args, **kwargs: False)
+        unresolved = run_isolation_diagnostic(
+            source=source, probe=probe, runtime_override={"provider": "custom", "api_key": "secret"}
+        )
     assert unresolved.classification == "needs_quiescence"
     assert next(item for item in unresolved.slices if item.id == "session_state").status == "needs_quiescence"
+
+    (source / "state.db").unlink()
+    (source / "state.db-wal").write_bytes(b"orphan")
+    orphan = run_isolation_diagnostic(
+        source=source, probe=probe, runtime_override={"provider": "custom", "api_key": "secret"}
+    )
+    assert orphan.classification == "needs_quiescence"
 
 
 def test_isolate_stops_after_failed_sterile_control_and_parser_modes_are_exclusive(tmp_path):

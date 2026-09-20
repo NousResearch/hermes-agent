@@ -220,10 +220,17 @@ By default, the bot only responds in channels when `@mentioned`. You can change 
 |----------|---------|-------------|
 | `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | _(none)_ | Comma-separated channel IDs where the bot responds without `@mention`, even when require_mention is true. |
+| `MATTERMOST_RESPOND_IN_BOT_THREADS` | `true` | Set to `false` to require an `@mention` on every reply, even inside a thread the bot is participating in. |
 
 To find a channel ID in Mattermost: open the channel, click the channel name header, and look for the ID in the URL or channel details.
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
+
+### Thread replies (`respond_in_bot_threads`)
+
+Replies inside a thread the bot is participating in — it authored the thread root, or posted any reply within it — are treated as addressed and answered **without** an `@mention`, so an ongoing conversation does not need to be re-`@`-ed on every message. The thread-membership check runs only when a thread reply would otherwise be dropped (no mention, not a free-response channel).
+
+Set `respond_in_bot_threads: false` under `mattermost:` in `config.yaml` (or `MATTERMOST_RESPOND_IN_BOT_THREADS=false`) to restore strict per-reply mention gating.
 
 ## Channel allowlist (`allowed_channels`)
 

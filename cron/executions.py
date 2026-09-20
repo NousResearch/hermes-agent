@@ -321,7 +321,10 @@ def recover_interrupted_executions() -> int:
     now = _hermes_now().isoformat()
     changed = 0
     recovered: List[Dict[str, Any]] = []
-    stale_after = _live_owner_stale_after_seconds()
+    # Derived on the first live-owned row only: the bound reads config, and the idle gateway
+    # tick must stay config-free (tests/cron/test_idle_tick_config_skip.py).
+    stale_after: Optional[float] = None
+    stale_after_resolved = False
     with _transaction() as conn:
         rows = conn.execute(
             """SELECT id, status, process_id, pid, process_started_at,
@@ -342,6 +345,9 @@ def recover_interrupted_executions() -> int:
                 # NOT terminated here (leaked until host restart); rows owned by this process
                 # (process_id == _PROCESS_ID, in-process runs) are skipped above and remain
                 # out of scope.
+                if not stale_after_resolved:
+                    stale_after = _live_owner_stale_after_seconds()
+                    stale_after_resolved = True
                 if stale_after is None or _claim_age_seconds(row["claimed_at"]) <= stale_after:
                     continue
                 reason = _OWNER_WEDGED_REASON

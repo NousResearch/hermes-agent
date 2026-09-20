@@ -905,6 +905,14 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     import os
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    # Identity vars + mocked verifier (not_applicable: no-code workspace) so the
+    # completion-evidence gate passes without a real verification receipt.
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-artifact-test")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "not_applicable"},
+    )
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
         kt._handle_complete({

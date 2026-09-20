@@ -831,6 +831,40 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _cli_worker_completion_evidence(
+    task_id: str, *, run_started_at: Optional[int] = None
+) -> tuple[bool, Optional[dict]]:
+    """CLI-path mirror of tools/kanban_tools.py::_handle_complete's evidence gate.
+
+    ``hermes kanban complete`` is documented as a trusted-human entry point,
+    but a dispatcher-spawned worker inherits the same OS identity and env as
+    any human operator and can reach this CLI directly via its own
+    ``terminal`` tool (default ``TERMINAL_ENV=local``). Without this check, a
+    worker could shell out to ``hermes kanban complete $HERMES_KANBAN_TASK
+    --summary ...`` and defeat the completion-evidence gate that
+    ``kanban_complete`` (the tool) enforces — a confused-deputy bypass of the
+    entire evidence-hardening effort.
+
+    Delegates to the single source of truth
+    (``tools.kanban_tools._worker_completion_evidence``) rather than
+    reimplementing the identity/receipt logic here, so the two entry points
+    can never drift out of sync. Returns ``(False, None)`` — "not
+    applicable" — for every caller that is not itself the dispatcher-owned
+    worker for ``task_id`` (i.e. ordinary human/CLI use is unaffected);
+    import failures fail closed (evidence required, no receipt), matching
+    the tool path's own defensive posture.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return False, None
+    try:
+        from tools.kanban_tools import _worker_completion_evidence
+    except Exception:
+        # Same boundary the tool-path guards against malformed identity:
+        # uncertainty must not resolve to "no evidence needed".
+        return True, None
+    return _worker_completion_evidence(task_id, run_started_at=run_started_at)
+
+
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Goal judge for every terminal worker handoff (including review).
 
@@ -924,10 +958,20 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
+            active_run = kb.latest_run(conn, tid)
+            evidence_required, completion_evidence = _cli_worker_completion_evidence(
+                tid,
+                run_started_at=(
+                    active_run.started_at if active_run and active_run.status == "running"
+                    else None
+                ),
+            )
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        force=bool(getattr(args, "force", False)),
+                                        require_completion_evidence=evidence_required,
+                                        completion_evidence=completion_evidence)
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -936,6 +980,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             except kb.EmptyCompletionError as empty_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
                                  f"describing what was done (an empty completion is not evidence).")
+                return False
+            except kb.CompletionEvidenceError as evidence_err:
+                fail_msg[tid] = (
+                    f"cannot complete {tid}: {evidence_err}. Run the repository's required "
+                    "verification after the latest edit, then retry, or use the kanban_complete "
+                    "tool instead of this CLI.")
                 return False
             if not done:
                 # complete_task returns bare False for a dependency refusal too;
@@ -1323,6 +1373,66 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _cmd_delegation_status(args: argparse.Namespace) -> int:
+    """Read a background delegation's durable state from state.db.
+
+    Reads async_delegations directly, bypassing all LLM self-report
+    and in-memory state. Exit 0=found, 1=not found, 2=error.
+    """
+    try:
+        from tools.async_delegation import query_delegation_status
+    except ImportError as exc:
+        print(f"kanban delegation-status: cannot import async_delegation: {exc}",
+              file=sys.stderr)
+        return 2
+
+    delegation_id = args.delegation_id
+    use_json = getattr(args, "json", False)
+
+    try:
+        row = query_delegation_status(delegation_id)
+    except Exception as exc:
+        # The observer raises a typed read error. Keep this boundary defensive:
+        # import/schema/runtime failures are verifier errors, never "not found".
+        if use_json:
+            print(json.dumps({
+                "found": False,
+                "delegation_id": delegation_id,
+                "error": str(exc),
+            }))
+        else:
+            print(f"delegation-status: cannot read state.db: {exc}", file=sys.stderr)
+        return 2
+    if row is None:
+        if use_json:
+            print(json.dumps({"found": False, "delegation_id": delegation_id}))
+        else:
+            print(f"delegation-status: {delegation_id!r} not found in state.db",
+                  file=sys.stderr)
+        return 1
+
+    if use_json:
+        print(json.dumps(row, default=str))
+    else:
+        state = row.get("state", "?")
+        completed = row.get("completed_at")
+        result = row.get("result") or {}
+        summary = result.get("summary") if isinstance(result, dict) else None
+        status_line = result.get("status") if isinstance(result, dict) else None
+        print(f"delegation_id : {delegation_id}")
+        print(f"state         : {state}")
+        if completed:
+            import datetime
+            ts = datetime.datetime.fromtimestamp(completed).isoformat()
+            print(f"completed_at  : {ts}")
+        if status_line:
+            print(f"result.status : {status_line}")
+        if summary:
+            first_line = str(summary).strip().splitlines()[0][:200]
+            print(f"result.summary: {first_line}")
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1343,6 +1453,7 @@ _HANDLERS = {
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
     "gc": _cmd_gc,
+    "delegation-status": _cmd_delegation_status,
 }
 
 

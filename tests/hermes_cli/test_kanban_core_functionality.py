@@ -1198,6 +1198,116 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# CLI completion-evidence gate parity (worker cannot bypass kanban_complete
+# by shelling out to `hermes kanban complete` from its own terminal tool)
+# ---------------------------------------------------------------------------
+
+def test_cli_complete_blocks_worker_bypass_without_evidence(kanban_home, monkeypatch):
+    """A dispatcher-owned worker cannot use `hermes kanban complete` (the
+    CLI path) to silently finish its own task when the tool path
+    (`kanban_complete` / `_handle_complete`) would require terminal-verified
+    evidence. Regression test for the confused-deputy gap found in review
+    of PR #102390 (t_39e9b2dc): the CLI previously called
+    `kb.complete_task()` with `require_completion_evidence` always False and
+    never consulted `_worker_completion_evidence()` at all, so a worker with
+    a bare `terminal` tool (default `TERMINAL_ENV=local`) could defeat the
+    entire evidence-hardening effort with a single shell command.
+    """
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="worker-owned", assignee="worker-x")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+    finally:
+        conn.close()
+
+    # Simulate full dispatcher-worker identity, exactly as a real spawned
+    # worker process would have it set, then call the CLI directly — the
+    # same thing a worker's own `terminal` tool could do.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-cli-bypass")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(kanban_home))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {"status": "unverified"},
+    )
+
+    out = run_slash(f"complete {tid} --summary 'done, all tests pass'")
+
+    # Must NOT report success, and the task must NOT have flipped to done.
+    assert "Completed" not in out, out
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tid).status != "done"
+    finally:
+        conn.close()
+
+
+def test_cli_complete_allows_worker_with_verified_evidence(kanban_home, monkeypatch):
+    """The same worker-owned CLI path succeeds once the terminal
+    verification ledger actually reports a passing receipt bound to this
+    task/run — the gate blocks unverified self-report, not legitimate
+    completion.
+    """
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="worker-owned-verified", assignee="worker-x")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-cli-verified")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(kanban_home))
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_status",
+        lambda **_kwargs: {
+            "status": "passed",
+            "root": str(kanban_home),
+            "session_id": "session-cli-verified",
+            "evidence": {
+                "id": 99,
+                "kind": "test",
+                "created_at": "2100-01-01T00:00:00+00:00",
+            },
+        },
+    )
+
+    out = run_slash(f"complete {tid} --summary 'done, tests pass'")
+
+    assert "Completed" in out, out
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "done"
+    finally:
+        conn.close()
+
+
+def test_cli_complete_unaffected_for_non_worker_caller(kanban_home, monkeypatch):
+    """Ordinary human/CLI completion (no HERMES_KANBAN_TASK identity match)
+    is not subject to the evidence gate — it stays exactly as before.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="human-completed", assignee="worker-x")
+        kb.claim_task(conn, tid)
+    finally:
+        conn.close()
+
+    out = run_slash(f"complete {tid} --summary 'closed manually by operator'")
+
+    assert "Completed" in out, out
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "done"
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

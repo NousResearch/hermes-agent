@@ -49,6 +49,7 @@ def selected_run_idempotency_store(adapter, home):
     from gateway.runtime_ownership import process_ownership
     if not process_ownership.owns(home):
         return None
+    owner_epoch, owner_instance_id = authority.epoch, authority.instance_id
     key = hermes_home_key(home)
     lock = getattr(adapter, '_run_idempotency_store_lock', None)
     if lock is None:
@@ -57,11 +58,16 @@ def selected_run_idempotency_store(adapter, home):
         stores = getattr(adapter, '_profile_run_idempotency_stores', None)
         if stores is None:
             return None
+        current = authority_for_home(runner, home)
+        if (current is not authority or getattr(current, 'epoch', None) != owner_epoch
+                or getattr(current, 'instance_id', None) != owner_instance_id
+                or not process_ownership.owns(home)):
+            return None
         existing = stores.get(key)
         if existing is not None:
             owner, epoch, instance_id, store = existing
-            if (owner is not authority or epoch != authority.epoch
-                    or instance_id != authority.instance_id
+            if (owner is not authority or epoch != owner_epoch
+                    or instance_id != owner_instance_id
                     or not _exact_durable_store(store, path)):
                 return None
             return store
@@ -70,7 +76,16 @@ def selected_run_idempotency_store(adapter, home):
         if not _exact_durable_store(store, path):
             store.close()
             return None
-        stores[key] = (authority, authority.epoch, authority.instance_id, store)
+        # Opening SQLite may block.  The registry slot and process reservation are
+        # the publication authority, so re-read both after construction while the
+        # release path is excluded by this same lock.
+        current = authority_for_home(runner, home)
+        if (current is not authority or getattr(current, 'epoch', None) != owner_epoch
+                or getattr(current, 'instance_id', None) != owner_instance_id
+                or not process_ownership.owns(home)):
+            store.close()
+            return None
+        stores[key] = (authority, owner_epoch, owner_instance_id, store)
         return store
 
 

@@ -125,6 +125,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_store_lock = threading.Lock()
     self._profile_run_idempotency_stores = {}
     self._run_receipt_stores = {}
+    self._run_authorities = {}
     self._run_owner_pid = os.getpid()
     try:
         from gateway.status import get_process_start_time
@@ -192,7 +193,11 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
         or bool(field_names & {"output", "error", "usage", "pending_steer", "session_id"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
-            self._run_receipt_stores.get(run_id, self._run_idempotency_store).update_status(run_id, current)
+            store = self._run_receipt_stores.get(run_id)
+            if store is None:
+                logger.error("[api_server] exact receipt owner unavailable for idempotent run %s", run_id)
+            else:
+                store.update_status(run_id, current)
         except Exception:
             logger.exception("[api_server] failed to persist idempotent run status %s", run_id)
     return current
@@ -204,6 +209,9 @@ def _run_receipt_store(self, *, request=None, run_id=None):
         retained = self._run_receipt_stores.get(run_id)
         if retained is not None:
             return retained
+        if run_id in self._run_idempotency_ids:
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('run_receipt_owner_unavailable')
     runner = getattr(self, 'gateway_runner', None)
     if runner is not None:
         from hermes_constants import get_hermes_home
@@ -474,7 +482,57 @@ def _forget_run(self, run_id: str, *tables) -> None:
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids)
+                self._stopping_run_ids, self._run_authorities)
+
+
+async def retire_profile_runs(self, authority) -> None:
+    """Cancel and await only API observers bound to *authority*.
+
+    The adapter status is made durably cancelled through its retained exact
+    receipt handle before any task is detached.  The authority's canonical
+    execution is not declared complete: its drain has already been cancelled
+    by the owner teardown and a replacement epoch recovers a started row as
+    unknown/interrupted.
+    """
+    run_ids = [
+        run_id for run_id, owner in list(getattr(self, '_run_authorities', {}).items())
+        if owner is authority
+    ]
+    if not run_ids:
+        return
+    tasks = []
+    for run_id in run_ids:
+        self._set_run_status(
+            run_id, 'cancelled', completed=False, interrupted=True,
+            last_event='run.cancelled')
+        self._stopping_run_ids.add(run_id)
+        task = self._active_run_tasks.get(run_id)
+        if task is not None and not task.done():
+            task.cancel()
+            tasks.append(task)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    observers = getattr(authority, 'api_observers', {})
+    for run_id in run_ids:
+        admission_id = None
+        with authority.db._read_ctx() as connection:
+            row = connection.execute(
+                "SELECT admission_id FROM session_admissions "
+                "WHERE principal_id='api' AND request_id=?", (run_id,)
+            ).fetchone()
+            if row is not None:
+                admission_id = row[0]
+        if admission_id is not None:
+            waiter = authority.waiters.pop(admission_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.cancel()
+            observers.pop(admission_id, None)
+        _unregister_approval_notify(self._run_approval_sessions.get(run_id))
+        stream = self._run_streams.get(run_id)
+        if stream is not None and (not stream.events or stream.events[-1] is not None):
+            stream.put_nowait(None)
+        _retire_live_run(self, run_id)
 
 
 def _drop_run_transport(self, run_id: str) -> None:
@@ -710,6 +768,8 @@ async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_se
                     code = exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable'
                     return _json_error(_openai_error, code, code=code, status=409 if isinstance(exc, RuntimeStoreError) else 503)
         self._activate_admitted_request()
+        if launch.admission is not None:
+            self._run_authorities[run_id] = launch.admission[0]
         task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
         with suppress(TypeError):
             self._background_tasks.add(task)  # tracked for shutdown drain

@@ -207,7 +207,9 @@ async def unserve_profile_runtime(runner, home):
     from gateway.config import Platform
     adapter = getattr(runner, 'adapters', {}).get(Platform.API_SERVER)
     if adapter is not None:
+        from gateway.platforms.api_server_runs import retire_profile_runs
         from gateway.platforms.api_server_store import release_profile_run_idempotency_store
+        await retire_profile_runs(adapter, authority)
         release_profile_run_idempotency_store(adapter, authority)
     _publish_served_set(runner)
 

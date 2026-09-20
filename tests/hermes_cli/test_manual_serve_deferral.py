@@ -189,3 +189,29 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
     fleet._warn_pending_fleet_restart_on_startup()
     assert "900" not in capsys.readouterr().err
+
+
+def test_unknown_incarnation_defers_pid_scoped_and_discharges(monkeypatch, capsys):
+    """A ``None`` incarnation (unreadable /proc) still defers instead of going immortal."""
+    from hermes_cli import update_serve_obligations as obligations
+
+    unknown = asdict(RuntimeRecord(kind="serve", profile="work", pid=901, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
+    assert obligations.defer_manual_serve(unknown) is True
+    assert obligations.defer_manual_serve(unknown, require_alive=True) is True
+    directory = get_hermes_home() / "serve_restart_pending"
+    target = directory / "901-unknown.json"
+    assert json.loads(target.read_text(encoding="utf-8"))["create_time"] is None
+    # The receipt row is discharged by the durable file, never retained as pending.
+    assert obligations.retain_receipt_manual_serves({"plan": {"runtimes": [unknown]}}) == []
+    # Regaining the incarnation on a later update supersedes the pid-scoped file.
+    known = asdict(RuntimeRecord(kind="serve", profile="work", pid=901, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": 1000.0}))
+    assert obligations.defer_manual_serve(known) is True
+    assert not target.exists()
+    assert len(list(directory.glob("901-*.json"))) == 1
+    # A provably dead pid discharges the pid-scoped file through the warn path.
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
+    assert obligations.defer_manual_serve(unknown) is True
+    obligations.warn_pending_manual_serves(startup=True, pending_manual=[])
+    assert "901" not in capsys.readouterr().err
+    assert list(directory.glob("901-*.json")) == []

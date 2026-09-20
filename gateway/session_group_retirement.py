@@ -3,13 +3,13 @@ import json
 from hermes_state_runtime import RuntimeStoreError
 
 
-def require_room_retired(conn, room_id, *, unavailable=False):
+def require_room_retired(conn, room_id, *, unavailable=False, sealed_inventory=False):
     reason = 'runtime_coordination_required' if unavailable else 'output_cleanup_pending'
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     def refuse():
         raise RuntimeStoreError(reason)
     from gateway.hosted_room_task_scan import pending
-    if pending(conn, room_id):
+    if not sealed_inventory and pending(conn, room_id):
         refuse()
     if 'session_admissions' in tables:
         # Retained canonical admissions are stronger evidence than driver inactivity.

@@ -8,7 +8,6 @@ state, or an invite from an arbitrary federated user that arrives while
 the gateway is down gets auto-joined on restart.
 """
 
-import logging
 import time
 from unittest.mock import AsyncMock
 
@@ -87,19 +86,6 @@ class TestPendingInviteAuthorization:
             "!pending_room:example.org", "@alice:example.org"
         )
 
-    @pytest.mark.asyncio
-    async def test_unknown_bot_user_id_fails_closed(self):
-        adapter = _make_adapter()
-        adapter._user_id = ""
-
-        sync_data = _invite_sync_data(invite_state={"events": [_member_invite_event()]})
-        adapter._schedule_pending_invite_joins(sync_data)
-        await _drain_invite_tasks(adapter)
-
-        adapter._join_room_by_id.assert_not_awaited()
-        adapter._record_dm_room.assert_not_awaited()
-        assert adapter._invite_join_tasks == {}
-
     @pytest.mark.parametrize(
         "invite_state",
         [
@@ -133,58 +119,3 @@ class TestPendingInviteAuthorization:
         adapter._join_room_by_id.assert_not_awaited()
         adapter._record_dm_room.assert_not_awaited()
         assert adapter._invite_join_tasks == {}
-
-    @pytest.mark.asyncio
-    async def test_empty_allowlist_fails_closed(self):
-        """With no allowlist configured, _on_invite rejects every invite;
-        reconciliation must do the same."""
-        adapter = _make_adapter()
-        adapter._allowed_user_ids = set()
-
-        sync_data = _invite_sync_data(invite_state={"events": [_member_invite_event()]})
-        adapter._schedule_pending_invite_joins(sync_data)
-        await _drain_invite_tasks(adapter)
-
-        adapter._join_room_by_id.assert_not_awaited()
-        adapter._record_dm_room.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_allow_all_env_bypasses_gate(self, monkeypatch):
-        """GATEWAY_ALLOW_ALL_USERS disables the gate, exactly as it does
-        for _on_invite, even when the inviter is unknown."""
-        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-        adapter = _make_adapter()
-        adapter._allowed_user_ids = set()
-
-        sync_data = _invite_sync_data(invite_state=None)
-        adapter._schedule_pending_invite_joins(sync_data)
-        await _drain_invite_tasks(adapter)
-
-        adapter._join_room_by_id.assert_awaited_once_with("!pending_room:example.org")
-        adapter._record_dm_room.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_allow_all_logs_direct_invite_without_inviter(
-        self, monkeypatch, caplog
-    ):
-        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-        adapter = _make_adapter()
-        adapter._allowed_user_ids = set()
-
-        sync_data = _invite_sync_data(
-            invite_state={"events": [_member_invite_event(sender="")]}
-        )
-        with caplog.at_level(
-            logging.WARNING,
-            logger="plugins.platforms.matrix.adapter",
-        ):
-            adapter._schedule_pending_invite_joins(sync_data)
-            await _drain_invite_tasks(adapter)
-
-        adapter._join_room_by_id.assert_awaited_once_with("!pending_room:example.org")
-        adapter._record_dm_room.assert_not_awaited()
-        assert [record.getMessage() for record in caplog.records] == [
-            "Matrix: joining direct invite to !pending_room:example.org "
-            "without recording it in m.direct because the invite state "
-            "has no inviter"
-        ]

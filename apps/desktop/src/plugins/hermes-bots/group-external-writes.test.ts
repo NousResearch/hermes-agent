@@ -135,13 +135,50 @@ describe('external writes into a member session', () => {
     ])
   })
 
-  it('leave room-fed prompts and their replies alone', async () => {
-    const room = await loadRoom(createGroupGateway(options))
+  it('leave room-fed prompts alone and surface outside writes on room open, without a drive', async () => {
+    const gateway = createGroupGateway(options)
+    const room = await loadRoom(gateway)
+    const view = await import('./group-chat-view')
 
     const thread = await drive(room, 'hello room')
     await drive(room, 'second', thread)
 
     expect(texts(room)).toEqual(['hello room', 'room reply 1', 'second', 'room reply 2'])
+    expect(room.gateway.calls).toHaveLength(2)
+
+    // Nobody drives the room: a peer asks the member something in its session,
+    // the agent answers a compaction handoff and a cron delivery (plumbing rows
+    // the room never speaks for), then the user merely opens the room.
+    const key = room.membership.groupSessionKey(thread, MEMBER)
+    const session = gateway.sessions.get(String(room.chat.$groupChats.get().Room.sessions?.[key]))!
+    session.messages.push(
+      { content: 'manager: status?', role: 'user' },
+      { content: 'status report: all green', role: 'assistant' },
+      { content: '[CONTEXT COMPACTION — REFERENCE ONLY] summary…', role: 'user' },
+      { content: 'noted the summary', role: 'assistant' },
+      { content: 'Cronjob Response: nightly\nran', role: 'user' },
+      { content: 'cron acknowledged', role: 'assistant' },
+      { content: 'continue', display_kind: 'auto_continue', role: 'user' } as never,
+      { content: 'nudged answer', role: 'assistant' }
+    )
+
+    // The member sits on this Desktop's roster, as it does in production; the
+    // stored descriptor alone would read as a remote seat.
+    const data = await import('./data')
+    data.$lastRoster.set([{ name: 'research' }] as never)
+    data.$botMeta.set({ research: { groups: ['Room'] } } as never)
+
+    view.openGroupChat('Room')
+    await drain(() => texts(room).length < 6)
+
+    expect(texts(room)).toEqual([
+      'hello room',
+      'room reply 1',
+      'second',
+      'room reply 2',
+      'manager: status?',
+      'status report: all green'
+    ])
     expect(room.gateway.calls).toHaveLength(2)
   })
 })

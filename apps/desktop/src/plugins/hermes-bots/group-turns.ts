@@ -12,7 +12,7 @@ import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { mirrorExternalGroupWrites } from './group-external-writes'
+import { groupTranscriptRowText, mirrorExternalGroupWrites, syntheticGroupUserRow } from './group-external-writes'
 import {
   followGroupChat,
   groupMemberAuthor,
@@ -21,6 +21,7 @@ import {
   groupSessionOwner,
   hasThreadScopedGroupSession
 } from './group-membership'
+import { GROUP_PROMPT_HEADER_PREFIX } from './group-round-prompt'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -80,6 +81,47 @@ function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: numb
     }
 
     return replyText
+  }
+
+  return passText
+}
+
+/** The reply of a STRANDED turn: the first substantive assistant row after the
+ *  turn's own prompt (the header-prefixed user row at or after `before`),
+ *  stopping where an outside writer takes the session over. Newest-first
+ *  (`pickGroupTurnReply`) would post a CLI answer written after the late reply
+ *  as the turn reply — and the external-write mirror posts it again. Only
+ *  passes in range → the last pass; no anchor row → scan from `before`. */
+function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: number): null | string {
+  const anchor = messages.findIndex(
+    (msg, i) => i >= before && msg?.role === 'user' && groupTranscriptRowText(msg).startsWith(GROUP_PROMPT_HEADER_PREFIX)
+  )
+
+  let passText: null | string = null
+
+  for (let i = anchor === -1 ? before : anchor; i < messages.length; i++) {
+    const msg = messages[i]
+    const text = groupTranscriptRowText(msg)
+
+    if (msg?.role === 'user') {
+      if (text.startsWith(GROUP_PROMPT_HEADER_PREFIX) || syntheticGroupUserRow(msg, text)) {
+        continue
+      }
+
+      break
+    }
+
+    if (msg?.role !== 'assistant' || !text) {
+      continue
+    }
+
+    if (isGroupPassText(text)) {
+      passText = text
+
+      continue
+    }
+
+    return text
   }
 
   return passText
@@ -1248,7 +1290,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const messages = Array.isArray(state?.messages) ? state.messages : []
     // A transcript that never grew is not proof of nothing: a turn that dies
     // before its prompt is committed leaves only the retained error behind.
-    const reply = messages.length > strandedBefore ? pickGroupTurnReply(messages, strandedBefore) : null
+    const reply = messages.length > strandedBefore ? pickStrandedGroupTurnReply(messages, strandedBefore) : null
 
     if (reply === null) {
       // The late turn died instead of answering: say so where the user looks

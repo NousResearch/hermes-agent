@@ -151,6 +151,11 @@ class SkillSource(ABC):
     def trust_level_for(self, identifier: str) -> str:
         return self.TRUST_LEVEL
 
+    def current_revision(self, identifier: str) -> str:
+        """Upstream revision the skill would be fetched at; "" when the registry has no cheap
+        revision probe, which keeps update checks on the full-fetch path."""
+        return ""
+
 
 class GuardedFetchMixin:
     """SSRF/policy-guarded GETs, routed through ``tools.skills_hub`` (test-patchable)."""

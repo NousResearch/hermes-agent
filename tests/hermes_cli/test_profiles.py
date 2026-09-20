@@ -143,6 +143,20 @@ class TestCreateProfile:
         mode = stat.S_IMODE(env_path.stat().st_mode)
         assert mode == 0o600
 
+    def test_shared_auth_policy_links_new_profile_to_default_store(self, profile_env):
+        """An install that explicitly opts into fleet-wide auth gives new profiles one
+        atomic credential store instead of requiring a second OAuth login."""
+        default_home = profile_env / ".hermes"
+        root_auth = default_home / "auth.json"
+        root_auth.write_text('{"active_provider":"openai-codex"}\n', encoding="utf-8")
+        (default_home / ".share-profile-auth").write_text("enabled\n", encoding="utf-8")
+
+        profile_dir = create_profile("coder", no_alias=True)
+        profile_auth = profile_dir / "auth.json"
+
+        assert profile_auth.is_symlink()
+        assert profile_auth.samefile(root_auth)
+
 
     def test_fresh_profile_inherits_a_usable_model(self, profile_env):
         """A profile created without a clone source still resolves a provider.

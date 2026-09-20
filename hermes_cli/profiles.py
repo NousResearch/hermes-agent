@@ -71,6 +71,10 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
+# Explicit install-level opt-in for one shared LLM credential store. Profiles remain
+# isolated by default; operators that want fleet-wide subscription auth create this marker.
+SHARED_PROFILE_AUTH_MARKER = ".share-profile-auth"
+
 # Header seeded into a profile's empty .env so it owns a credentials file from day one.
 _PLACEHOLDER_ENV = (
     "# Per-profile secrets for this Hermes profile.\n"
@@ -1136,10 +1140,31 @@ def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: boo
     if not clone_all:
         _migrate_profile_config_if_outdated(profile_dir)
 
+    _link_shared_profile_auth(profile_dir)
+
     # Description last, so a partial-create failure doesn't strand a description file.
     if description and description.strip():
         with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
             write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
+
+
+def _link_shared_profile_auth(profile_dir: Path) -> bool:
+    """Link ``profile_dir/auth.json`` to the default store when the install opts in.
+
+    ``profile_dir`` may still be the hidden staging directory. Its depth is the same as
+    the published profile directory, so the relative link remains valid after rename.
+    """
+    default_home = _get_default_hermes_home()
+    if not (default_home / SHARED_PROFILE_AUTH_MARKER).is_file():
+        return False
+    root_auth = default_home / "auth.json"
+    if not root_auth.is_file():
+        return False
+    profile_auth = profile_dir / "auth.json"
+    if profile_auth.exists() or profile_auth.is_symlink():
+        profile_auth.unlink()
+    profile_auth.symlink_to(os.path.relpath(root_auth, profile_dir))
+    return True
 
 
 def _notify_multiplexer(canon: str) -> None:

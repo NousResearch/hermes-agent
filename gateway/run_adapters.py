@@ -1112,6 +1112,9 @@ class GatewayAdapterLifecycleMixin:
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
+        fanout_setter = getattr(adapter, "set_final_response_fanout_handler", None)
+        if callable(fanout_setter):
+            fanout_setter(self._deliver_api_final_response)
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(

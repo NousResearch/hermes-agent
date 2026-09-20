@@ -140,6 +140,7 @@ from gateway.browser_control_broker import (
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
+from gateway.session import SessionSource
 
 
 logger = logging.getLogger(__name__)
@@ -1222,6 +1223,37 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # One-shot artifact transport: lazy per-profile stores + limiter (tests inject).
         self._browser_control_artifacts: Dict[str, ArtifactStore] = {}
         self._browser_control_artifact_limiter: Optional[ArtifactRateLimiter] = None
+        self._final_response_fanout_handler = None
+        self._fanout_tasks: set[asyncio.Task] = set()
+
+    def set_final_response_fanout_handler(self, handler) -> None:
+        """Install the gateway-owned delivery seam for completed native-alias turns."""
+        self._final_response_fanout_handler = handler
+
+    async def _fanout_completed_api_turn(
+        self, *, session_source: Optional[SessionSource], response_text: Any, surface: str,
+    ) -> None:
+        """Schedule best-effort native delivery without delaying API completion."""
+        if session_source is None or self._final_response_fanout_handler is None:
+            return
+        text = str(response_text or "")
+        if not text.strip():
+            return
+
+        async def deliver() -> None:
+            try:
+                result = self._final_response_fanout_handler(
+                    session_source=session_source, content=text, surface=surface)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.exception("[api_server] native final-response delivery failed surface=%s", surface)
+
+        task = asyncio.create_task(deliver())
+        self._fanout_tasks.add(task)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._fanout_tasks.discard)
+        task.add_done_callback(self._background_tasks.discard)
 
     def active_agent_work_count(self) -> int:
         """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
@@ -3221,6 +3253,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         effective_session_id = result.get("session_id") if is_dict else session_id
         final_response = _resolve_media_to_data_urls(
             result.get("final_response", "") if is_dict else "")
+        if is_dict and result.get("completed", True) and not result.get("failed") and not result.get("partial"):
+            await self._fanout_completed_api_turn(
+                session_source=ctx.get("session_source"), response_text=result.get("final_response", ""),
+                surface="session_chat")
         headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
         return web.json_response(
             {"object": "hermes.session.chat.completion",
@@ -3287,6 +3323,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
+                if is_dict and result.get("completed", True) and not result.get("failed") and not result.get("partial"):
+                    await self._fanout_completed_api_turn(
+                        session_source=ctx.get("session_source"), response_text=result.get("final_response", ""),
+                        surface="session_chat_stream")
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
                 # Terminal status and flags come from the result (interrupted -> cancelled,

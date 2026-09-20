@@ -116,7 +116,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
@@ -140,6 +140,7 @@ from gateway.browser_control_broker import (
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
+from gateway.session import SessionSource, build_session_key
 
 
 logger = logging.getLogger(__name__)
@@ -1698,6 +1699,43 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None, _invalid_request("Session key too long")
         return raw, None
 
+    def _resolve_api_session_identity(
+        self, presented_key: Optional[str]
+    ) -> tuple[Optional[str], Optional[SessionSource], Optional[Any]]:
+        """Promote only an exact configured alias to native session identity."""
+        config = load_gateway_config()
+        aliases = config.session_key_aliases
+        if not presented_key or presented_key not in aliases:
+            return presented_key, None, None
+        raw = aliases[presented_key]
+        try:
+            if not isinstance(raw, dict):
+                raise ValueError("mapping required")
+            platform = Platform(raw.get("platform"))
+            chat_id = raw.get("chat_id")
+            chat_type = raw.get("chat_type", "dm")
+            if platform in {Platform.API_SERVER, Platform.WEBHOOK} or not isinstance(chat_id, str) or not chat_id.strip():
+                raise ValueError("native platform and chat_id required")
+            if not isinstance(chat_type, str) or not chat_type.strip():
+                raise ValueError("chat_type required")
+            if raw.get("profile") is not None or raw.get("scope_id") is not None:
+                raise ValueError("profile and scope_id aliases are not supported")
+            for name in ("thread_id", "user_id", "parent_chat_id"):
+                if raw.get(name) is not None and not isinstance(raw[name], str):
+                    raise ValueError(f"{name} must be a string")
+            request_profile = _api_request_profile.get()
+            source = SessionSource(
+                platform=platform, chat_id=chat_id, chat_type=chat_type,
+                thread_id=raw.get("thread_id"), user_id=raw.get("user_id"),
+                parent_chat_id=raw.get("parent_chat_id"), profile=request_profile)
+            return build_session_key(
+                source, group_sessions_per_user=config.group_sessions_per_user,
+                thread_sessions_per_user=config.thread_sessions_per_user,
+                profile=request_profile), source, None
+        except (TypeError, ValueError):
+            return None, None, web.json_response(
+                _openai_error("Configured session key alias is invalid", code="invalid_session_alias"), status=400)
+
     # -- Session DB -------------------------------------------------------------------
 
     def _open_and_cache_session_db(self, home) -> Optional[Any]:
@@ -3087,6 +3125,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return None, key_err
+        gateway_session_key, session_source, identity_err = self._resolve_api_session_identity(gateway_session_key)
+        if identity_err is not None:
+            return None, identity_err
         session_id = request.match_info["session_id"]
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -3146,6 +3187,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             session_history_delivery="1", **agent_overrides)
         return {
             "gateway_session_key": gateway_session_key, "session_id": session_id, "body": body,
+            "session_source": session_source,
             "user_message": user_message, "runtime_request": runtime_request,
             "lock_active": lock_active, "run_kwargs": run_kwargs}, None
 

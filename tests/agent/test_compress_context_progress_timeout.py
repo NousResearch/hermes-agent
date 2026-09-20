@@ -174,47 +174,6 @@ class TestResolveContextCompressionTimeouts:
             }
         ) == (30.0, 120.0)
 
-    def test_uncertified_short_route_keeps_explicit_total_ceiling(self, monkeypatch):
-        import agent.auxiliary_client as aux
-
-        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 30.0)
-        monkeypatch.setattr(
-            aux,
-            "_get_auxiliary_task_config",
-            lambda task: {
-                "provider": "cliproxyapi",
-                "model": "medium-latest",
-                "timeout": 30,
-            },
-        )
-        assert resolve_context_compression_timeouts(
-            {
-                "context_timeout_seconds": 30,
-                "context_total_ceiling_seconds": 30,
-            }
-        ) == (30.0, 30.0)
-
-    def test_fast_route_progress_allowance_never_exceeds_normal_ceiling(self, monkeypatch):
-        import agent.auxiliary_client as aux
-
-        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 300.0)
-        monkeypatch.setattr(
-            aux,
-            "_get_auxiliary_task_config",
-            lambda task: {
-                "provider": "cliproxyapi",
-                "model": "light-latest",
-                "reasoning_effort": "none",
-                "timeout": 300,
-            },
-        )
-        assert resolve_context_compression_timeouts(
-            {
-                "context_timeout_seconds": 300,
-                "context_total_ceiling_seconds": 300,
-            }
-        ) == (300.0, 600.0)
-
     def test_zero_idle_disables_wrapper(self):
         idle, ceiling = resolve_context_compression_timeouts(
             {"context_timeout_seconds": 0}

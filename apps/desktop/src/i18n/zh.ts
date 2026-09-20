@@ -309,6 +309,7 @@ export const zh = defineLocale({
     search: '搜索',
     searchTitle: '搜索会话、视图与操作',
     swapSidebarSides: '交换侧边栏位置',
+    turnToBackworkspace: '翻到背面工作区',
     hideRightSidebar: '隐藏右侧栏',
     showRightSidebar: '显示右侧栏',
     unreadSessions: count => (count === 1 ? '1 个未读会话' : `${count} 个未读会话`),
@@ -321,6 +322,23 @@ export const zh = defineLocale({
     resetHudLayout: '重置 HUD 大小和位置',
     layoutEditor: '布局编辑器',
     layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
+  },
+
+  backworkspace: {
+    attachFailed: '无法将该图片添加到页面。',
+    askNobody: '用 @ 提及一个智能体，即可从此页面提问。',
+    askPending: name => `${name} 正在回答…`,
+    askFailed: name => `${name} 无法回答，页面未改动。`,
+    askUnreachable: name => `${name} 在此窗口中不可用。`,
+    approvalBadge: count => `${count} 项在等你放行`,
+    approvalWaiting: shortcut => `智能体在等你放行 — 按 ${shortcut} 查看`,
+    approvalWaitingMany: (count, shortcut) => `${count} 项待放行 — 按 ${shortcut} 查看`,
+    approvalConfirm: '始终允许 — 再按一次',
+    mentionSelf: '智能体 · 当前配置文件',
+    label: '背面工作区',
+    unsupported: '此 Hermes 后端还不能保存背面工作区。请更新 Hermes。',
+    loadFailed: '无法打开背面工作区。请翻回正面后重试。',
+    saveFailed: '保存失败。文字仍保留在这里，下次编辑时会一并保存。'
   },
 
   keybinds: {
@@ -388,6 +406,10 @@ export const zh = defineLocale({
       'view.closeTab': '关闭标签',
       'view.reopenTab': '重新打开已关闭的标签',
       'view.flipPanes': '交换侧边栏位置',
+      'backworkspace.ask': '向提到的智能体提问（背面工作区）',
+      'backworkspace.mention': '提及智能体（背面工作区）',
+      'backworkspace.approval': '打开待放行请求（背面工作区）',
+      'view.toggleBackworkspace': '将窗口翻到背面工作区',
       'view.findInPage': '页面内查找',
       'view.findNext': '查找下一个',
       'view.findPrevious': '查找上一个',

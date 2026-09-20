@@ -268,6 +268,8 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
 
+In the desktop app the same prompt is a card in the conversation; on the [back workspace](./back-workspace.md) page it is one line at the bottom that opens a card on **⌘/Ctrl+Shift+A**.
+
 ### Permanent Allowlist
 
 Commands approved with "always" are saved to `~/.hermes/config.yaml`:

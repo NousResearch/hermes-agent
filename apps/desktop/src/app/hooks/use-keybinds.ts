@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { toggleBackworkspace } from '@/app/backworkspace/store'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
@@ -272,6 +273,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.prevTerminal': () => isPaneVisible('terminal') && cycleTerminal(-1),
     'view.closeTerminal': () => isPaneVisible('terminal') && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
+    'view.toggleBackworkspace': () => void toggleBackworkspace(),
     // ⌘W: close the focused tab (terminal / preview target / zone tree tab).
     // On the main tab with session tabs stacked, it shifts the next one in —
     // the loader navigates to that session's route (loads it into main). On

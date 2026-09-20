@@ -92,6 +92,32 @@
   src: url('./fonts/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
+/* Caveat (SIL OFL 1.1) — the hand the back workspace page is written in. Two
+   subsets on Google's own ranges: ğ, ş and İ live in Latin Extended, and a
+   page written in Turkish that falls back to the sans mid-word is not a hand
+   at all. The agent's replies stay in the reading face — they were not
+   written by hand, and the page says so by setting them apart. */
+@font-face {
+  font-family: 'Caveat';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/Caveat-latin.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+    U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Caveat';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/Caveat-latin-ext.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 @theme inline {
   --color-background: var(--dt-background);
   --color-foreground: var(--dt-foreground);
@@ -256,6 +282,9 @@
     --z-over-modal-content: 210;
     --z-switcher-backdrop: 219;
     --z-switcher: 220;
+    /* The page on the back of the window (src/app/backworkspace): above every
+       shell layer, below anything that must still reach the user over it. */
+    --z-backworkspace: 100;
     /* Boot and blocking states, in the order they can stack. */
     --z-connecting: 1200;
     --z-onboarding: 1300;
@@ -3679,4 +3708,64 @@ html[data-hud-window] [data-slot='popover-content'] {
 
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
+}
+
+/* Back workspace (src/app/backworkspace): while the window is turned over the
+   shell stays mounted — terminals, previews and streams keep running — but
+   only the back page paints and takes input. Portals outside #root (toasts,
+   dialogs) are not part of the shell and stay visible over the page. */
+:root[data-backworkspace] #root {
+  visibility: hidden;
+}
+
+/* The back page is paper, not a second chat pane.
+   Its field comes from the chrome mix, never from --ui-chat-surface-background:
+   glass empties that one at :root, and the page would ship see-through. Tokens
+   rather than literals at the call sites, so the page's look is one place and a
+   skin can reach it later without touching src/app/backworkspace. */
+[data-backworkspace-page] {
+  --bw-paper: color-mix(in srgb, var(--ui-bg-chrome) 72%, #efe6d4);
+  /* Raised above the field — the approval card. A card wearing the chat
+     surface would read as the front of the window leaking through the back. */
+  --bw-paper-raised: color-mix(in srgb, var(--bw-paper) 82%, #ffffff);
+  /* Pressed into it — the command block, the row under the pointer. */
+  --bw-paper-sunken: color-mix(in srgb, var(--ui-base) 6%, var(--bw-paper));
+  /* Opaque, unlike --ui-text-primary (94%): grain showing through the letters
+     is grain on the nib rather than on the page. */
+  --bw-ink: var(--ui-base);
+  --bw-ink-quiet: color-mix(in srgb, var(--ui-base) 62%, var(--bw-paper));
+  --bw-rule: color-mix(in srgb, var(--ui-base) 20%, var(--bw-paper));
+  --bw-hand: 'Caveat', var(--dt-font-sans);
+  /* How wide the writing runs. One number for the editor's column and the
+     status line under it, which were two literals that had nothing holding
+     them together. ~58 characters in the hand at its size — a written page
+     has a short line, and the eye finds the next one without hunting. */
+  --bw-measure: 36rem;
+  --bw-grain-opacity: 0.07;
+  /* <body> forces `antialiased`; the platform default fills the strokes, which
+     is what a pen does. A no-op away from macOS. */
+  -webkit-font-smoothing: auto;
+}
+
+:root.dark [data-backworkspace-page] {
+  --bw-paper: color-mix(in srgb, var(--ui-bg-chrome) 92%, #6a5a48);
+  --bw-paper-raised: color-mix(in srgb, var(--bw-paper) 88%, #ffffff);
+  /* Mid-grey grain darkens a light field and lifts a dark one — one rule, both
+     schemes — but the dark side takes far less of it before it reads as dirt. */
+  --bw-grain-opacity: 0.03;
+}
+
+/* The grain. A pseudo-element because the strength has to be a token and
+   `url(var(--x))` is not a url any browser will take, which leaves opacity as
+   the only knob — and opacity needs a box of its own. Behind the writing,
+   never over it, never in the way of the mouse, and painted once: it belongs
+   to the window rather than to the scrolling text. */
+[data-backworkspace-page]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: var(--bw-grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E");
 }

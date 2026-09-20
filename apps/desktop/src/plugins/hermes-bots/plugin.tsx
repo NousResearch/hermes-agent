@@ -83,6 +83,8 @@ interface MentionCompletionItem {
   display: string
   insert: string
   meta: string
+  /** Where the bot lives, for a surface that sends to it (see composer/contrib). */
+  target: { connectionId: null | string; profile: string }
 }
 
 /** The draft a `composer.middleware` handler rewrites, passes through, or
@@ -177,7 +179,11 @@ export default {
             items.push({
               insert,
               display: insert,
-              meta: `Bot · ${display}${source}`
+              meta: `Bot · ${display}${source}`,
+              // The tag may be qualified to disambiguate two bots that tag alike
+              // (#103731); the page still routes by the profile itself, so the
+              // target is carried explicitly rather than parsed back out.
+              target: { connectionId: profile.connectionId ?? null, profile: profile.name }
             })
           }
 

@@ -390,6 +390,7 @@ export interface Translations {
     search: string
     searchTitle: string
     swapSidebarSides: string
+    turnToBackworkspace: string
     hideRightSidebar: string
     showRightSidebar: string
     unreadSessions: (count: number) => string
@@ -402,6 +403,23 @@ export interface Translations {
     resetHudLayout: string
     layoutEditor: string
     layoutEditorTitle: (modifier: string) => string
+  }
+
+  backworkspace: {
+    attachFailed: string
+    askNobody: string
+    askPending: (name: string) => string
+    askFailed: (name: string) => string
+    askUnreachable: (name: string) => string
+    approvalBadge: (count: number) => string
+    approvalWaiting: (shortcut: string) => string
+    approvalWaitingMany: (count: number, shortcut: string) => string
+    approvalConfirm: string
+    label: string
+    mentionSelf: string
+    unsupported: string
+    loadFailed: string
+    saveFailed: string
   }
 
   keybinds: {

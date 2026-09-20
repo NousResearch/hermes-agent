@@ -268,6 +268,7 @@ export const ru = defineLocale({
     search: 'Поиск',
     searchTitle: 'Поиск сеансов, видов и действий',
     swapSidebarSides: 'Поменять панели местами',
+    turnToBackworkspace: 'Перевернуть на обратную сторону',
     hideRightSidebar: 'Скрыть правую панель',
     showRightSidebar: 'Показать правую панель',
     unreadSessions: count =>
@@ -282,6 +283,23 @@ export const ru = defineLocale({
     exitHud: 'Выйти из режима HUD',
     layoutEditor: 'Редактор раскладки',
     layoutEditorTitle: mod => `Редактор раскладки — ${mod}-клик сбрасывает раскладку`
+  },
+
+  backworkspace: {
+    attachFailed: 'Не удалось добавить это изображение на страницу.',
+    askNobody: 'Упомяните агента через @, чтобы спросить с этой страницы.',
+    askPending: name => `${name} отвечает…`,
+    askFailed: name => `${name} не смог ответить. Страница не изменилась.`,
+    askUnreachable: name => `${name} недоступен из этого окна.`,
+    approvalBadge: count => `${count} ждут вашего разрешения`,
+    approvalWaiting: shortcut => `Агент ждёт вашего разрешения — ${shortcut}, чтобы посмотреть.`,
+    approvalWaitingMany: (count, shortcut) => `Ожидают разрешения: ${count} — ${shortcut}, чтобы посмотреть.`,
+    approvalConfirm: 'Разрешать всегда — нажмите ещё раз',
+    mentionSelf: 'Агент · этот профиль',
+    label: 'Обратная сторона',
+    unsupported: 'Этот бэкенд Hermes пока не умеет сохранять обратную сторону. Обновите Hermes.',
+    loadFailed: 'Не удалось открыть обратную сторону. Переверните окно обратно и попробуйте снова.',
+    saveFailed: 'Не удалось сохранить. Текст остаётся здесь и сохранится при следующей правке.'
   },
   keybinds: {
     title: 'Горячие клавиши',
@@ -354,6 +372,10 @@ export const ru = defineLocale({
       'view.closeTab': 'Закрыть вкладку',
       'view.reopenTab': 'Восстановить закрытую вкладку',
       'view.flipPanes': 'Поменять панели местами',
+      'backworkspace.ask': 'Спросить упомянутого агента (обратная сторона)',
+      'backworkspace.mention': 'Упомянуть агента (обратная сторона)',
+      'backworkspace.approval': 'Открыть ожидающее разрешение (обратная сторона)',
+      'view.toggleBackworkspace': 'Перевернуть окно на обратную сторону',
       'view.findInPage': 'Найти на странице',
       'view.findNext': 'Следующее вхождение',
       'view.findPrevious': 'Предыдущее вхождение',

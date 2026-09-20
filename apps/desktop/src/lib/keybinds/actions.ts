@@ -159,6 +159,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.closeTerminal', category: 'view', defaults: ['ctrl+shift+w'] },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
+  // ⌘⇧E — the back page has no chrome of its own, so the way back must be a
+  // bound chord (Esc inside the page works too). A mod chord, so it also fires
+  // from inside the page's textarea.
+  { id: 'view.toggleBackworkspace', category: 'view', defaults: ['mod+shift+e'] },
   // ⌘W closes the focused zone's active tab — its own tab strip (preview) or
   // the tree tab (session tiles, files, terminal). The uncloseable workspace
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.
@@ -258,6 +262,11 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
   { id: 'composer.steer', category: 'composer', keys: ['enter'] },
   { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
+  // The back workspace's own surface keys: they belong to the page's editor,
+  // like the composer's, and are listed so the panel can teach them.
+  { id: 'backworkspace.ask', category: 'view', keys: ['mod+enter'] },
+  { id: 'backworkspace.mention', category: 'view', keys: ['@'] },
+  { id: 'backworkspace.approval', category: 'view', keys: ['mod+shift+a'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
   { id: 'composer.slash', category: 'composer', keys: ['/'] },

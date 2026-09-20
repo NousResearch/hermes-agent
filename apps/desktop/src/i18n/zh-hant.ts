@@ -275,6 +275,7 @@ export const zhHant = defineLocale({
     search: '搜尋',
     searchTitle: '搜尋工作階段、檢視和動作',
     swapSidebarSides: '交換側邊欄位置',
+    turnToBackworkspace: '翻到背面工作區',
     hideRightSidebar: '隱藏右側邊欄',
     showRightSidebar: '顯示右側邊欄',
     unreadSessions: count => (count === 1 ? '1 個未讀工作階段' : `${count} 個未讀工作階段`),
@@ -283,6 +284,23 @@ export const zhHant = defineLocale({
     openSettings: '開啟設定',
     openStarmap: '開啟記憶圖譜',
     resetHudLayout: '重設 HUD 大小和位置'
+  },
+
+  backworkspace: {
+    attachFailed: '無法將該圖片加入頁面。',
+    askNobody: '用 @ 提及一個代理，即可從此頁面提問。',
+    askPending: name => `${name} 正在回答…`,
+    askFailed: name => `${name} 無法回答，頁面未變動。`,
+    askUnreachable: name => `${name} 在此視窗中無法使用。`,
+    approvalBadge: count => `${count} 項在等你放行`,
+    approvalWaiting: shortcut => `代理在等你放行 — 按 ${shortcut} 查看`,
+    approvalWaitingMany: (count, shortcut) => `${count} 項待放行 — 按 ${shortcut} 查看`,
+    approvalConfirm: '一律允許 — 再按一次',
+    mentionSelf: '代理 · 目前設定檔',
+    label: '背面工作區',
+    unsupported: '此 Hermes 後端尚無法儲存背面工作區。請更新 Hermes。',
+    loadFailed: '無法開啟背面工作區。請翻回正面後再試一次。',
+    saveFailed: '儲存失敗。文字仍保留在這裡，下次編輯時會一併儲存。'
   },
 
   language: {

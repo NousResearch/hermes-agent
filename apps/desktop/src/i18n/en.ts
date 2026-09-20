@@ -348,6 +348,7 @@ export const en: Translations = {
     search: 'Search',
     searchTitle: 'Search sessions, views, and actions',
     swapSidebarSides: 'Swap sidebar sides',
+    turnToBackworkspace: 'Turn to back workspace',
     hideRightSidebar: 'Hide right sidebar',
     showRightSidebar: 'Show right sidebar',
     unreadSessions: count => (count === 1 ? '1 unread session' : `${count} unread sessions`),
@@ -360,6 +361,23 @@ export const en: Translations = {
     resetHudLayout: 'Reset HUD size and position',
     layoutEditor: 'Layout editor',
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
+  },
+
+  backworkspace: {
+    attachFailed: 'That image could not be added to the page.',
+    askNobody: 'Mention an agent with @ to ask this page.',
+    askPending: name => `${name} is answering…`,
+    askFailed: name => `${name} could not answer. The page is unchanged.`,
+    askUnreachable: name => `${name} is not reachable from this window.`,
+    approvalBadge: count => `${count} waiting for your ok`,
+    approvalWaiting: shortcut => `The agent is waiting for your ok — ${shortcut} to look.`,
+    approvalWaitingMany: (count, shortcut) => `${count} approvals are waiting — ${shortcut} to look.`,
+    approvalConfirm: 'Always allow — press again',
+    mentionSelf: 'Agent · this profile',
+    label: 'Back workspace',
+    unsupported: "This Hermes backend can't store the back workspace yet. Update Hermes to use it.",
+    loadFailed: "Couldn't open the back workspace. Turn back and try again.",
+    saveFailed: "Couldn't save. Your text stays here and saves with your next edit."
   },
 
   keybinds: {
@@ -434,6 +452,10 @@ export const en: Translations = {
       'view.closeTab': 'Close tab',
       'view.reopenTab': 'Reopen closed tab',
       'view.flipPanes': 'Swap sidebar sides',
+      'backworkspace.ask': 'Ask the mentioned agent (back workspace)',
+      'backworkspace.mention': 'Mention an agent (back workspace)',
+      'backworkspace.approval': 'Open the waiting approval (back workspace)',
+      'view.toggleBackworkspace': 'Turn window to back workspace',
       'view.findInPage': 'Find in page',
       'view.findNext': 'Find next match',
       'view.findPrevious': 'Find previous match',

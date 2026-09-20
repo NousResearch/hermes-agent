@@ -249,6 +249,7 @@ export const ar = defineLocale({
     search: 'بحث',
     searchTitle: 'البحث في الجلسات والعروض والإجراءات',
     swapSidebarSides: 'تبديل جانبي الأشرطة',
+    turnToBackworkspace: 'اقلب إلى مساحة العمل الخلفية',
     hideRightSidebar: 'إخفاء الشريط الأيمن',
     showRightSidebar: 'إظهار الشريط الأيمن',
     unreadSessions: count => (count === 1 ? 'جلسة واحدة غير مقروءة' : `${count} جلسات غير مقروءة`),
@@ -261,6 +262,23 @@ export const ar = defineLocale({
     resetHudLayout: 'إعادة تعيين حجم HUD وموضعه',
     layoutEditor: 'محرر التخطيط',
     layoutEditorTitle: modifier => `محرر التخطيط — انقر مع ${modifier} لإعادة ضبط التخطيط`
+  },
+
+  backworkspace: {
+    attachFailed: 'تعذّرت إضافة تلك الصورة إلى الصفحة.',
+    askNobody: 'اذكر وكيلاً بعلامة @ لتسأل من هذه الصفحة.',
+    askPending: name => `${name} يجيب الآن…`,
+    askFailed: name => `${name} لم يستطع الإجابة. الصفحة لم تتغيّر.`,
+    askUnreachable: name => `${name} غير متاح من هذه النافذة.`,
+    approvalBadge: count => `${count} بانتظار موافقتك`,
+    approvalWaiting: shortcut => `الوكيل ينتظر موافقتك — ${shortcut} للاطّلاع.`,
+    approvalWaitingMany: (count, shortcut) => `${count} طلبات موافقة تنتظر — ${shortcut} للاطّلاع.`,
+    approvalConfirm: 'السماح دائمًا — اضغط مرة أخرى',
+    mentionSelf: 'وكيل · هذا الملف',
+    label: 'مساحة العمل الخلفية',
+    unsupported: 'لا تستطيع واجهة Hermes الخلفية هذه حفظ مساحة العمل الخلفية بعد. حدّث Hermes لاستخدامها.',
+    loadFailed: 'تعذّر فتح مساحة العمل الخلفية. اقلب النافذة إلى الأمام وحاول مرة أخرى.',
+    saveFailed: 'تعذّر الحفظ. يبقى نصك هنا ويُحفظ مع تعديلك التالي.'
   },
   keybinds: {
     title: 'اختصارات لوحة المفاتيح',
@@ -324,6 +342,10 @@ export const ar = defineLocale({
       'view.terminalPaste': 'لصق في الطرفية',
       'view.closePreviewTab': 'إغلاق علامة تبويب المعاينة',
       'view.flipPanes': 'تبديل جانبي الشريط الجانبي',
+      'backworkspace.ask': 'اسأل الوكيل المذكور (مساحة العمل الخلفية)',
+      'backworkspace.mention': 'اذكر وكيلاً (مساحة العمل الخلفية)',
+      'backworkspace.approval': 'افتح طلب الموافقة المنتظر (مساحة العمل الخلفية)',
+      'view.toggleBackworkspace': 'اقلب النافذة إلى مساحة العمل الخلفية',
       'appearance.toggleMode': 'تبديل الفاتح / الداكن',
       'profile.default': 'الانتقال إلى الملف الشخصي الافتراضي',
       'profile.switch.1': 'الانتقال إلى الملف الشخصي 1',

@@ -78,6 +78,7 @@ import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
+import { BackworkspacePage } from '../backworkspace/back-page'
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchPreviewTiles } from '../chat/preview-tile'
@@ -840,6 +841,7 @@ export function ContribController() {
           {statusbarVisible && <WiredPane part="statusbar" />}
         </div>
       </ContribWiring>
+      <BackworkspacePage />
     </SidebarProvider>
   )
 }

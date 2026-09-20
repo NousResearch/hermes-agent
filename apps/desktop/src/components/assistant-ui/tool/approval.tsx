@@ -20,28 +20,21 @@ import {
 } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
-import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
 import { releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
-import {
-  answerApproval,
-  type ApprovalRequest,
-  clearApprovalRequest,
-  replayPendingApproval,
-  sessionApprovalRequests,
-  sessionApprovalStackSize
-} from '@/store/prompts'
+import { type ApprovalRequest, sessionApprovalRequests, sessionApprovalStackSize } from '@/store/prompts'
 import { setToolDisclosureOpen } from '@/store/tool-view'
 
 import { isApprovalActivity } from './approval-activity'
+import { type ApprovalChoice, approvalChoices } from './approval-choices'
+import { sendApproval } from './approval-send'
 import { toolEntryDisclosureId } from './fallback-model/targets'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
 
-type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 export const ApprovalPlacementContext = createContext<'inline' | 'floating'>('inline')
 
 // One transcript-owned host for the session. Execution rows never mount,
@@ -156,27 +149,6 @@ function ApprovalActivity({ floating, visible }: { floating: boolean; visible: b
   )
 }
 
-async function sendApproval(request: ApprovalRequest, choice: ApprovalChoice) {
-  const gateway = $gateway.get()
-
-  if (!gateway) {
-    throw new Error('Gateway disconnected')
-  }
-
-  if (
-    !sessionApprovalRequests(request.sessionId)
-      .get()
-      .some(item => item.requestId === request.requestId)
-  ) {
-    return
-  }
-
-  await answerApproval(gateway, request, choice)
-  triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-  clearApprovalRequest(request.sessionId, request.requestId)
-  void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
-}
-
 export function ApprovalQueue({
   requests,
   total,
@@ -266,11 +238,11 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
     }
   }, [])
 
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
-  const allowPermanent = request.allowPermanent !== false
-  const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
-  const allowSession = choices ? choices.includes('session') : true
-  const allowAlways = choices ? choices.includes('always') : allowPermanent
+  // Which answers this request takes — the same list the back workspace page
+  // offers, so the two surfaces cannot drift on what a command may be given.
+  const choices = approvalChoices(request)
+  const allowSession = choices.includes('session')
+  const allowAlways = choices.includes('always')
   const hasMoreOptions = allowSession || allowAlways
   const hasCommand = request.command.trim().length > 0
 

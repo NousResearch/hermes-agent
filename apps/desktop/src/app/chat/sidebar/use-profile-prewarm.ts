@@ -5,7 +5,7 @@ import { prewarmProfileBackend } from '@/store/profile'
 // Dwell before firing: long enough that sweeping the pointer across the rail
 // or a mixed-profile session list doesn't spawn a backend for every element
 // passed through, short enough to beat the click by hundreds of ms.
-const PREWARM_DWELL_MS = 120
+export const PREWARM_DWELL_MS = 120
 
 /**
  * pointerenter/pointerleave/pointermove handlers that pre-warm `profile`'s

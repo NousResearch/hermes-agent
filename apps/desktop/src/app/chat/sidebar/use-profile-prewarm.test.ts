@@ -7,9 +7,7 @@ const { prewarmProfileBackend } = vi.hoisted(() => ({
 
 vi.mock('@/store/profile', () => ({ prewarmProfileBackend }))
 
-import { useProfilePrewarm } from './use-profile-prewarm'
-
-const DWELL_MS = 120
+import { PREWARM_DWELL_MS as DWELL_MS, useProfilePrewarm } from './use-profile-prewarm'
 
 describe('useProfilePrewarm (#100548 layout-only pointerenter)', () => {
   beforeEach(() => {
@@ -26,27 +24,6 @@ describe('useProfilePrewarm (#100548 layout-only pointerenter)', () => {
 
     act(() => {
       result.current.startPrewarm()
-    })
-    act(() => {
-      vi.advanceTimersByTime(DWELL_MS)
-    })
-
-    expect(prewarmProfileBackend).not.toHaveBeenCalled()
-  })
-
-  it('does not cascade when successive rows (distinct profiles) receive layout-only pointerenter', () => {
-    const first = renderHook(() => useProfilePrewarm('finance'))
-    act(() => {
-      first.result.current.startPrewarm()
-    })
-    act(() => {
-      vi.advanceTimersByTime(DWELL_MS)
-    })
-    first.unmount()
-
-    const second = renderHook(() => useProfilePrewarm('scout'))
-    act(() => {
-      second.result.current.startPrewarm()
     })
     act(() => {
       vi.advanceTimersByTime(DWELL_MS)

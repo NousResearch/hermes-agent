@@ -393,12 +393,8 @@ function SidebarSessionRowImpl({
           startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
           dragHandleProps?.onPointerDown?.(event)
         }}
-        // Hovering a row from another profile (the all-profiles view) telegraphs
-        // a cross-profile resume — start that backend's spawn now so the click
-        // doesn't pay the full cold boot. Same-profile rows no-op inside
-        // prewarmProfileBackend. Layout-only pointerenter (stationary cursor,
-        // row identity changing underneath) must not arm the spawn — dwell
-        // starts on a real pointermove for this visit (#100548).
+        // Cross-profile hover pre-warms that backend; the dwell starts on a real
+        // pointermove, not on enter — see useProfilePrewarm (#100548).
         onPointerEnter={startPrewarm}
         onPointerLeave={cancelPrewarm}
         onPointerMove={notePointerMove}

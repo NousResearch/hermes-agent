@@ -3229,14 +3229,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
         if admitted is None:
             return None
-        home, record = admitted
-        from tools.bot_live_delivery import read_delivery_result
-        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
+        record = await self._await_live_bot_chat_receipt(*admitted)
         delivery_id = record["delivery_id"]
-        deadline = time.monotonic() + _LIVE_WAIT_SECONDS
-        while record["status"] in ("queued", "claimed") and time.monotonic() < deadline:
-            await asyncio.sleep(0.5)
-            record = await asyncio.to_thread(read_delivery_result, home, delivery_id) or record
         headers = self._session_headers(session_id, ctx["gateway_session_key"])
         if record["status"] == "settled":
             return web.json_response(
@@ -3249,6 +3243,63 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                  "status": record["status"], "delivery_id": delivery_id}, status=202, headers=headers)
         return _error_response(record.get("error") or f"Bot Chat delivery {record['status']}", 502,
                                code=record.get("reason") or record["status"], headers=headers)
+
+    async def _await_live_bot_chat_receipt(self, home: Path, record: Dict[str, Any], *, keepalive=None) -> Dict[str, Any]:
+        """Poll the owner's mailbox record until it settles or the local DM budget runs out; ``keepalive``
+        (async) is called every SSE keepalive interval so a streaming caller's proxy keeps the socket."""
+        from tools.bot_live_delivery import read_delivery_result
+        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
+        delivery_id = record["delivery_id"]
+        deadline = time.monotonic() + _LIVE_WAIT_SECONDS
+        next_keepalive = time.monotonic() + CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS
+        while record["status"] in ("queued", "claimed") and time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            record = await asyncio.to_thread(read_delivery_result, home, delivery_id) or record
+            if keepalive is not None and time.monotonic() >= next_keepalive:
+                await keepalive()
+                next_keepalive = time.monotonic() + CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS
+        return record
+
+    async def _stream_through_live_bot_chat(self, request: "web.Request", ctx: Dict[str, Any]) -> Optional["web.StreamResponse"]:
+        """``_answer_through_live_bot_chat`` for the SSE sibling route: the owner's settled receipt is
+        the run's single ``assistant.completed`` event; a receipt still open at the budget is a
+        ``run.queued`` event (the 202 shape), a failed one an ``error`` event carrying the reason."""
+        session_id = ctx["session_id"]
+        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"]["turn_author"])
+        if admitted is None:
+            return None
+        events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
+        response = web.StreamResponse(status=200, headers={
+            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+            **self._session_headers(session_id, ctx["gateway_session_key"])})
+        await response.prepare(request)
+
+        async def _write(name: str, payload: Dict[str, Any]) -> None:
+            name, payload = events.payload(name, payload)
+            await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
+
+        async def _keepalive() -> None:
+            await response.write(b": keepalive\n\n")
+
+        try:
+            await _write("run.started", {"user_message": {"role": "user", "content": ctx["user_message"]}, "runtime": {}})
+            record = await self._await_live_bot_chat_receipt(*admitted, keepalive=_keepalive)
+            delivery_id = record["delivery_id"]
+            if record["status"] == "settled":
+                message_id = f"msg_{uuid.uuid4().hex}"
+                await _write("message.started", {"message": {"id": message_id, "role": "assistant"}})
+                await _write("assistant.completed", {
+                    "message_id": message_id, "content": record.get("reply") or "", "delivery_id": delivery_id, "runtime": {}})
+                await _write("run.completed", {"message_id": message_id, "delivery_id": delivery_id, "usage": {}, "runtime": {}})
+            elif record["status"] in ("queued", "claimed"):
+                await _write("run.queued", {"status": record["status"], "delivery_id": delivery_id})
+            else:
+                await _write("error", {"message": record.get("error") or f"Bot Chat delivery {record['status']}",
+                                       "code": record.get("reason") or record["status"], "delivery_id": delivery_id})
+            await _write("done", {})
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            logger.info("Session SSE client disconnected while a live Bot Chat held the turn")
+        return response
 
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
@@ -3304,6 +3355,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
+        handed_off = await self._stream_through_live_bot_chat(request, ctx)
+        if handed_off is not None:
+            return handed_off
         gateway_session_key, session_id = ctx["gateway_session_key"], ctx["session_id"]
         user_message, runtime_request = ctx["user_message"], ctx["runtime_request"]
         runtime_meta = self._sanitize_runtime_metadata(

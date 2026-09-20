@@ -111,6 +111,63 @@ async def test_a_peer_turn_into_an_open_bot_chat_is_answered_by_its_live_owner(
         db.close()
 
 
+def _sse_events(raw: str) -> list[tuple[str, dict]]:
+    events = []
+    for frame in raw.split("\n\n"):
+        lines = [line for line in frame.splitlines() if line and not line.startswith(":")]
+        if lines and lines[0].startswith("event: "):
+            events.append((lines[0][7:], json.loads(lines[1][6:])))
+    return events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("owner_replies", "terminal"), [(True, "assistant.completed"), (False, "run.queued")],
+                         ids=["open-bot-chat-answers", "open-bot-chat-still-running"])
+async def test_a_streamed_peer_turn_into_an_open_bot_chat_is_answered_by_its_live_owner(
+    tmp_path, monkeypatch, owner_replies, terminal
+):
+    """The SSE sibling of the chat route takes the same door: the owner's receipt arrives as the run's
+    single assistant.completed event (or run.queued at the budget) and no turn runs here."""
+    home = tmp_path.resolve()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("tools.bot_mode_dm._LIVE_WAIT_SECONDS", 1.0)
+    db = SessionDB(home / "state.db")
+    db.create_session("bot-chat", "desktop")
+    db.set_session_title("bot-chat", "Bot Chat")
+    from hermes_cli.active_sessions import try_acquire_active_session
+    lease, refusal = try_acquire_active_session(
+        session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
+        metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
+    assert lease is not None and refusal is None
+    owner = _owner_answers(home, "pong") if owner_replies else None
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = db
+    app = web.Application()
+    app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    try:
+        with patch.object(adapter, "_run_agent", AsyncMock(return_value=({"final_response": "ran here"}, {}))) as run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/sessions/bot-chat/chat/stream", json={"message": "ping", "author": AUTHOR})
+                assert resp.status == 200 and resp.content_type == "text/event-stream"
+                events = _sse_events(await resp.text())
+        if owner is not None:
+            owner.join(5)
+        assert not run.called
+        [record] = [json.loads(p.read_text()) for p in (home / "runtime" / "bot_live_delivery").glob("*.json")]
+        assert (record["message"], record["author"]) == ("ping", AUTHOR)
+        names = [name for name, _ in events]
+        assert names[0] == "run.started" and names[-1] == "done" and terminal in names
+        payload = dict(events)[terminal]
+        assert payload["delivery_id"] == record["delivery_id"]
+        if owner_replies:
+            assert payload["content"] == "pong" and "run.completed" in names
+        else:
+            assert payload["status"] == "queued"
+    finally:
+        lease.release()
+        db.close()
+
+
 def _runs_app(adapter):
     app = web.Application()
     app.router.add_post("/v1/runs", adapter._handle_runs)

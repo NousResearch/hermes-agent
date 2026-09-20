@@ -4,6 +4,7 @@ import shutil
 import json
 import os
 import stat
+import sys
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -272,6 +273,59 @@ class TestExternalDirsIndexing:
         assert "clair-qa" in result["copied"]
         assert "ascii-art" in result["copied"]
         assert result["shadowed_by_external"] == []
+
+    def test_plain_stale_shadow_still_removed(self, tmp_path):
+        """A real local shadow (inside the skills dir, NOT under any external dir)
+        is still removed when byte-identical to the bundled copy."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        # Local shadow from an earlier sync, before external_dirs was configured.
+        shadow = skills_dir / "devops" / "clair-qa"
+        shadow.mkdir(parents=True)
+        shutil.copytree(bundled / "devops" / "clair-qa", shadow, dirs_exist_ok=True)
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"clair-qa:{_dir_hash(bundled / 'devops' / 'clair-qa')}\n")
+        ext_dir = self._setup_external(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True)
+
+        assert not shadow.exists()
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert "clair-qa" not in _read_manifest()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")
+    def test_symlinked_category_reaching_external_copy_never_deleted(self, tmp_path):
+        """Regression (shared-tree profiles): when a category dir is a symlink into
+        a tree ALSO listed in external_dirs, the deferred skill's dest resolves to
+        the EXTERNAL copy itself — it must never be rmtree'd, and the sync must
+        not die on the scope guard's ValueError (which surfaced as
+        "sync failed" for every such profile).
+        """
+        bundled = self._setup_bundled(tmp_path)
+        # Shared tree the profile both symlinks into and lists in external_dirs.
+        shared = tmp_path / "shared_skills"
+        (shared / "devops" / "clair-qa").mkdir(parents=True)
+        shutil.copytree(bundled / "devops" / "clair-qa", shared / "devops" / "clair-qa", dirs_exist_ok=True)
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir()
+        # The profile's category dir is a symlink into the shared tree.
+        (skills_dir / "devops").symlink_to(shared / "devops", target_is_directory=True)
+        manifest_file = skills_dir / ".bundled_manifest"
+        # Stale manifest entry from before external_dirs was configured — the
+        # incident's trigger condition (hash match -> pre-fix code called rmtree).
+        manifest_file.write_text(f"clair-qa:{_dir_hash(bundled / 'devops' / 'clair-qa')}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[shared]):
+                result = sync_skills(quiet=True)  # pre-fix: ValueError (scope guard, #48200)
+
+        assert (shared / "devops" / "clair-qa").exists(), "external copy must survive"
+        assert (shared / "devops" / "clair-qa" / "SKILL.md").exists()
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert "clair-qa" not in _read_manifest()
 
 
 class TestRenamedBundledSkillRecovery:

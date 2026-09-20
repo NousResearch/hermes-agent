@@ -260,6 +260,28 @@ def _recover_orphan_backup(dest: Path) -> None:
             logger.warning("Could not recover orphaned skill backup %s", orphan, exc_info=True)
 
 
+def _dest_lives_in_external_dir(dest: Path) -> bool:
+    """True when *dest* resolves into any configured external_skills dir.
+
+    Profiles commonly share one skills tree via symlinks (``profile/skills/creative ->
+    ~/.hermes/skills/creative``) AND list that shared tree in ``skills.external_dirs``.
+    A deferred skill's computed dest then ``exists()`` through the symlink — but it is
+    the EXTERNAL copy itself, not a stale local shadow, and must never be removed.
+    """
+    from agent.skill_utils import get_external_skills_dirs
+    try:
+        resolved = dest.resolve()
+    except OSError:  # unreadable symlink target — treat as external (never delete)
+        return True
+    for ext_dir in get_external_skills_dirs():
+        try:
+            resolved.relative_to(Path(ext_dir).resolve())
+        except ValueError:
+            continue
+        return True
+    return False
+
+
 def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash: str) -> None:
     """An external_dirs source provides this skill; a local copy would be a name collision the
     loader refuses. Defer for ALL manifest states; remove a stale local shadow from an earlier
@@ -267,6 +289,15 @@ def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash
     st.shadowed_by_external.append(skill_name)
     st.skipped += 1
     st.say(f"  ⇢ {skill_name} (deferred to external_dirs, not written to local tree)")
+    if _dest_lives_in_external_dir(dest):
+        # The "shadow" is the external copy itself reached through a category symlink
+        # (external_dirs pointing at the shared tree the profile symlinks into). Removing
+        # it would delete the source of truth; drop the stale manifest entry instead so
+        # the skill is not re-examined every sync.
+        if skill_name in st.manifest:
+            st.manifest.pop(skill_name, None)
+            st.say(f"  ✓ dropped manifest entry for {skill_name} (external copy reached via symlink)")
+        return
     if dest.exists() and _dir_hash(dest) == bundled_hash:
         _rmtree_writable(dest)
         st.say(f"  ✓ removed stale shadow of {skill_name}")

@@ -56,8 +56,13 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
 # Patterns in last_failure_error that indicate a quota / auth blocker.
 # These errors won't resolve by retrying immediately — auto-block instead.
+# The auth family is a curated list, not an open `auth\w*` stem: that stem
+# also matched ordinary English words like "author"/"authored"/"authoring"/
+# "authoritative" in worker progress prose, parking a healthy card forever
+# (#117009).
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
+    r"\b(quota|rate[\s_\-]?limit|429|403|"
+    r"auth|authenticat(?:e|ed|ion)|authoriz(?:e|ed|ation)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
     r"invalid[\s_]api[\s_]key)\b",

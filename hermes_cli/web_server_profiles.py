@@ -291,7 +291,7 @@ def _config_profile_scope(profile: Optional[str]):
         # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
         secrets = launch_secret_scope(process_home)
     with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
-        token = set_secret_scope(secrets)
+        token = set_secret_scope(secrets, home=(profile_dir if profile_dir is not None else process_home))
         try:
             yield scoped
         finally:

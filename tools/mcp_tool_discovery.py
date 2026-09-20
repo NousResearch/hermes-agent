@@ -79,7 +79,7 @@ async def _install_owner_secret_scope():
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     # Off-loop: an external source runs a helper subprocess (once per home, then cached).
     await asyncio.to_thread(hydrate_profile_secret_sources, home)
-    return set_secret_scope(build_profile_secret_scope(home))
+    return set_secret_scope(build_profile_secret_scope(home), home=home)
 
 
 @contextmanager
@@ -97,7 +97,7 @@ def _owner_secret_scope():
         return
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     hydrate_profile_secret_sources(home)
-    token = set_secret_scope(build_profile_secret_scope(home))
+    token = set_secret_scope(build_profile_secret_scope(home), home=home)
     try:
         yield
     finally:

@@ -322,7 +322,7 @@ class ComputeHost:
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
                 from hermes_state_registry import acquire
                 home_token = set_hermes_home_override(profile_home)
-                secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)), home=profile_home)
                 # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
                 # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
                 session_db = acquire(Path(profile_home) / "state.db")

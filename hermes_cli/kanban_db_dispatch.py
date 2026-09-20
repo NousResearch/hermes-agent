@@ -2583,7 +2583,7 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         # Toolset availability probes read credentials (``get_secret``); under multiplex an
         # unscoped read raises and the pin was silently dropped for every worker.
         secret_token = (
-            set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
+            set_secret_scope(build_profile_secret_scope(Path(hermes_home)), home=hermes_home)
             if is_multiplex_active() else None)
         try:
             cfg = load_config()
@@ -2751,7 +2751,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # installed while multiplexing is on — mirrors _resolve_worker_cli_toolsets's
     # own scope-then-read ordering a few functions up in this module.
     secret_token = (
-        set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        set_secret_scope(build_profile_secret_scope(Path(profile_home)), home=profile_home)
         if multiplex_active and profile_home else None)
     try:
         env = build_subprocess_env(

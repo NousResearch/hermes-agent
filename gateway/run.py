@@ -1788,7 +1788,7 @@ def _profile_runtime_scope(
     else:
         from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
         secrets = build_profile_secret_scope(Path(profile_home))
-    secret_token = set_secret_scope(secrets)
+    secret_token = set_secret_scope(secrets, home=profile_home)
     # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
     # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
     # pinned (first-writer-wins backend leak; #68559).

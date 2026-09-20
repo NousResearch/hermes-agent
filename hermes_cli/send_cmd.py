@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -144,6 +145,28 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     return _SUCCESS_EXIT
 
 
+_SECRET_SCOPE_MISMATCH_WARNED = False
+
+
+def _warn_secret_scope_mismatch_once(home_key: str, scope_key: str) -> None:
+    """Warn once (stderr) when ``_load_hermes_env`` skips a merge because the resolved home does
+    not match the installed multiplex secret scope. Mirrors ``hermes_constants._warn_profile_fallback_once``
+    — a real mismatch must be visible, not silently swallowed."""
+    global _SECRET_SCOPE_MISMATCH_WARNED
+    if _SECRET_SCOPE_MISMATCH_WARNED:
+        return
+    _SECRET_SCOPE_MISMATCH_WARNED = True
+    with contextlib.suppress(Exception):
+        print(
+            "hermes send: refused to merge this profile's .env secrets into the active multiplex "
+            f"secret scope (resolved home key {home_key!r} != installed scope owner {scope_key!r}). "
+            "This is an internal profile-scoping mismatch, not your configuration — the merge was "
+            "skipped fail-closed rather than risk leaking another profile's credentials. Report it "
+            "with `hermes debug share` if it keeps happening.",
+            file=sys.stderr,
+        )
+
+
 def _load_hermes_env() -> None:
     """Populate the credential environment from ``<HERMES_HOME>/.env`` AND bridge top-level ``config.yaml``
     keys into it so the gateway config loader sees platform credentials and home channels.
@@ -155,6 +178,15 @@ def _load_hermes_env() -> None:
     The installed scope is already ``build_profile_secret_scope``'s composition — user ``.env``, then
     the profile's external secret sources over it — so it is authoritative as-is; replaying raw
     ``.env`` over it would let a stale user value beat the secret-manager one for this request.
+
+    FAIL-CLOSED IDENTITY CHECK: every installer of the multiplex scope (``_config_profile_scope``,
+    the MCP/browser-tool lifecycle re-registration paths, the cron/kanban worker scopes, etc.) also
+    stashes the owning profile's ``hermes_home_key()`` in a paired ContextVar (see
+    ``agent.secret_scope.set_secret_scope``'s ``home=`` argument). Before merging ``secrets`` (built
+    from this call's own resolved ``home``) into that installed scope, we compare the two home keys
+    and skip the merge on any mismatch — consistent with ``UnscopedSecretError``'s fail-closed
+    philosophy — instead of trusting that every current and future caller keeps ``HERMES_HOME`` and
+    the installed secret scope paired (#114297 review finding).
     """
     import os
     try:
@@ -162,10 +194,28 @@ def _load_hermes_env() -> None:
         home = get_hermes_home()
     except Exception:
         return
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from agent.secret_scope import (
+        build_profile_secret_scope, current_secret_scope, current_secret_scope_home_key,
+        is_multiplex_active)
+    try:
+        secrets = build_profile_secret_scope(home)
+    except Exception:
+        secrets = {}
     scope = current_secret_scope() if is_multiplex_active() else None
     if isinstance(scope, dict):
+        from hermes_constants import hermes_home_key
+        scope_key = current_secret_scope_home_key()
+        home_key = hermes_home_key(home)
+        if scope_key is not None and scope_key != home_key:
+            # The installed scope belongs to a DIFFERENT profile than the one this call resolved —
+            # merging would leak that profile's secrets (and, below, its config.yaml scalars) into
+            # whatever profile installed the scope. Skip everything fail-closed and warn once so a
+            # real mismatch stays visible rather than being silently swallowed.
+            _warn_secret_scope_mismatch_once(home_key, scope_key)
+            return
         target: dict = scope
+        for key, val in secrets.items():
+            target.setdefault(key, val)
     else:
         target = os.environ
         env_path = home / ".env"

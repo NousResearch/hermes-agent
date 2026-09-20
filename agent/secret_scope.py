@@ -52,6 +52,12 @@ def serves_routed_profile() -> bool:
 
 _SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
 
+# Paired with _SECRET_SCOPE: the hermes_home_key() of the profile whose secrets are installed
+# in the scope above. Lets a caller resolving its OWN home (e.g. hermes_cli.send_cmd) verify
+# that home actually matches the scope it is about to merge secrets into, instead of trusting
+# an unenforced "caller sets both from the same profile" invariant (#114297 review finding).
+_SECRET_SCOPE_HOME_KEY: ContextVar[Optional[str]] = ContextVar("_SECRET_SCOPE_HOME_KEY", default=None)
+
 
 class UnscopedSecretError(RuntimeError):
     """A secret was read in multiplex mode with no scope installed.
@@ -81,18 +87,58 @@ class UnscopedSecretError(RuntimeError):
             self.add_note(developer_detail)
 
 
-def set_secret_scope(secrets: Optional[Mapping[str, str]]) -> Token:
-    """Install the active profile's secret mapping; ``None`` clears. Returns a reset token."""
-    return _SECRET_SCOPE.set(secrets)
+class SecretScopeToken:
+    """Reset handle for ``set_secret_scope``: pairs the ``_SECRET_SCOPE`` reset token with the
+    ``_SECRET_SCOPE_HOME_KEY`` one so both context vars are always installed/torn down together."""
+
+    __slots__ = ("_scope_token", "_home_key_token")
+
+    def __init__(self, scope_token: Token, home_key_token: Token):
+        self._scope_token = scope_token
+        self._home_key_token = home_key_token
 
 
-def reset_secret_scope(token: Token) -> None:
-    _SECRET_SCOPE.reset(token)
+def set_secret_scope(secrets: Optional[Mapping[str, str]], home: "Optional[str | Path]" = None) -> SecretScopeToken:
+    """Install the active profile's secret mapping; ``None`` clears. Returns a reset token.
+
+    ``home`` should be passed whenever the caller also sets a ``HERMES_HOME`` override for this
+    scope (true of every real installer today — see ``hermes_home_key`` call sites in
+    ``web_server_profiles.py`` / ``web_server_mcp.py`` / ``kanban_db_dispatch.py`` /
+    ``mcp_tool_lifecycle.py`` / ``browser_tool_lifecycle.py``). It is stashed as a paired identity
+    marker (``hermes_home_key(home)``) so a caller that independently resolves its own home before
+    merging secrets into an already-installed scope — ``hermes_cli.send_cmd._load_hermes_env()`` is
+    the one that does this — can verify the installed scope actually belongs to that home before
+    merging, instead of trusting an unenforced "the installer set both from the same profile"
+    invariant (#114297 review finding). Omitting ``home`` installs the mapping with no marker,
+    which makes ``current_secret_scope_home_key()`` read back ``None``.
+    """
+    scope_token = _SECRET_SCOPE.set(secrets)
+    home_key = None
+    if secrets is not None and home is not None:
+        from hermes_constants import hermes_home_key
+        home_key = hermes_home_key(home)
+    home_key_token = _SECRET_SCOPE_HOME_KEY.set(home_key)
+    return SecretScopeToken(scope_token, home_key_token)
+
+
+def reset_secret_scope(token: "Token | SecretScopeToken") -> None:
+    if isinstance(token, SecretScopeToken):
+        _SECRET_SCOPE.reset(token._scope_token)
+        _SECRET_SCOPE_HOME_KEY.reset(token._home_key_token)
+    else:
+        # Back-compat: a bare contextvars.Token from before the paired home-key marker existed.
+        _SECRET_SCOPE.reset(token)
 
 
 def current_secret_scope() -> Optional[Mapping[str, str]]:
     """The active secret mapping, or None when no scope is installed."""
     return _SECRET_SCOPE.get()
+
+
+def current_secret_scope_home_key() -> Optional[str]:
+    """The ``hermes_home_key()`` of the profile whose secrets are installed in the current
+    secret scope, or None when no scope is installed or it was installed without a ``home``."""
+    return _SECRET_SCOPE_HOME_KEY.get()
 
 
 # Genuinely-global env vars: process/deployment settings, NOT profile secrets.

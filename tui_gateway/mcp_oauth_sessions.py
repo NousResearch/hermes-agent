@@ -124,7 +124,7 @@ def _worker(
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
         from tools.mcp_oauth import force_interactive_oauth
         home_token = set_hermes_home_override(hermes_home)
-        secret_token = set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(hermes_home)), home=hermes_home)
         try:
             with force_interactive_oauth(), dashboard_oauth_flow(flow):
                 _probe_with_rollback(server_name, cfg, hermes_home, flow, reconnect_live)

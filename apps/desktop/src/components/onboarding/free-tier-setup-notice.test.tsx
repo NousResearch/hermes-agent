@@ -104,7 +104,12 @@ describe('FreeTierSetupNotice', () => {
 
     cleanup()
     $freeTierStatus.set(null)
-    const unreachable = ctxReturning({ ...NO_IDENTITY, error_code: 'anon_unreachable', retryable: true, retry_after: 15 })
+    const unreachable = ctxReturning({
+      ...NO_IDENTITY,
+      error_code: 'anon_unreachable',
+      retryable: true,
+      retry_after: 15
+    })
     render(<FreeTierSetupNotice ctx={unreachable} />)
 
     await screen.findByTestId('free-tier-setup-notice')

@@ -359,11 +359,7 @@ function ConfigSettingsInner({
       <SettingsProfileScope className="mb-5" />
       {activeSectionId === 'model' && (
         <div className={showModelSettings ? 'mb-6' : undefined}>
-          <ModelSettings
-            onMainModelChanged={onMainModelChanged}
-            scopeProfile={scopeProfile}
-            subpage={subpage}
-          />
+          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} subpage={subpage} />
         </div>
       )}
       {children}
@@ -421,7 +417,9 @@ function ConfigSettingsInner({
 
   const showEmptyState =
     visibleFields.length === 0 &&
-    (subpage === undefined ? activeSectionId !== 'chat' : !showModelSettings && !showDesktopSettings && !showAttachments)
+    (subpage === undefined
+      ? activeSectionId !== 'chat'
+      : !showModelSettings && !showDesktopSettings && !showAttachments)
 
   return renderPage(
     <>

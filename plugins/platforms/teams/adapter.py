@@ -717,6 +717,33 @@ class TeamsAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
 
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Update a previously sent activity for gateway streaming."""
+        del finalize
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+        conv_ref = self._conv_refs.get(chat_id)
+        if not conv_ref:
+            return SendResult(success=False, error="Teams conversation reference unavailable")
+        try:
+            from microsoft_teams.api import MessageActivityInput
+
+            activity = MessageActivityInput().with_text(self.format_message(content))
+            activity.id = str(message_id)
+            result = await self._app.activity_sender.send(activity, conv_ref)
+            result_id = getattr(result, "id", None) or str(message_id)
+            return SendResult(success=True, message_id=str(result_id))
+        except Exception as exc:
+            logger.warning("[teams] edit_message failed: %s", exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if self._app:
             with suppress(Exception):

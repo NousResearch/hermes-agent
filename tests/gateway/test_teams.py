@@ -418,6 +418,40 @@ class TestTeamsSend:
         assert result.message_id == "msg-123"
         mock_app.send.assert_awaited_once_with("conv-id", "Hello")
 
+    @pytest.mark.anyio
+    async def test_edit_message_updates_existing_activity_for_streaming(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        conv_ref = SimpleNamespace()
+        sent = MagicMock()
+        sent.id = "msg-123"
+        sender = MagicMock()
+        sender.send = AsyncMock(return_value=sent)
+        adapter._app = SimpleNamespace(activity_sender=sender)
+        adapter._conv_refs["conv-id"] = conv_ref
+
+        result = await adapter.edit_message("conv-id", "msg-123", "Hello, final")
+
+        assert result.success is True
+        assert result.message_id == "msg-123"
+        sender.send.assert_awaited_once()
+        activity, ref = sender.send.await_args.args
+        assert activity.id == "msg-123"
+        assert ref is conv_ref
+
+    @pytest.mark.anyio
+    async def test_edit_message_fails_closed_without_conversation_reference(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = SimpleNamespace(activity_sender=MagicMock())
+
+        result = await adapter.edit_message("conv-id", "msg-123", "Hello")
+
+        assert result.success is False
+        assert "conversation reference" in result.error.lower()
+
 
 def _make_summary_payload():
     return TeamsMeetingSummaryPayload(

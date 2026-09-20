@@ -26,8 +26,13 @@ const PAGE_THEME = EditorView.theme({
   },
   '.cm-line': { padding: '0' },
   // The column is centered with the SCROLLER's padding, so the scrollbar stays
-  // at the window edge and a click in the margin still lands in the text.
+  // at the window edge. It has to be the scroller: the selection of several
+  // lines is painted from the CONTENT's box edge inwards by whatever padding
+  // `.cm-line` carries, so a margin held by either of those two would have the
+  // highlight run the full width of the window. The margin is still writable —
+  // `caretFromMargin` below hands a click there to the line beside it.
   '.cm-scroller': {
+    cursor: 'text',
     fontFamily: 'var(--dt-font-sans)',
     lineHeight: '1.65',
     overflowY: 'auto',
@@ -44,6 +49,25 @@ const PAGE_THEME = EditorView.theme({
   },
   '.cm-content ::selection': { backgroundColor: 'var(--ui-selection-background)' }
 })
+
+/**
+ * Hands a click in the page's margin to the line beside it.
+ *
+ * The centered column is the scroller's padding, so a click out there has the
+ * scroller as its target — and CodeMirror listens for the mouse on the content
+ * alone, which is why the page would otherwise sit there doing nothing. Its own
+ * hit-testing wants no more than a height and a distance, so it answers for a
+ * point in the margin exactly as it would for one on the line.
+ */
+export function caretFromMargin(view: EditorView, event: MouseEvent) {
+  if (event.button !== 0 || event.target !== view.scrollDOM) {
+    return
+  }
+
+  event.preventDefault()
+  view.dispatch({ selection: { anchor: view.posAtCoords({ x: event.clientX, y: event.clientY }, false) } })
+  view.focus()
+}
 
 interface BackworkspaceEditorProps {
   ariaLabel: string
@@ -90,18 +114,6 @@ export function BackworkspaceEditor({
           keymap.of([...defaultKeymap, ...historyKeymap]),
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({ 'aria-label': ariaLabel, spellcheck: 'true' }),
-          // A click in the centered column's margin lands on the scroller, not
-          // on the text, so CodeMirror would ignore it. The page is meant to
-          // take writing from anywhere on it: hand focus back instead.
-          EditorView.domEventHandlers({
-            mousedown(event, view) {
-              if (event.target === view.scrollDOM) {
-                view.focus()
-              }
-
-              return false
-            }
-          }),
           EditorView.updateListener.of(update => {
             if (update.docChanged) {
               onChangeRef.current(update.state.doc.toString())
@@ -112,6 +124,10 @@ export function BackworkspaceEditor({
         ]
       })
     })
+
+    // On the scroller, not through `EditorView.domEventHandlers`: those are
+    // bound to the content, which is the one element a margin click misses.
+    view.scrollDOM.addEventListener('mousedown', event => caretFromMargin(view, event))
 
     if (autoFocus) {
       view.focus()

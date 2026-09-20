@@ -14,6 +14,7 @@ import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } fro
 import type { GroupChatRoom } from './group-chat'
 import {
   followGroupChat,
+  groupMemberAuthor,
   groupMemberKey,
   groupSessionKey,
   groupSessionOwner,
@@ -1172,15 +1173,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       })
       appendGroupChatEntry(
         group,
-        {
-          kind: 'member',
-          name: member.name,
-          ...(member.remoteSource
-            ? {
-                source: member.connectionLabel || member.connectionId
-              }
-            : {})
-        },
+        groupMemberAuthor(member),
         reply,
         strandedThread
       )

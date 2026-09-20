@@ -247,12 +247,18 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
         headers["User-Agent"] = "claude-code/0.1.0"
     # Google's Generative Language API rejects ``Authorization: Bearer <api-key>`` with 401
     # ACCESS_TOKEN_TYPE_UNSUPPORTED (reserved for OAuth 2 tokens); plain keys use ``x-goog-api-key``.
-    if url and base_url_host_matches(url, "generativelanguage.googleapis.com"):
-        from agent.gemini_native_adapter import normalize_gemini_base_url
-        # A Vertex express key (AQ.) can only 403 on the Studio host; normalize routes it to aiplatform.
-        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0], key) + "/models"
-        headers.pop("Authorization", None)
-        headers["x-goog-api-key"] = key
+    if url and (base_url_host_matches(url, "generativelanguage.googleapis.com")
+                or base_url_host_matches(url, "aiplatform.googleapis.com")):
+        from agent.gemini_native_adapter import is_vertex_express_base_url, normalize_gemini_base_url
+        root = url.rsplit("/models", 1)[0]
+        if base_url_host_matches(url, "generativelanguage.googleapis.com") or is_vertex_express_base_url(root):
+            # Normalize guarantees the version segment and completes an explicitly configured express
+            # aiplatform base to the publishers form; the key itself never decides the surface — AQ.
+            # keys exist for both AI Studio and Vertex express mode (#115306). The OAuth Vertex
+            # ``…/endpoints/openapi`` base is OpenAI-compatible and stays exactly as configured.
+            url = normalize_gemini_base_url(root) + "/models"
+            headers.pop("Authorization", None)
+            headers["x-goog-api-key"] = key
     return base, url, headers
 
 

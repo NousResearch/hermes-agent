@@ -1187,6 +1187,25 @@ export function resolveRosterMentions(
     }
   }
 
+  // Previous profile names fill gaps only: a bot renamed after a handle was
+  // typed (or remembered) still resolves, but a live name always wins over
+  // another bot's rename history (#110200).
+  for (const bot of members) {
+    if (!bot?.name || isActiveRosterBot(bot, active)) {
+      continue
+    }
+
+    const previous = Array.isArray(bot.previous_names) ? bot.previous_names : []
+
+    for (const name of previous) {
+      for (const form of mentionNameForms(name)) {
+        if (form && !byForm.has(form)) {
+          byForm.set(form, bot)
+        }
+      }
+    }
+  }
+
   const mentioned: RosterRow[] = []
   const seen = new Set<string>()
 
@@ -1290,6 +1309,7 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...bot,
     connectionKind: bot.connectionKind || source.kind,
     connectionLabel: bot.connectionLabel || source.label,
+    ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,
     sourceReachable: source.reachable

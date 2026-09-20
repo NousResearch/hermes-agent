@@ -406,6 +406,39 @@ def test_relay_route_ambiguous_target_errors_with_forms(tmp_path, monkeypatch):
     assert out2.get("status") == "queued"
 
 
+def test_remote_default_is_addressable_by_its_title_slug(tmp_path, monkeypatch):
+    """A remote ``default`` is ``@hermes`` like every gateway's own, so its Bot Mode title is the only
+    bare form that singles it out: ``message_agent`` accepts the slug, the prompt roster offers it
+    (never bare ``@hermes``, which is the LOCAL default), and the form does not depend on roster order."""
+    from tools import bot_mode_probe
+
+    home = _managed_home(tmp_path)
+    rows = [
+        {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
+        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1", "title": "Ops Bot"},
+        {"profile": "cos-bot", "handle": "cos-bot", "connection_id": "cloud-1", "title": "Other"},
+    ]
+    monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", lambda *a, **k: json.dumps({"status": "queued"}))
+    agent = _FakeAgent(home)
+    for order in (rows, rows[::-1]):
+        bot_relay.write_remote_roster(home, order)
+        roster = bot_relay.read_remote_roster(home)
+        forms = dict(zip((r["connection_id"] + "/" + r["profile"] for r in roster),
+                         bot_relay.remote_target_forms(roster, bot_mode_probe.local_taken_forms(home))))
+        # an exact handle beats a colliding title slug; the collided title falls back to the qualified form
+        assert forms == {"cloud-1/cos-bot": "cos-bot", "vps-1/default": "hermes@vps-1", "cloud-1/default": "ops-bot"}
+        assert bot_relay.resolve_remote_target("cos-bot", roster)["profile"] == "cos-bot"
+    out = json.loads(message_agent_tool(target="@ops-bot", message="ping", agent=agent))
+    assert out.get("status") == "queued"
+    [env] = bot_relay.claim_pending_envelopes(home)
+    assert (env["target_connection"], env["target_profile"]) == ("cloud-1", "default")
+    # a bare @hermes from the local default is the two remote defaults — offered under their reply-safe forms
+    err = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))["error"]
+    assert "hermes@vps-1" in err and "ops-bot" in err
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@ops-bot`" in section and "`@hermes@vps-1`" in section and "- `@hermes` —" not in section
+
+
 def test_unknown_target_error_mentions_connected_machines(tmp_path):
     home = _managed_home(tmp_path)
     agent = _FakeAgent(home)
@@ -423,7 +456,8 @@ def test_protocol_section_lists_remote_teammates(tmp_path):
     ])
     section = bot_mode_probe.get_bot_mode_protocol_section(home, force_refresh=True)
     assert "OTHER connected machines" in section
-    assert "`@hermes` — on Hermes Cloud — Moxie" in section
+    # Offered under its title slug: bare `@hermes` is THIS gateway's own default (#103731).
+    assert "`@moxie` — on Hermes Cloud — Moxie" in section
 
 
 def test_capability_fingerprint_changes_with_relay_roster(tmp_path):
@@ -616,6 +650,12 @@ def test_drain_ttl_zero_disables_expiry(root, monkeypatch):
     out_path.write_text(json.dumps(env), encoding="utf-8")
     claimed = bot_relay.claim_pending_envelopes(root)
     assert [e["id"] for e in claimed] == [env["id"]]
+
+
+def test_invalid_ttl_config_falls_back_instead_of_breaking_drain(monkeypatch):
+    monkeypatch.setattr(bot_relay, "_bot_mode_cfg", lambda *args, **kwargs: "not-a-number")
+
+    assert bot_relay._envelope_ttl_seconds() == bot_relay.DEFAULT_ENVELOPE_TTL_SECONDS
 
 
 def test_ttl_config_read_is_lazy_and_defensive(monkeypatch):

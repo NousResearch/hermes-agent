@@ -2478,9 +2478,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] DM topic '%s' already exists in chat %s (will be mapped from incoming messages)", self.name, name, chat_id)
             elif "not a forum" in error_text or "forums_disabled" in error_text:
                 logger.warning(
-                    "[%s] Cannot create DM topic '%s' in chat %s: Topics mode is not enabled. "
-                    "The user must open the DM with this bot in Telegram, tap the bot name "
-                    "at the top, and enable 'Topics' in chat settings before topics can be created.",
+                    "[%s] Cannot create DM topic '%s' in chat %s: Threaded Mode is not enabled. "
+                    "The bot owner must open the BotFather Mini App (search 'botfather' in "
+                    "Telegram, tap Open on the search result) -> My bots -> this bot -> Bot "
+                    "Settings -> Threads Settings -> enable Threaded Mode. This cannot be enabled "
+                    "from the DM chat, nor from the BotFather /mybots text menu.",
                     self.name, name, chat_id)
             else:
                 logger.warning(
@@ -5874,6 +5876,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
         return None
 
+    def _bot_sender_suppressed(self, message: Message) -> bool:
+        """True when ``bots_require_mention`` vetoes this other-bot message: another bot must
+        explicitly @mention us, its quote-replies and plain chatter do not count (two bots
+        answering each other's replies never stop otherwise)."""
+        return bool(
+            self._telegram_bots_require_mention()
+            and self._sender_is_other_bot(message)
+            and not self._message_mentions_bot(message)
+        )
+
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
         """Return True when a group message should be stored but not dispatched."""
         if self._is_own_message(message) or not self._telegram_observe_unmentioned_group_messages() or not self._is_group_chat(message):
@@ -5887,9 +5899,15 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or chat_id_str not in allowed:
             return False
-        # Only observe messages the require_mention gate would skip.
+        # Free-response chats/topics dispatch every message, so they are never observed.
         if chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return False
+        # Only observe messages the require_mention gate would skip. The bot-to-bot loop breaker
+        # in ``_should_process_message`` skips another bot's message too, so a sibling bot
+        # addressing us by wake word (or quote-reply) is never dispatched and must still be
+        # kept as observed context (#115119).
+        if self._bot_sender_suppressed(message):
+            return True
         if not self._telegram_require_mention() or self._is_reply_to_bot(message) or self._message_mentions_bot(message):
             return False
         return not self._message_matches_mention_patterns(message)
@@ -6126,11 +6144,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         # Bot-to-bot loop breaker: another bot must explicitly @mention us; its quote-reply or
         # plain chatter does not count (two bots answering each other's replies never stop otherwise).
-        if (
-            self._telegram_bots_require_mention()
-            and self._sender_is_other_bot(message)
-            and not self._message_mentions_bot(message)
-        ):
+        if self._bot_sender_suppressed(message):
             return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message):
             return True

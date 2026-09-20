@@ -415,6 +415,10 @@ def format_process_notification(evt: dict) -> "str | None":
             "...(output trimmed — subagent-owned process; see the "
             "delegation's live transcript for full output)\n"
             + _out[-600:])
+    elif evt.get("output_cut"):
+        # Say so where the output is the payload (a teammate's reply): a silent tail reads as whole.
+        _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
+                f"session_id=\"{_sid}\") has the full output)\n{_out}")
     return (
         f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
         f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")

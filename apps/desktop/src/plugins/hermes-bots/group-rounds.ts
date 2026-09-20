@@ -93,6 +93,29 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
         handles.set(form, groupMemberKey(member))
       }
     }
+
+    // Normalized slug/collapsed variants of a live identity, gap-filled only — an exact live name elsewhere always wins, so an old handle can never squat (#110200).
+    for (const raw of [member.name, handle, title, ...botFriendlyNames(member)]) {
+      for (const form of mentionNameForms(raw)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, groupMemberKey(member))
+        }
+      }
+    }
+  }
+
+  // Renamed members answer to previous handles, gap-fill only — every live identity's variants are claimed first, so a live name always wins (#110200).
+  for (const member of members) {
+    const key = groupMemberKey(member)
+    const previous = Array.isArray(member.previous_names) ? member.previous_names : []
+
+    for (const name of previous) {
+      for (const form of mentionNameForms(name)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, key)
+        }
+      }
+    }
   }
 
   for (const match of source.matchAll(/@([a-z0-9][a-z0-9._-]*)/gi)) {

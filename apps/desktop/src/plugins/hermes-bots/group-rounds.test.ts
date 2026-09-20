@@ -134,6 +134,73 @@ describe('routing', () => {
     expect(rounds.groupReplyMentionTag({ name: 'ops', title: 'The Ops' }, MEMBERS)).toBe('the-ops')
   })
 
+  it('resolves a pre-rename handle to the renamed member (#110200)', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [{ name: 'niezalezny', previous_names: ['niezale-ny'] }, { name: 'builder' }]
+
+    const parsed = rounds.parseGroupChatMentions('@niezale-ny please check', members)
+
+    expect(parsed.mentioned.has('niezalezny')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
+  it('prefers a live name over another member\u2019s rename history', async () => {
+    const { rounds } = await loadRoom()
+
+    // Someone later claimed the old name as their own profile: the live name
+    // wins, the alias must not steal the mention.
+    const members: GroupMember[] = [{ name: 'niezalezny', previous_names: ['niezale-ny'] }, { name: 'niezale-ny' }]
+
+    const parsed = rounds.parseGroupChatMentions('@niezale-ny take this', members)
+
+    expect(parsed.mentioned.has('niezale-ny')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
+  it('a previous-name alias cannot squat on a collapsed form of a live name', async () => {
+    const { rounds } = await loadRoom()
+
+    // Live member "bob.jones": the live loop registers "bob.jones" but NOT
+    // the collapsed "bobjones" (its hand-rolled collapse only strips [\s_-],
+    // never dots). The alias loop normalizes with mentionNameForms, which
+    // DOES yield "bobjones" — the old !handles.has guard missed it and let
+    // the alias hijack the mention. Every typed normalization must reach
+    // the live member.
+    const members: GroupMember[] = [{ name: 'bob.jones' }, { name: 'renamed', previous_names: ['bobjones'] }]
+
+    for (const typed of ['@bob.jones', '@bob-jones', '@bobjones']) {
+      const parsed = rounds.parseGroupChatMentions(`${typed} take this`, members)
+
+      expect(parsed.mentioned.has('bob.jones')).toBe(true)
+      expect(parsed.mentioned.size).toBe(1)
+    }
+  })
+
+  it('a previous-name alias cannot squat on the slug form of a dotted live name', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [{ name: 'ann.lee' }, { name: 'renamed', previous_names: ['ann-lee'] }]
+
+    const parsed = rounds.parseGroupChatMentions('@ann-lee take this', members)
+
+    expect(parsed.mentioned.has('ann.lee')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
+  it('dotted previous names still resolve through every normalization when uncontested', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [{ name: 'renamed', previous_names: ['ann.lee'] }, { name: 'builder' }]
+
+    for (const typed of ['@ann.lee', '@ann-lee', '@annlee']) {
+      const parsed = rounds.parseGroupChatMentions(`${typed} take this`, members)
+
+      expect(parsed.mentioned.has('renamed')).toBe(true)
+      expect(parsed.mentioned.size).toBe(1)
+    }
+  })
+
   it('rotates the lead speaker each round', async () => {
     const { rounds } = await loadRoom()
 
@@ -166,6 +233,49 @@ describe('routing', () => {
 
     expect(lines.some(line => line.startsWith('research:'))).toBe(true)
     expect(lines.some(line => line.startsWith('builder: On it'))).toBe(true)
+  })
+
+  // #94863 D3: a LOCAL member's reply must carry from.source too, or the same
+  // entry mirrored to another Desktop reads as that Desktop's own same-named bot.
+  it('stamps a local member reply with its connection label and keeps (you) for that member only', async () => {
+    const room = await loadRoom({ turn: () => 'Central here.' })
+    const { formatGroupChatLine } = await import('./group-round-prompt')
+    const local: GroupMember = { connectionId: 'central', connectionLabel: 'Central', name: 'default', title: '' }
+
+    room.rounds.sendToGroupChat('Core', [local], '@hermes status?')
+    await settle(room, 'Core')
+
+    const reply = log(room, 'Core').find(entry => entry.from.kind === 'member')
+
+    expect(reply?.from).toEqual({ kind: 'member', name: 'default', source: 'Central' })
+    expect(formatGroupChatLine(reply as GroupMessage, local)).toContain('(you)')
+    // The same entry seen by the other machine's `default` is somebody else.
+    expect(
+      formatGroupChatLine(reply as GroupMessage, { connectionId: 'mbp', connectionLabel: 'MBP', name: 'default', remoteSource: true })
+    ).not.toContain('(you)')
+  })
+
+  // Two Desktops label the same gateway differently ("Central" here, "Studio"
+  // there): the reply's gateway install_id, not the label, decides `(you)`.
+  it('matches self on the gateway install_id when Desktops label the connection differently', async () => {
+    const room = await loadRoom({ turn: () => 'Central here.' })
+    const { formatGroupChatLine } = await import('./group-round-prompt')
+    const local: GroupMember = { connectionId: 'central', connectionLabel: 'Central', installId: 'gw-1', name: 'default', title: '' }
+
+    room.rounds.sendToGroupChat('Core', [local], '@hermes status?')
+    await settle(room, 'Core')
+
+    const reply = log(room, 'Core').find(entry => entry.from.kind === 'member') as GroupMessage
+
+    expect(reply.from).toEqual({ kind: 'member', name: 'default', source: 'Central', gateway: 'gw-1' })
+    // The other Desktop's view of the SAME gateway under its own label.
+    expect(
+      formatGroupChatLine(reply, { connectionId: 'c9', connectionLabel: 'Studio', installId: 'gw-1', name: 'default', remoteSource: true })
+    ).toContain('(you)')
+    // …and a different gateway that happens to share the label is not self.
+    expect(
+      formatGroupChatLine(reply, { connectionId: 'c2', connectionLabel: 'Central', installId: 'gw-2', name: 'default', remoteSource: true })
+    ).not.toContain('(you)')
   })
 })
 

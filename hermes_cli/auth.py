@@ -284,12 +284,34 @@ _PLACEHOLDER_SECRET_VALUES = {
     "placeholder", "example", "dummy", "null", "none"}
 
 
+# The two placeholder shapes this repo ships itself, in ``.env.example`` (four providers) and in
+# the quickstart / MCP / skill references (``ghp_xxx``, ``hf_xxx``, ``sk-xxxxxxxx``). Both are
+# copied verbatim by users, so both must read as "not configured" rather than as a credential.
+_PLACEHOLDER_KEY_PREFIXES = ("sk-", "ghp_", "hf_")
+
+
+def _is_placeholder_shape(value: str) -> bool:
+    """True for the placeholder shapes shipped in .env.example and the docs."""
+    lowered = value.lower()
+    if lowered.startswith("your_") and lowered.endswith("_here"):
+        return True
+    for prefix in _PLACEHOLDER_KEY_PREFIXES:
+        if lowered.startswith(prefix):
+            tail = lowered[len(prefix):]
+            if tail and all(c == "x" for c in tail):
+                return True
+    stripped = lowered.replace(" ", "").replace("-", "").replace("_", "")
+    return bool(stripped) and all(c == "x" for c in stripped)
+
+
 def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     """Return True when a configured secret looks usable, not empty/placeholder."""
     if not isinstance(value, str):
         return False
     cleaned = value.strip()
-    return len(cleaned) >= min_length and cleaned.lower() not in _PLACEHOLDER_SECRET_VALUES
+    return (len(cleaned) >= min_length
+            and cleaned.lower() not in _PLACEHOLDER_SECRET_VALUES
+            and not _is_placeholder_shape(cleaned))
 
 
 # Known API-key prefixes per provider. Only listed providers get prefix validation; everyone else

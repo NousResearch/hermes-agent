@@ -384,6 +384,43 @@ class TestGatewayRuntimeStatus:
         cmdline = r"hermes_home=c:\opt\data\profiles\coder hermes gateway run --replace"
         assert status._command_line_belongs_to_profile(cmdline, home) is True
 
+    def test_command_line_belongs_to_profile_rejects_sibling_homes(self):
+        """A substring test let ``HERMES_HOME=/root/profiles/ops2`` satisfy the ``ops`` profile's
+        predicate, so a stale state record could borrow the sibling's live gateway identity (same
+        shape as the ``-p ops`` vs ``-p ops-2`` token rule) -- on the named AND the default branch
+        (#115031). An exact or absent assignment still matches."""
+        home = Path("/fixture/profiles/ops")
+        for cmdline in (
+            "HERMES_HOME=/fixture/profiles/ops2 hermes gateway run",
+            "HERMES_HOME=/fixture/profiles/ops-backup hermes gateway run",
+            "HERMES_HOME=/fixture/profiles/ops/2 hermes gateway run",
+        ):
+            assert not status._command_line_belongs_to_profile(cmdline, home), cmdline
+        default_home = Path("/opt/hermes-data")
+        assert not status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data2 hermes gateway run", default_home)
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data hermes gateway run", default_home)
+        assert status._command_line_belongs_to_profile("hermes gateway run", default_home)
+
+    def test_command_line_belongs_to_profile_matches_own_home_spellings_only(self):
+        """Token-bounded value AND name: quoted values (ps/wmic re-quoting) and a trailing separator
+        (systemd ``Environment=``, ``sh -c`` wrappers) are the same home; ``FOO=hermes_home=/x``
+        embeds the name inside another token and is not an assignment."""
+        home = Path("/opt/data/profiles/coder with space")
+        assert status._command_line_belongs_to_profile(
+            'hermes_home="/opt/data/profiles/coder with space" hermes gateway run', home)
+        # /proc and psutil hand argv back space-joined, so an unquoted value with a space is cut at
+        # the space by the token parser; the whole-home literal match must still claim it.
+        assert status._command_line_belongs_to_profile(
+            "HERMES_HOME=/opt/data/profiles/coder with space hermes gateway run", home)
+        assert status._command_line_belongs_to_profile(
+            r"HERMES_HOME=C:\Users\John Doe\.hermes hermes gateway run", Path(r"C:\Users\John Doe\.hermes"))
+        assert not status._command_line_belongs_to_profile(
+            "HERMES_HOME=/opt/data/profiles/coder with spaces hermes gateway run", home)
+        home = Path("/fixture/profiles/ops")
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/fixture/profiles/ops/ hermes gateway run", home)
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data/ hermes gateway run", Path("/opt/hermes-data"))
+        assert not status._command_line_belongs_to_profile("FOO=hermes_home=/fixture/profiles/ops hermes gateway run", home)
+
 
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

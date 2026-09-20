@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli.kanban_author import resolve_author
 
 from utils import env_int
 
@@ -116,10 +116,14 @@ def _title_body(parsed: dict) -> tuple[Optional[str], Optional[str]]:
     return (title.strip() if title else None), _nonblank(parsed.get("body"))
 
 
-def _profile_author(default: str = "specifier") -> str:
-    """Mirror of ``hermes_cli.kanban._profile_author``. Kept local to
-    avoid a circular import when kanban.py imports this module."""
-    return os.environ.get("HERMES_PROFILE") or os.environ.get("USER") or default
+def _profile_author() -> str:
+    """Mirror of ``hermes_cli.kanban._profile_author``: shared contract, explicit signals only.
+
+    Delegates to :mod:`hermes_cli.kanban_author` (no circular import), so a specify/decompose
+    emit is attributed exactly like a CLI comment — and an unpinned one raises instead of
+    falling back to the OS user or the specifier role name.
+    """
+    return resolve_author()
 
 
 def _load_triage_task(task_id: str) -> tuple[Optional[kb.Task], str]:

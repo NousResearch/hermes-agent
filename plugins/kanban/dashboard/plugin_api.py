@@ -987,7 +987,7 @@ class SpecifyBody(BaseModel):
 def specify_task_endpoint(task_id: str, payload: SpecifyBody, board: Optional[str] = Query(None)):
     """Flesh out a triage task via the auxiliary LLM (``hermes kanban specify``). Non-OK is NOT
     an HTTP error — the UI renders the reason inline. Sync ``def`` → runs in the threadpool."""
-    outcome = _run_aux(board, "kanban_specify", "specify_task", task_id, payload.author)
+    outcome = _run_aux(board, "kanban_specify", "specify_task", task_id, payload.author or "dashboard")
     return {"ok": bool(outcome.ok), "task_id": outcome.task_id, "reason": outcome.reason, "new_title": outcome.new_title}
 
 
@@ -1564,7 +1564,7 @@ class DecomposeBody(BaseModel):
 def decompose_task_endpoint(task_id: str, payload: DecomposeBody, board: Optional[str] = Query(None)):
     """Fan a triage task out into child tasks via the auxiliary LLM (``hermes kanban decompose``).
     Non-OK is NOT an HTTP error. Sync ``def`` → runs in the threadpool."""
-    outcome = _run_aux(board, "kanban_decompose", "decompose_task", task_id, payload.author)
+    outcome = _run_aux(board, "kanban_decompose", "decompose_task", task_id, payload.author or "dashboard")
     return {
         "ok": bool(outcome.ok), "task_id": outcome.task_id, "reason": outcome.reason,
         "fanout": bool(outcome.fanout), "child_ids": outcome.child_ids or [], "new_title": outcome.new_title}

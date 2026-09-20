@@ -627,6 +627,11 @@ def _apply_profile_override() -> None:
         print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
         return
     os.environ["HERMES_HOME"] = hermes_home
+    if consume > 0:
+        # Explicit `-p`/`--profile`: publish the name itself. Pin, not preference — downstream
+        # author attribution (kanban comments/status moves) may only read explicit signals, and
+        # the home-derived name no longer counts.
+        os.environ["HERMES_PROFILE_NAME"] = profile_name
     # Strip the flag from argv so argparse doesn't choke
     if consume > 0 and profile_index is not None:
         start = profile_index + 1  # +1 because argv is sys.argv[1:]

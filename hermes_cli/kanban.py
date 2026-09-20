@@ -22,6 +22,7 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
+from hermes_cli.kanban_author import KanbanAuthorRequired, bind_author, resolve_author
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
@@ -192,6 +193,10 @@ def kanban_command(args: argparse.Namespace) -> int:
             return _err(f"kanban: unknown action {action!r}", 2)
         try:
             return int(handler(args) or 0)
+        except KanbanAuthorRequired as exc:
+            # Any author-attributing verb, wherever it resolves the name: refuse the write and
+            # say which flag fixes it, rather than attributing to a lane nobody chose.
+            return _err(f"kanban: {exc}")
         except (ValueError, RuntimeError, PermissionError) as exc:
             return _err(f"kanban: {exc}")
 
@@ -199,16 +204,12 @@ def kanban_command(args: argparse.Namespace) -> int:
 # --- Handlers ---
 
 def _profile_author() -> str:
-    """Best-effort author name for an interactive CLI call."""
-    for env in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
-        v = os.environ.get(env)
-        if v:
-            return v
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "user"
-    except Exception:
-        return "user"
+    """Author for an author-attributing action from the explicit signals only.
+
+    Contract lives in :mod:`hermes_cli.kanban_author`; unpinned raises
+    :class:`~hermes_cli.kanban_author.KanbanAuthorRequired` rather than naming a lane.
+    """
+    return resolve_author()
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
@@ -1373,9 +1374,15 @@ Read-only commands are safe while an agent is running.\
 """
 
 
-def run_slash(rest: str) -> str:
+def run_slash(rest: str, author: Optional[str] = None) -> str:
     """Execute a ``/kanban …`` string (``rest`` = everything after ``/kanban``) and return captured
-    stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical."""
+    stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical.
+
+    *author* is the calling surface's explicit identity — the gateway passes the profile serving
+    the chat, since it has no ``HERMES_PROFILE`` of its own and its routed profile is otherwise
+    only ambient. Omitted: the verb resolves its author from the env alone, and an unpinned one
+    refuses rather than guessing.
+    """
     import io
 
     tokens = shlex.split(rest) if rest and rest.strip() else []
@@ -1417,7 +1424,7 @@ def run_slash(rest: str) -> str:
     except argparse.ArgumentError as exc:
         return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
 
-    with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+    with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err), bind_author(author):
         try:
             kanban_command(args)
         except SystemExit:

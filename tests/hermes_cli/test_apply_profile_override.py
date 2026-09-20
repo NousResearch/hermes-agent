@@ -185,6 +185,49 @@ class TestSupervisedChildIgnoresStickyProfile:
 
 
 
+class TestExplicitProfileFlagPublishesAuthorIdentity:
+    """`hermes -p X …` is an explicit profile signal, so it must publish X as HERMES_PROFILE_NAME.
+
+    Kanban author attribution resolves from explicit signals only; the home-derived profile name —
+    which the sticky ``active_profile`` file also drives — no longer counts. So the flag has to
+    carry the name itself, and the sticky redirect must NOT, or an unpinned comment would again be
+    attributed to whichever profile was last made active.
+    """
+
+    _ARGV = ["hermes", "-p", "coder", "kanban", "comment", "t_1", "hi"]
+
+    def test_explicit_flag_publishes_profile_name(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+        _run_apply_profile_override(
+            tmp_path, monkeypatch, hermes_home=None, active_profile="coder", argv=self._ARGV
+        )
+        assert os.environ.get("HERMES_PROFILE_NAME") == "coder"
+
+    def test_equals_form_publishes_profile_name(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+        _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+            argv=["hermes", "--profile=coder", "kanban", "comment", "t_1", "hi"],
+        )
+        assert os.environ.get("HERMES_PROFILE_NAME") == "coder"
+
+    def test_sticky_active_profile_redirects_home_but_publishes_no_author(self, tmp_path, monkeypatch):
+        """The sticky file may re-home the process; it must never name an author."""
+        monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+            argv=["hermes", "kanban", "comment", "t_1", "hi"],
+        )
+        assert result is not None and result.endswith("coder")
+        assert os.environ.get("HERMES_PROFILE_NAME") is None
+
+
 class TestGeneralizedSupervisorMarkers:
     """Regression tests for issue #74872.
 

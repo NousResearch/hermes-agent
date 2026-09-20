@@ -353,8 +353,12 @@ class GatewaySlashCommandsMixin(
             else:
                 action = tok
                 break
+        # The gateway process has no HERMES_PROFILE of its own and the routed profile is otherwise
+        # only ambient (HERMES_HOME), which Kanban author attribution must no longer read: hand
+        # run_slash the serving profile explicitly — this path's equivalent of `--author`.
+        author = self._kanban_author_for_event(event)
         try:
-            output = await asyncio.to_thread(run_slash, text)
+            output = await asyncio.to_thread(run_slash, text, author)
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
 
@@ -374,6 +378,17 @@ class GatewaySlashCommandsMixin(
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    def _kanban_author_for_event(self, event: MessageEvent) -> Optional[str]:
+        """The profile serving *event* — the identity a /kanban action is attributed to.
+
+        Same resolution as the notifier profile in ``_kanban_auto_subscribe``: the event's routed
+        profile, else the runner's pinned kanban profile, else the active one. The gateway has no
+        ``HERMES_PROFILE`` in its environment, so this must be handed over explicitly.
+        """
+        raw = str(getattr(event.source, "profile", "") or "").strip()
+        name = raw or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name()
+        return str(name).strip() or None
 
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the

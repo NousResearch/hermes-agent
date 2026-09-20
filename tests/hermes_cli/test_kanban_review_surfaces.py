@@ -264,6 +264,8 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # reopen-review comments are author-attributed: explicit signal required.
+    monkeypatch.setenv("HERMES_PROFILE", "reviewer")
     secret = "ghp_" + "Q" * 40
     with kbc.connect() as conn:
         invalid_id = kb.create_task(conn, title="not review", assignee="builder")

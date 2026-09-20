@@ -100,7 +100,9 @@ def _promote_ns(task_id, *, ids=None, reason=None, force=False,
     )
 
 
-def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
+def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys, monkeypatch):
+    # Promote attributes its audit comment to an explicit author only.
+    monkeypatch.setenv("HERMES_PROFILE", "operator")
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="parent")
         children = [

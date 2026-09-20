@@ -117,13 +117,6 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 # Set to 0 to disable (env: HERMES_TEST_FILE_RETRIES).
 _DEFAULT_FILE_RETRIES = 1
 
-# Per-worker heap cap in GiB (Linux RLIMIT_DATA: brk + private anonymous mmap; inherited by the
-# worker's children). A runaway allocation loop then dies with a MemoryError traceback in seconds
-# instead of swapping the host for 20 GB with no stack (five OOM incidents from one leaking test
-# thread). RLIMIT_AS is deliberately NOT used: browsers spawned by tests reserve huge address
-# space. Set to 0 to disable (env: HERMES_TEST_WORKER_MEM_GB).
-_DEFAULT_WORKER_MEM_GB = 8.0
-
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
@@ -452,25 +445,6 @@ _FLAKY_RESULTS: List[Tuple[Path, str]] = []
 _flaky_lock = threading.Lock()
 
 
-def _worker_memory_cap():
-    """``preexec_fn`` applying the per-worker heap cap, or None when disabled / unsupported."""
-    if sys.platform != "linux":
-        return None
-    try:
-        gib = float(os.environ.get("HERMES_TEST_WORKER_MEM_GB", _DEFAULT_WORKER_MEM_GB))
-    except ValueError:
-        gib = _DEFAULT_WORKER_MEM_GB
-    if gib <= 0:
-        return None
-    limit = int(gib * (1 << 30))
-
-    def _apply():
-        import resource
-        resource.setrlimit(resource.RLIMIT_DATA, (limit, limit))
-
-    return _apply
-
-
 def _run_one_file_once(
     file: Path,
     pytest_args: List[str],
@@ -512,7 +486,6 @@ def _run_one_file_once(
         stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
         env=env,
-        preexec_fn=_worker_memory_cap(),
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;

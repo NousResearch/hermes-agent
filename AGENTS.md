@@ -341,8 +341,7 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
 
 - **Flake policy:** a failing FILE is retried once in a fresh subprocess (`--file-retries`;
   `HERMES_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
-  retried. Each worker runs under an 8 GiB heap cap on Linux (`HERMES_TEST_WORKER_MEM_GB`, 0
-  disables) so a runaway loop dies with a `MemoryError` traceback instead of swapping the host. Pass-on-retry is green but printed under `⚠ FLAKY`
+  retried (relaunching a runaway doubles the damage). Pass-on-retry is green but printed under `⚠ FLAKY`
   with both outputs — a bug to fix, not noise. Timing tests must not assume a quiet runner:
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,

@@ -1,6 +1,6 @@
 import { host } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Test harness supplies the host's locale registration, as plugin loading does.
@@ -10,7 +10,7 @@ import { registerPluginLocales } from '@/i18n/plugin-i18n'
 import type * as KanbanApi from './api'
 import { $boardSlug, BOARDS_KEY, fetchBoards } from './api'
 import { KanbanBoardPage } from './board'
-import { KANBAN_LOCALES } from './i18n'
+import { en, KANBAN_LOCALES } from './i18n'
 import plugin from './plugin'
 import type { BoardsResponse, KanbanBoard, KanbanTask } from './types'
 import { $boardRequest } from './ui'
@@ -325,5 +325,53 @@ describe('fleet-scoped entry', () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'warning' }))
 
     notify.mockRestore()
+  })
+})
+
+describe('fleet-scoped entry — rejected validation', () => {
+  it('shows the failure and keeps everything gated until a retry succeeds', async () => {
+    $boardSlug.set('shipping')
+    vi.mocked(fetchBoards).mockRejectedValueOnce(new Error('503: {"detail":"boards unavailable"}'))
+
+    openFleet()
+    mount()
+    await settle()
+
+    // Shipping never becomes actionable: no New task, no cards, no board fetch.
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveProperty('disabled', true)
+    expect(screen.queryByText('[Sync pending] Rotate the turnerbook canary')).toBeNull()
+    expect(fetchedBoards).toEqual([])
+    expect($boardSlug.get()).toBe('shipping')
+
+    // The validation failure is what the operator sees.
+    expect(await screen.findByText(en.boardsCheckFailed('fleet'))).toBeTruthy()
+    expect(screen.getByText('boards unavailable')).toBeTruthy()
+
+    // Retry: the list answers, the entry resolves, the fleet board is bound.
+    fireEvent.click(screen.getByRole('button', { name: en.retry }))
+
+    await waitFor(() => expect($boardSlug.get()).toBe('fleet'))
+    expect(await screen.findByText('Rotate the turnerbook canary')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveProperty('disabled', false)
+    expect(fetchedBoards).toEqual(['fleet'])
+  })
+
+  it('returns to the operator’s own board only when they cancel the entry', async () => {
+    $boardSlug.set('shipping')
+    vi.mocked(fetchBoards).mockRejectedValueOnce(new Error('boards unavailable'))
+
+    openFleet()
+    mount()
+    await settle()
+
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveProperty('disabled', true)
+    expect(screen.queryByText('[Sync pending] Rotate the turnerbook canary')).toBeNull()
+    expect(await screen.findByText(en.boardsCheckFailed('fleet'))).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: en.cancel }))
+
+    expect(await screen.findByText('[Sync pending] Rotate the turnerbook canary')).toBeTruthy()
+    expect($boardSlug.get()).toBe('shipping')
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveProperty('disabled', false)
   })
 })

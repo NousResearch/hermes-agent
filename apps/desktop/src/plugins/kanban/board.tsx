@@ -1153,46 +1153,43 @@ export function KanbanBoardPage() {
   // for the requested one — and issues no board fetch. Known slug: selected
   // (the switcher's '' = server-current convention), request consumed. Unknown
   // slug: the operator's own selection stands, with a toast. Board list
-  // unreachable: the selection stands, silently — the page's own error state
-  // says what is wrong. Consumed once, so a later manual switch is never
+  // REJECTED with nothing cached: the request stays pending — still nothing
+  // actionable — and the failure is shown with Retry / Cancel; only a
+  // successful retry resolves it, only Cancel hands the page back to the
+  // operator's own board. Consumed once, so a later manual switch is never
   // undone; a fresh request per command, so re-running it after that switch
   // enters again.
   const request = useValue($boardRequest)
-
-  const { data: boards, isError: boardsUnavailable } = useQuery({
-    queryKey: BOARDS_KEY,
-    queryFn: fetchBoards,
-    staleTime: 30_000
-  })
-
+  const boardsQuery = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
+  const boards = boardsQuery.data
   const resolving = request !== null
+  const validationFailed = resolving && !boards && boardsQuery.isError && !boardsQuery.isFetching
+  const validationError = validationFailed ? errText(boardsQuery.error) : null
 
   useEffect(() => {
-    if (!request || (!boards && !boardsUnavailable)) {
+    if (!request || !boards) {
       return
     }
 
-    if (boards) {
-      if (boards.boards.some(meta => meta.slug === request.slug)) {
-        const next = request.slug === boards.current ? '' : request.slug
+    if (boards.boards.some(meta => meta.slug === request.slug)) {
+      const next = request.slug === boards.current ? '' : request.slug
 
-        if ($boardSlug.get() !== next) {
-          $boardSlug.set(next)
-        }
-      } else {
-        host.notify({ kind: 'warning', message: k.boardMissing(request.slug) })
+      if ($boardSlug.get() !== next) {
+        $boardSlug.set(next)
       }
+    } else {
+      host.notify({ kind: 'warning', message: k.boardMissing(request.slug) })
     }
 
     $boardRequest.set(null)
-  }, [request, boards, boardsUnavailable, k])
+  }, [request, boards, k])
 
   // Verified fleet context: the selected slug, or — with nothing selected —
   // the server's current board as the board list reports it. Until that list
   // has answered (or failed) for an empty selection the board is not painted:
   // a fleet card shown literally for a beat and then re-read is a flicker that
   // reads as a bug. An explicit selection needs no wait.
-  const contextPending = !slug && !boards && !boardsUnavailable
+  const contextPending = !slug && !boards && !boardsQuery.isError
   const fleet = isFleetBoard(slug || boards?.current)
 
   // Live updates ride the events socket (bindApi); this interval is only the
@@ -1482,7 +1479,20 @@ export function KanbanBoardPage() {
 
       {board && <Intro />}
 
-      {errorMessage && !board ? (
+      {validationError && request ? (
+        <div className="grid flex-1 place-items-center px-4">
+          <ErrorState description={validationError} title={k.boardsCheckFailed(request.slug)}>
+            <div className="flex justify-center gap-2">
+              <Button onClick={() => void boardsQuery.refetch()} size="sm" variant="outline">
+                {k.retry}
+              </Button>
+              <Button onClick={() => $boardRequest.set(null)} size="sm" variant="text">
+                {k.cancel}
+              </Button>
+            </div>
+          </ErrorState>
+        </div>
+      ) : errorMessage && !board ? (
         <div className="grid flex-1 place-items-center">
           <ErrorState title={errorMessage} />
         </div>

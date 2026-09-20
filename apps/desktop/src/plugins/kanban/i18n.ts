@@ -15,6 +15,9 @@ type KanbanMessages = {
   openFleetBoard: string
   /** Toast when a scoped entry names a board this backend doesn't have. */
   boardMissing: (slug: string) => string
+  /** Error surface when the board list — the entry's validation — is rejected. */
+  boardsCheckFailed: (slug: string) => string
+  retry: string
   /** Command label — shows in the ⌘K palette AND as the keybind panel row,
    *  so it carries the "Kanban: " prefix the palette convention wants. */
   newTaskCommand: string
@@ -230,6 +233,8 @@ export const en: KanbanMessages = {
   openBoard: 'Kanban: Open board',
   openFleetBoard: 'Kanban: Open Fleet board',
   boardMissing: slug => `Board “${slug}” isn’t on this backend.`,
+  boardsCheckFailed: slug => `Couldn’t confirm that board “${slug}” is on this backend.`,
+  retry: 'Retry',
   newTaskCommand: 'Kanban: New task',
   countTip: (running, ready) => `Kanban — ${running} running, ${ready} ready`,
   col: {
@@ -449,6 +454,8 @@ const ja: KanbanMessages = {
   openBoard: 'カンバン: ボードを開く',
   openFleetBoard: 'カンバン: Fleet ボードを開く',
   boardMissing: slug => `ボード「${slug}」はこのバックエンドにありません。`,
+  boardsCheckFailed: slug => `ボード「${slug}」がこのバックエンドにあるか確認できませんでした。`,
+  retry: '再試行',
   newTaskCommand: 'カンバン: 新しいタスク',
   countTip: (running, ready) => `カンバン — 実行中 ${running}、待機 ${ready}`,
   col: {
@@ -667,6 +674,8 @@ const zh: KanbanMessages = {
   openBoard: '看板：打开面板',
   openFleetBoard: '看板：打开 Fleet 面板',
   boardMissing: slug => `此后端没有“${slug}”看板。`,
+  boardsCheckFailed: slug => `无法确认此后端是否有“${slug}”看板。`,
+  retry: '重试',
   newTaskCommand: '看板：新建任务',
   countTip: (running, ready) => `看板 — 运行中 ${running}、就绪 ${ready}`,
   col: {
@@ -882,6 +891,8 @@ const zhHant: KanbanMessages = {
   openBoard: '看板：開啟面板',
   openFleetBoard: '看板：開啟 Fleet 面板',
   boardMissing: slug => `此後端沒有「${slug}」看板。`,
+  boardsCheckFailed: slug => `無法確認此後端是否有「${slug}」看板。`,
+  retry: '重試',
   newTaskCommand: '看板：新增任務',
   countTip: (running, ready) => `看板 — 執行中 ${running}、就緒 ${ready}`,
   col: {

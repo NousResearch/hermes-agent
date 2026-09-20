@@ -46,7 +46,7 @@ async def test_restart_notice_retries_only_known_unsent_and_keeps_exhausted_work
         if outcome == "ambiguous":
             raise ConnectionError("read timed out after request was transmitted")
         if outcome == "exhausted" or (outcome == "refused" and len(calls) == 1):
-            return SendResult(success=False, retryable=True, retry_after=60 if outcome == "exhausted" else 0.007)
+            return SendResult(success=False, retryable=True, known_unsent=True, retry_after=60 if outcome == "exhausted" else 0.007)
         return SendResult(success=True, message_id="delivered")
 
     adapter.send = send

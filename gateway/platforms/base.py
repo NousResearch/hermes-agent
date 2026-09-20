@@ -1614,6 +1614,10 @@ class SendResult:
     # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
+    # Strict whole-call guarantee: NO part of the payload was accepted by the provider,
+    # including earlier chunks/attempts. Retryable alone does not imply this; an
+    # ambiguous timeout or partial send must leave it False. Appended for positional compatibility.
+    known_unsent: bool = False
 
 
 # Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the

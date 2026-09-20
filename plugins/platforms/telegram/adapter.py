@@ -3512,15 +3512,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if live is not None:
                 return await live.send(chat_id, content, reply_to, metadata)
             if self._is_permanent_fatal() or not await self._wait_for_reconnection():
-                return SendResult(success=False, error="Not connected", retryable=not self._is_permanent_fatal())
+                return SendResult(success=False, error="Not connected", retryable=not self._is_permanent_fatal(), known_unsent=True)
             live = self._replacement_telegram_adapter()
             if not self._bot and live is not None:
                 return await live.send(chat_id, content, reply_to, metadata)
             if not self._bot:
-                return SendResult(success=False, error="Not connected", retryable=True)
+                return SendResult(success=False, error="Not connected", retryable=True, known_unsent=True)
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
+            return SendResult(success=False, error="send_path_degraded", retryable=True, known_unsent=True)
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)

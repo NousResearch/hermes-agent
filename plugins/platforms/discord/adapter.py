@@ -2971,7 +2971,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not self._client:
             # Dead transport: classify as send_path_degraded so the delivery ledger's reconnect
             # sweep can replay this; a generic "Not connected" error would strand the output.
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
+            return SendResult(success=False, error="send_path_degraded", retryable=True, known_unsent=True)
         if not (content or "").strip():
             logger.warning(
                 "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s", self.name,

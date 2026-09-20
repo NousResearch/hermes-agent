@@ -23,7 +23,7 @@ _RESTART_NOTICE_MAX_DELAY = 15.0
 def _known_unsent(result) -> bool:
     """Only an explicit adapter refusal permits replay; never infer safety from error text."""
     get = result.get if isinstance(result, dict) else lambda key, default=None: getattr(result, key, default)
-    return (_send_failed(result) and get("retryable") is True
+    return (get("success") is False and get("known_unsent") is True and get("retryable") is True
             and not get("message_id") and not get("continuation_message_ids"))
 
 
@@ -108,7 +108,7 @@ class GatewayRestartNotificationsMixin:
                             # create_task yields: a /restart may replace the marker before we run.
                             if (not runner._running or runner._restart_requested
                                     or loop.time() >= deadline or not owns_marker()):
-                                return SendResult(success=False, retryable=True)
+                                return SendResult(success=False, retryable=True, known_unsent=True)
                             consume = True  # From this point a cancellation/exception is ambiguous.
                             return await transport.send(
                                 platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
@@ -120,12 +120,13 @@ class GatewayRestartNotificationsMixin:
                             logger.warning("Restart notification send timed out; not replaying an ambiguous send")
                             return None
                         result = send_task.result()
-                        if not _send_failed(result):
+                        failed = result.get("success") is False if isinstance(result, dict) else _send_failed(result)
+                        if not failed:
                             logger.info("Sent restart notification to %s:%s", platform.value, chat_id)
                             return platform.value, str(chat_id), str(thread_id) if thread_id else None
                         if not _known_unsent(result):
                             logger.warning("Restart notification to %s:%s was not delivered: %s",
-                                           platform.value, chat_id, _send_error(result))
+                                           platform.value, chat_id, result.get("error") if isinstance(result, dict) else _send_error(result))
                             return None
                         consume = False
                         raw_delay = result.get("retry_after") if isinstance(result, dict) else getattr(result, "retry_after", None)

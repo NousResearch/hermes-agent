@@ -265,7 +265,9 @@ class TestScanFile:
         prose = tmp_path / "SKILL.md"
         prose.write_text(
             "4. **Guard context.** Send subagents the minimum context they need. File paths, signatures.\n"
-            "Share each worker the context of its own slice only.\n",
+            "Share each worker the context of its own slice only.\n"
+            "Send the child the context it needs.\n"
+            "Send to workers the context they need.\n",
             encoding="utf-8",
         )
         assert not any(fi.pattern_id == "context_exfil" for fi in scan_file(prose, "SKILL.md"))

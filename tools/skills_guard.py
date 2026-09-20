@@ -116,7 +116,7 @@ _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
 # exfil ("Send child context to the operator"). A URL destination is still send_to_url.
 _NOT_DELEGATE = (
     r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?)\b'
-    r'|(?:(?:the|your|each|every|all|a)\s+)(?:workers?|delegates?|children)\b)'
+    r'|(?:(?:the|your|each|every|all|to|a)\s+)(?:workers?|delegates?|children|child)\b)'
 )
 
 # POSIX shell names as one shared alternation, so every pipe-to-shell pattern below flags the

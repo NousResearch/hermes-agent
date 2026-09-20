@@ -2798,13 +2798,12 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
         _reload_notice = _pruned_skill_reload_notice(compressed)
         if _reload_notice:
             todo_snapshot = f"{todo_snapshot}\n\n{_reload_notice}"
-        # Fold the snapshot into a trailing REAL user msg (no synthetic user/user pair);
-        # strip old snapshots first. Scaffolding tails must not absorb it (provenance).
+        # Fold the snapshot into a trailing user msg (no synthetic user/user pair) and strip old snapshots first.
         # Any snapshot merged at an earlier boundary is stripped first so repeated compactions refresh
         # rather than accumulate todo state (#26981). Scaffolding tails (continuation marker, summary
-        # handoff, a bare stale snapshot row) must never absorb the snapshot: merging would upgrade them to
-        # "real user" evidence and break zero-user provenance (#69292), so those keep the flagged standalone
-        # append and the real-user preservation pass continues to see todo scaffolding, not human intent.
+        # handoff, a bare stale snapshot row) must never become "real user" evidence when absorbing the
+        # snapshot (#69292), so those retain synthetic provenance; a separate user row would violate strict
+        # role alternation.
         from agent.context_compressor import _append_text_to_content
         merged = False
         _tail = compressed[-1] if compressed and isinstance(compressed[-1], dict) else None
@@ -2822,6 +2821,13 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 # The tail was nothing but an earlier snapshot row —
                 # refresh it in place instead of stacking a duplicate.
                 _replace_message_content(_tail, todo_snapshot)
+                _tail["_todo_snapshot_synthetic"] = True
+                merged = True
+            else:
+                # Keep synthetic user scaffolding synthetic, but fold the snapshot into it so
+                # strict providers never receive adjacent user rows.
+                _snapshot_text = f"\n\n{todo_snapshot}" if _message_text(_probe).strip() else todo_snapshot
+                _replace_message_content(_tail, _append_text_to_content(_stripped, _snapshot_text))
                 _tail["_todo_snapshot_synthetic"] = True
                 merged = True
         if not merged:

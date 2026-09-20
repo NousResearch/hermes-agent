@@ -29,6 +29,7 @@ import pytest
 from agent.context_compressor import ContextCompressor, _DB_PERSISTED_MARKER
 from agent.conversation_compression import (
     CompressionCommitFence,
+    _fold_todo_snapshot,
     _is_real_user_message,
 )
 from hermes_state import SessionDB
@@ -1534,7 +1535,7 @@ class TestTodoSnapshotMergedNotDuplicated:
 
 
 class TestTodoSnapshotScaffoldingTails:
-    """Scaffolding tails must never absorb the todo snapshot (#69292)."""
+    """Snapshot folding must preserve scaffolding provenance (#69292)."""
 
     @staticmethod
     def _agent_with_todo(db: SessionDB, session_id: str, tail: dict):
@@ -1549,6 +1550,35 @@ class TestTodoSnapshotScaffoldingTails:
             [{"id": "t1", "content": "task A", "status": "pending"}]
         )
         return agent
+
+    def test_repeated_snapshot_fold_preserves_role_alternation(self):
+        """A synthetic user tail must not gain an adjacent snapshot user row."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        agent = MagicMock()
+        agent._todo_store.format_for_injection.return_value = (
+            f"{TODO_INJECTION_HEADER}\n- [ ] t1. task A (pending)"
+        )
+        agent._todo_store.has_items.return_value = True
+        compressed = [
+            {
+                "role": "user",
+                "content": "Continue after recovering the empty response.",
+                "_empty_recovery_synthetic": True,
+            }
+        ]
+
+        _fold_todo_snapshot(agent, compressed)
+        _fold_todo_snapshot(agent, compressed)
+
+        assert len(compressed) == 1
+        assert compressed[0]["content"].count(TODO_INJECTION_HEADER) == 1
+        assert compressed[0]["_empty_recovery_synthetic"] is True
+        assert compressed[0]["_todo_snapshot_synthetic"] is True
+        assert not any(
+            previous.get("role") == current.get("role") == "user"
+            for previous, current in zip(compressed, compressed[1:])
+        )
 
 
 

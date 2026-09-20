@@ -7,6 +7,7 @@ mocked away. Each test asserts a single ruled property of the flow.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 
@@ -395,7 +396,8 @@ def test_cancelling_during_a_completed_status_request_obeys_the_surface_policy(
     assert anon_auth.is_guest_state(state) is cancel_wins
 
 
-def _cancel_after_a_completed_promotion(portal, monkeypatch, *, cancel_wins: bool):
+def _cancel_after_a_completed_promotion(
+        portal, monkeypatch, *, cancel_wins: bool, persist_guard=None):
     _seed_free_tier()
     stop = threading.Event()
 
@@ -404,7 +406,8 @@ def _cancel_after_a_completed_promotion(portal, monkeypatch, *, cancel_wins: boo
         return {"status": "completed", "user_id": "nas_user:9", "account_email": EMAIL}
     monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait)
     return list(anon_auth.run_sign_in(
-        cancelled=stop.is_set, cancel_wins_after_promotion=cancel_wins))
+        cancelled=stop.is_set, cancel_wins_after_promotion=cancel_wins,
+        persist_guard=persist_guard))
 
 
 def test_a_desktop_style_cancel_after_a_completed_promotion_persists_nothing(
@@ -421,7 +424,12 @@ def test_a_desktop_style_cancel_after_a_completed_promotion_persists_nothing(
 
 def test_a_gateway_style_supersede_after_a_completed_promotion_still_signs_in(
         portal, free_account, monkeypatch):
-    states = _cancel_after_a_completed_promotion(portal, monkeypatch, cancel_wins=False)
+    @contextlib.contextmanager
+    def _cancelled_surface_guard():
+        yield False
+
+    states = _cancel_after_a_completed_promotion(
+        portal, monkeypatch, cancel_wins=False, persist_guard=_cancelled_surface_guard)
 
     assert states[-1].kind == "completed"
     assert portal.token_grants == 1

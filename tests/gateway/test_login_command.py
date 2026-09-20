@@ -273,6 +273,57 @@ async def test_a_second_login_from_the_same_identity_supersedes_the_first(monkey
 
 
 @pytest.mark.asyncio
+async def test_supersession_at_direct_reauthentication_persist_boundary_writes_nothing(
+        monkeypatch, tmp_path):
+    runner = _runner(monkeypatch)
+    del runner.__dict__["_run_login_blocking"]
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_bytes(b'{"providers":{"nous":{"last_auth_error":"invalid_grant"}}}')
+    before = auth_file.read_bytes()
+    at_boundary = threading.Event()
+    release_boundary = threading.Event()
+    flow_calls = 0
+
+    def flow(**kwargs):
+        nonlocal flow_calls
+        flow_calls += 1
+        if flow_calls > 1:
+            yield anon_auth.TimedOut()
+            return
+        yield anon_auth.Code("https://example.test/sign-in", "CODE", 60, 1)
+        yield anon_auth.Waiting()
+        at_boundary.set()
+        assert release_boundary.wait(2)
+        with kwargs["persist_guard"]() as may_persist:
+            if may_persist:
+                auth_file.write_bytes(b'{"providers":{"nous":{"access_token":"new"}}}')
+        yield anon_auth.Completed() if may_persist else anon_auth.Superseded()
+
+    monkeypatch.setattr(anon_auth, "run_sign_in", flow)
+    monkeypatch.setattr(anon_auth, "current_nous_state", lambda: {
+        "auth_method": "oauth_device_code",
+        "last_auth_error": {"code": "invalid_grant", "relogin_required": True},
+    })
+
+    await runner._handle_login_command(_event())
+    first = runner._login_attempts["login"]
+    assert await asyncio.to_thread(at_boundary.wait, 2)
+    replacement = asyncio.create_task(runner._handle_login_command(_event()))
+    await asyncio.sleep(0)
+    assert first.cancelled is True
+    release_boundary.set()
+
+    assert await asyncio.wait_for(replacement, 2) == anon_auth.UPGRADE_START
+    await _finish_tasks(runner)
+    runner._login_exec.shutdown(wait=True)
+
+    assert auth_file.read_bytes() == before
+    assert any(
+        pushed.args[0] is first.source and pushed.args[1] == anon_auth.Superseded().copy
+        for pushed in runner._deliver_platform_notice.await_args_list)
+
+
+@pytest.mark.asyncio
 async def test_a_superseded_attempt_that_already_completed_still_pushes_its_completion(monkeypatch):
     runner = _runner(monkeypatch)
     seen = []

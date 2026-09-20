@@ -470,7 +470,12 @@ def run_sign_in(
         if persist_cancelled():
             yield Superseded()
             return
-        guard = persist_guard or _default_persist_guard(persist_cancelled)
+        # A completed guest promotion is irreversible when cancellation loses after promotion.
+        # Do not let a surface guard reintroduce cancellation at the final write in that case.
+        if promoting_guest and not cancel_wins_after_promotion:
+            guard = _default_persist_guard(persist_cancelled)
+        else:
+            guard = persist_guard or _default_persist_guard(persist_cancelled)
         with open_scope():
             with guard() as may_persist:
                 if may_persist:

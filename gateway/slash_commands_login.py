@@ -116,10 +116,19 @@ class GatewayLoginCommandsMixin:
             with lock:
                 return attempt.cancelled
 
+        @contextlib.contextmanager
+        def _persist_guard():
+            # Linearize supersession with the credential write: either cancellation owns the
+            # lock first and the old grant is discarded, or persistence owns it first and the
+            # replacement observes an already-completed attempt.
+            with lock:
+                yield not attempt.cancelled
+
         gen = anon_auth.run_sign_in(
             timeout_seconds=15.0,
             cancelled=_cancelled,
             cancel_wins_after_promotion=False,
+            persist_guard=_persist_guard,
         )
         pushed_terminal = False
         try:

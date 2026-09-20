@@ -423,13 +423,26 @@ def _core_constraints_file() -> Optional[Path]:
 
 
 def _pip_config_candidates(env: dict[str, str]) -> list[Path]:
-    """pip config files in pip's own precedence order: ``PIP_CONFIG_FILE`` alone when set, else
-    site, then user (``$XDG_CONFIG_HOME``/pip, defaulting to ``~/.config/pip``), then legacy
-    ``~/.pip``. Later files override earlier ones in :class:`configparser`, matching pip."""
-    if explicit := env.get("PIP_CONFIG_FILE"):
-        return [Path(explicit)]
-    xdg = Path(env.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return [Path("/etc/pip.conf"), xdg / "pip" / "pip.conf", Path.home() / ".pip" / "pip.conf"]
+    """pip's config files, lowest precedence first (mirrors ``pip._internal.configuration``
+    ``get_configuration_files``): ``PIP_CONFIG_FILE``, then global, the venv's ``sys.prefix``
+    site file, then user (legacy ``~/.pip`` before the new location, so the new one wins).
+    ``PIP_CONFIG_FILE=os.devnull`` disables every file, as in pip."""
+    explicit = env.get("PIP_CONFIG_FILE", "")
+    if explicit == os.devnull:
+        return []
+    home = Path.home()
+    if sys.platform == "win32":
+        name = "pip.ini"
+        global_files = [Path(env.get("ProgramData") or r"C:\ProgramData") / "pip" / name]
+        user_files = [home / "pip" / name, Path(env.get("APPDATA") or home / "AppData" / "Roaming") / "pip" / name]
+    else:
+        name = "pip.conf"
+        global_files = [Path("/etc") / name, Path("/etc/pip") / name]
+        xdg = Path(env.get("XDG_CONFIG_HOME") or home / ".config")
+        user_files = [home / ".pip" / name, xdg / "pip" / name]
+        if sys.platform == "darwin" and (home / "Library" / "Application Support" / "pip").is_dir():
+            user_files.append(home / "Library" / "Application Support" / "pip" / name)
+    return ([Path(explicit)] if explicit else []) + global_files + [Path(sys.prefix) / name] + user_files
 
 
 def _pip_conf_index_url(env: dict[str, str]) -> Optional[str]:
@@ -442,13 +455,14 @@ def _pip_conf_index_url(env: dict[str, str]) -> Optional[str]:
     try:
         import configparser
 
-        parser = configparser.ConfigParser()
+        # Raw: pip does not interpolate, and mirror URLs carry percent-encoded credentials.
+        parser = configparser.RawConfigParser()
         found = parser.read(str(p) for p in _pip_config_candidates(env))
         if not found or not parser.has_section("global"):
             return None
         value = parser.get("global", "index-url", fallback="").strip()
         return value or None
-    except Exception as e:  # noqa: BLE001 — config reading is best-effort
+    except Exception as e:  # noqa: BLE001  (config reading is best-effort)
         logger.debug("Could not read pip.conf for index-url: %s", e)
         return None
 
@@ -573,9 +587,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
         # uv never reads pip.conf, so a mirrored-pip user would see every
         # lazy install stall against the default pypi.org for the full
         # timeout (#95608). Bridge pip's index-url unless uv is configured
-        # explicitly — same policy as the update path (#17761). PIP_INDEX_URL
-        # follows pip's own precedence (env var beats pip.conf).
-        if not uv_env.get("UV_INDEX_URL"):
+        # explicitly (any of its index knobs). PIP_INDEX_URL follows pip's own
+        # precedence (env var beats pip.conf).
+        if not any(uv_env.get(k) for k in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")):
             pip_index_url = (uv_env.get("PIP_INDEX_URL") or "").strip() or (
                 _pip_conf_index_url(uv_env)
             )

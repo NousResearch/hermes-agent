@@ -607,15 +607,20 @@ class TestInstallWarmsBytecode:
 # ---------------------------------------------------------------------------
 
 class TestPipConfIndexBridge:
-    def _run_with_fake_uv(self, monkeypatch, tmp_path):
-        """Run _venv_pip_install against a stubbed uv and return the env it was spawned with."""
-        (tmp_path / "pip").mkdir()
-        (tmp_path / "pip" / "pip.conf").write_text(
-            "[global]\nindex-url = https://mirror.example/simple\n", encoding="utf-8"
-        )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-        monkeypatch.delenv("PIP_CONFIG_FILE", raising=False)
-        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
+    MIRROR = "https://user:p%40ss@mirror.example/simple"  # percent-encoded credential, the mirrored-host shape
+
+    def _run_with_fake_uv(self, monkeypatch, tmp_path, **env):
+        """Run _venv_pip_install against a stubbed uv (with *env* set) and return the env it was spawned with."""
+        conf = tmp_path / "pip.conf"
+        conf.write_text(f"[global]\nindex-url = {self.MIRROR}\n", encoding="utf-8")
+        # PIP_CONFIG_FILE keeps the host's own /etc, sys.prefix and ~ pip files out of the read.
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        monkeypatch.setattr(ld.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(ld.sys, "prefix", str(tmp_path / "venv"))
+        for var in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX"):
+            monkeypatch.delenv(var, raising=False)
+        for var, value in env.items():
+            monkeypatch.setenv(var, value)
         captured = {}
 
         def fake_run(cmd, **kwargs):
@@ -630,11 +635,13 @@ class TestPipConfIndexBridge:
         return captured["env"]
 
     def test_pip_conf_index_url_bridged_when_uv_unset(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("UV_INDEX_URL", raising=False)
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
         env = self._run_with_fake_uv(monkeypatch, tmp_path)
-        assert env["UV_INDEX_URL"] == "https://mirror.example/simple"
+        assert env["UV_INDEX_URL"] == self.MIRROR
 
-    def test_explicit_uv_index_url_untouched(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("UV_INDEX_URL", "https://custom.example/simple")
-        env = self._run_with_fake_uv(monkeypatch, tmp_path)
-        assert env["UV_INDEX_URL"] == "https://custom.example/simple"
+    def test_pip_index_url_env_beats_pip_conf_and_explicit_uv_config_is_left_alone(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PIP_INDEX_URL", "https://env.example/simple")
+        assert self._run_with_fake_uv(monkeypatch, tmp_path)["UV_INDEX_URL"] == "https://env.example/simple"
+
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, UV_DEFAULT_INDEX="https://custom.example/simple")
+        assert "UV_INDEX_URL" not in env, "an explicit uv index knob must not be overridden"

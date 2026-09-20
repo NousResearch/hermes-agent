@@ -48,7 +48,7 @@ Build a matrix:
 | images | fal_client.py | image_generator.py | REPLACE (B is superset) |
 | video | ffmpeg_video.py | video_generator.py | COEXIST (different functions) |
 | drafts | llm_drafts.py | missing | A-ONLY |
-| screenshots | missing | screenshot_repurposer.py | B-ONLY |
+| screenshots | ai image gen (gen-image pipeline) | screenshot_repurposer.py retired | REMOVED 2026-09-20 |
 
 Three categories:
 - **MERGE**: Both files serve same concept but different details (configs, registries)

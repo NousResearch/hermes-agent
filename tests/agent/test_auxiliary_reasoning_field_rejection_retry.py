@@ -21,6 +21,7 @@ _RELAY_400 = (
     "Error code: 400 - {'error': {'message': 'Unrecognized request argument supplied: "
     "reasoning_effort', 'type': 'invalid_request_error', 'param': '', 'code': None}}"
 )
+_VENICE_REASONING_400 = "Error code: 400 - {'error': 'reasoning.max_tokens must be positive'}"
 
 
 def _custom_route_patches(client):
@@ -62,6 +63,35 @@ def test_reasoning_effort_rejection_retries_once_without_reasoning_fields(async_
     assert "reasoning" not in (retry.get("extra_body") or {})
     assert retry["extra_body"]["response_format"] == {"type": "json_object"}  # unrelated fields survive
     assert retry["model"] == first["model"]
+
+
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+def test_venice_reasoning_max_tokens_rejection_retries_without_nested_reasoning(async_mode):
+    """Venice's max_tokens-shaped 400 for ``extra_body.reasoning`` strips that wire control once."""
+    from agent.auxiliary_client import _ProfileProjection
+
+    client = MagicMock()
+    client.base_url = "https://api.venice.ai/api/v1"
+    side_effect = [RuntimeError(_VENICE_REASONING_400), {"ok": True}]
+    client.chat.completions.create = AsyncMock(side_effect=side_effect) if async_mode else MagicMock(side_effect=side_effect)
+    projection = _ProfileProjection({}, {"reasoning": {"enabled": False}}, {}, True)
+    p1, p2, p3, p4 = _custom_route_patches(client)
+    with p1, p2, p3, p4, patch("agent.auxiliary_client._project_provider_profile", return_value=projection):
+        result = asyncio.run(async_call_llm(
+            task="title_generation", messages=[{"role": "user", "content": "hi"}],
+            extra_body={"response_format": {"type": "json_object"}}, reasoning_config={"enabled": False},
+        )) if async_mode else call_llm(
+            task="title_generation", messages=[{"role": "user", "content": "hi"}],
+            extra_body={"response_format": {"type": "json_object"}}, reasoning_config={"enabled": False},
+        )
+
+    assert result == {"ok": True}
+    calls = client.chat.completions.create.call_args_list
+    assert len(calls) == 2
+    first, retry = calls[0].kwargs, calls[1].kwargs
+    assert first["extra_body"]["reasoning"] == {"enabled": False}
+    assert "reasoning" not in retry.get("extra_body", {})
+    assert retry["extra_body"]["response_format"] == {"type": "json_object"}
 
 
 def test_unrelated_400_does_not_strip_reasoning_fields():

@@ -520,6 +520,13 @@ _REASONING_REQUIRED_MARKERS = (
     "always enabled", "cannot be turned off",
 )
 
+# Venice-compatible relays validate their nested ``reasoning`` object against a max_tokens-shaped
+# schema. A thinking-off payload lacks that required positive value, so this is a rejection of the
+# reasoning wire control—not the ordinary top-level output cap handled by ``_is_max_tokens_rejection``.
+_REASONING_VALUE_CONSTRAINT_MARKERS = (
+    "must be positive", "must be greater than 0", "must be greater than zero", "must be at least 1",
+)
+
 
 def is_reasoning_required_rejection(error_msg: str) -> bool:
     """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
@@ -544,6 +551,9 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     model, so both the main loop and the auxiliary ladder retry once without the disable. A body
     whose structured ``param``/code names the reasoning field (``'param': 'reasoning.effort'``,
     ``invalid_reasoning_effort``, #100536) is a rejection whatever the message says — even none.
+    Venice-compatible relays can instead require the nested object's implicit ``reasoning.max_tokens``
+    to be positive; the same strip retry is correct for that value-constraint wording and its close
+    ``greater than 0`` / ``at least 1`` variants.
 
     Known trade-off: a 400 about a thinking *state* ("Function calling is not supported when
     thinking is enabled") also matches — the marker sits right next to the token, so no proximity
@@ -556,7 +566,12 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 32):token.end() + 32]
-    return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+    value_constraint_near = msg[max(0, token.start() - 32):token.end() + 64]
+    return (
+        "unsupported" in near
+        or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+        or any(m in value_constraint_near for m in _REASONING_VALUE_CONSTRAINT_MARKERS)
+    )
 
 
 def _billing_hints(error_msg: str) -> Verdict:

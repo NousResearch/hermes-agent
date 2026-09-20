@@ -23,6 +23,8 @@ from hermes_cli.plugin_capabilities import _child_dict
 from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import atomic_write_text
 
+from hermes_cli.plugin_installation import installation_transaction
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,6 +114,7 @@ def _config_str(*keys: str, default: str) -> str:
     return _config_value(*keys, default=default) or default
 
 
+@installation_transaction
 def _write_config_value(section: str, key: str, value: Any) -> None:
     """Persist ``config[section][key] = value`` to config.yaml (creating the section)."""
     from hermes_cli.config import load_config, save_config
@@ -314,6 +317,7 @@ def _looks_like_plugin_dir(target: Path) -> bool:
         or (target / "__init__.py").exists())
 
 
+@installation_transaction
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy ``*.example`` files to their real names (``config.yaml.example`` -> ``config.yaml``),
     never overwriting an existing file so reinstall keeps user config."""
@@ -488,6 +492,7 @@ def _read_install_metadata() -> dict[str, dict[str, object]]:
     return value
 
 
+@installation_transaction
 def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
     """Atomically replace the profile-local plugin install metadata sidecar."""
     path = _install_metadata_path()
@@ -698,6 +703,7 @@ def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: 
         raise
 
 
+@installation_transaction
 def _install_plugin_core(
     identifier: str,
     *,
@@ -771,6 +777,7 @@ def _install_plugin_core(
     return target, installed_manifest, installed_manifest.get("name") or target.name
 
 
+@installation_transaction
 def cmd_install(
     identifier: str,
     force: bool = False,
@@ -860,6 +867,7 @@ def cmd_install(
     console.print()
 
 
+@installation_transaction
 def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None) -> str:
     """Shared ``update`` core: refuse pinned / non-git checkouts, ``git pull``, record the new
     revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
@@ -884,6 +892,7 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
     return output
 
 
+@installation_transaction
 def cmd_update(name: str) -> None:
     """Update an installed plugin by pulling latest from its git remote."""
     from rich.markup import escape
@@ -949,6 +958,7 @@ def _rescan_after_update(target: Path, name: str, console) -> None:
             f"if you trust them.")
 
 
+@installation_transaction
 def _post_pull_housekeeping(target: Path, console) -> None:
     """After ``git pull``: drop stale ``__pycache__``, copy any new ``.example`` files, and install
     dependencies the new revision declares (a version bump commonly adds or moves a package)."""
@@ -959,6 +969,7 @@ def _post_pull_housekeeping(target: Path, console) -> None:
     _install_python_dependencies(target, console)
 
 
+@installation_transaction
 def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
     metadata = _read_install_metadata()
@@ -984,6 +995,7 @@ def _remove_plugin_core(target: Path) -> None:
     shutil.rmtree(staging)
 
 
+@installation_transaction
 def cmd_remove(name: str) -> None:
     """Remove an installed plugin by name."""
     console = _console()
@@ -1011,6 +1023,7 @@ def _save_enabled_set(enabled: set) -> None:
     _write_config_value("plugins", "enabled", sorted(enabled))
 
 
+@installation_transaction
 def _save_plugin_sets(enabled: set, disabled: set) -> None:
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
@@ -1041,6 +1054,7 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
     names.discard(key.split("/")[-1])
 
 
+@installation_transaction
 def _set_plugin_enabled(name: str, *, enable: bool) -> None:
     """Move *name* between the enabled allow-list and the disabled deny-list and persist both."""
     enabled = _get_enabled_set()
@@ -1075,6 +1089,7 @@ def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
     return leaf_matches[0] if len(leaf_matches) == 1 else None
 
 
+@installation_transaction
 def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     """Write ``plugins.entries.<plugin_id>.<key> = value`` into config.yaml."""
     from hermes_cli.config import load_config, save_config
@@ -1084,6 +1099,7 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     save_config(config)
 
 
+@installation_transaction
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
@@ -1164,6 +1180,7 @@ def _declared_capabilities_for_key(key: str) -> list:
     return _declared_capabilities_from_manifest(_read_manifest(Path(entry[4])), entry[0])
 
 
+@installation_transaction
 def _run_capability_consent(console, plugin_id: str, declared: list, *, context: str = "install") -> bool:
     """Show the capability consent screen and record the decision; True when granted.
 
@@ -1280,6 +1297,7 @@ def _resolve_tool_override_grant(console, key: str, allow_tool_override: Optiona
             "this later.[/dim]")
 
 
+@installation_transaction
 def cmd_disable(name: str) -> None:
     """Remove a plugin from the enabled allow-list (and add to disabled)."""
     console = _console()
@@ -1614,6 +1632,7 @@ def cmd_toggle() -> None:
         _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled_set, categories, console)
 
 
+@installation_transaction
 def _persist_plugin_selection(plugin_keys, chosen, disabled) -> tuple[bool, set]:
     """Save the composite UI's checkbox state; returns ``(changed, new_enabled)``.
 
@@ -1806,6 +1825,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
     print()
 
 
+@installation_transaction
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
     ref: Optional[str] = None,
@@ -1900,6 +1920,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     return None
 
 
+@installation_transaction
 def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
     """Add/remove a plugin's toolset in ``platform_toolsets`` for all platforms (no-op when the
     plugin provides no tools)."""
@@ -1922,6 +1943,7 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
         save_config(config)
 
 
+@installation_transaction
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
     """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists)."""
     if _resolve_plugin_key(name) is None:
@@ -1944,6 +1966,7 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
     return target if target.is_dir() else None
 
 
+@installation_transaction
 def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     """``git pull`` inside ``~/.hermes/plugins/<name>``."""
     from hermes_cli import plugins_cmd_catalog as catalog
@@ -1971,6 +1994,7 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     return {"ok": True, "name": name, "output": msg, "unchanged": "Already up to date" in msg}
 
 
+@installation_transaction
 def _clear_plugin_bytecode(target: Path) -> int:
     """Remove ``__pycache__`` dirs under a just-updated plugin checkout. Plugin dirs sit outside
     the repo, so the launch-time bytecode sweep never covers them and stale bytecode after a pull
@@ -2048,6 +2072,7 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
     return True, ""
 
 
+@installation_transaction
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     """``git pull --ff-only`` a plugin checkout, autostashing local edits (users patch installed
     plugins in place, and a plain ff-only pull would then refuse forever).
@@ -2098,6 +2123,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         return False, "Git operation timed out after 60 seconds."
 
 
+@installation_transaction
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
     plugins_dir = _plugins_dir()

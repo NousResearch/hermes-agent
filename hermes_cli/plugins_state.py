@@ -19,6 +19,21 @@ _PLUGIN_STATE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _PLUGIN_STATE_QUOTA_BYTES = 10 * 1024 * 1024
 _PLUGIN_STATE_LOCKS: Dict[str, threading.RLock] = {}
 _PLUGIN_STATE_LOCKS_GUARD = threading.Lock()
+_PLUGIN_STATE_HANDLES = set()
+
+
+def _reset_plugin_locks_after_fork():
+    global _PLUGIN_STATE_LOCKS, _PLUGIN_STATE_LOCKS_GUARD, _PLUGIN_STATE_HANDLES
+    # Close the inherited handles instead of LOCK_UN: the flock still belongs to the parent.
+    for handle in _PLUGIN_STATE_HANDLES:
+        handle.close()
+    _PLUGIN_STATE_HANDLES = set()
+    _PLUGIN_STATE_LOCKS = {}
+    _PLUGIN_STATE_LOCKS_GUARD = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_plugin_locks_after_fork)
 
 
 def _plugin_relative_segments(key: str) -> tuple[str, ...]:
@@ -83,25 +98,29 @@ def _locked_plugin_state(path: Path):
         thread_lock = _PLUGIN_STATE_LOCKS.setdefault(str(lock_path.resolve(strict=False)), threading.RLock())
     with thread_lock:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(lock_path, "a+b") as handle:
-            if os.name == "nt":  # pragma: no cover - exercised on Windows CI
-                import msvcrt
-                if handle.seek(0, os.SEEK_END) == 0:
-                    handle.write(b"\0")
-                    handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        with open(lock_path, "a+b", buffering=0) as handle:
+            _PLUGIN_STATE_HANDLES.add(handle)
             try:
-                yield
-            finally:
                 if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                    import msvcrt
+                    if handle.seek(0, os.SEEK_END) == 0:
+                        handle.write(b"\0")
                     handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
                 else:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    if not handle.closed:  # A fork child's at-fork hook already closed its copy.
+                        if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+                            handle.seek(0)
+                            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                        else:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                _PLUGIN_STATE_HANDLES.discard(handle)
 
 
 class PluginState:

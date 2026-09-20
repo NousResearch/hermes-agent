@@ -11,6 +11,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1032,6 +1033,15 @@ class TestPythonpathSelectiveStrip:
         else:
             assert norm_root not in norm_parts, \
                 "repo root must stay absent for an external-env child"
+        # The fake streams must hit EOF: the kernel's reader threads consume
+        # ``read1()``, and an unconfigured MagicMock there is a truthy value
+        # forever — the stderr reader spins after the test returns, growing
+        # the pytest process by hundreds of MB per second (#115912).
+        for thread in threading.enumerate():
+            if "_reader" in thread.name:
+                thread.join(timeout=2)
+                assert not thread.is_alive(), \
+                    f"{thread.name} is still spinning on the fake kernel stream"
 
 
     def test_repo_root_direct_child_preserved(self):

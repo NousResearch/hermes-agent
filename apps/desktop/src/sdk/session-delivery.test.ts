@@ -260,6 +260,36 @@ describe('host.submitToSession', () => {
     expect(result).toEqual({ runtimeSessionId: 'runtime-4', status: null })
   })
 
+  it('refuses a malformed submit acknowledgement instead of leaving the hold waiting', async () => {
+    // Neither shape, an unknown status, and a contradictory combination: all
+    // three leave nothing running, so all three must fail closed.
+    for (const reply of [{}, { status: 'weird' }, { status: 'queued', voice_stopped: true }]) {
+      mocks.releaseRoute.mockClear()
+      mocks.releaseTurn.mockClear()
+      mocks.requestGatewayForAgent.mockReset()
+      mocks.requestGatewayForAgent.mockImplementation(async (_connectionId, _profile, method) => {
+        if (method === 'session.resume') {
+          return { session_id: 'runtime-malformed' }
+        }
+
+        if (method === 'prompt.submit') {
+          return reply
+        }
+
+        throw new Error(`unexpected method ${method}`)
+      })
+
+      await expect(host.submitToSession(route, { storedSessionId: STORED_ID, text: 'hello' })).rejects.toThrow(
+        /unrecognised acknowledgement/i
+      )
+
+      // Nothing started, so no terminal session event will ever release the
+      // hold this call took.
+      expect(mocks.releaseTurn).toHaveBeenCalledOnce()
+      expect(mocks.releaseRoute).toHaveBeenCalledOnce()
+    }
+  })
+
   it('refuses an ambiguous profile-only route before retaining the local route', async () => {
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
       getAgentRoster: vi.fn(async () => ({

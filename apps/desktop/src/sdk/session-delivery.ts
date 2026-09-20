@@ -37,6 +37,34 @@ interface PluginPromptSubmitReply {
   voice_stopped?: boolean | null
 }
 
+/** The statuses that mean the backend accepted a turn. */
+const ACCEPTED_SUBMIT_STATUSES: Exclude<PluginSessionSubmitStatus, null>[] = [
+  'streaming',
+  'queued',
+  'steered',
+  'redirected'
+]
+
+/** Read the reply as exactly one of its two shapes: a known status once a turn
+ *  is accepted, or the typed-stop acknowledgement, which starts none. Anything
+ *  else is a contract violation, and production only LOGS those, so an
+ *  unreadable reply would leave a hold waiting for a terminal event that never
+ *  comes — this fails closed instead. */
+function readSubmitAcknowledgement(reply: PluginPromptSubmitReply | undefined): PluginSessionSubmitStatus {
+  const status = reply?.status ?? null
+  const stopped = reply?.voice_stopped === true
+
+  if (stopped && status === null) {
+    return null
+  }
+
+  if (!stopped && status !== null && ACCEPTED_SUBMIT_STATUSES.includes(status)) {
+    return status
+  }
+
+  throw new Error('prompt.submit returned an unrecognised acknowledgement')
+}
+
 /** The SDK primitives the sequence composes. */
 export interface PluginSessionDeliveryDeps {
   /** Canonical route resolution — `sdk/index.ts::resolvePluginProfileTarget`.
@@ -113,13 +141,16 @@ export async function submitToPluginSession(
         queued: true
       })
 
-      // The typed stop phrase ends the voice chat and starts no turn, so no
-      // terminal session event will ever release this hold.
-      if (submitted?.voice_stopped) {
+      const status = readSubmitAcknowledgement(submitted)
+
+      // A null status is the typed stop phrase: it ends the voice chat and
+      // starts no turn, so no terminal session event will ever release this
+      // hold. A reply that is neither shape throws into the catch below.
+      if (status === null) {
         releaseTurn()
       }
 
-      return { runtimeSessionId, status: submitted?.status ?? null }
+      return { runtimeSessionId, status }
     } catch (error) {
       // A refused submit has no turn to keep alive; a timed-out one may already
       // have been accepted, so this releases the hold without resending.

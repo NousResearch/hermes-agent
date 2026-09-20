@@ -81,18 +81,25 @@ def test_validate_references_filters_bad_names_and_refs():
 
 
 def test_fetch_happy_path(monkeypatch, tmp_path):
+    """Multi-reference fetch resolves through one batched `op inject` call."""
     fake_op = tmp_path / "op"
     fake_op.write_text("")
     values = {
-        "op://Private/OpenAI/api key": "sk-abc\n",
+        "op://Private/OpenAI/api key": "sk-abc",
         "op://Private/Anthropic/credential": "sk-ant-xyz",
     }
+    calls = {"n": 0}
 
     def fake_run(cmd, **kwargs):
-        # argv list, never shell=True; reference passed after `--`.
-        assert "--" in cmd
-        ref = cmd[cmd.index("--") + 1]
-        return _ok(values[ref])
+        # argv list, never shell=True; one invocation carries the whole template.
+        calls["n"] += 1
+        assert "inject" in cmd
+        template = Path(cmd[cmd.index("-i") + 1]).read_text(encoding="utf-8")
+        out = Path(cmd[cmd.index("-o") + 1])
+        for ref, value in values.items():
+            template = template.replace(f"{{{{ {ref} }}}}", value)
+        out.write_text(template, encoding="utf-8")
+        return _ok("")
 
     monkeypatch.setattr(op.subprocess, "run", fake_run)
 
@@ -106,6 +113,85 @@ def test_fetch_happy_path(monkeypatch, tmp_path):
     )
     assert secrets == {"OPENAI_API_KEY": "sk-abc", "ANTHROPIC_API_KEY": "sk-ant-xyz"}
     assert warnings == []
+    # The point of batching: two references cost ONE `op` invocation, not two.
+    assert calls["n"] == 1
+
+
+def test_single_reference_uses_op_read(monkeypatch, tmp_path):
+    """One reference gains nothing from a template, so it takes the direct read path."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+
+    def fake_run(cmd, **kwargs):
+        assert "inject" not in cmd
+        assert "--" in cmd
+        assert cmd[cmd.index("--") + 1] == "op://Private/OpenAI/api key"
+        return _ok("sk-abc\n")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"OPENAI_API_KEY": "op://Private/OpenAI/api key"},
+        binary=fake_op,
+        use_cache=False,
+    )
+    assert secrets == {"OPENAI_API_KEY": "sk-abc"}
+    assert warnings == []
+
+
+def test_batch_failure_falls_back_to_per_reference_reads(monkeypatch, tmp_path):
+    """`op inject` is all-or-nothing: one bad reference must not lose the good ones."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    values = {"op://V/I/good": "good-value"}
+    seen = {"inject": False}
+
+    def fake_run(cmd, **kwargs):
+        if "inject" in cmd:  # batch fails wholesale, as op does for an unknown field
+            seen["inject"] = True
+            return _err(1, "[ERROR] item 'V/I' does not have a field 'bad'")
+        ref = cmd[cmd.index("--") + 1]
+        if ref not in values:
+            return _err(1, "[ERROR] item 'V/I' does not have a field 'bad'")
+        return _ok(values[ref])
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"GOOD": "op://V/I/good", "BAD": "op://V/I/bad"},
+        binary=fake_op,
+        use_cache=False,
+    )
+    # The batch was attempted, and its wholesale failure did not cost the good reference.
+    assert seen["inject"]
+    assert secrets == {"GOOD": "good-value"}
+    assert len(warnings) == 1
+    assert "op://V/I/bad" in warnings[0]
+
+
+def test_inject_values_survive_special_characters(monkeypatch, tmp_path):
+    """Sentinel framing keeps '=', '#', quotes and newlines inside a value intact."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    values = {
+        "op://V/I/a": "pa=ss#word 'quoted' \"too\"",
+        "op://V/I/b": "-----BEGIN KEY-----\nline2\n-----END KEY-----",
+    }
+
+    def fake_run(cmd, **kwargs):
+        template = Path(cmd[cmd.index("-i") + 1]).read_text(encoding="utf-8")
+        out = Path(cmd[cmd.index("-o") + 1])
+        for ref, value in values.items():
+            template = template.replace(f"{{{{ {ref} }}}}", value)
+        out.write_text(template, encoding="utf-8")
+        return _ok("")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    secrets, _ = op.fetch_onepassword_secrets(
+        references={"A": "op://V/I/a", "B": "op://V/I/b"}, binary=fake_op, use_cache=False
+    )
+    assert secrets == {"A": values["op://V/I/a"], "B": values["op://V/I/b"]}
 
 
 

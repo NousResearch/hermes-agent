@@ -1044,31 +1044,17 @@ def _emit_runtime_status_transition(
 
 
 def write_runtime_status(
-    *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
-    active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
-    error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
-    retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    multiplex_standalone_reason: Any = _UNSET,
-    ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
-    drop_profile_platforms: Optional[str] = None, reload_existing: bool = False,
-    wait_timeout: Optional[float] = None,
+    *, reload_existing: bool = False, wait_timeout: Optional[float] = None, **fields: Any,
 ) -> bool:
     """Synchronously persist status for CLI callers and off-loop startup.
 
     ``wait_timeout`` bounds how long the caller waits for durable persistence.
     A timed-out update remains queued for the single background writer.
+    Keyword ``fields`` are those of ``_prepare_runtime_status_update``.
     """
     with _runtime_status_state_lock:
         path, payload, previous_payload = _prepare_runtime_status_update(
-            gateway_state=gateway_state, exit_reason=exit_reason,
-            restart_requested=restart_requested, active_agents=active_agents, active_work=active_work,
-            platform=platform, platform_state=platform_state, error_code=error_code,
-            error_message=error_message, needs_attention=needs_attention,
-            retrying_since=retrying_since, served_profiles=served_profiles,
-            session_store=session_store, multiplex_standalone_reason=multiplex_standalone_reason,
-            ingress_url=ingress_url, listener_base=listener_base,
-            clear_profile_platforms=clear_profile_platforms, drop_profile_platforms=drop_profile_platforms,
-            reload_existing=reload_existing)
+            reload_existing=reload_existing, **fields)
         writer = _get_runtime_status_writer()
         generation = writer.submit(path, payload)
     # Report the transition once it is queued (matching ``publish_runtime_status``): a
@@ -1077,27 +1063,14 @@ def write_runtime_status(
     return writer.wait(generation, timeout=wait_timeout)
 
 
-def publish_runtime_status(
-    *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
-    active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
-    error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
-    retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    multiplex_standalone_reason: Any = _UNSET,
-    ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
-    drop_profile_platforms: Optional[str] = None,
-) -> int:
-    """Merge and enqueue status without waiting for filesystem persistence."""
+def publish_runtime_status(**fields: Any) -> int:
+    """Merge and enqueue status without waiting for filesystem persistence.
+
+    Keyword ``fields`` are those of ``_prepare_runtime_status_update``.
+    """
     with _runtime_status_state_lock:
         path, payload, previous_payload = _prepare_runtime_status_update(
-            gateway_state=gateway_state, exit_reason=exit_reason,
-            restart_requested=restart_requested, active_agents=active_agents, active_work=active_work,
-            platform=platform, platform_state=platform_state, error_code=error_code,
-            error_message=error_message, needs_attention=needs_attention,
-            retrying_since=retrying_since, served_profiles=served_profiles,
-            session_store=session_store, multiplex_standalone_reason=multiplex_standalone_reason,
-            ingress_url=ingress_url, listener_base=listener_base,
-            clear_profile_platforms=clear_profile_platforms, drop_profile_platforms=drop_profile_platforms,
-            load_existing=False)
+            load_existing=False, **fields)
         generation = _get_runtime_status_writer().submit(path, payload)
     _emit_runtime_status_transition(previous_payload, payload)
     return generation

@@ -263,13 +263,41 @@ class StreamingContextScrubber:
             self._at_block_boundary = self._ends_at_block_boundary(text)
 
 
+def _drop_repeated_recall_lines(text: str) -> str:
+    """Drop a recalled bullet that an EARLIER line of this same block already states.
+
+    Providers merge several stores (and this merges several providers), so one prefetch routinely
+    surfaces the same fact two or three times. A byte-identical repeat inside one block tells the
+    model nothing the block has not already said, and it is not free: the composed block is stamped
+    into the user row's ``api_content`` sidecar and replayed verbatim on every later request for as
+    long as that row is in context, so each duplicate is paid once per turn, forever.
+
+    Only list items are considered, and only when identical after stripping: headings, prose,
+    blank lines and separators are left exactly as the provider wrote them, so section structure —
+    and any line a provider deliberately repeats as prose — survives untouched.
+    """
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        # A bullet with actual content; a bare "-" or a "---" rule is structure, never a duplicate.
+        if stripped[:1] in ("-", "*") and any(ch.isalnum() for ch in stripped):
+            if stripped in seen:
+                continue
+            seen.add(stripped)
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def build_memory_context_block(raw_context: str) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
-    clean = sanitize_context(raw_context)
-    if clean != raw_context:
+    sanitized = sanitize_context(raw_context)
+    if sanitized != raw_context:
+        # Stays keyed on sanitization alone: a deduped bullet is routine, not a provider fault.
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    clean = _drop_repeated_recall_lines(sanitized)
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

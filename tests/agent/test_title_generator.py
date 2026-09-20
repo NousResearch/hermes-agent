@@ -452,13 +452,14 @@ class TestMaybeAutoTitle:
         "main_runtime, title_cfg, deferred",
         [
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {}, True),
+            ({"provider": "lmstudio", "base_url": "http://127.0.0.1:1234/v1"}, {}, True),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://127.0.0.1:8080/v1/"}, True),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"provider": "openrouter"}, False),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://10.0.0.2:8080/v1"}, False),
             ({"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"}, {}, False),
         ],
     )
-    def test_title_call_waits_for_the_turn_when_it_shares_a_custom_endpoint(self, main_runtime, title_cfg, deferred):
+    def test_title_call_waits_for_the_turn_when_it_shares_a_self_hosted_endpoint(self, main_runtime, title_cfg, deferred):
         """#117296: a self-hosted server serving the main turn and the concurrent json_schema title request
         can decode the title into the main reply. The upgrade must not go on the wire until the caller starts
         it after the turn; every other route keeps the turn-start timing."""

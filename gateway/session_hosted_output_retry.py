@@ -191,7 +191,7 @@ class CanonicalOutputRetry:
             raise RoomArtifactError('Group Chat output attempt changed')
         result, payload = json.loads(row['result_json']), json.loads(row['payload_json'])
         scope = RoomArtifactScope.from_mapping(result.get('artifact_scope') or {})
-        task = require_output_task(conn, scope, row['cancel_generation'])
+        task = require_output_task(conn, scope, row['cancel_generation'], cleanup=True)
         if (scope.room_id, scope.task_id, scope.execution_generation) != key or not payload.get('recipient_member_ids'):
             raise RoomArtifactError('Group Chat output receipt changed')
         owner = conn.execute('SELECT value FROM state_meta WHERE key=?', ('gateway.hosted.owner.v1:' + key[0],)).fetchone()

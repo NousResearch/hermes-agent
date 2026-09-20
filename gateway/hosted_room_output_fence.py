@@ -5,7 +5,7 @@ import json
 from gateway.hosted_room_artifacts import RoomArtifactError, RoomArtifactScope
 
 
-def require_output_task(conn, scope: RoomArtifactScope, cancel_generation, *, status="settled"):
+def require_output_task(conn, scope: RoomArtifactScope, cancel_generation, *, status="settled", cleanup=False):
     if type(cancel_generation) is not int or cancel_generation < 0:
         raise RoomArtifactError("Group Chat output cancellation generation is invalid")
     room = conn.execute(
@@ -26,9 +26,18 @@ def require_output_task(conn, scope: RoomArtifactScope, cancel_generation, *, st
                 and target.get('profile') == scope.target_profile)
     if not any(matches(member) for member in json.loads(room['members_json'])):
         raise RoomArtifactError("Group Chat output participant changed")
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    HostedRoomAttachmentStore._require_viewer_room(conn, room_id=scope.room_id,
-        authority_gateway_id=scope.authority_gateway_id, authority_epoch=scope.authority_epoch)
+    if cleanup:
+        # Closing withdraws viewers/NEW, not the original terminal custody.
+        from gateway.hosted_rooms import room_safety
+        room_safety._raise_if_quarantined(conn, scope.room_id)
+        fence = conn.execute('SELECT authority_gateway_id,authority_epoch FROM hosted_room_disband_fences WHERE room_id=?',
+                             (scope.room_id,)).fetchone()
+        if fence is not None and tuple(fence) != (scope.authority_gateway_id, scope.authority_epoch):
+            raise RoomArtifactError("Group Chat cleanup fence changed")
+    else:
+        from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+        HostedRoomAttachmentStore._require_viewer_room(conn, room_id=scope.room_id,
+            authority_gateway_id=scope.authority_gateway_id, authority_epoch=scope.authority_epoch)
     task = conn.execute("SELECT * FROM hosted_room_driver_tasks WHERE room_id=? AND task_id=?",
                         (scope.room_id, scope.task_id)).fetchone()
     payload = json.loads(task["payload_json"]) if task else {}
@@ -56,7 +65,7 @@ def require_output_publication(conn, room_id, expected, *, kind, actor, payload)
     scope = RoomArtifactScope.from_mapping(expected["scope"])
     if scope.room_id != room_id:
         raise RoomArtifactError("Group Chat output room changed")
-    task = require_output_task(conn, scope, expected["cancel_generation"])
+    task = require_output_task(conn, scope, expected["cancel_generation"], cleanup=kind != "message.member")
     if (payload.get("task_id") != scope.task_id or payload.get("member_id") != scope.member_id
             or payload.get("thread_id") != task["thread_id"] or payload.get("turn_id") != task["turn_id"]):
         raise RoomArtifactError("Group Chat output event coordinates changed")

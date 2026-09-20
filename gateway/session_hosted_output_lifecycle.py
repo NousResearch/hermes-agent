@@ -94,7 +94,7 @@ class CanonicalOutputLifecycle:
             execution_generation=row['execution_generation'], member_id=member, target_profile=payload['target_profile'],
             home_install_id=room['authority_gateway_id'], target_install_id=room['authority_gateway_id'],
             authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch']))
-        require_output_task(conn, scope, row['cancel_generation'], status=row['status'])
+        require_output_task(conn, scope, row['cancel_generation'], status=row['status'], cleanup=True)
         base.update(scope=scope.as_mapping(), scope_key=scope.key, lineage_identity=scope.lineage_json)
         if identity_only:
             return base, None
@@ -291,6 +291,14 @@ class CanonicalOutputLifecycle:
         current, admission = self._cleanup_snapshot(conn, task)
         if current != expected or (terminal and (admission is None or admission['status'] != 'terminal')):
             raise RoomArtifactError('Group Chat cleanup authority changed')
+
+    def capture_output_retirement(self, conn, room_id):
+        from gateway.session_hosted_output_close import capture
+        return capture(self, conn, room_id)
+
+    def require_output_retirement(self, conn, room_id, saved):
+        from gateway.session_hosted_output_close import require
+        return require(self, conn, room_id, saved)
 
     def output_cleanup_status(self, room_id, *, state_read=None):
         with self._output_status_read(room_id, state_read=state_read) as conn:

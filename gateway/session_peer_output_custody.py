@@ -29,7 +29,7 @@ class PeerOutputCustody:
         self.registry = self.authority.runner.session_authorities
         with self.authority.db._read_ctx() as conn:
             self.check_current(conn, self.scope)
-            task = require_output_task(conn, self.scope, self.cancel_generation)
+            task = require_output_task(conn, self.scope, self.cancel_generation, cleanup=True)
             self.recipients = json.loads(task['payload_json']).get('recipient_member_ids')
             self.link = dict(conn.execute("SELECT * FROM hosted_room_links WHERE room_id=? AND member_id=?",
                                          (self.scope.room_id, self.scope.member_id)).fetchone())
@@ -55,7 +55,7 @@ class PeerOutputCustody:
         authority._require_admission_open()
         _epoch(conn, self.epoch)
         owner = conn.execute('SELECT value FROM state_meta WHERE key=?', (_OWNER + scope.room_id,)).fetchone()
-        task = require_output_task(conn, scope, self.cancel_generation)
+        task = require_output_task(conn, scope, self.cancel_generation, cleanup=True)
         if (owner is None or owner[0] != self.owner or json.loads(task['result_json']) != self.result
                 or self.result.get('artifact_scope') != scope.as_mapping()
                 or self.result.get('artifacts') != self.manifest
@@ -129,7 +129,8 @@ class PeerOutputCustody:
                 raise RoomArtifactError('Group Chat output ACK was not confirmed')
             return result
         # Re-prove Home's journal and bytes AFTER remote observation I/O.
-        return acknowledge_published(self.service.output_attachments, scope=scope, manifest=self.manifest, acknowledge=transmit)
+        from gateway.session_hosted_output_retirement import RetainedPublication
+        return acknowledge_published(RetainedPublication(self.service, scope), scope=scope, manifest=self.manifest, acknowledge=transmit)
 
     def discard_durably(self, scope):
         client, link, receipt = self._route(scope)

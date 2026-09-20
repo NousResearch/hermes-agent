@@ -7,20 +7,39 @@ import json
 import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import closing
+from pathlib import Path
+from typing import Any, Protocol
 
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+from gateway.hosted_room_attachments import AttachmentData, HostedRoomAttachmentStore
 from gateway.hosted_room_artifacts import (
     RoomArtifactError, RoomArtifactScope, validate_terminal_artifact_manifest,
 )
 
 
-def _snapshot(store):
+class PublishedAttachmentStore(Protocol):
+    """Read-only publication proof consumed before source acknowledgement."""
+
+    db_path: Path
+
+    def _require_viewer_room(
+        self, conn: sqlite3.Connection, *, room_id: str,
+        authority_gateway_id: str, authority_epoch: int,
+    ) -> object: ...
+
+    def read_viewer(
+        self, *, room_id: Any, attachment_id: Any, event_id: Any | None = None,
+        recipient_member_id: Any = None, authority_gateway_id: Any,
+        authority_epoch: Any,
+    ) -> AttachmentData: ...
+
+
+def _snapshot(store: PublishedAttachmentStore):
     conn = sqlite3.connect(store.db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def _terminal_binding(store, scope, manifest, recipient_member_ids=None):
+def _terminal_binding(store: PublishedAttachmentStore, scope, manifest, recipient_member_ids=None):
     scope = RoomArtifactScope.from_mapping(scope.as_mapping())
     items = validate_terminal_artifact_manifest(manifest)
     if not items or len({item["artifact_id"] for item in items}) != len(items):
@@ -114,7 +133,7 @@ def prepare_output(
 
 
 def acknowledge_published(
-    store: HostedRoomAttachmentStore,
+    store: PublishedAttachmentStore,
     *,
     scope: RoomArtifactScope,
     manifest: Mapping,

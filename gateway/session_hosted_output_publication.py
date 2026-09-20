@@ -13,6 +13,7 @@ from gateway.session_hosted_output_retry import CanonicalOutputRetry, retryable
 from gateway.session_hosted_output_lifecycle import CanonicalOutputLifecycle
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_artifact_service import prepare_output, acknowledge_published
+from gateway.session_hosted_output_retirement import RetainedPublication
 
 
 class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRetry):
@@ -46,7 +47,7 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
                 return 0
             return outbox.acknowledge(scope, artifact_ids, message_event_id=message_event_id)
 
-        return acknowledge_published(self.output_attachments, scope=scope, manifest=manifest,
+        return acknowledge_published(RetainedPublication(self, scope), scope=scope, manifest=manifest,
                                       acknowledge=acknowledge_or_retired)
 
     def _prepare_terminal_tasks(self, room):
@@ -57,8 +58,10 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
         # Direct callers retain exception reporting; scheduler callers consume the
         # durable disposition after every independent sibling has had a chance.
         with self._output_room_lock(str(room['room_id'])):
-            with self._output_policy_read():
-                pass
+            with self._output_policy_read() as conn:
+                from gateway.session_group_disband import sealed_output
+                if sealed_output(self, conn, str(room['room_id'])):
+                    return False
             self._prune_output_retry_metadata(str(room['room_id']))
             changed, errors = False, []
             from gateway.hosted_room_task_scan import page, finish
@@ -126,8 +129,9 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
         # producer bytes are never read: ACK evidence belongs to Home's copy.
         if completed['completed_operation'] == 'ack':
             result = task['result']
-            acknowledge_published(self.output_attachments,
-                scope=RoomArtifactScope.from_mapping(result['artifact_scope']), manifest=result['artifacts'],
+            scope = RoomArtifactScope.from_mapping(result['artifact_scope'])
+            acknowledge_published(RetainedPublication(self, scope),
+                scope=scope, manifest=result['artifacts'],
                 acknowledge=lambda *args, **kwargs: None)
         with self.authority.db._read_ctx() as conn:
             current = self._output_metadata(conn, self._output_key(task))

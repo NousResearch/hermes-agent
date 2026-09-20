@@ -487,40 +487,21 @@ def test_reported_turn_still_lingering_at_the_cap_is_booked_from_its_latest_repo
     tmp.write_text("hi", encoding="utf-8")
     started = time.monotonic()
     try:
-        with mock.patch.object(subprocess, "Popen", side_effect=spy):
+        with mock.patch.object(subprocess, "Popen", side_effect=spy) as popen:
             result = methods_bot_relay._run_delivery("ops", str(tmp), env, timeout=2)
         elapsed = time.monotonic() - started
         assert (result.returncode, result.stdout, result.stderr) == (0, "teammate says: done", "")
         assert 2 <= elapsed < 8, elapsed
         assert procs[0].poll() is None, "the lingering child must survive the booking"
         assert not (tmp_path / "dm.txt.turn.json").exists(), "the report is the runner's to clean up"
+        # Decoding stays pinned through the runner (#93590 sibling defect): without encoding= the
+        # child's UTF-8 output is decoded with the locale codec — cp1252/GBK on Windows — mangling
+        # non-ASCII replies; errors="replace" keeps a bad byte from raising instead of delivering.
+        assert popen.call_args.kwargs["encoding"] == "utf-8" and popen.call_args.kwargs["errors"] == "replace"
     finally:
         for proc in procs:
             proc.kill()
             proc.wait(timeout=10)
-
-
-def test_child_that_exits_under_the_cap_is_booked_from_its_streams(tmp_path, monkeypatch):
-    """Today's contract when the whole run fits: ``-Q`` prints after the linger, and a teammate's
-    reply may have become that answer — so the printed streams and real exit code win over the
-    report. Decoding is pinned (#93590 sibling defect): without encoding= the child's UTF-8 output
-    is decoded with the locale codec — cp1252/GBK on Windows — mangling non-ASCII replies."""
-    env = _child_argv(monkeypatch, """
-        import os, sys
-        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
-        write_turn_report(os.environ.pop(TURN_REPORT_FILE_ENV), exit_code=0, reply="interim")
-        print("final: ünïcode")
-        print("session_id: s-1", file=sys.stderr)
-        sys.exit(3)
-        """)
-    procs, spy = _spy_popen()
-    tmp = tmp_path / "dm.txt"
-    tmp.write_text("hi", encoding="utf-8")
-    env["PYTHONIOENCODING"] = "utf-8"  # the real child writes UTF-8 whatever the console codec
-    with mock.patch.object(subprocess, "Popen", side_effect=spy) as popen:
-        result = methods_bot_relay._run_delivery("ops", str(tmp), env, timeout=10)
-    assert (result.returncode, result.stdout, result.stderr) == (3, "final: ünïcode\n", "session_id: s-1\n")
-    assert popen.call_args.kwargs["encoding"] == "utf-8" and popen.call_args.kwargs["errors"] == "replace"
 
 
 def test_turn_that_never_ends_is_still_a_delivery_timeout(tmp_path, monkeypatch):

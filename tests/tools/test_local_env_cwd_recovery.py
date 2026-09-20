@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tools.environments import bubblewrap
 from tools.environments.bubblewrap import BubblewrapEnvironment
 from tools.environments.local import (
     LocalEnvironment,
@@ -30,6 +31,9 @@ def env_cls(request, tmp_path_factory, monkeypatch):
         # Outside tmp_path: the tests use tmp_path as the cwd, and the
         # bubblewrap backend refuses a sandbox dir inside a writable cwd.
         monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path_factory.mktemp("bwrap-sandboxes")))
+        # These tests never exec bwrap - Popen is faked and only the argv is
+        # read - so short-circuit the probe and run on hosts without it.
+        monkeypatch.setattr(bubblewrap, "_probed_bwrap_path", shutil.which("bwrap") or "/usr/bin/bwrap")
     return request.param
 
 

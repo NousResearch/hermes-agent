@@ -18,6 +18,7 @@ import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
+import { $linkOpenMode, type LinkOpenMode, setLinkOpenMode } from '@/store/link-open-mode'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
@@ -409,6 +410,7 @@ export function AppearanceSettings() {
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
+  const linkOpenMode = useStore($linkOpenMode)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
@@ -505,6 +507,11 @@ export function AppearanceSettings() {
     { id: 'always', label: a.embedsAlways },
     { id: 'off', label: a.embedsOff }
   ] as const satisfies readonly { id: EmbedMode; label: string }[]
+
+  const linkOpenOptions = [
+    { id: 'in-app', label: a.linkOpenInApp },
+    { id: 'external', label: a.linkOpenExternal }
+  ] as const satisfies readonly { id: LinkOpenMode; label: string }[]
 
   const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
 
@@ -961,6 +968,22 @@ export function AppearanceSettings() {
             }
             description={a.reasoningCollapsedDesc}
             title={a.reasoningCollapsedTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setLinkOpenMode(id)
+                }}
+                options={linkOpenOptions}
+                value={linkOpenMode}
+              />
+            }
+            description={a.linkOpenDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.linkOpen)}
+            title={a.linkOpenTitle}
           />
 
           <ListRow

@@ -2,7 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { setLinkOpenMode } from '@/store/link-open-mode'
 import { $previewTabs, closeRightRail } from '@/store/preview'
+import * as previewStore from '@/store/preview'
 
 import {
   __resetLinkTitleCache,
@@ -13,6 +15,7 @@ import {
   isTitleFetchable,
   LinkifiedText,
   MarkdownLinkText,
+  openLink,
   PrettyLink,
   urlSlugTitleLabel
 } from './external-link'
@@ -40,6 +43,7 @@ function installTitleBridge(title: string) {
 
 afterEach(() => {
   __resetLinkTitleCache()
+  setLinkOpenMode('in-app')
   closeRightRail()
   vi.restoreAllMocks()
   cleanup()
@@ -106,6 +110,45 @@ describe('external link helpers', () => {
     expect(a).toBe('Shared Canonical Title')
     expect(b).toBe('Shared Canonical Title')
     expect(bridge).toHaveBeenCalledTimes(1)
+  })
+
+  // Preference: External → a plain https click uses the OS-browser path,
+  // not the in-app preview pane. Fail-open (missing / in-app) keeps today.
+  it('opens a web link in the OS browser when the preference is external', async () => {
+    setLinkOpenMode('external')
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    const preview = vi.spyOn(previewStore, 'openPreview')
+
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    openLink('https://example.com/doc')
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/doc')
+    await Promise.resolve()
+    expect(preview).not.toHaveBeenCalled()
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('fail-opens a missing preference to the in-app preview for https', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    openLink('https://example.com/doc')
+
+    expect(openExternal).not.toHaveBeenCalled()
+    await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/doc'))
+  })
+
+  it('still opens a clicked web link in the OS browser when the preference is external', async () => {
+    setLinkOpenMode('external')
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(<ExternalLink href="https://example.com/doc">Doc</ExternalLink>)
+    fireEvent.click(screen.getByRole('link', { name: 'Doc' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/doc')
+    expect($previewTabs.get()).toHaveLength(0)
   })
 
   // A web link belongs in the in-app browser now; the OS browser is the

@@ -148,10 +148,14 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
-def _is_skill_disabled(name: str, platform: str = None) -> bool:
+def _is_skill_disabled(name: str, platform: str = None,
+                       allow_platform_disabled: bool = False) -> bool:
     """Disabled in config? Platform precedence: explicit arg, ``HERMES_PLATFORM``, session
     ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
-    (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
+    (keep in sync with agent.skill_utils.get_disabled_skill_names).
+
+    ``allow_platform_disabled=True`` drops the per-platform gate for a caller that *named* the
+    skill itself (see ``skill_view``); the global ``disabled`` list still applies."""
     try:
         from hermes_cli.config import load_config
         skills_cfg = load_config().get("skills", {})
@@ -164,6 +168,8 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         if resolved_platform:
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
         in_platform = platform_disabled is not None and name in platform_disabled
+        if allow_platform_disabled:
+            in_platform = False
         return in_platform or name in skills_cfg.get("disabled", [])
     except Exception:
         return False
@@ -570,11 +576,18 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
+    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True,
+    allow_platform_disabled: bool = False) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
-    slash/preload callers render the message themselves."""
+    slash/preload callers render the message themselves.
+
+    ``allow_platform_disabled`` is for non-interactive callers that load a skill they named
+    themselves (the cron scheduler resolves the skills a job declares). The per-platform disabled
+    list prunes the *interactive* skill surface, so without this the same job loads its skills
+    when it fires on schedule (no platform in context) but loses them whenever it is run manually
+    from a chat session that inherits ``HERMES_SESSION_PLATFORM``."""
     try:
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
@@ -603,7 +616,7 @@ def skill_view(
         if not skill_matches_platform(frontmatter):
             return _fail(f"Skill '{name}' is not supported on this platform.", readiness_status=SkillReadinessStatus.UNSUPPORTED.value)
         resolved_name = frontmatter.get("name", skill_md.parent.name)
-        if _is_skill_disabled(resolved_name):
+        if _is_skill_disabled(resolved_name, allow_platform_disabled=allow_platform_disabled):
             return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
         if file_path and skill_dir:
             return _serve_skill_file(

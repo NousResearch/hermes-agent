@@ -309,7 +309,9 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     from tools.skills_tool import skill_view
     for skill_name in skill_names:
         try:
-            payload = json.loads(skill_view(skill_name))
+            # Same reasoning as _load_cron_skill_parts: the job declared this skill, so the
+            # per-platform gate (interactive-surface pruning) must not hide it from the check.
+            payload = json.loads(skill_view(skill_name, allow_platform_disabled=True))
         except Exception:
             continue  # unreadable/missing skill → existing skip handling
         if not isinstance(payload, dict) or not payload.get("success"):

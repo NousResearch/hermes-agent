@@ -156,7 +156,12 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
             continue
 
         try:
-            loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
+            # The job names its own skills, so the per-platform gate (which prunes the interactive
+            # listing) must not drop them: a manual run launched from a chat platform inherits
+            # HERMES_SESSION_PLATFORM and would otherwise skip a skill the scheduled run loads fine.
+            # Global `skills.disabled` (retired skills) still applies.
+            loaded = json.loads(skill_view(
+                normalize_skill_lookup_name(skill_name), allow_platform_disabled=True))
         except (json.JSONDecodeError, TypeError):
             _skip("skill '%s' returned invalid JSON, skipping", skill_name)
             continue

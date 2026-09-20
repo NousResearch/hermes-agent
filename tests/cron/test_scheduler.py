@@ -1478,7 +1478,7 @@ class TestRunJobSkillBacked:
 
         fake_db = MagicMock()
 
-        def _skill_view(name):
+        def _skill_view(name, **_kwargs):
             assert name == "notion"
             from tools.env_passthrough import register_env_passthrough
 
@@ -1856,7 +1856,7 @@ class TestBuildJobPromptAbsoluteSkillPath:
         absolute_path = str(skill_dir)
         seen_names: list[str] = []
 
-        def _skill_view(name: str) -> str:
+        def _skill_view(name: str, **_kwargs) -> str:
             seen_names.append(name)
             if name == "alpha-skill":
                 return json.dumps({"success": True, "content": "# Alpha\nDo alpha."})
@@ -1876,7 +1876,7 @@ class TestBuildJobPromptBumpUse:
     def test_bump_use_called_for_loaded_skill(self):
         """bump_use is called for each successfully loaded skill."""
 
-        def _skill_view(name: str) -> str:
+        def _skill_view(name: str, **_kwargs) -> str:
             return json.dumps({"success": True, "content": f"Content for {name}."})
 
         with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \

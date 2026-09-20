@@ -29,6 +29,15 @@ from hermes_cli.models import (
 
 
 class TestMergeHelper:
+    def test_deepseek_merge_omits_retired_ids_and_puts_live_models_first(self):
+        with patch(
+            "agent.models_dev.list_agentic_models",
+            return_value=["deepseek-v4-flash-vision-exp", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro"],
+        ):
+            out = _merge_with_models_dev("deepseek", ["deepseek-v4-pro", "deepseek-flash"])
+
+        assert out == ["deepseek-flash", "deepseek-v4-pro"]
+
     def test_merge_empty_mdev_returns_curated(self):
         """When models.dev returns nothing, curated list is preserved verbatim."""
         with patch("agent.models_dev.list_agentic_models", return_value=[]):

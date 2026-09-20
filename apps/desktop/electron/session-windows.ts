@@ -46,9 +46,44 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // window while its transcript is streaming. Explicit user actions still call
 // the main-process window focus paths (session re-open, notification/deep-link,
 // app activation), preserving intentional raises without background focus theft.
-function chatWindowWebPreferences(preloadPath: string) {
+// Per-profile Electron session partition for chat windows.
+//
+// WHY: the renderer persists its UI state (right-rail preview tabs, sidebar
+// order, workspace layout) in localStorage, which is scoped to the Electron
+// session — NOT to the profile the window renders. With no partition every
+// window shares one store, so a preview tab opened in one agent's chat appears
+// in every other agent's chat, and one profile's layout bleeds into another.
+// apps/desktop/AGENTS.md states the rule this violates: "Persisted state must
+// declare its scope in its own key... Getting the scope wrong is how one
+// profile's setting bleeds into another."
+//
+// Giving each non-primary profile its own partition scopes that localStorage
+// per agent, so each agent keeps its own rail and layout.
+//
+// Two deliberate constraints:
+//   - The PRIMARY profile keeps the default session (no partition), so existing
+//     installs keep their saved layout instead of resetting it once.
+//   - The name is plain ASCII. AGENTS.md warns that a partition name containing
+//     a character Electron percent-escapes (e.g. ':') produces a cookie-store
+//     folder name the OS cannot read, silently breaking persistence — so the
+//     profile key is sanitized to [a-zA-Z0-9._-] before it is interpolated.
+function chatWindowPartition(profileKey?: null | string) {
+  const key = typeof profileKey === 'string' ? profileKey.trim() : ''
+
+  if (!key || key === 'default') {
+    return undefined
+  }
+
+  return `persist:hermes-win-${key.replace(/[^a-zA-Z0-9._-]/g, '-')}`
+}
+
+function chatWindowWebPreferences(preloadPath: string, profileKey?: null | string) {
+  const partition = chatWindowPartition(profileKey)
+
   return {
     preload: preloadPath,
+    // Absent partition = Electron's default session (the primary profile).
+    ...(partition ? { partition } : {}),
     contextIsolation: true,
     webviewTag: true,
     sandbox: true,
@@ -201,6 +236,7 @@ function createSessionWindowRegistry() {
 export {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
+  chatWindowPartition,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   instanceWindowBounds,

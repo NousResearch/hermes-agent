@@ -37,6 +37,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
@@ -110,6 +111,9 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
       profile: String(event.profile ?? '').trim() || 'default'
     })
 
+    // An owner resolved after the focus moved must still re-home the rail.
+    syncPreviewScope()
+
     return
   }
 
@@ -121,6 +125,8 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
   if (profile) {
     sessionOwnerByRuntimeId.set(event.session_id, profile)
   }
+
+  syncPreviewScope()
 }
 
 /** The owner an inbound runtime EVENT proved for `sessionId` (#97511): the
@@ -1147,6 +1153,28 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
   return sessionOwnerByRuntimeId.get(sessionId) ?? durable
 }
 
+/** The profile whose chat is on screen — the rail's scope.
+ *
+ *  NOT `$activeGatewayProfile`: a focused tab does not swap the gateway socket,
+ *  and every bot chat is served by one pooled backend, so the socket stays on
+ *  the launch profile while you read another agent's chat. Keying the rail there
+ *  showed one agent's previews in every agent's chat. `bot-row.tsx` documents
+ *  the same trap for the roster highlight and resolves it the same way. */
+function railScopeForActiveSession(): string {
+  const owner = knownOwnerForSession($activeSessionId.get() ?? undefined)
+  const profile = typeof owner === 'string' ? owner : owner?.profile
+
+  return normalizeProfileKey(profile || $activeGatewayProfile.get())
+}
+
+/** Keep the rail on the chat in view, so switching agents re-homes it. */
+function syncPreviewScope() {
+  setPreviewScope(railScopeForActiveSession())
+}
+
+$activeSessionId.subscribe(syncPreviewScope)
+syncPreviewScope()
+
 /**
  * Whether the connection that OWNS `sessionId` is remote — never the ambient
  * `$connection`. A session tied to a registered secondary connection (Bot
@@ -2053,6 +2081,9 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
+  // The rail is a profile-keyed family too: a deleted profile's tabs must not
+  // outlive it, or a later profile of the same name inherits them.
+  dropPreviewTabsForProfile(name)
 }
 
 /**
@@ -2112,6 +2143,9 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   migrateRememberedNavigationForProfile(from, to)
   migrateSessionOwnerHintsForProfile(from, to)
   migratePreviewArtifactsForProfile(from, to)
+  // Sibling family: the rail's profile-keyed buckets move with the rename, or
+  // the renamed profile opens with an empty rail and the old name keeps them.
+  migratePreviewTabsForProfile(from, to)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

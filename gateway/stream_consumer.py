@@ -74,6 +74,25 @@ class StreamConsumerConfig:
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
     chat_type: str = ""  # originating chat type; gates platform-specific drafts
+    # Keep an edit-based preview alive across tool boundaries (and mid-turn commentary)
+    # for the whole turn. The gateway enables this only for Telegram while text
+    # tool-progress is quiet (off/log). See #110564.
+    single_message_per_turn: bool = False
+    # Single-message extras: while the mode above is active, render a transient activity
+    # overlay under the evolving preview — tool-start lines and thinking snippets — that
+    # real text replaces and the final edit never carries. See #110564.
+    single_message_activity: bool = False
+    single_message_thinking: bool = False
+    # Single-message overflow policy: false (default) = deferred pagination — the preview
+    # is NOT cut while the turn runs; an over-limit turn-final is paged by the adapter's
+    # overflow split instead, so the live phase stays one message and pages only appear
+    # when the text genuinely overflows. true = eager ≤limit seals mid-stream (the reply
+    # arrives as several long messages). See #110564.
+    single_message_4096_split: bool = False
+    # Completion effect (Telegram private chats only): emoji name applied to the turn's
+    # FINAL fresh send when the turn ran at least ``message_effect_min_seconds``. Empty = off.
+    message_effect: str = ""
+    message_effect_min_seconds: float = 60.0
 
 
 @dataclass
@@ -155,6 +174,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
         self._last_edit_overflowed = False  # last _send_or_edit split into continuations
+        self._turn_started = time.monotonic()  # basis for the completion message effect
         self._flood_strikes = 0
         self._current_edit_interval = self.cfg.edit_interval  # adaptive backoff
         self._delivered_commentary_texts: list[str] = []
@@ -239,19 +259,59 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return False
 
     @property
+    def single_message_mode(self) -> bool:
+        """One evolving preview for the whole turn (opt-in; see #110564)."""
+        return bool(self.cfg.single_message_per_turn)
+
+    def _eager_overflow_split(self) -> bool:
+        """Whether over-limit content is sealed into separate messages mid-stream.
+
+        True for classic streaming. In single-message mode the default (``false``) defers
+        pagination to the turn-final adapter overflow split, so the live phase keeps one
+        message; opt back in with ``streaming_single_message_4096_split: true``."""
+        if not self.single_message_mode:
+            return True
+        return bool(self.cfg.single_message_4096_split)
+
+    @property
     def accepts_tool_progress(self) -> bool:
-        """True only when native streaming is active (gates in-stream tool progress)."""
-        return self._use_native_streaming
+        """True when the live surface renders tool progress in-stream: native streaming
+        always; single-message mode when its activity overlay is enabled."""
+        return self._use_native_streaming or (
+            self.single_message_mode and self.cfg.single_message_activity
+        )
+
+    @property
+    def accepts_thinking_progress(self) -> bool:
+        """True when the live surface renders thinking snippets in-stream (single-message
+        mode with its thinking overlay enabled)."""
+        return self.single_message_mode and self.cfg.single_message_thinking
 
     def on_tool_progress(self, line: str) -> None:
-        """Thread-safe: overlay a tool-progress line in the native bubble until the next delta."""
+        """Thread-safe: overlay a tool/thinking line in the evolving preview (native
+        streams and single-message mode) until the next real-text delta."""
         if line:
             self._queue.put((_TOOL_PROGRESS, line))
 
     def _compose_frame_content(self) -> str:
-        """Native frame content: text, with any tool-progress lines below a rule."""
-        progress = "\n".join(self._tool_progress_lines)
+        """Interim frame content (native streams, drafts, single message): text, with any
+        tool-progress lines below a rule — expandable-quote styled when the transport
+        formats frames and the overlay is on (see _style_overlay_lines)."""
+        progress = "\n".join(self._style_overlay_lines(self._tool_progress_lines))
         return "\n\n---\n".join(p for p in (self._accumulated, progress) if p)
+
+    def _style_overlay_lines(self, lines: list) -> list:
+        """MarkdownV2 expandable-quote framing for the activity overlay (#110564).
+
+        Only the draft lane formats interim frames (MarkdownV2); edit-lane frames are
+        raw, so styling markers would render literally — those keep the plain lines.
+        Frame convention: first line ``**>``, further lines ``>``, closing ``||``.
+        """
+        if not (self.single_message_mode and self._use_draft_streaming and lines):
+            return list(lines)
+        styled = [f"**> {lines[0]}"] + [f"> {line}" for line in lines[1:]]
+        styled[-1] += "||"
+        return styled
 
     def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
         """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends
@@ -264,6 +324,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
+            if self.cfg.message_effect and (
+                    time.monotonic() - self._turn_started
+            ) >= float(self.cfg.message_effect_min_seconds):
+                meta["message_effect"] = self.cfg.message_effect
         return meta or None
 
     # Read-only views for the gateway (flag semantics: see _clear_turn_final_flags).
@@ -572,7 +636,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         return
 
                 if self._should_edit(tick) and (
-                    self._accumulated or (self._use_native_streaming and self._tool_progress_active)
+                    self._accumulated
+                    or ((self._use_native_streaming or self.single_message_mode)
+                        and self._tool_progress_active)
                 ):
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
@@ -580,7 +646,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         if await self._split_first_send(tick):
                             return
                         continue
-                    await self._seal_overflow_heads()
+                    # Overflow policy: eager seals cut finished head chunks into their own
+                    # ≤limit messages while the preview fills; single-message mode can defer
+                    # pagination to the turn-final (adapter overflow split) instead, keeping
+                    # the live phase as one message. See _eager_overflow_split().
+                    if self._eager_overflow_split():
+                        await self._seal_overflow_heads()
                     await self._push_update(tick)
 
                 if tick.got_done:
@@ -661,8 +732,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
             elif kind is _TOOL_PROGRESS:  # keep draining to batch simultaneous lines
-                if self._use_native_streaming:
-                    self._tool_progress_lines.append(item[1])
+                if self._use_native_streaming or self.single_message_mode:
+                    line = item[1]
+                    if line.startswith("💭"):
+                        # Latest thinking only: a new snippet replaces the previous one.
+                        self._tool_progress_lines = [
+                            existing for existing in self._tool_progress_lines
+                            if not existing.startswith("💭")
+                        ]
+                    self._tool_progress_lines.append(line)
+                    if len(self._tool_progress_lines) > 6:
+                        del self._tool_progress_lines[:-6]  # defensive cap
                     self._tool_progress_active = True
             elif kind is _APPROVAL_BOUNDARY:
                 tick.approval_boundary = (item[1], item[2])
@@ -723,6 +803,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._use_native_streaming:
             # No platform edit-rate limit: push every delta immediately.
             should_edit = bool(self._accumulated) or self._tool_progress_active
+        elif self.single_message_mode:
+            # Same throttle as the edit path, but an activity-only preview (no text yet)
+            # is a valid update — that IS the transient overlay.
+            elapsed = time.monotonic() - self._last_edit_time
+            should_edit = bool(
+                (elapsed >= self._current_edit_interval
+                 and (self._accumulated or self._tool_progress_active))
+                or len(self._accumulated) >= self.cfg.buffer_threshold
+            )
         else:
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
@@ -811,7 +900,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim:
-            if self._use_native_streaming:
+            if self._use_native_streaming or self.single_message_mode:
                 display_text = self._compose_frame_content()
                 if display_text and self.cfg.cursor:
                     display_text += self.cfg.cursor
@@ -895,14 +984,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return stream_draft or self._use_native_streaming
 
     async def _deliver_commentary(self, commentary_text: str) -> None:
-        """Post commentary as its own message.  Cumulative transports keep the stream going —
-        resetting _accumulated would break the append-only invariant / lose text."""
-        cumulative = self._cumulative_transport()
-        if not cumulative:
+        """Post commentary as its own message.  Cumulative transports and the single-message
+        mode keep the stream going — resetting _accumulated would break the append-only
+        invariant / lose the evolving preview."""
+        keep_stream = self._cumulative_transport() or self.cfg.single_message_per_turn
+        if not keep_stream:
             self._reset_segment_state()
         await self._send_commentary(commentary_text)
         self._last_edit_time = time.monotonic()
-        if not cumulative:
+        if not keep_stream:
             self._reset_segment_state()
 
     async def _end_segment(self, tick: "_Tick") -> None:
@@ -911,8 +1001,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         non-prefix snapshot and the connector re-appends the whole answer.  preserve_no_edit:
         "__no_edit__" (platform never returned a real id — Signal, github_comment webhook)
         must keep its sentinel or every tool boundary posts a new message; the
-        continuation goes out once via _send_fallback_final."""
-        if self._cumulative_transport():
+        continuation goes out once via _send_fallback_final.  Single-message mode
+        (Telegram, quiet progress) skips the reset so one preview spans the turn."""
+        if self._cumulative_transport() or self.cfg.single_message_per_turn:
             return
         # If the segment-break edit didn't land (flood control / fallback mode),
         # _accumulated holds unseen pre-boundary text — flush it before the reset.

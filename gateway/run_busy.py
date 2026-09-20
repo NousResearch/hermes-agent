@@ -475,13 +475,17 @@ class GatewayBusySessionMixin:
             else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
         )
 
-    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
+    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False,
+                               extra_metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send a busy-path reply anchored to the event (thread metadata included)."""
         reply_anchor = self._reply_anchor_for_event(event)
+        metadata = self._thread_metadata_for_source(event.source, reply_anchor)
+        if extra_metadata:
+            metadata = {**(metadata or {}), **extra_metadata}
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
             reply_to=reply_anchor if plain_anchor else self._busy_reply_to(event, reply_anchor),
-            metadata=self._thread_metadata_for_source(event.source, reply_anchor),
+            metadata=metadata,
         )
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
@@ -737,7 +741,17 @@ class GatewayBusySessionMixin:
 
     async def _send_busy_ack_reply(self, event: MessageEvent, adapter, message: str) -> None:
         try:
-            await self._send_busy_reply(event, adapter, message)
+            source = event.source
+            # Telegram group whisper (Bot API 10.3 ephemeral): scope the busy-ack to the
+            # sender via the adapter's opt-in gate (telegram.extra.ephemeral_messages);
+            # DMs are already private and other platforms ignore the metadata key.
+            # No ephemeral fallback: a rejected whisper stays unsent rather than
+            # leaking the ack to the whole group.
+            extra = None
+            if (source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
+                    and source.user_id and source.chat_type not in (None, "dm", "private")):
+                extra = {"ephemeral_for": str(source.user_id)}
+            await self._send_busy_reply(event, adapter, message, extra_metadata=extra)
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 

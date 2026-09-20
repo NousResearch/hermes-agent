@@ -866,7 +866,25 @@ display:
       # Or quiet them entirely
       interim_assistant_messages: false
       long_running_notifications: false
+      # Keep one editable streaming preview across tool calls
+      # (needs streaming enabled; quiet tool_progress: off or log)
+      streaming_single_message: true
 ```
+
+With streaming enabled (`streaming.enabled` / `display.platforms.telegram.streaming`), `streaming_single_message: true` keeps one editable preview alive for the whole turn — text emitted on both sides of tool calls keeps updating the same message instead of starting a new one at every tool boundary. It applies while text tool-progress is quiet (`off` or `log`).
+
+While that mode is active, a transient **activity overlay** can ride inside the same message: tool-start lines (default on; disable with `streaming_single_message_activity: false`) and thinking snippets (opt-in, `streaming_single_message_thinking: true`) render under a `---` rule beneath the evolving text, and are replaced the moment real text arrives — the final message never contains them.
+
+Over-limit handling follows `streaming_single_message_4096_split`: `true` cuts the preview into several ≤4096-character messages as it fills; the default `false` leaves the live message uncut and pages only at completion, when the text genuinely overflows — nothing is lost, pagination just arrives at the end (rich-eligible content first rides the platform's 32,768-character rich cap).
+
+### Telegram platform extras (opt-in, Bot API 10.3)
+
+Under `gateway.platforms.telegram.extra`, four switches connect native Telegram features. Each is off by default and degrades to the ordinary path when unsupported:
+
+- **`stop_button: true`** — during DM draft streaming, Telegram shows a **Stop** button; pressing it sends a `stopped_message_generation` update, which Hermes feeds into the same interrupt path as `/stop`. `keep_on_stop` sets what stays in the chat after the stop (`"frame"` keeps the partial preview as a message; `"none"` discards it).
+- **`checklist_emoji: "✅"`** — turns `- [ ]` / `- [x]` task lists into Telegram-native checklists (business accounts only; other chats keep the MarkdownV2 fallback rendering, or use `rich_messages` for the rich-block variant).
+- **`message_effects: true`** — replies that finish after `message_effect_min_seconds` (default 60) arrive with an animated effect. Emojis map to validated Bot API effect ids (👍 👎 🔥 🎉 🎊); a numeric string in `message_effect` is passed through as an explicit effect id. Private chats only — groups and channels skip the parameter.
+- **`ephemeral_messages: true`** — in **groups**, messages carrying `ephemeral_for: <user_id>` metadata are visible only to that user; the busy-session acknowledgment uses this to whisper acks to the sender instead of pinging the whole group (with `busy_ack_enabled` on). Send failures do not fall back to a group-wide send.
 
 ### Warning and error notifications (opt-in suppression)
 
@@ -913,6 +931,7 @@ Policy is resolved for the owning profile and logical destination. Agent turns
 use their turn policy; independent notifications and deferred deliveries evaluate
 policy at their own delivery boundary. Already delivered messages are not removed.
 Suppression does not fix an underlying failure or add another logging destination.
+
 
 ### Progress bubble cleanup (opt-in)
 

@@ -90,6 +90,44 @@ def _make_adapter(platform_val="telegram"):
     return adapter
 
 
+class TestBusyAckEphemeralWhisper:
+    """Telegram group busy-acks can whisper to the sender (Bot API 10.3 ephemeral)."""
+
+    @pytest.mark.asyncio
+    async def test_group_ack_carries_ephemeral_for(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        adapter = MagicMock()
+        adapter._send_with_retry = AsyncMock()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="-100999", chat_type="supergroup", user_id="777")
+        evt = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="m1")
+
+        await GatewayRunner._send_busy_ack_reply(runner, evt, adapter, "busy ack")
+
+        kwargs = adapter._send_with_retry.await_args.kwargs
+        assert kwargs["metadata"]["ephemeral_for"] == "777"
+
+    @pytest.mark.asyncio
+    async def test_dm_ack_has_no_ephemeral_key(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        adapter = MagicMock()
+        adapter._send_with_retry = AsyncMock()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="777", chat_type="dm", user_id="777")
+        evt = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="m1")
+
+        await GatewayRunner._send_busy_ack_reply(runner, evt, adapter, "busy ack")
+
+        metadata = adapter._send_with_retry.await_args.kwargs["metadata"] or {}
+        assert "ephemeral_for" not in metadata
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------

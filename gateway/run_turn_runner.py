@@ -136,6 +136,25 @@ class TurnRunner:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+        # Single-message mode keeps tool_progress quiet, but the evolving preview can carry
+        # a transient overlay while it runs: tool-start lines and (opt-in) thinking snippets.
+        # Placed before the progress-queue guard — single mode usually runs without a queue.
+        sc = self._stream_consumer()
+        if sc is not None and getattr(sc, "single_message_mode", False) is True:
+            if (event_type == "tool.started" and tool_name and tool_name != "clarify"
+                    and ctx._run_still_current()
+                    and getattr(sc, "accepts_tool_progress", False) is True):
+                msg = self._progress_build_message(tool_name, preview, args)
+                if msg:
+                    self._progress_emit(msg)
+                return
+            if ((event_type == "_thinking" or tool_name == "_thinking")
+                    and getattr(sc, "accepts_thinking_progress", False) is True):
+                thinking_text = (preview if tool_name == "_thinking" else tool_name)
+                snippet = " ".join(str(thinking_text or "").split())[:160]
+                if snippet and ctx._run_still_current():
+                    sc.on_tool_progress(f"💭 {snippet}")
+                return
         if not ctx.progress_queue or not ctx._run_still_current():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:

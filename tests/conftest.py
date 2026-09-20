@@ -1496,19 +1496,38 @@ def _live_system_guard(request, monkeypatch):
 
     test_pid = _os.getpid()
     lookalike_ok = request.node.get_closest_marker(_GATEWAY_LOOKALIKE_MARK) is not None
-    # Capture the test process's existing children at fixture start —
-    # any *new* children spawned by the test are also allowlisted via
-    # the live psutil walk below. Static set keeps the fast path cheap.
+    # Capture stable identities for existing children. PIDs alone are not an
+    # ownership proof: the kernel may reuse one after the child exits.
     try:
         import psutil as _psutil
-        _initial_children = {
-            c.pid for c in _psutil.Process(test_pid).children(recursive=True)
-        }
+        _owned_children = set()
+        for child in _psutil.Process(test_pid).children(recursive=True):
+            try:
+                _owned_children.add((child.pid, child.create_time()))
+            except Exception:
+                # A child that vanishes during the snapshot is not allowlisted.
+                pass
     except Exception:
         _psutil = None
-        _initial_children = set()
+        _owned_children = set()
 
-    def _is_own_subtree(pid: int) -> bool:
+    def _record_child(pid: int) -> None:
+        """Record a successfully spawned child by PID plus birth time."""
+        if _psutil is None:
+            return
+        try:
+            child = _psutil.Process(pid)
+            identity = (pid, child.create_time())
+            # A very short-lived child can exit before this lookup. Do not
+            # accidentally record an unrelated process that reused its PID.
+            if any(parent.pid == test_pid for parent in child.parents()):
+                _owned_children.add(identity)
+        except Exception:
+            # An already-gone child has no stable identity to trust; a later
+            # signal attempt therefore remains fail-closed.
+            pass
+
+    def _is_own_subtree(pid: int):
         # PID 0 means "our own process group"; -1 means "every process we
         # can signal". Both are dangerous when paired with SIGTERM/SIGKILL,
         # but pid 0 is technically scoped to our group so allow it; pid -1
@@ -1517,24 +1536,41 @@ def _live_system_guard(request, monkeypatch):
             return True
         if pid < 0:
             return False
-        if pid == test_pid or pid in _initial_children:
+        if pid == test_pid:
             return True
         if _psutil is None:
             return False
         try:
             walker = _psutil.Process(pid)
+            identity = (pid, walker.create_time())
+        except (_psutil.NoSuchProcess, ProcessLookupError):
+            return None
         except Exception:
-            # Stale PID — kill would be a no-op anyway, allow it.
+            return False
+        if identity in _owned_children:
             return True
         try:
             for parent in walker.parents():
                 if parent.pid == test_pid:
+                    _owned_children.add(identity)
                     return True
+        except (_psutil.NoSuchProcess, ProcessLookupError):
+            return None
         except Exception:
+            # psutil may surface RuntimeError when the process exits between
+            # construction and ancestry traversal. Confirm it with a fresh
+            # identity read; never treat an arbitrary error as ownership.
+            try:
+                _psutil.Process(pid).create_time()
+            except (_psutil.NoSuchProcess, ProcessLookupError):
+                return None
+            except Exception:
+                pass
             return False
         return False
 
     real_kill = _os.kill
+    _signal_targets = {"kill": real_kill}
 
     def _guarded_kill(pid, sig, *args, **kwargs):
         # Signal 0 is a pure liveness probe — it cannot terminate anything.
@@ -1544,8 +1580,13 @@ def _live_system_guard(request, monkeypatch):
         # test_entire_tree_is_sigkilled_not_just_parent.
         if int(sig) == 0:
             return real_kill(pid, sig, *args, **kwargs)
-        if _is_own_subtree(int(pid)):
-            return real_kill(pid, sig, *args, **kwargs)
+        ownership = _is_own_subtree(int(pid))
+        if ownership is True:
+            return _signal_targets["kill"](pid, sig, *args, **kwargs)
+        if ownership is None:
+            # Never invoke kill on an unverified numeric PID: it may already
+            # have been recycled for an unrelated process.
+            raise ProcessLookupError(int(pid))
         raise RuntimeError(
             f"tests/conftest.py live-system guard: blocked os.kill("
             f"{pid}, {sig}) — PID is outside the test process subtree. "
@@ -1566,14 +1607,18 @@ def _live_system_guard(request, monkeypatch):
     # the test process's own group.
     if hasattr(_os, "killpg"):
         real_killpg = _os.killpg
+        _signal_targets["killpg"] = real_killpg
         own_pgid = _os.getpgrp()
 
         def _guarded_killpg(pgid, sig, *args, **kwargs):
             # Signal 0 is a pure liveness probe — never destructive.
             if int(sig) == 0:
                 return real_killpg(pgid, sig, *args, **kwargs)
-            if int(pgid) == own_pgid or _is_own_subtree(int(pgid)):
-                return real_killpg(pgid, sig, *args, **kwargs)
+            ownership = _is_own_subtree(int(pgid))
+            if int(pgid) == own_pgid or ownership is True:
+                return _signal_targets["killpg"](pgid, sig, *args, **kwargs)
+            if ownership is None:
+                raise ProcessLookupError(int(pgid))
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"os.killpg({pgid}, {sig}) — PGID is outside the test "
@@ -1782,6 +1827,7 @@ def _live_system_guard(request, monkeypatch):
             def __init__(self, cmd, *args, **kwargs):
                 _check_subprocess_cmd("Popen", cmd)
                 super().__init__(cmd, *args, **kwargs)
+                _record_child(self.pid)
 
         _GuardedPopen.__name__ = "Popen"
         _GuardedPopen.__qualname__ = "Popen"
@@ -1854,11 +1900,15 @@ def _live_system_guard(request, monkeypatch):
             _check_subprocess_cmd(
                 "asyncio.create_subprocess_exec", [program, *args]
             )
-            return await real_async_exec(program, *args, **kwargs)
+            child = await real_async_exec(program, *args, **kwargs)
+            _record_child(child.pid)
+            return child
 
         async def _guarded_async_shell(cmd, *args, **kwargs):
             _check_subprocess_cmd("asyncio.create_subprocess_shell", cmd)
-            return await real_async_shell(cmd, *args, **kwargs)
+            child = await real_async_shell(cmd, *args, **kwargs)
+            _record_child(child.pid)
+            return child
 
         monkeypatch.setattr(_asyncio, "create_subprocess_exec", _guarded_async_exec)
         monkeypatch.setattr(
@@ -1867,7 +1917,10 @@ def _live_system_guard(request, monkeypatch):
     except Exception:
         pass
 
-    yield
+    yield {
+        "owned_children": _owned_children,
+        "signal_targets": _signal_targets,
+    }
 
 
 @pytest.fixture(autouse=True)

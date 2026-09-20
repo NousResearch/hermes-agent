@@ -35,43 +35,65 @@ class OnePasswordLoginBackend(LoginBackend):
 
     def __init__(self, cfg: Optional[Dict] = None):
         self.cfg = cfg or {}
-        from agent.secret_scope import get_secret
-        env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
-        self._service_token = get_secret(env_name, "") or ""
+        self._authenticated_wrapper = str(self.cfg.get("authenticated_wrapper_path") or "").strip()
+        self._service_token = ""
+        if not self._authenticated_wrapper:
+            from agent.secret_scope import get_secret
+            env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
+            self._service_token = get_secret(env_name, "") or ""
+        self._vault_ids: Dict[str, str] = {}
 
     # ── auth ────────────────────────────────────────────────────────────────
 
     def _op(self) -> Path:
-        op = find_op(str(self.cfg.get("binary_path") or ""))
+        if self._authenticated_wrapper:
+            wrapper = Path(self._authenticated_wrapper)
+            if not wrapper.is_absolute() or not wrapper.is_file() or not os.access(wrapper, os.X_OK):
+                raise RuntimeError(
+                    "vault.onepassword.authenticated_wrapper_path must be an absolute executable file"
+                )
+            return wrapper
+        binary_path = str(self.cfg.get("binary_path") or "")
+        op = find_op(binary_path)
         if op is None:
             raise RuntimeError("1Password CLI (op) not found — install it or set vault.onepassword.binary_path")
         return op
 
     def _env(self, session_token: Optional[str]) -> Dict[str, str]:
         from agent.secret_scope import get_secret
-        env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_CONNECT_")}
+        env = {
+            k: os.environ[k]
+            for k in _OP_ENV_ALLOWLIST
+            if k in os.environ
+            and not k.startswith("OP_CONNECT_")
+            and not (self._authenticated_wrapper and k == "OP_ACCOUNT")
+        }
         # Connect credentials outrank OP_SERVICE_ACCOUNT_TOKEN inside op, so they must come from the
         # profile's own secret scope like the service token does — never from the launch environment.
-        for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
-            if v := get_secret(k, ""):
-                env[k] = v
+        if not self._authenticated_wrapper:
+            for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
+                if v := get_secret(k, ""):
+                    env[k] = v
         env["NO_COLOR"] = "1"
         account = str(self.cfg.get("account") or "")
-        if account:
+        if account and not self._authenticated_wrapper:
             env["OP_ACCOUNT"] = account
-        if self._service_token:
-            env["OP_SERVICE_ACCOUNT_TOKEN"] = self._service_token
-        elif session_token:
-            # op signin --raw prints the bare token; the env var name carries the account shorthand,
-            # which op also accepts as plain OP_SESSION for the default account.
-            env[f"OP_SESSION_{account}" if account else "OP_SESSION"] = session_token
+        if not self._authenticated_wrapper:
+            if self._service_token:
+                env["OP_SERVICE_ACCOUNT_TOKEN"] = self._service_token
+            elif session_token:
+                # op signin --raw prints the bare token; the env var name carries the account shorthand,
+                # which op also accepts as plain OP_SESSION for the default account.
+                env[f"OP_SESSION_{account}" if account else "OP_SESSION"] = session_token
         return env
 
     def is_unlocked(self) -> bool:
-        return bool(self._service_token) or _unlock.is_unlocked(self.name)
+        return bool(self._authenticated_wrapper) or bool(self._service_token) or _unlock.is_unlocked(self.name)
 
     def unlock(self, master_password: str) -> None:
         """Mint a session token from the master password (consumed on stdin, never argv)."""
+        if self._authenticated_wrapper:
+            raise RuntimeError("the configured 1Password wrapper owns authentication")
         generation = _unlock.begin_unlock(self.name)
         cmd = [str(self._op()), "signin", "--raw"]
         if account := str(self.cfg.get("account") or ""):
@@ -84,14 +106,19 @@ class OnePasswordLoginBackend(LoginBackend):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
-        token = None if self._service_token else _unlock.get_session_token(self.name)
-        if not self._service_token and not token:
+        token = None if self._service_token or self._authenticated_wrapper else _unlock.get_session_token(self.name)
+        if not self._authenticated_wrapper and not self._service_token and not token:
             raise UnlockRequired(self)
         proc = run_cli([str(self._op()), *args], env=self._env(token), timeout=_TIMEOUT, label="op",
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             err = _scrub(proc.stderr or "")
-            if "session" in err.lower() or "sign in" in err.lower() or "not signed in" in err.lower():
+            interactive = not self._authenticated_wrapper and not self._service_token
+            if interactive and (
+                "session" in err.lower()
+                or "sign in" in err.lower()
+                or "not signed in" in err.lower()
+            ):
                 _unlock.lock(self.name)
                 raise UnlockRequired(self)
             raise RuntimeError(f"op failed: {err[:200]}")
@@ -103,33 +130,59 @@ class OnePasswordLoginBackend(LoginBackend):
             return []
         raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
         out: List[VaultItemMeta] = []
+        vault_ids: Dict[str, str] = {}
         for item in raw if isinstance(raw, list) else []:
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
             origins = _all_origins(urls)
             if not origins:
                 continue
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                continue
+            vault = item.get("vault") or {}
+            vault_id = str(vault.get("id") or "").strip() if isinstance(vault, dict) else ""
+            if vault_id:
+                vault_ids[item_id] = vault_id
             username = str(item.get("additional_information") or "").strip() or None
             out.append(VaultItemMeta(
-                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origins[0]),
+                id=f"{self.prefix}{item_id}", kind="login", label=str(item.get("title") or origins[0]),
                 origin=origins[0], created_at=str(item.get("created_at") or ""),
                 identifier_type="username" if username else None, identifier=username,
                 allowed_origins=_web_origins(origins)))
+        self._vault_ids = vault_ids
         return out
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
     def resolve_password(self, handle: str) -> str:
-        item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        item_id, vault_id = self._item_ref(handle)
+        args = ["item", "get", item_id]
+        if vault_id:
+            args += ["--vault", vault_id]
+        return self._run(*args, "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            item_id, vault_id = self._item_ref(handle)
+            args = ["item", "get", item_id]
+            if vault_id:
+                args += ["--vault", vault_id]
+            code = self._run(*args, "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None
+
+    def _item_ref(self, handle: str) -> tuple[str, Optional[str]]:
+        """Resolve a handle to its item ID plus the vault scope required by service accounts."""
+        item_id = handle[len(self.prefix):]
+        if item_id not in self._vault_ids:
+            self.list_items()
+        vault_id = self._vault_ids.get(item_id)
+        if (self._authenticated_wrapper or self._service_token) and not vault_id:
+            raise RuntimeError("could not resolve the 1Password item's vault scope")
+        return item_id, vault_id
 
 
 def _web_origins(origins: List[str]) -> tuple:

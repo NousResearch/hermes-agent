@@ -9,6 +9,7 @@ namespaced by ``prefix`` so ``backend_for_handle`` needs no lookup table.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -104,6 +105,10 @@ def is_installed(name: str) -> bool:
     """Is the manager CLI reachable — honouring a configured ``binary_path`` over PATH."""
     import shutil
     section = _cfg().get(name) or {}
+    wrapper = str(section.get("authenticated_wrapper_path") or "") if isinstance(section, dict) else ""
+    if name == "onepassword" and wrapper:
+        path = Path(wrapper)
+        return path.is_absolute() and path.is_file() and os.access(path, os.X_OK)
     explicit = str(section.get("binary_path") or "") if isinstance(section, dict) else ""
     if explicit:
         return Path(explicit).is_file()

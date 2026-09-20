@@ -50,6 +50,35 @@ if argv[:2] == ["get", "password"]:
 sys.exit(2)
 '''
 
+_FAKE_OP = r'''#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log")
+with open(log_path, "a", encoding="utf-8") as log:
+    log.write(json.dumps({
+        "argv": argv,
+        "stdin": sys.stdin.read(),
+        "account": os.environ.get("OP_ACCOUNT"),
+        "connect_host": os.environ.get("OP_CONNECT_HOST"),
+        "connect_token": os.environ.get("OP_CONNECT_TOKEN"),
+        "service_token": os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"),
+    }) + "\n")
+if argv[:2] == ["item", "list"]:
+    print(json.dumps([{
+        "id": "fedfit", "title": "Fed & Fit", "vault": {"id": "worker-vault"},
+        "urls": [{"href": "https://fedandfit.com/wp-admin"}],
+        "additional_information": "robin",
+    }]))
+    sys.exit(0)
+if argv[:2] == ["item", "get"]:
+    if "--vault" not in argv or argv[argv.index("--vault") + 1] != "worker-vault":
+        sys.stderr.write("a vault query must be provided when this command is called by a service account\n")
+        sys.exit(1)
+    print("246810" if "--otp" in argv else "password-canary")
+    sys.exit(0)
+sys.exit(2)
+'''
+
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="fake bw is a shebang script; the backend under test is host-agnostic")
 
@@ -231,3 +260,88 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+@pytest.mark.parametrize("wrapper_auth", [False, True])
+def test_onepassword_headless_auth_scopes_password_and_otp_reads(tmp_path, monkeypatch, wrapper_auth):
+    """Both token auth and a pinned auth wrapper carry the list result's vault into item reads."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe = tmp_path / "op-wrapper"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    log = tmp_path / "op.log"
+    monkeypatch.setenv("OP_ACCOUNT", "ambient-account")
+    monkeypatch.setenv("OP_CONNECT_HOST", "https://ambient-connect.invalid")
+    monkeypatch.setenv("OP_CONNECT_TOKEN", "ambient-connect-token")
+
+    def secret(name, default=""):
+        if wrapper_auth:
+            raise AssertionError(f"authenticated wrapper must not read scoped secret {name}")
+        if name == "OP_SERVICE_ACCOUNT_TOKEN":
+            return "ambient-service-token"
+        return default
+
+    cfg = (
+        {"authenticated_wrapper_path": str(exe), "binary_path": "/does/not/exist"}
+        if wrapper_auth
+        else {"binary_path": str(exe)}
+    )
+    with patch("agent.secret_scope.get_secret", side_effect=secret):
+        backend = OnePasswordLoginBackend(cfg)
+        [meta] = backend.list_items()
+        assert meta.id == "op:fedfit"
+        assert backend.resolve_password(meta.id) == "password-canary"
+
+        # OTP can be requested after a page transition without a prior metadata lookup
+        # on this backend instance; it must refresh the item-to-vault mapping itself.
+        fresh_backend = OnePasswordLoginBackend(cfg)
+        assert fresh_backend.resolve_otp(meta.id) == "246810"
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    get_calls = [call for call in calls if call["argv"][:2] == ["item", "get"]]
+    assert len(get_calls) == 2
+    assert all(call["argv"][call["argv"].index("--vault") + 1] == "worker-vault" for call in get_calls)
+    assert all(call["connect_host"] is None and call["connect_token"] is None for call in calls)
+    assert all(call["stdin"] == "" for call in calls)
+    assert not any(call["argv"] and call["argv"][0] == "signin" for call in calls)
+    if wrapper_auth:
+        assert all(call["service_token"] is None and call["account"] is None for call in calls)
+    else:
+        assert all(call["service_token"] == "ambient-service-token" for call in calls)
+    assert "password-canary" not in log.read_text(encoding="utf-8")
+    assert "246810" not in log.read_text(encoding="utf-8")
+
+
+def test_onepassword_authenticated_wrapper_is_profile_scoped_a_b_a(tmp_path, monkeypatch):
+    """A configured wrapper belongs only to its profile; an invalid sibling never falls back to raw op."""
+    from agent.vault_backends.base import enabled_backends
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    wrapper = tmp_path / "op-agent"
+    wrapper.write_text(_FAKE_OP, encoding="utf-8")
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    profile_a = tmp_path / "profiles" / "a"
+    profile_b = tmp_path / "profiles" / "b"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+    (profile_a / "config.yaml").write_text(
+        f"vault:\n  onepassword:\n    authenticated_wrapper_path: {wrapper}\n",
+        encoding="utf-8",
+    )
+    (profile_b / "config.yaml").write_text(
+        "vault:\n  onepassword:\n    authenticated_wrapper_path: op-agent\n",
+        encoding="utf-8",
+    )
+
+    def backend_names(home):
+        token = set_hermes_home_override(home)
+        try:
+            return [backend.name for backend in enabled_backends()]
+        finally:
+            reset_hermes_home_override(token)
+
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "must-not-enable-the-invalid-profile")
+    assert backend_names(profile_a) == ["local", "onepassword"]
+    assert backend_names(profile_b) == ["local"]
+    assert backend_names(profile_a) == ["local", "onepassword"]

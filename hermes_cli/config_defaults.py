@@ -2347,6 +2347,8 @@ DEFAULT_CONFIG = {
             "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.
             "account": "",          # account shorthand for `op --account`; empty = default account.
             "binary_path": "",      # absolute path to op; empty = PATH.
+            # Absolute op-compatible wrapper that owns auth; takes precedence over token/session auth.
+            "authenticated_wrapper_path": "",
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
         },

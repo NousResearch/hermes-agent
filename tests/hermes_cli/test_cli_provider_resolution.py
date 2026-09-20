@@ -373,8 +373,14 @@ def _quota_auth_error():
     )
 
 
-def test_fallback_runtime_quota_outage_is_not_labeled_auth_failure(monkeypatch, tmp_path):
-    """A 429 at credential resolution is quota, not bad credentials (#117482)."""
+@pytest.mark.parametrize(("exc_factory", "expected", "absent"), [
+    (_quota_auth_error, "quota exhausted", "auth failed"),
+    (lambda: __import__("hermes_cli.auth", fromlist=["AuthError"]).AuthError(
+        "no key", provider="openai-codex", code="missing_api_key"), "Primary auth failed", "quota exhausted"),
+])
+def test_fallback_runtime_labels_quota_outage_and_bad_credentials_distinctly(monkeypatch, tmp_path, exc_factory, expected, absent):
+    """A 429 at credential resolution is quota, not bad credentials (#117482); a real
+    credential failure keeps the auth-failed wording."""
     from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 
     home = tmp_path / "hermes"
@@ -390,38 +396,12 @@ def test_fallback_runtime_quota_outage_is_not_labeled_auth_failure(monkeypatch, 
 
     shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
     shell._fallback_model = [{"provider": "custom", "model": "local-model"}]
-    runtime = shell._resolve_fallback_runtime(_quota_auth_error())
+    runtime = shell._resolve_fallback_runtime(exc_factory())
 
     assert runtime is not None
     assert printed
-    assert "quota exhausted" in printed[-1]
-    assert "auth failed" not in printed[-1]
-
-
-def test_fallback_runtime_keeps_auth_failed_wording_for_bad_credentials(monkeypatch, tmp_path):
-    from hermes_cli.auth import AuthError
-    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
-
-    home = tmp_path / "hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    printed = []
-    monkeypatch.setattr("cli._cprint", printed.append, raising=False)
-    monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda **kw: {"provider": "custom", "base_url": "http://x/v1", "api_key": "k"},
-    )
-    monkeypatch.setattr("hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: "k")
-
-    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
-    shell._fallback_model = [{"provider": "custom", "model": "local-model"}]
-    runtime = shell._resolve_fallback_runtime(
-        AuthError("no key", provider="openai-codex", code="missing_api_key"))
-
-    assert runtime is not None
-    assert printed
-    assert "Primary auth failed" in printed[-1]
-    assert "quota exhausted" not in printed[-1]
+    assert expected in printed[-1]
+    assert absent not in printed[-1]
 
 
 def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_path):

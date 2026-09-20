@@ -360,7 +360,7 @@ class CLIAgentSetupMixin:
         order and switch the CLI's requested_provider/model to the first that resolves.
         None when the error is not auth-related or no fallback resolves."""
         from cli import _cprint, logger
-        from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+        from hermes_cli.auth import AuthError, primary_failure_wording
         from hermes_cli.runtime_provider import resolve_runtime_provider
         if not isinstance(primary_exc, AuthError):
             return None
@@ -381,12 +381,7 @@ class CLIAgentSetupMixin:
                 if _fb_api_key:
                     _fb_kwargs["explicit_api_key"] = _fb_api_key
                 runtime = resolve_runtime_provider(**_fb_kwargs)
-                # A 429/quota AuthError leaves the credentials valid; saying "auth failed" sends
-                # operators hunting for an expired token (#117482).
-                if is_rate_limited_auth_error(primary_exc):
-                    _why_log, _why = "rate-limited (429)", "Primary provider quota exhausted"
-                else:
-                    _why_log, _why = "auth failed", "Primary auth failed"
+                _why_log, _why = primary_failure_wording(primary_exc)  # #117482: quota is not auth
                 logger.warning(
                     "Primary provider %s (%s). Falling through to fallback: %s/%s",
                     _why_log, primary_exc, _fb_provider, _fb_model)

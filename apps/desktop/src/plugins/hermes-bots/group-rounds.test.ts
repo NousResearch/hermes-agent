@@ -1202,6 +1202,74 @@ describe('member holds (#93129)', () => {
     // Unset watermark treated as 0.
     expect(heldMemberWatermarkAdvance(undefined, 2)).toBe(2)
   })
+
+  // #117472: a hold used to swallow the triggering message for good — the
+  // held member's watermark advanced past it and no later prompt ever
+  // contained the text. The hold stamp now parks the consumed delta and the
+  // release moves it onto the room, so the member's first turn after the
+  // release sees the held-out entries.
+  it('delivers the delta a hold swallowed on the turn after release', async () => {
+    const room = await loadRoom()
+    const members = [MEMBERS[0]]
+
+    // "stop @research …" holds research and its delta is consumed by the skip.
+    room.rounds.sendToGroupChat('Hold', members, '@research stop messing with prod')
+    await settle(room, 'Hold')
+
+    const held = room.chat.$groupChats.get().Hold
+
+    expect(held.holds && Object.keys(held.holds).length).toBe(1)
+
+    const heldKey = Object.keys(held.holds!)[0]
+
+    expect(held.holds![heldKey].pendingDelta?.some(e => (e.text || '').includes('prod'))).toBe(true)
+
+    // A later direct mention releases the hold; the parked delta must ride
+    // the released member's prompt — without the replay the interview
+    // answer would exist in no prompt this member ever sees.
+    room.rounds.sendToGroupChat('Hold', members, '@research status?')
+    await settle(room, 'Hold')
+
+    const prompts = room.gateway.calls.map(call => call.prompt).join('\n---\n')
+
+    expect(prompts).toMatch(/prod/)
+    expect(room.chat.$groupChats.get().Hold.heldBack?.[heldKey]).toBeUndefined()
+  })
+
+  it('keeps a released member quiet when nothing was swallowed', async () => {
+    const room = await loadRoom()
+    const members = [MEMBERS[0]]
+    const key = members[0].name
+
+    // Hold set by a real stop message, then the watermark pushed past the
+    // whole log so a subsequent send leaves the member no fresh delta and
+    // nothing parked — the release must not resurrect a turn out of nothing.
+    room.rounds.sendToGroupChat('Quiet', members, `stop @${key}`)
+    await settle(room, 'Quiet')
+
+    const afterHold = room.chat.$groupChats.get().Quiet
+
+    expect(afterHold.holds && Object.keys(afterHold.holds).length).toBe(1)
+
+    const markKey = Object.keys(afterHold.watermarks || {}).find(k => k.endsWith(`::${key}`))
+
+    if (markKey) {
+      room.chat.updateGroupChat('Quiet', state => ({
+        ...state,
+        watermarks: { ...state.watermarks, [markKey]: state.log.length }
+      }))
+    }
+
+    room.rounds.sendToGroupChat('Quiet', members, `@${key} hello again`)
+    await settle(room, 'Quiet')
+
+    const quiet = room.chat.$groupChats.get().Quiet
+
+    expect(quiet.holds && Object.keys(quiet.holds).length).toBe(0)
+    expect(quiet.heldBack && Object.keys(quiet.heldBack).length).toBe(0)
+    // No parked entries survived a hold that consumed nothing.
+    expect((quiet.heldBack || {})[key]).toBeUndefined()
+  })
 })
 
 // #91868/#94569: a REAL stop path for group-chat rounds. Before

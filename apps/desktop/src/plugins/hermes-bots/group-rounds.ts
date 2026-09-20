@@ -819,6 +819,7 @@ export function sendToGroupChat(
     // explicit "stop @member" sets a sticky hold; "@member resume" (or
     // @all resume, or any direct non-stop mention of the held member)
     // releases it. Bot replies never flow through this function.
+    const heldBefore = room.holds || {}
     room.holds = applyGroupHoldDirective(
       room.holds,
       parseGroupChatMentions(trimmed, members),
@@ -830,6 +831,22 @@ export function sendToGroupChat(
       },
       members.map((member: GroupMember) => groupMemberKey(member))
     )
+
+    // Deliver-then-hold: a released member must still receive the entries
+    // its hold consumed, so the parked delta moves out of the dying hold
+    // stamp onto the room. The member's next turn replays it.
+    for (const key of Object.keys(heldBefore)) {
+      if (!room.holds[key]) {
+        const parked = heldBefore[key].pendingDelta || []
+
+        if (parked.length) {
+          room.heldBack = {
+            ...(room.heldBack || {}),
+            [key]: [...(room.heldBack?.[key] || []), ...parked]
+          }
+        }
+      }
+    }
 
     return room
   })

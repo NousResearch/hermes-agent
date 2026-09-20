@@ -9,7 +9,7 @@ import {
   shouldCommitMemberTurn,
   updateGroupChat
 } from './group-chat'
-import type { GroupChatRoom } from './group-chat'
+import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
 import { groupMemberAuthor, groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupDeltaLines } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
@@ -47,7 +47,9 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
   // turn sees only the conversation it's part of.
   const delta = room.log.slice(seen).filter((e: GroupMessage) => groupThreadOf(e) === thread)
 
-  if (!delta.length) {
+  const heldBackCount = (room.heldBack?.[memberKey] || []).length
+
+  if (!delta.length && !heldBackCount) {
     return null
   }
 
@@ -65,12 +67,20 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
         r.watermarks[markKey] = advance
       }
 
-      if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
+      if (r.holds?.[memberKey]) {
         r.holds = {
           ...r.holds,
           [memberKey]: {
             ...r.holds[memberKey],
-            noted: true
+            // Deliver-then-hold: the skip consumed this member's delta
+            // (watermark past it), so park the entries on the stamp — the
+            // first turn after release replays them instead of the member
+            // never seeing the text that triggered the hold.
+            pendingDelta: [
+              ...((r.holds[memberKey] as GroupHoldStamp).pendingDelta || []),
+              ...delta
+            ],
+            ...(r.holds[memberKey].noted ? {} : { noted: true })
           }
         }
       }
@@ -89,18 +99,31 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     return null
   }
 
+  // A just-released member first receives what its hold swallowed — the
+  // entries were consumed out of the watermark stream, so without the
+  // replay they would exist in no prompt this member ever sees. Replayed
+  // entries render like any delta line; dedupe by entry id in case the
+  // same entries are still visible through the normal window.
+  const parked = room.heldBack?.[memberKey] || []
+
+  const parkedUnseen = parked.filter(
+    (e: GroupMessage) => !delta.some((d: GroupMessage) => d.id === e.id)
+  )
+
+  const deltaWithHeld = [...delta, ...parkedUnseen]
+
   const prompt = buildGroupChatTurnPrompt({
     groupName: context.group,
     members,
     viewer: member,
-    deltaLines: formatGroupDeltaLines(delta, member, context.group)
+    deltaLines: formatGroupDeltaLines(deltaWithHeld, member, context.group)
   })
 
   // Images riding this delta (user attachments — member entries don't
   // carry images today, but flatMap keeps this future-proof) get staged
   // into the member's session so the model sees the pixels, not just
   // the transcript's [attached image: …] marker.
-  const deltaImages = delta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
+  const deltaImages = deltaWithHeld.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
 
   return { room, memberKey, markKey, prompt, deltaImages }
 }
@@ -116,7 +139,9 @@ async function runVisibleMemberTurn(
   updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
 
   try {
-    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
+    const r = await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
+
+    return r
   } finally {
     if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
       updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
@@ -140,7 +165,7 @@ export async function runGroupRoundMember(
     return false
   }
 
-  const { room, markKey, prompt, deltaImages } = prepared
+  const { room, memberKey, markKey, prompt, deltaImages } = prepared
   const anchorId = room.log.at(-1)?.id ?? null
   let reply: null | string = null
   let accepted = false
@@ -226,47 +251,34 @@ export async function runGroupRoundMember(
     updateGroupChat(context.group, (r: GroupChatRoom) => {
       r.watermarks[markKey] = anchorIdx + 1
 
+      if (r.heldBack?.[memberKey]) {
+        delete r.heldBack[memberKey]
+      }
+
       return r
     })
   }
 
-  const spoke = reply !== null && !isGroupPassText(reply)
-
-  if (reply !== null && spoke) {
+  if (reply !== null && !isGroupPassText(reply)) {
     appendGroupChatEntry(
       context.group,
       groupMemberAuthor(member),
       reply,
       thread
     )
+    // A reply cannot acknowledge user entries that arrived during inference.
+    updateGroupChat(context.group, (r: GroupChatRoom) => {
+      if (r.watermarks[markKey] === r.log.length - 1) {
+        r.watermarks[markKey] = r.log.length
+      }
+
+      return r
+    })
+
+    return true
   }
 
-  // A member's own entries — its reply, and the rows group-external-writes.ts
-  // mirrored out of its own session — are never news to their author, so the
-  // watermark steps over them. A user entry that arrived during inference
-  // stops the walk: a reply cannot acknowledge what it never saw.
-  updateGroupChat(context.group, (r: GroupChatRoom) => {
-    let mark = r.watermarks[markKey] || 0
-
-    while (mark < r.log.length && authoredByMember(r.log[mark], member)) {
-      mark += 1
-    }
-
-    if (mark !== (r.watermarks[markKey] || 0)) {
-      r.watermarks[markKey] = mark
-    }
-
-    return r
-  })
-
-  return spoke
-}
-
-function authoredByMember(entry: GroupMessage, member: GroupMember): boolean {
-  const from = entry?.from
-  const source = member.remoteSource ? member.connectionLabel || member.connectionId : undefined
-
-  return from?.kind === 'member' && from.name === member.name && String(from.source || '') === String(source || '')
+  return false
 }
 
 export async function runGroupContinuationMembers(

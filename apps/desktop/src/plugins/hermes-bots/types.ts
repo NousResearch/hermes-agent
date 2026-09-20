@@ -189,6 +189,10 @@ export interface GroupChat {
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   holds?: Record<string, GroupHold>
+  /** Entries a member's hold consumed that the member has not received in a
+   *  committed turn yet. Transferred from the hold stamp at release; drained
+   *  into the member's next prompt and cleared when that turn commits. */
+  heldBack?: Record<string, GroupMessage[]>
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]
@@ -203,11 +207,6 @@ export interface GroupChat {
   /** A member turn this Desktop is not (or no longer) polling: the message-count baseline to
    *  harvest its late reply from. `turn` names the poll that owns it while that poll runs. */
   stranded?: Record<string, number | { before: number; thread?: string; turn?: string }>
-  /** #93813: how far each member's external-write reconcile sweep has read
-   *  into that member's per-group session transcript (absolute row index of
-   *  the last mirrored row + 1). Persisted so external posts aren't rescanned
-   *  (or re-mirrored) after a window restart. */
-  externalCursors?: Record<string, number>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean

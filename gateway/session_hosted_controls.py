@@ -88,7 +88,10 @@ class HostedControls:
         from gateway.session_hosted_peer_retry import retry_peer
         return retry_peer(self, task, binding)
 
-    def status(self, room_id=None):
+    def status(self, room_id=None, *, state_read=None):
+        if state_read is not None:
+            from gateway.session_group_state import driver_status
+            return driver_status(self, room_id, state_read)
         result = super().status(room_id)
         if room_id is None:
             return result

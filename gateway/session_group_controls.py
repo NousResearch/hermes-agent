@@ -82,7 +82,8 @@ async def dispatch_group_control(connection, method, params):
                 if method in {'groups.peer.invite', 'groups.peer.revoke', 'groups.peer.revoke_exact'}:
                     from gateway.session_group_peers import dispatch_group_peer
                     return dispatch_group_peer(connection, method, supplied)
-                return _group(authority, actor, home, method, supplied)
+                return _group(authority, actor, home, method, supplied,
+                              state_owner=connection._group_state_owner)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
@@ -92,7 +93,12 @@ async def dispatch_group_control(connection, method, params):
     return await asyncio.to_thread(invoke)
 
 
-def _group(authority, actor, home, method, params):
+def _group(authority, actor, home, method, params, *, state_owner=None):
+    if method == 'groups.state':
+        from gateway.session_group_state import read_group_state
+        if state_owner is None:
+            raise RuntimeStoreError('group_state_unavailable')
+        return read_group_state(state_owner, authority, actor, params)
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()

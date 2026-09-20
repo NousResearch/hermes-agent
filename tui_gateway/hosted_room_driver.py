@@ -650,15 +650,28 @@ class HostedRoomRuntime:
                 bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure
             ):
                 try:
-                    state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
+                    # Policy-managed member turns must publish deferral so the
+                    # planner can admit a sibling. A bare runtime has no such
+                    # consumer and retains its existing automatic queue retry.
+                    if self.publish_terminal is not None and task.get("payload", {}).get("target_member_id"):
+                        deferred = state.defer_not_admitted_task(
+                            self.db_path, attempt, reason="member_unavailable", clock=self.clock,
+                            retry_binding=getattr(transport, "nonadmission_retry_binding", None))
+                    else:
+                        deferred = None
+                        state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
                     self._mark_ambiguous(binding, attempt)
                     self._record_task_error(
                         attempt, f"not-admitted proof lost its fence: {fence_exc}")
                 else:
                     delay = self._defer_unavailable_route(task)
+                    if deferred is not None:
+                        self._publish(binding, deferred)
                     self._record_task_error(
-                        attempt, f"was not admitted; queued for retry in {delay:g}s")
+                        attempt, "was not admitted; " + (
+                            "member deferred pending explicit retry" if deferred is not None
+                            else f"queued for retry in {delay:g}s"))
             elif submit_attempted:
                 self._mark_ambiguous(binding, attempt)
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")

@@ -476,7 +476,8 @@ def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None, new_work: bool = False) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None, new_work: bool = False,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
@@ -485,6 +486,8 @@ def _transition(
     """
     params = (*set_params, identity.room_id, identity.task_id, *fence_params)
     with _transaction(db_path) as conn:
+        if authorize is not None:
+            authorize(conn)
         if lease is not None and lease_first:
             _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
@@ -505,7 +508,8 @@ def _transition(
 def _generation_transition(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, execution_generation: int,
     cancel_generation: int, *, now: float, set_params: tuple[Any, ...],
-    replay: Callable[[sqlite3.Row], Any] | None = None) -> dict[str, Any]:
+    replay: Callable[[sqlite3.Row], Any] | None = None,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Lease-first transition from ``_GENERATION_TRANSITIONS`` fenced on status + both generations."""
     status, set_clause, generation_stale, stale = _GENERATION_TRANSITIONS[name]
     def guard(row: sqlite3.Row) -> None:
@@ -514,7 +518,7 @@ def _generation_transition(
     return _transition(
         db_path, identity, lease=lease, now=now, replay=replay, guard=guard, sql=_generation_update(set_clause, status),
         set_params=set_params, fence_params=(execution_generation, cancel_generation), stale=stale,
-        new_work=name in {"requeue", "requeue_deferred"})
+        new_work=name in {"requeue", "requeue_deferred"}, authorize=authorize)
 
 
 def _run_fence_transition(
@@ -757,13 +761,70 @@ def defer_indeterminate_task(
 
 def requeue_deferred_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
-    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    expected_cancel_generation: int, clock: Clock,
+    authorize: Callable[[sqlite3.Connection], None] | None = None) -> dict[str, Any]:
     """Explicitly retry a fenced deferred turn under a new generation."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     now = _timestamp(clock)
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
-        now=now, set_params=(now,))
+        now=now, set_params=(now,), authorize=authorize)
+
+
+def is_proven_nonadmission(task: Mapping[str, Any]) -> bool:
+    """Only the durable producer's exact attempt may grant a NEW peer retry.
+
+    Legacy/unknown deferrals share reason/retryable, not this disposition.
+    Requeue clears result and run coordinates, consuming the proof.
+    """
+    result = task.get("result")
+    proof = result.get("nonadmission") if isinstance(result, dict) else None
+    if task.get("status") != "deferred" or not isinstance(proof, dict):
+        return False
+    if (set(proof) != {"disposition", "identity", "execution_generation", "cancel_generation",
+                      "authority_epoch", "run_gateway_id", "run_process_generation",
+                      "run_lease_generation", "retry_binding"}
+            or proof["disposition"] != "proven_nonadmission"
+            or proof["identity"] != dataclasses.asdict(task["identity"])
+            or type(proof["authority_epoch"]) is not int or proof["authority_epoch"] < 1):
+        return False
+    for key in ("execution_generation", "cancel_generation", "run_lease_generation"):
+        if type(proof[key]) is not int or proof[key] != task.get(key):
+            return False
+        if proof[key] < (0 if key == "cancel_generation" else 1):
+            return False
+    return all(isinstance(proof[key], str) and proof[key] and proof[key] == task.get(key)
+               for key in ("run_gateway_id", "run_process_generation"))
+
+
+def defer_not_admitted_task(
+    db_path: DbPath, attempt: TaskAttempt, *, reason: Any, clock: Clock,
+    retry_binding: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Release sibling member turns after proven non-admission, not unknown work.
+
+    Retains the historical member-deferral contract using the current exact
+    running-attempt fence. Retrying a deferred member still requires explicit
+    requeue_deferred_task; publication alone cannot allocate a new generation.
+    """
+    _check_same_room(attempt.lease, attempt.identity)
+    reason = _identifier(reason, label="defer_reason")
+    proof = dict(disposition="proven_nonadmission", identity=dataclasses.asdict(attempt.identity),
+        execution_generation=attempt.execution_generation, cancel_generation=attempt.cancel_generation,
+        authority_epoch=attempt.lease.authority_epoch, run_gateway_id=attempt.lease.gateway_id,
+        run_process_generation=attempt.lease.process_generation, run_lease_generation=attempt.lease.lease_generation,
+        retry_binding=dict(retry_binding) if retry_binding is not None else None)
+    result_json = _canonical_json({"reason": reason, "retryable": True, "nonadmission": proof})
+    now = _timestamp(clock)
+    def replay(row: sqlite3.Row) -> dict[str, Any] | None:
+        deferred = _generations_match(row, "deferred", attempt.execution_generation, attempt.cancel_generation)
+        same_run = (row["run_gateway_id"], row["run_process_generation"], row["run_lease_generation"]) == _run_fence(attempt.lease)
+        return _task_from_row(row, idempotent=True) if deferred and same_run and row["result_json"] == result_json else None
+    sql = _generation_update("status='deferred', result_json=?, terminal_at=?, updated_at=?", "running") + f" AND {_RUN_FENCE}"
+    return _run_fence_transition(
+        db_path, attempt, guard_stale="not-admitted task attempt lost its fence",
+        lease_generation=lambda value: int(value or 0), now=now, replay=replay, sql=sql,
+        set_params=(result_json, now, now), stale="not-admitted task changed during deferral")
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:

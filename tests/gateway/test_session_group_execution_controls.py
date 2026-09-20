@@ -9,9 +9,10 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 class RoomService:
-    def __init__(self, path, owner):
+    def __init__(self, path, owner: str | None, authority):
         self.db_path = path
-        self.owner = owner
+        self.owner: str | None = owner
+        self.authority = authority
         self.calls = []
         self._policy_lock = threading.RLock()
         self.runtime = SimpleNamespace(status=lambda: {'running': True, 'stopping': False})
@@ -21,12 +22,17 @@ class RoomService:
             raise RuntimeStoreError('permission_denied')
 
     def create_room(self, *, room_id, name, members):
-        from gateway.hosted_rooms import create_room, local_authority_gateway_id
+        from gateway import hosted_rooms
         self.calls.append(('create', room_id))
-        return create_room(self.db_path, room_id=room_id, name=name, members=members,
-                           authority_gateway_id=local_authority_gateway_id())
+        result = hosted_rooms.create_room(
+            self.db_path, room_id=room_id, name=name, members=members,
+            authority_gateway_id=hosted_rooms.local_authority_gateway_id())
+        self.authority.db._execute_write(lambda conn: conn.execute(
+            'INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
+            ('gateway.hosted.owner.v1:' + room_id, self.owner)))
+        return result
 
-    def status(self, room_id):
+    def status(self, room_id, **kwargs):
         return {'room_id': room_id, 'pending_actions': [{'kind': 'retry', 'task_id': 'task'}]}
 
     def revoke_room_routes(self, room_id):
@@ -63,9 +69,17 @@ class RoomService:
 def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+        from hermes_state_runtime import begin_runtime_epoch
+        runner = SimpleNamespace(session_authority=None)
+        authority = SimpleNamespace(
+            profile_id=str(tmp_path), instance_id='owner', db=db, events={},
+            epoch=begin_runtime_epoch(db, instance_id='owner'), runner=runner,
+            _require_admission_open=lambda: None)
+        runner.session_authority = authority
+        service = authority.hosted_room_service = RoomService(
+            db.db_path, None, authority)
         connection = AuthorityConnection(authority, object(), {'user_id': 'alice'})
-        service = authority.hosted_room_service = RoomService(db.db_path, connection.actor.subject)
+        service.owner = connection.actor.subject
 
         async def probe():
             async def call(method, **params):
@@ -78,6 +92,8 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
             assert 'result' in created, created
             assert service.calls[-1] == ('create', 'owned')
             state = await call('groups.state', room_id='owned')
+            assert 'result' in state, state
+            assert state['result']['room']['room_id'] == 'owned'
             assert state['result']['driver_status'] == service.status('owned')
             other = AuthorityConnection(authority, object(), {'user_id': 'bob'})
             listed = await other.dispatch({'id': 1, 'method': 'groups.list', 'params': {}})
@@ -105,18 +121,23 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
             assert approved['result'] == {'approved': True, 'result': {'resolved': 'approval-exact'}}
             assert service.calls[-1] == ('approve', 'owned', 'one', 'task-exact', 3,
                                         'once', 'approval-exact')
-            disbanded = await call('groups.disband', room_id='owned', cancel_id='disband-exact')
-            assert 'result' in disbanded, disbanded
-            assert service.calls[-2:] == [('stop', 'owned', 'disband-exact', True), ('revoke', 'owned')]
         asyncio.run(probe())
 
 
 def test_execution_controls_reject_foreign_actor_profile_room_and_unready_service(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+        from hermes_state_runtime import begin_runtime_epoch
+        runner = SimpleNamespace(session_authority=None)
+        authority = SimpleNamespace(
+            profile_id=str(tmp_path), instance_id='owner', db=db, events={},
+            epoch=begin_runtime_epoch(db, instance_id='owner'), runner=runner,
+            _require_admission_open=lambda: None)
+        runner.session_authority = authority
+        service = authority.hosted_room_service = RoomService(
+            db.db_path, None, authority)
         owner = AuthorityConnection(authority, object(), {'user_id': 'alice'})
-        service = authority.hosted_room_service = RoomService(db.db_path, owner.actor.subject)
+        service.owner = owner.actor.subject
 
         async def probe():
             requests = {

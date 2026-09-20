@@ -1825,6 +1825,23 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             logger.debug("Fallback to %s/%s: could not attach credential pool: %s", fb_provider, fb_model, exc)
 
 
+def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider) -> None:
+    """A billing switch is a WARNING naming the profile, both models and the remedy: the gateway
+    persists the turn as a transient failure otherwise, and nothing in the log says the paid
+    model was refused for credits or how to fix it (#115702). Other reasons stay INFO."""
+    if reason != FailoverReason.billing:
+        logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+        return
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    profile = profile_name_for_home(get_hermes_home()) or "default"
+    remedy = "hermes model" if profile == "default" else f"hermes -p {profile} model"
+    logger.warning(
+        "Profile %s: %s via %s refused for billing/credits — using fallback %s via %s. "
+        "Top up credits, or run `%s` to pick a model this account can use.",
+        profile, old_model, old_provider, fb_model, fb_provider, remedy,
+    )
+
+
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
@@ -2071,7 +2088,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # provenance so the restore path only emits a recovery notice after a real fallback.
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
-            logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+            _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)

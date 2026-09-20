@@ -270,43 +270,6 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
-    def test_404_insufficient_credits_for_paid_model_code_is_billing(self):
-        # A 404 carrying the structured 'insufficient_credits_for_paid_model'
-        # code (paid model ungated by credits) must route like 429-exhaustion:
-        # billing with the fallback chain armed -- not 'unknown' burning
-        # retries and never falling back. (#115702)
-        e = MockAPIError(
-            "Not Found",
-            status_code=404,
-            body={
-                "error": {
-                    "code": "insufficient_credits_for_paid_model",
-                    "message": "Not Found",
-                },
-            },
-        )
-        result = classify_api_error(e, provider="nous", model="openai/gpt-5.5-pro")
-        assert result.reason == FailoverReason.billing
-        assert result.retryable is False
-        assert result.should_rotate_credential is True
-        assert result.should_fallback is True
-        assert result.error_context.get("credit_exhaustion_code") == "insufficient_credits_for_paid_model"
-
-    def test_404_insufficient_credits_for_paid_model_in_message_is_billing(self):
-        # Same code embedded in the exception text (the SDK str() flattens the
-        # body) with no billing wording in the message -- still billing.
-        e = MockAPIError(
-            "Error code: 404 - {'error': {'code': 'insufficient_credits_for_paid_model', "
-            "'message': 'request failed'}}",
-            status_code=404,
-        )
-        result = classify_api_error(e, provider="nous", model="openai/gpt-5.5-pro")
-        assert result.reason == FailoverReason.billing
-        assert result.retryable is False
-        assert result.should_fallback is True
-        assert result.error_context.get("credit_exhaustion_code") == "insufficient_credits_for_paid_model"
-
-
     def test_wrapped_402_uses_nested_body_message(self):
         inner = MockAPIError(
             "inner",

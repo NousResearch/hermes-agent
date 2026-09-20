@@ -1,94 +1,59 @@
-"""404 'insufficient_credits_for_paid_model' triggers the fallback chain (#115702)."""
+"""Regression for #115702: a paid Nous model behind an empty credit balance answers HTTP 404
+``insufficient_credits_for_paid_model``. The code must classify as billing (fallback chain armed,
+no retry burn) and the resulting switch must be a WARNING naming the failing profile and remedy.
+"""
 
 import logging
-from types import SimpleNamespace
 
+from agent.chat_completion_helpers import _log_fallback_activated
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.turn_recovery import log_credit_exhaustion_fallback, route_classified_error
-from agent.turn_retry_state import TurnRetryState
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
-class MockAPIError(Exception):
-    """Simulates an OpenAI SDK APIStatusError."""
-
-    def __init__(self, message, status_code=None, body=None):
+class _StatusError(Exception):
+    def __init__(self, message, status_code, body):
         super().__init__(message)
         self.status_code = status_code
-        self.body = body or {}
+        self.body = body
 
 
-def _classified_credit_404():
-    e = MockAPIError(
-        "Not Found",
-        status_code=404,
-        body={"error": {"code": "insufficient_credits_for_paid_model", "message": "Not Found"}},
+def test_404_insufficient_credits_code_is_billing_with_fallback():
+    # Structured code only, message carries no billing wording (message-pattern rules cannot save it).
+    err = _StatusError(
+        "Not Found", 404, {"error": {"code": "insufficient_credits_for_paid_model", "message": "Not Found"}},
     )
-    return classify_api_error(e, provider="nous", model="openai/gpt-5.5-pro")
-
-
-def test_credit_404_classifies_like_429_exhaustion():
-    result = _classified_credit_404()
-    assert result.reason == FailoverReason.billing
-    assert result.retryable is False
-    assert result.should_fallback is True
-
-
-def test_credit_404_fallback_logs_actionable_error_naming_credits_and_target(caplog):
-    agent = SimpleNamespace(model="openai/gpt-5.5-free", provider="nous", log_prefix="")
-    with caplog.at_level(logging.ERROR, logger="agent.conversation_loop"):
-        log_credit_exhaustion_fallback(agent, _classified_credit_404())
-    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert len(errors) == 1
-    text = errors[0].getMessage().lower()
-    assert "credit" in text
-    assert "insufficient_credits_for_paid_model" in text
-    assert "openai/gpt-5.5-free" in text
-
-
-def test_credit_404_fallback_log_silent_without_marker(caplog):
-    agent = SimpleNamespace(model="x", provider="nous", log_prefix="")
-    classified = SimpleNamespace(reason=FailoverReason.billing, error_context={})
-    with caplog.at_level(logging.ERROR, logger="agent.conversation_loop"):
-        log_credit_exhaustion_fallback(agent, classified)
-    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
-
-
-def test_credit_404_routes_to_fallback_chain(caplog):
-    """End to end through the classifier + eager-fallback routing: the 404
-    credit error attempts the fallback_model chain and logs the ERROR."""
-    classified = _classified_credit_404()
-    calls = []
-
-    agent = SimpleNamespace(
-        model="openai/gpt-5.5-pro",
-        provider="nous",
-        log_prefix="",
-        _fallback_index=0,
-        _fallback_chain=[{"provider": "nous", "model": "openai/gpt-5.5-free"}],
-        _credential_pool=None,
+    verdict = classify_api_error(err, provider="nous", model="z-ai/glm-5.2")
+    assert verdict.reason == FailoverReason.billing
+    assert verdict.should_fallback and not verdict.retryable
+    # Control: an unrelated 404 body keeps its generic verdict — nothing to fall back for.
+    other = classify_api_error(
+        _StatusError("Not Found", 404, {"error": {"code": "route_not_found", "message": "Not Found"}}),
+        provider="nous", model="z-ai/glm-5.2",
     )
+    assert other.reason == FailoverReason.unknown
 
-    def _activate(reason=None):
-        calls.append(reason)
-        agent.model = "openai/gpt-5.5-free"
-        return True
 
-    agent._try_activate_fallback = _activate
-    agent._buffer_diagnostic_status = lambda msg: calls.append(msg)
+def test_billing_fallback_warning_names_failing_profile_and_remedy(tmp_path, caplog):
+    """Under multiplex the log runs in the failing profile's home scope: A then B name themselves,
+    never the launch profile; a non-billing switch stays INFO."""
+    seen = {}
+    for name in ("alpha", "beta"):
+        token = set_hermes_home_override(tmp_path / ".hermes" / "profiles" / name)
+        try:
+            caplog.clear()
+            with caplog.at_level(logging.INFO, logger="agent.chat_completion_helpers"):
+                _log_fallback_activated(None, FailoverReason.billing, "z-ai/glm-5.2", "nous", "free/model", "nous")
+        finally:
+            reset_hermes_home_override(token)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        seen[name] = warnings[0].getMessage()
+    assert "Profile alpha:" in seen["alpha"] and "hermes -p alpha model" in seen["alpha"]
+    assert "Profile beta:" in seen["beta"] and "alpha" not in seen["beta"]
+    for text in seen.values():
+        assert "z-ai/glm-5.2" in text and "free/model" in text
 
-    with caplog.at_level(logging.ERROR, logger="agent.conversation_loop"):
-        verdict = route_classified_error(
-            agent, MockAPIError("Not Found", 404), classified, TurnRetryState(),
-            error_msg="Not Found", error_context={}, recovered_with_pool=False,
-            base_url="", model="openai/gpt-5.5-pro", messages=[], api_messages=[],
-            system_message=None, active_system_prompt="sys", conversation_history=[],
-            retry_count=0, max_retries=3, compression_attempts=0,
-            max_compression_attempts=2, api_call_count=1, effective_task_id=None,
-        )
-    assert verdict.action == "break"
-    assert FailoverReason.billing in calls
-    assert agent.model == "openai/gpt-5.5-free"
-    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert len(errors) == 1
-    text = errors[0].getMessage().lower()
-    assert "credit" in text and "openai/gpt-5.5-free" in text
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="agent.chat_completion_helpers"):
+        _log_fallback_activated(None, FailoverReason.server_error, "a", "p", "b", "q")
+    assert [r.levelno for r in caplog.records] == [logging.INFO]

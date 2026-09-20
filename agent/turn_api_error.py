@@ -19,7 +19,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
-    log_api_error_attempt, log_credit_exhaustion_fallback,
+    log_api_error_attempt,
     max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
     recover_before_classification, route_classified_error,
 )
@@ -339,7 +339,6 @@ def settle_unrecovered_error(
                 _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
                 agent._buffer_diagnostic_status(f"⚠️ {_label} — trying fallback...")
             if agent._try_activate_fallback():
-                log_credit_exhaustion_fallback(agent, classified)
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
                 # re-runs the pre-API preflight against the fallback's context window.
                 active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)

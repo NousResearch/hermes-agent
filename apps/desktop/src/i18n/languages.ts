@@ -15,7 +15,7 @@ export const LOCALE_OPTIONS = [
   },
   {
     id: 'it',
-    name: 'Italiano',
+    name: LOCALE_ENDONYMS.it,
     englishName: 'Italian',
     configValue: 'it'
   },

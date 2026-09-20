@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $activeTip, $retiredTips, agentTipId, dismissTip, resetTips, retireActiveTip, showTip } from './tips'
+import { $activeTip, $retiredTips, $tipShownAt, agentTipId, dismissTip, resetTips, retireActiveTip, showTip } from './tips'
 
 const showAgentTip = (selector: string, text: string) => {
   showTip({
@@ -28,14 +28,7 @@ describe('agent tip retirement', () => {
     expect(tipId).not.toContain('Choose a model here.')
     expect($retiredTips.get()).toContain(tipId)
     expect($activeTip.get()).toBeNull()
-  })
-
-  it('keeps distinct agent tips independently dismissible', () => {
-    showAgentTip('[data-tour="model-pill"]', 'Choose a model here.')
-    retireActiveTip()
-
-    showAgentTip('[data-tour="composer"]', 'Write your prompt here.')
-
-    expect($activeTip.get()?.tipId).toBe(agentTipId('[data-tour="composer"]', 'Write your prompt here.'))
+    // Only the ✕ persists for agent tips; the seen ledger stays catalog-only.
+    expect($tipShownAt.get()).toEqual({})
   })
 })

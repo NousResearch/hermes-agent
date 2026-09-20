@@ -146,7 +146,11 @@ export function showTip(tip: ActiveTip): void {
       $lastTipId.set(tip.tipId)
     }
 
-    $tipShownAt.set({ ...$tipShownAt.get(), [tip.tipId]: Date.now() })
+    // Agent tips are unbounded in number and only need the ✕ to persist; keep
+    // them out of the seen ledger so a chatty agent cannot grow localStorage.
+    if (!tip.tipId.startsWith('agent:')) {
+      $tipShownAt.set({ ...$tipShownAt.get(), [tip.tipId]: Date.now() })
+    }
   }
 
   // Any tip starts the cooldown, an agent's included: whoever just pointed at

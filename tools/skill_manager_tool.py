@@ -33,7 +33,8 @@ from tools.skill_manager_guards import (
     _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
     _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
-    _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
+    _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _rewrite_target,
+    _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
@@ -332,21 +333,6 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     if len(parts) < 2:
         return f"Provide a file path, not just a directory. Example: '{parts[0]}/myfile.md'"
     return None
-
-
-def _is_supporting_file_path(file_path: Optional[str]) -> bool:
-    """True when ``file_path`` names a supporting file rather than the skill's SKILL.md.
-
-    Empty/None and every spelling of the main file that ``_validate_file_path`` accepts
-    (``SKILL.md``, ``./SKILL.md``, ``skill.md``, ``<skill>/SKILL.md``) mean SKILL.md. A path
-    whose basename is SKILL.md never counts as a supporting file, so ``foo/SKILL.md`` cannot
-    plant a second SKILL.md inside the skill."""
-    if not file_path:
-        return False
-    parts = [p for p in str(file_path).strip().replace("\\", "/").split("/") if p and p != "."]
-    if not parts or parts[-1].lower() == "skill.md":
-        return False
-    return True
 
 
 def _resolve_supporting_file(skill_dir: Path, file_path: str):
@@ -708,11 +694,15 @@ def _act_patch(a):
     tool and the helper give the same guidance); content alone = full rewrite (the old 'edit').
     A full rewrite that names a supporting ``file_path`` replaces THAT file (write_file's path),
     never SKILL.md — otherwise a script body would be run through the frontmatter validator
-    and, on the bare rewrite path, overwrite the skill's main file."""
+    and, on the bare rewrite path, overwrite the skill's main file. A path that is neither
+    (``references/SKILL.md``) is refused by ``_rewrite_target``."""
     if a["content"] and (a["old_string"] or a["new_string"] is not None):
         return tool_error(_PATCH_EITHER_OR, success=False)
     if a["content"]:
-        if _is_supporting_file_path(a["file_path"]):
+        target, err = _rewrite_target(a["name"], a["file_path"])
+        if err:
+            return tool_error(err, success=False)
+        if target != "SKILL.md":
             return _write_file(a["name"], a["file_path"], a["content"])
         return _edit_skill(a["name"], a["content"])
     return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"], a["replace_all"])
@@ -786,10 +776,12 @@ def skill_manage(
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
                 absorbed_into=absorbed_into)
+    # Shape before the gate (as the batch does): a misfiled op must be refused, not staged for a
+    # reviewer to approve and then fail — or land somewhere other than the preview showed.
+    if (shape_err := _op_shape_error(action, args, name)) is not None:
+        return tool_error(shape_err, success=False)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
-    if (shape_err := _op_shape_error(action, args)) is not None:
-        return tool_error(shape_err, success=False)
     # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
     # (create takes a bare name; the other actions also accept ``category/name``).
     if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
@@ -904,7 +896,11 @@ SKILL_MANAGE_SCHEMA = {
                     }, ("old_string", "new_string")),
                     _op_schema("patch", {
                         "content": {"type": "string",
-                                    "description": "Full SKILL.md rewrite (REPLACES the whole file; last resort)."},
+                                    "description": "Full rewrite (REPLACES the whole file; last resort) of "
+                                                   "SKILL.md, or of the supporting file named by file_path."},
+                        "file_path": {"type": "string",
+                                      "description": "Optional supporting file to rewrite (write_file's shape); "
+                                                     "default SKILL.md."},
                     }, ("content",)),
                     _op_schema("write_file", {
                         "file_path": _FILE_PATH,

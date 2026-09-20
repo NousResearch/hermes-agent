@@ -63,7 +63,33 @@ def _misplaced_text_hint(action: str, args: dict) -> str:
     return f" Note: this op carries {carried} — move that text to {destination}."
 
 
-def _op_shape_error(action: str, args: dict):
+_MAIN_FILE = "SKILL.md"
+
+
+def _rewrite_target(name: str, file_path):
+    """Where a full-rewrite ``patch`` (content, no old/new string) lands.
+
+    -> ``("SKILL.md", None)`` for the skill's main file, ``(<normalized path>, None)`` for a
+    supporting file, or ``(None, error)``. Only the spellings that unambiguously mean the main
+    file count as it: no ``file_path``, ``SKILL.md`` / ``./SKILL.md``, or ``<skill>/SKILL.md``
+    for THIS skill's name. Any other path whose basename is SKILL.md (``references/SKILL.md``,
+    ``scripts/skill.md``, ``foo/SKILL.md``) is refused rather than redirected: write_file
+    accepts those as supporting paths, so silently rewriting SKILL.md for them would show one
+    file in the staged preview and replace another."""
+    parts = [p for p in str(file_path or "").strip().replace("\\", "/").split("/") if p and p != "."]
+    if not parts or parts == [_MAIN_FILE]:
+        return _MAIN_FILE, None
+    if len(parts) == 2 and parts[1] == _MAIN_FILE and name and parts[0] == posixpath.basename(name):
+        return _MAIN_FILE, None
+    if parts[-1].lower() == "skill.md":
+        return None, (f"file_path '{file_path}' is neither the skill's main file nor a supporting "
+                      f"file: a SKILL.md under a subdirectory would shadow the main one. To rewrite "
+                      f"SKILL.md pass content without file_path (or file_path='SKILL.md'); supporting "
+                      f"files cannot be named SKILL.md.")
+    return posixpath.normpath("/".join(parts)), None
+
+
+def _op_shape_error(action: str, args: dict, name: str = ""):
     """Argument-shape error text for one op, or None. Only shape misses carry the misplaced-text
     hint: a patch whose real problem is an unmatched old_string must not be steered to a full
     rewrite. Pure function so the batch can reject a misfiled op BEFORE any sibling is applied."""
@@ -79,6 +105,12 @@ def _op_shape_error(action: str, args: dict):
             return _PATCH_NEEDS_OLD_STRING + _misplaced_text_hint(action, args)
         if not args.get("content") and args.get("new_string") is None:
             return _PATCH_NEEDS_NEW_STRING
+        if args.get("content") and args.get("file_path"):
+            # Decided here (before staging / before any sibling op) so a rewrite aimed at an
+            # ambiguous path is refused up front, not redirected onto SKILL.md at apply time.
+            _, target_err = _rewrite_target(name, args.get("file_path"))
+            if target_err:
+                return target_err
     return None
 
 
@@ -100,7 +132,7 @@ def _validate_batch_ops(operations, default_name, tool_error):
             return fail(i, " needs a 'name' (the skill it targets).")
         # Reject a misfiled op here, before any sibling is applied: a runtime failure on
         # op[1] would first apply op[0] and then roll the whole batch back.
-        if (shape_err := _op_shape_error(act, op)) is not None:
+        if (shape_err := _op_shape_error(act, op, nm)) is not None:
             return fail(i, f" ({act} on '{nm}'): {shape_err}")
         names.append(nm)
         if act == "create" and nm in names[:-1]:
@@ -110,17 +142,20 @@ def _validate_batch_ops(operations, default_name, tool_error):
     # Clobber guard: a DESTRUCTIVE op (create/write_file/remove_file/full rewrite) on
     # a file an earlier op touched would SILENTLY discard its work — reject it.
     # Additive patches are always legal. Paths are normalized against spelling variants.
-    from tools.skill_manager_tool import _is_supporting_file_path
     touched_files = set()
     for i, op in enumerate(operations):
         act, nm = op["action"], names[i]
         # create always hits SKILL.md; a full-rewrite patch (content) hits SKILL.md unless it
-        # names a supporting file_path (then it rewrites that file, like write_file).
+        # names a supporting file_path (then it rewrites that file, like write_file). Ambiguous
+        # paths were already refused by _op_shape_error above.
         full_rewrite = act == "patch" and bool(op.get("content"))
         fp = (op.get("file_path") or "").strip()
-        target = ("SKILL.md" if (act == "create" or not fp
-                                 or (full_rewrite and not _is_supporting_file_path(fp)))
-                  else posixpath.normpath(fp.lstrip("/")))
+        if act == "create" or not fp:
+            target = _MAIN_FILE
+        elif full_rewrite:
+            target = _rewrite_target(nm, fp)[0]
+        else:
+            target = posixpath.normpath(fp.lstrip("/"))
         key = (nm, target)
         if (act in ("create", "write_file", "remove_file") or full_rewrite) and key in touched_files:
             return fail(i, f": {act} on '{target}' of skill '{nm}' — an earlier op in this "

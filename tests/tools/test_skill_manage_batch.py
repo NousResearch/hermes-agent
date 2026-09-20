@@ -125,6 +125,15 @@ class TestSkillManageBatch(unittest.TestCase):
             {"action": "patch", "content": "b", "file_path": "scripts/r.py"},
         ])
         self.assertTrue(r["success"], r)
+        # A basename-SKILL.md path under a subdirectory is refused up front (op[0] never applied).
+        r = self._call("probe", [
+            {"action": "write_file", "file_path": "references/b.md", "file_content": "b"},
+            {"action": "patch", "content": "c", "file_path": "references/SKILL.md"},
+        ])
+        self.assertFalse(r["success"])
+        self.assertIn("references/SKILL.md", r["error"])
+        self.assertFalse(os.path.exists(os.path.join(base, "references", "b.md")))
+        self.assertFalse(os.path.exists(os.path.join(base, "references", "SKILL.md")))
 
     def test_intra_batch_conflict_guard(self):
         """Same-file double writes and post-edit full rewrites are always

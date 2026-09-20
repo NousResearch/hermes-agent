@@ -310,11 +310,10 @@ word word
         assert (tmp_path / "my-skill" / "scripts" / "validate.py").read_text() == script
         assert (tmp_path / "my-skill" / "SKILL.md").read_text() == VALID_SKILL_CONTENT
 
-    @pytest.mark.parametrize("file_path", [None, "SKILL.md", "./SKILL.md", "skill.md",
-                                           "my-skill/SKILL.md", "foo/SKILL.md"])
+    @pytest.mark.parametrize("file_path", [None, "SKILL.md", "./SKILL.md", "my-skill/SKILL.md"])
     def test_patch_content_aimed_at_skill_md_rewrites_skill_md_only(self, tmp_path, file_path):
-        """Every spelling of the main file (and any basename SKILL.md) is the SKILL.md rewrite:
-        it goes through the frontmatter validator and never plants a second SKILL.md."""
+        """Every unambiguous spelling of the main file is the SKILL.md rewrite: it goes through
+        the frontmatter validator and never plants a second SKILL.md."""
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             kwargs = {"file_path": file_path} if file_path else {}
@@ -326,7 +325,48 @@ word word
         assert bad["success"] is False and "frontmatter" in bad["error"].lower()
         skill_dir = tmp_path / "my-skill"
         assert [p for p in skill_dir.rglob("*") if p.name.lower() == "skill.md"] == [skill_dir / "SKILL.md"]
-        assert not (skill_dir / "foo").exists()
+
+    @pytest.mark.parametrize("file_path", ["references/SKILL.md", "scripts/skill.md", "foo/SKILL.md",
+                                           "skill.md", "other-skill/SKILL.md"])
+    def test_patch_content_with_ambiguous_skill_md_path_is_refused(self, tmp_path, file_path):
+        """A basename-SKILL.md path that is not the main file's spelling is refused, not redirected:
+        write_file accepts e.g. references/SKILL.md as a supporting file, so a redirect would
+        preview that file and replace the main SKILL.md. Neither file may change."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            skill_dir = tmp_path / "my-skill"
+            (skill_dir / "references").mkdir()
+            (skill_dir / "references" / "SKILL.md").write_text("old ref body\n")
+            r = json.loads(skill_manage(action="patch", name="my-skill",
+                                        content=VALID_SKILL_CONTENT_2, file_path=file_path))
+        assert r["success"] is False and file_path in r["error"] and "supporting" in r["error"]
+        assert (skill_dir / "SKILL.md").read_text() == VALID_SKILL_CONTENT
+        assert (skill_dir / "references" / "SKILL.md").read_text() == "old ref body\n"
+        assert not (skill_dir / "foo").exists() and not (skill_dir / "scripts").exists()
+
+    def test_patch_content_with_ambiguous_path_is_refused_before_staging(self, tmp_path):
+        """With skills.write_approval on, the refusal happens up front: nothing is staged for a
+        reviewer to approve and then have land on a different file than the preview named."""
+        from unittest.mock import patch as _patch
+        import tools.write_approval as wa
+
+        class _Decision:
+            allow = False
+            blocked = False
+            message = "staged for review"
+        staged = []
+        with _skill_dir(tmp_path), \
+             _patch.object(wa, "evaluate_gate", return_value=_Decision()), \
+             _patch.object(wa, "stage_write", side_effect=lambda *a, **k: staged.append(a) or {"id": "p1"}):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)  # create stages too — drop that entry
+            staged.clear()
+            r = json.loads(skill_manage(action="patch", name="my-skill", content="x\n",
+                                        file_path="references/SKILL.md"))
+            ok = json.loads(skill_manage(action="patch", name="my-skill", content="x\n",
+                                         file_path="scripts/r.py"))
+        assert r["success"] is False and "references/SKILL.md" in r["error"]
+        assert ok.get("staged") is True
+        assert len(staged) == 1
 
     def test_patch_supporting_file_symlink_escape_blocked(self, tmp_path):
         outside_file = tmp_path / "outside.txt"

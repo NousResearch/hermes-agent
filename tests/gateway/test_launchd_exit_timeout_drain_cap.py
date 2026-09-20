@@ -11,6 +11,8 @@ takeovers are not launchd-timed and keep the configured drain).
 
 from __future__ import annotations
 
+import asyncio
+import signal
 from types import SimpleNamespace
 
 import pytest
@@ -61,3 +63,20 @@ def test_effective_drain_capped_only_for_signal_stops_under_launchd():
     # The thread watchdog (drain + grace) must also fire before launchd's SIGKILL.
     leash = resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(signal_stop))
     assert effective_stop_watchdog_delay(signal_stop, leash) < 60.0 < leash
+
+
+@pytest.mark.parametrize("takeover", [False, True])
+def test_sigterm_handler_marks_stop_as_signal_driven_unless_planned_takeover(monkeypatch, takeover):
+    import gateway.run as run_mod
+    import gateway.shutdown_forensics as forensics
+    import gateway.status as status
+
+    monkeypatch.setattr(status, "consume_takeover_marker_for_self", lambda: takeover)
+    monkeypatch.setattr(status, "consume_planned_stop_marker_for_self", lambda: False)
+    monkeypatch.setattr(forensics, "snapshot_shutdown_context", lambda *a, **k: None)
+    monkeypatch.setattr(run_mod.asyncio, "create_task", lambda coro: coro.close())
+    runner = _runner(drain=180.0, launchd=60.0, by_signal=False)
+    runner.stop = lambda: asyncio.sleep(0)
+    run_mod._start_gateway_make_shutdown_signal_handler(runner, [False])(signal.SIGTERM)
+    assert runner._stop_requested_by_signal is (not takeover)
+    assert effective_stop_drain_timeout(runner) == (180.0 if takeover else 50.0)

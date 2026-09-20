@@ -358,7 +358,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         state => {
           const busy = Boolean(payload!.running)
 
-          if (state.busy === busy && (busy || !state.awaitingResponse)) {
+          if (state.busy === busy && (busy || !state.awaitingResponse) && !state.turnStartedAt) {
             return state
           }
 

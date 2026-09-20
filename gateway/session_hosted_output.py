@@ -26,6 +26,9 @@ class HostedOutputBinding:
     owner_pid: int
     active: bool = True
     used: bool = False
+    task: dict | None = None
+    cleanup_pending: bool = False
+    cleanup_reason: str | None = None
 
     def check_write(self, conn, scope):
         if not self.active or os.getpid() != self.owner_pid or scope != self.scope:
@@ -132,7 +135,9 @@ def _binding(authority, ref, row):
         member_id=member_id, target_profile=profile, home_install_id=gateway,
         target_install_id=gateway, authority_gateway_id=gateway, authority_epoch=epoch,
     ))
-    binding = HostedOutputBinding(authority, ref, row, scope, task["cancel_generation"], os.getpid())
+    binding = HostedOutputBinding(
+        authority, ref, row, scope, task["cancel_generation"], os.getpid(), task=dict(task)
+    )
     with authority.db._read_ctx() as conn:
         binding.check_write(conn, scope)
     return binding
@@ -165,6 +170,35 @@ def capture_output_result(authority, row, binding):
     if row.get("principal_id") == "api":
         from gateway.session_peer_output import output_run_binding
         saved["result"]["peer_output_binding"] = output_run_binding(row, saved["result"])
+
+
+def capture_failed_output(authority, row, binding):
+    """Retain one exact cleanup obligation without replacing the producer failure."""
+    if binding is None or not binding.used:
+        return None
+    try:
+        if (
+            binding.authority is not authority
+            or binding.row.get("admission_id") != row.get("admission_id")
+            or binding.row.get("generation") != row.get("generation")
+        ):
+            raise RoomArtifactError("Group Chat output owner changed")
+        service = getattr(authority, "hosted_room_service", None)
+        capture = getattr(service, "_capture_failed_output", None)
+        if not callable(capture):
+            raise RoomArtifactError("Group Chat output owner changed")
+        complete = capture(binding)
+    except Exception as exc:
+        binding.cleanup_pending = True
+        binding.cleanup_reason = (
+            "owner_unavailable"
+            if isinstance(exc, (RoomArtifactError, RuntimeStoreError))
+            else "cleanup_unavailable"
+        )
+        return binding.cleanup_reason
+    binding.cleanup_pending = not complete
+    binding.cleanup_reason = None if complete else "cleanup_pending"
+    return binding.cleanup_reason
 
 
 def output_receipt_fields(value):

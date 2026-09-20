@@ -132,10 +132,31 @@ class CanonicalOutputLifecycle:
                 base['unavailable'] = 'input_binding_unavailable'
         return base, admission
 
-    def _reconcile_stopped_output(self, task, *, capture_only=False, existing_only=False):
+    def _capture_failed_output(self, binding):
+        task, scope = binding.task, binding.scope
+        if task is None:
+            raise RoomArtifactError('Group Chat output task unavailable')
+        payload = task.get('payload') or {}
+        member = payload.get('target_member_id', payload.get('target_profile'))
+        if (binding.authority is not self.authority
+                or task['identity'].room_id != scope.room_id
+                or task['identity'].task_id != scope.task_id
+                or task['execution_generation'] != scope.execution_generation
+                or task['cancel_generation'] != binding.cancel_generation
+                or member != scope.member_id
+                or payload.get('target_profile') != scope.target_profile):
+            raise RoomArtifactError('Group Chat output cleanup binding changed')
+        return self._reconcile_stopped_output(
+            task, capture_only=True, producer_binding=binding
+        )
+
+    def _reconcile_stopped_output(
+            self, task, *, capture_only=False, existing_only=False, producer_binding=None):
         key = key_for(task)
         now = float(self._artifact_clock())
         def stage(conn):
+            if producer_binding is not None:
+                producer_binding.check_write(conn, producer_binding.scope)
             saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
             old = json.loads(saved[0]) if saved else None
             if existing_only and old is None:
@@ -147,6 +168,9 @@ class CanonicalOutputLifecycle:
                     conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(old, sort_keys=True), key))
                 return old
             snapshot, admission = self._cleanup_snapshot(conn, task)
+            if (producer_binding is not None
+                    and snapshot.get('scope') != producer_binding.scope.as_mapping()):
+                raise RoomArtifactError('Group Chat output cleanup scope changed')
             if old and old['state'] == 'pending':
                 # Damaged inventory does not spend attempts or mutate the exact
                 # retained physical obligation, much less initialize a store.

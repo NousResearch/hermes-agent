@@ -61,6 +61,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
+    ("triage_router", "Triage router", "Jev pre-triage classifier (off by default)"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass")]

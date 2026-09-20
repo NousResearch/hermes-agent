@@ -729,6 +729,10 @@ DEFAULT_CONFIG = {
         # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
         # kanban_decomposer emits a JSON graph of child tasks (more tokens).
         "triage_specifier": _aux(120),
+        # Kanban: triage_router is a fast/cheap Jev pre-check ahead of triage_specifier's
+        # full LLM call — off by default (model must be set explicitly). See
+        # docs/superpowers/specs/2026-09-20-triage-jev-router-design.md.
+        "triage_router": _aux(15, max_body_chars=300),
         "kanban_decomposer": _aux(180),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls

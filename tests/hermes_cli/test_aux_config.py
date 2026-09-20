@@ -39,6 +39,26 @@ def test_title_generation_present_in_default_config():
     assert tg["extra_body"] == {}
 
 
+def test_triage_router_present_in_default_config():
+    """`triage_router` task must be defined in DEFAULT_CONFIG, off by default.
+
+    Mirrors triage_specifier's shape (see kanban_specify.py) but ships with
+    an empty model — the router is opt-in, never silently active.
+    """
+    assert "triage_router" in DEFAULT_CONFIG["auxiliary"]
+    tr = DEFAULT_CONFIG["auxiliary"]["triage_router"]
+    assert tr["provider"] == "auto"
+    assert tr["model"] == ""
+    assert tr["timeout"] == 15
+    assert tr["max_body_chars"] == 300
+
+
+def test_triage_router_listed_in_aux_tasks_picker():
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+    keys = [t[0] for t in _AUX_TASKS]
+    assert "triage_router" in keys
+
+
 
 
 

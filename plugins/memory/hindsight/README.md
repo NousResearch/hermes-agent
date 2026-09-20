@@ -76,6 +76,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
 | `reflect_tags` | — | Tags to filter when reflecting. Applies to **both** the `hindsight_reflect` tool and `recall_prefetch_method=reflect` (they share one call path). Empty (default) = reflect over the whole bank. |
+| `reflect_tags_match` | `any` | Tag matching mode for reflect: `any` / `all` / `any_strict` / `all_strict`. Only sent when `reflect_tags` is set |
 | `recall_types` | `observation` | Fact types surfaced by recall (both auto-recall and the `hindsight_recall` tool). Comma-separated string or JSON list. **Default narrowed to `observation` only** (see "Behavior change" below). Set to `observation,world,experience` to also include raw facts. |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `recall_sync` | `false` | Recall synchronously against the *current* message each turn (higher relevance, adds recall latency). Default off: recall runs in the background and is injected on the next turn. |

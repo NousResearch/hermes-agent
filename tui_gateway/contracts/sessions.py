@@ -230,7 +230,8 @@ class SessionActiveListParams(ProfileParams):
 
 
 class SessionActiveItem(Result):
-    """``server._session_live_item``."""
+    """``server._session_live_item`` — the authoritative in-memory snapshot, so it
+    carries the same turn clock the resume/activate payload does."""
 
     current: bool
     id: str
@@ -242,6 +243,7 @@ class SessionActiveItem(Result):
     started_at: float
     status: LiveSessionStatus
     title: str
+    turn_started_at: float | None = None
 
 
 class SessionActiveListResult(Result):

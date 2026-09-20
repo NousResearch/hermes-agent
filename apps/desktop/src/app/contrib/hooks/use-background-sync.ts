@@ -346,6 +346,7 @@ interface LiveSessionStatusItem {
   last_active?: number
   session_key?: string
   status?: 'idle' | 'starting' | 'waiting' | 'working'
+  turn_started_at?: number
 }
 
 interface LiveSessionStatusResponse {
@@ -440,6 +441,17 @@ export function rehydrateLiveSessionStatuses(
     // here a poll lands between submit and first token and darkens the row.
     const busy = working || Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload)
 
+    // A working snapshot carries the authoritative turn clock. Seed it the
+    // same way a resume would, so a background session's sidebar timer runs
+    // without first being opened. Events own the clock once they arrive
+    // (turnStartedAt ?? …), and only seed when busy — an idle row must not
+    // adopt a stale clock from a turn that already finished. An absent or
+    // non-positive field is an older gateway: treat it as unknown, never NaN.
+    const turnStartedAt =
+      typeof session.turn_started_at === 'number' && session.turn_started_at > 0
+        ? session.turn_started_at * 1000
+        : null
+
     // Avoid re-arming the watchdog on every poll. Publish only when the
     // authoritative live snapshot differs from the renderer mirror; normal
     // gateway events continue to own subsequent transitions.
@@ -447,13 +459,19 @@ export function rehydrateLiveSessionStatuses(
       !existing ||
       existing.storedSessionId !== storedSessionId ||
       existing.busy !== busy ||
-      existing.needsInput !== needsInput
+      existing.needsInput !== needsInput ||
+      (busy && turnStartedAt && existing.turnStartedAt !== turnStartedAt)
     ) {
       publishSessionState(runtimeSessionId, {
         ...(existing ?? createClientSessionState(storedSessionId)),
         busy,
         needsInput,
-        storedSessionId
+        storedSessionId,
+        // Only adopt the authoritative clock for a busy row; the `?? state`
+        // order below means an event-seeded clock wins over the snapshot.
+        ...(busy && turnStartedAt
+          ? { turnStartedAt: existing?.turnStartedAt ?? turnStartedAt }
+          : {})
       })
     }
 

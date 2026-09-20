@@ -2633,7 +2633,7 @@ export interface SessionActiveListParams {
 export interface SessionActiveListResult {
   sessions: SessionActiveItem[]
 }
-/** ``server._session_live_item``. */
+/** ``server._session_live_item`` — the authoritative in-memory snapshot, so it carries the same turn clock the resume/activate payload does. */
 export interface SessionActiveItem {
   current: boolean
   id: string
@@ -2645,6 +2645,7 @@ export interface SessionActiveItem {
   started_at: number
   status: LiveSessionStatus
   title: string
+  turn_started_at?: number | null
 }
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working' | 'streaming' | 'resuming'
 /** ``session_id`` is the STORED id. */

@@ -17257,11 +17257,43 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "started_at": 10.0,
         "status": "idle",
         "title": "Research",
+        "turn_started_at": None,
     }
     assert rows["sid-b"]["current"] is True
     assert rows["sid-b"]["status"] == "working"
     assert rows["sid-b"]["title"] == "Implement"
     assert rows["sid-b"]["preview"] == "writing code"
+    assert rows["sid-b"]["turn_started_at"] is None
+
+
+def test_session_active_list_reports_turn_started_at(monkeypatch):
+    """A running background session reports its turn clock so Desktop's sidebar
+    timer runs before the session is ever opened (no transport == no events)."""
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+
+    class _DB:
+        def get_session_title(self, key):
+            return ""
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    server._sessions["sid-a"] = _session(
+        agent=types.SimpleNamespace(model="model-a"),
+        running=True,
+        session_key="key-a",
+        inflight_turn={"started_at": 1234.5},
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {"current_session_id": "sid-a"}}
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    (row,) = resp["result"]["sessions"]
+    assert row["status"] == "working"
+    assert row["turn_started_at"] == 1234.5
 
 
 def test_session_active_list_excludes_finalized_sessions(monkeypatch):

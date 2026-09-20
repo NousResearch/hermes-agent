@@ -24110,7 +24110,7 @@
       },
       "SessionActiveItem": {
         "additionalProperties": false,
-        "description": "``server._session_live_item``.",
+        "description": "``server._session_live_item`` \u2014 the authoritative in-memory snapshot, so it\ncarries the same turn clock the resume/activate payload does.",
         "properties": {
           "current": {
             "title": "Current",
@@ -24150,6 +24150,18 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "turn_started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Started At"
           }
         },
         "required": [

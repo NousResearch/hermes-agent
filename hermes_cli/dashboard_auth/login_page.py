@@ -407,8 +407,10 @@ _PASSWORD_FORM_SCRIPT = """\
         provider: form.getAttribute('data-provider') || '',
         username: (form.querySelector('input[name=username]') || {}).value || '',
         password: (form.querySelector('input[name=password]') || {}).value || '',
+        otp: (form.querySelector('input[name=otp]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
+      var hasOtp = !!form.querySelector('input[name=otp]');
       fetch('/auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -422,8 +424,10 @@ _PASSWORD_FORM_SCRIPT = """\
         }
         var msg = resp.status === 429
           ? 'Too many attempts. Please wait and try again.'
-          : (resp.status === 401 ? 'Invalid username or password.'
-                                 : 'Sign-in failed. Please try again.');
+          : (resp.status === 401
+              ? (hasOtp ? 'Invalid username, password or authenticator code.'
+                        : 'Invalid username or password.')
+              : 'Sign-in failed. Please try again.');
         if (err) { err.textContent = msg; err.hidden = false; }
         if (btn) { btn.disabled = false; }
       }).catch(function () {
@@ -492,11 +496,21 @@ def _render_password_form(provider, next_path: str) -> str:
 
     ``next_path`` rides in a hidden field (already validated by the caller,
     HTML-escaped here). The provider name is a ``data-`` attribute so the
-    script does not depend on field ordering.
+    script does not depend on field ordering. A ``requires_otp`` provider gets
+    a third, numeric one-time-code field (``autocomplete=one-time-code`` lets
+    the OS/password manager fill it).
     """
     pname = html.escape(provider.name, quote=True)
     plabel = html.escape(provider.display_name)
     safe_next = html.escape(next_path, quote=True) if next_path else ""
+    otp_field = (
+        f'        <label class="field">\n'
+        f'          <span class="field-label">Authenticator code</span>\n'
+        f'          <input class="field-input" type="text" name="otp" '
+        f'inputmode="numeric" pattern="[0-9 ]*" maxlength="7" '
+        f'autocomplete="one-time-code" placeholder="6-digit code" required>\n'
+        f'        </label>\n'
+    ) if getattr(provider, "requires_otp", False) else ""
     return (
         f'      <form class="provider-form" data-provider="{pname}" '
         f'autocomplete="on">\n'
@@ -513,6 +527,7 @@ def _render_password_form(provider, next_path: str) -> str:
         f'          <input class="field-input" type="password" name="password" '
         f'autocomplete="current-password" required>\n'
         f'        </label>\n'
+        f'{otp_field}'
         f'        <div class="form-error" role="alert" hidden></div>\n'
         f'        <button class="provider-btn" type="submit">Sign in</button>\n'
         f'      </form>'

@@ -3,9 +3,12 @@
 Login is a credential form (``supports_password`` + ``complete_password_login``); cookies,
 verify, refresh, ws-tickets and logout are the shared framework. Sessions are stateless
 HMAC-signed tokens (no IDP, no database); passwords use stdlib scrypt and login always hashes
-even for an unknown username (no username-enumeration timing oracle). Config: ``dashboard.
-basic_auth.{username,password_hash|password,secret,session_ttl_seconds}`` or the
-``HERMES_DASHBOARD_BASIC_AUTH_*`` env vars (env wins when non-empty; see ``_settings``).
+even for an unknown username (no username-enumeration timing oracle). An optional second
+factor (``totp_secret``, RFC 6238 — Microsoft/Google Authenticator etc.; set up with
+``hermes dashboard totp``) makes the form also require a one-time code (``requires_otp``).
+Config: ``dashboard.basic_auth.{username,password_hash|password,totp_secret,secret,
+session_ttl_seconds}`` or the ``HERMES_DASHBOARD_BASIC_AUTH_*`` env vars (env wins when
+non-empty; see ``_settings``).
 """
 
 from __future__ import annotations
@@ -17,10 +20,12 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 from typing import Optional
 
 from hermes_cli.dashboard_auth import DashboardAuthProvider, InvalidCredentialsError, RefreshExpiredError, Session
+from hermes_cli.dashboard_auth.totp import decode_totp_secret, verify_totp
 from plugins.dashboard_auth._shared import (
     NonInteractiveMixin, SkipRegistration, load_config_section, register_provider, resolve_env_or_cfg)
 
@@ -122,7 +127,8 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         "BasicAuthProvider is password-only; there is no OAuth redirect flow. "
         "The login page POSTs to /auth/password-login instead.")
 
-    def __init__(self, *, username: str, password_hash: str, secret: bytes, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
+    def __init__(self, *, username: str, password_hash: str, secret: bytes, ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+                 totp_secret: str = "") -> None:
         if not username:
             raise ValueError("username must be non-empty")
         if not password_hash:
@@ -133,18 +139,44 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         self._password_hash = password_hash
         self._secret = secret
         self._ttl = max(60, int(ttl_seconds))
+        # Second factor: a base32 TOTP secret (``ValueError`` if malformed). The instance flag
+        # drives the login form's code field and the route's ``otp=`` argument.
+        self._totp_secret: Optional[bytes] = decode_totp_secret(totp_secret) if totp_secret else None
+        self.requires_otp = self._totp_secret is not None
+        self._totp_last_counter = -1
+        self._totp_lock = threading.Lock()
 
     # ---- password login ----------------------------------------------------
 
-    def complete_password_login(self, *, username: str, password: str) -> Session:
+    def complete_password_login(self, *, username: str, password: str, otp: str = "") -> Session:
         # Always run a scrypt verify (real hash if the username matches, else the dummy)
         # and compare the username with compare_digest too, so neither the username nor
         # its length leaks via timing.
         username_ok = hmac.compare_digest(username.encode("utf-8"), self._username.encode("utf-8"))
         password_ok = _verify_password(password, self._password_hash if username_ok else _DUMMY_HASH)
-        if not (username_ok and password_ok):
-            raise InvalidCredentialsError("invalid username or password")
+        # The code is checked regardless of the first factor's outcome and every failure is
+        # the same generic error, so an attacker learns nothing about which factor was wrong.
+        otp_ok = self._check_totp(otp, consume=username_ok and password_ok) if self._totp_secret is not None else True
+        if not (username_ok and password_ok and otp_ok):
+            raise InvalidCredentialsError("invalid username, password or authenticator code")
         return self._mint_session(self._username)
+
+    def _check_totp(self, otp: str, *, consume: bool) -> bool:
+        """Verify the code; when ``consume`` (first factor passed) mark its time step used. A
+        TOTP is single-use, so a code captured in flight cannot be replayed for the rest of its
+        window (process-local, like sessions without a configured secret). A wrong password
+        does not burn the code, so a typo doesn't force a wait for the next one."""
+        assert self._totp_secret is not None
+        counter = verify_totp(self._totp_secret, otp)
+        if counter is None:
+            return False
+        if not consume:
+            return True
+        with self._totp_lock:
+            if counter <= self._totp_last_counter:
+                return False
+            self._totp_last_counter = counter
+        return True
 
     # ---- session lifecycle -------------------------------------------------
 
@@ -221,6 +253,7 @@ def _settings() -> dict:
     password_hash = setting("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", "password_hash")
     plaintext = setting("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "password")
     ttl_raw = setting("HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS", "session_ttl_seconds")
+    totp_secret = setting("HERMES_DASHBOARD_BASIC_AUTH_TOTP_SECRET", "totp_secret")
     if not username:
         raise SkipRegistration(
             "dashboard.basic_auth.username is not set (and HERMES_DASHBOARD_BASIC_AUTH_USERNAME "
@@ -250,7 +283,17 @@ def _settings() -> dict:
         ttl = int(ttl_raw) if ttl_raw else _DEFAULT_TTL_SECONDS
     except ValueError:
         ttl = _DEFAULT_TTL_SECONDS
-    return {"username": username, "password_hash": password_hash, "secret": _resolve_secret(section), "ttl_seconds": ttl}
+    if totp_secret:
+        try:
+            decode_totp_secret(totp_secret)
+        except ValueError as exc:
+            # Fail closed: a garbled secret must not silently drop the second factor.
+            raise SkipRegistration(
+                f"dashboard.basic_auth.totp_secret (or HERMES_DASHBOARD_BASIC_AUTH_TOTP_SECRET) "
+                f"is set but invalid ({exc}). Re-run `hermes dashboard totp` or clear it.",
+                level="warning")
+    return {"username": username, "password_hash": password_hash, "secret": _resolve_secret(section),
+            "ttl_seconds": ttl, "totp_secret": totp_secret}
 
 
 def register(ctx) -> None:
@@ -260,4 +303,5 @@ def register(ctx) -> None:
     LAST_SKIP_REASON = ""
     kwargs, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, BasicAuthProvider, _settings)
     if kwargs is not None:
-        logger.info("dashboard-auth-basic: registered password provider (username=%s)", kwargs["username"])
+        logger.info("dashboard-auth-basic: registered password provider (username=%s, totp=%s)",
+                    kwargs["username"], "on" if kwargs.get("totp_secret") else "off")

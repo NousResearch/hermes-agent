@@ -214,3 +214,87 @@ class TestRegister:
         p2 = ctx2.register_dashboard_auth_provider.call_args.args[0]
         s = p1.complete_password_login(username="admin", password="hunter2")
         assert p2.verify_session(access_token=s.access_token) is not None
+
+
+# ---------------------------------------------------------------------------
+# Second factor (TOTP)
+# ---------------------------------------------------------------------------
+
+
+class TestTotpSecondFactor:
+    SECRET_B32 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # b"12345678901234567890"
+
+    def _provider(self, basic, **kw):
+        return basic.BasicAuthProvider(
+            username="admin", password_hash=basic.hash_password("hunter2"),
+            secret=secrets.token_bytes(32), totp_secret=self.SECRET_B32, **kw)
+
+    def _code(self, offset_steps: int = 0) -> str:
+        from hermes_cli.dashboard_auth import totp
+        return totp.totp_code(b"12345678901234567890", counter=totp.totp_counter() + offset_steps)
+
+    def test_requires_otp_flag_follows_secret(self, basic):
+        assert self._provider(basic).requires_otp is True
+        plain = basic.BasicAuthProvider(
+            username="admin", password_hash=basic.hash_password("x"), secret=secrets.token_bytes(32))
+        assert plain.requires_otp is False
+        # A code-less provider ignores a stray otp argument.
+        assert plain.complete_password_login(username="admin", password="x", otp="000000").user_id == "admin"
+
+    def test_malformed_secret_rejected_at_construction(self, basic):
+        with pytest.raises(ValueError):
+            basic.BasicAuthProvider(
+                username="admin", password_hash=basic.hash_password("x"),
+                secret=secrets.token_bytes(32), totp_secret="not base32 !!")
+
+    def test_login_needs_valid_code(self, basic):
+        p = self._provider(basic)
+        with pytest.raises(InvalidCredentialsError):
+            p.complete_password_login(username="admin", password="hunter2")
+        with pytest.raises(InvalidCredentialsError):
+            p.complete_password_login(username="admin", password="hunter2", otp="000000")
+        s = p.complete_password_login(username="admin", password="hunter2", otp=self._code())
+        assert s.user_id == "admin" and p.verify_session(access_token=s.access_token)
+
+    def test_valid_code_with_wrong_password_still_fails(self, basic):
+        p = self._provider(basic)
+        with pytest.raises(InvalidCredentialsError):
+            p.complete_password_login(username="admin", password="nope", otp=self._code())
+        with pytest.raises(InvalidCredentialsError):
+            p.complete_password_login(username="ghost", password="hunter2", otp=self._code())
+
+    def test_code_is_single_use(self, basic):
+        p = self._provider(basic)
+        code = self._code()
+        p.complete_password_login(username="admin", password="hunter2", otp=code)
+        with pytest.raises(InvalidCredentialsError):
+            p.complete_password_login(username="admin", password="hunter2", otp=code)
+        # The next step's code is still accepted (counter moves forward).
+        p.complete_password_login(username="admin", password="hunter2", otp=self._code(+1))
+
+    def test_wrong_password_does_not_burn_the_code(self, basic):
+        p = self._provider(basic)
+        code = self._code()
+        with pytest.raises(InvalidCredentialsError):
+            p.complete_password_login(username="admin", password="typo", otp=code)
+        p.complete_password_login(username="admin", password="hunter2", otp=code)
+
+    def test_register_reads_totp_secret_from_env(self, basic, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "pw")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_TOTP_SECRET", self.SECRET_B32.lower())
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        ctx = MagicMock()
+        basic.register(ctx)
+        provider = ctx.register_dashboard_auth_provider.call_args[0][0]
+        assert provider.requires_otp is True
+
+    def test_register_skips_on_garbled_totp_secret(self, basic, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "pw")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_TOTP_SECRET", "!!! not base32")
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        ctx = MagicMock()
+        basic.register(ctx)
+        ctx.register_dashboard_auth_provider.assert_not_called()
+        assert "totp_secret" in basic.LAST_SKIP_REASON

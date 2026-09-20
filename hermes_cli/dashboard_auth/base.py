@@ -103,12 +103,15 @@ class DashboardAuthProvider(ABC):
 
     Subclasses MUST set ``name`` (stable lowercase id) and ``display_name``. Capability flags:
     ``supports_password`` (credential form + ``complete_password_login``; OAuth methods may be
-    ``NotImplementedError`` stubs), ``supports_token`` (``verify_token`` for the token-auth seam),
-    ``supports_session`` (False for token-only credentials such as drain, never offered a login).
+    ``NotImplementedError`` stubs), ``requires_otp`` (the credential form also collects a
+    one-time authenticator code, passed as ``otp=``), ``supports_token`` (``verify_token`` for
+    the token-auth seam), ``supports_session`` (False for token-only credentials such as drain,
+    never offered a login).
     """
     name: str = ""
     display_name: str = ""
     supports_password: bool = False
+    requires_otp: bool = False
     supports_token: bool = False
     supports_session: bool = True
 
@@ -128,11 +131,13 @@ class DashboardAuthProvider(ABC):
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
 
-    def complete_password_login(self, *, username: str, password: str) -> "Session":
+    def complete_password_login(self, *, username: str, password: str, otp: str = "") -> "Session":
         """Verify a username/password pair and mint a :class:`Session` (only called when
-        ``supports_password``). Raise ``InvalidCredentialsError`` on rejection (SHOULD be constant
-        time for unknown users — no timing oracle) and ``ProviderError`` when the store is
-        unreachable. The default raises so a mis-flagged provider fails loudly."""
+        ``supports_password``). ``otp`` is the one-time code from the login form; the route passes
+        it only when ``requires_otp`` (a code-less provider keeps the two-argument signature).
+        Raise ``InvalidCredentialsError`` on rejection — one generic error whichever factor failed
+        (SHOULD be constant time for unknown users — no timing oracle) and ``ProviderError`` when
+        the store is unreachable. The default raises so a mis-flagged provider fails loudly."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support password login "
             "(set supports_password = True and override complete_password_login)")

@@ -354,3 +354,98 @@ class TestLoginPageRender:
         finally:
             clear_providers()
 
+
+
+# ---------------------------------------------------------------------------
+# Second factor (``requires_otp``) plumbing: providers list, form, route
+# ---------------------------------------------------------------------------
+
+
+class OtpPasswordProvider(PasswordProvider):
+    """Password provider that also wants a one-time code (accepts ``123456``)."""
+
+    name = "testotp"
+    display_name = "Test Password + OTP"
+    requires_otp = True
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.seen_otp = None
+
+    def complete_password_login(self, *, username: str, password: str, otp: str = "") -> Session:
+        self.seen_otp = otp
+        session = super().complete_password_login(username=username, password=password)
+        if otp != "123456":
+            raise InvalidCredentialsError("bad code")
+        return session
+
+
+@pytest.fixture
+def otp_app():
+    provider = OtpPasswordProvider()
+    clear_providers()
+    register_provider(provider)
+    _reset_password_rate_limit()
+    prev = (getattr(web_server.app.state, "bound_host", None),
+            getattr(web_server.app.state, "bound_port", None),
+            getattr(web_server.app.state, "auth_required", None))
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+    client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+    yield client, provider
+    clear_providers()
+    _reset_password_rate_limit()
+    (web_server.app.state.bound_host, web_server.app.state.bound_port,
+     web_server.app.state.auth_required) = prev
+
+
+class TestOtpSecondFactor:
+    def test_providers_endpoint_reports_requires_otp(self, otp_app):
+        client, _ = otp_app
+        providers = client.get("/api/auth/providers").json()["providers"]
+        assert providers == [{"name": "testotp", "display_name": "Test Password + OTP",
+                              "supports_password": True, "requires_otp": True}]
+
+    def test_plain_password_provider_reports_requires_otp_false(self, gated_app):
+        providers = gated_app.get("/api/auth/providers").json()["providers"]
+        assert providers[0]["requires_otp"] is False
+
+    def test_login_page_renders_code_field_only_for_otp_provider(self, otp_app):
+        html = render_login_html()
+        assert 'name="otp"' in html
+        assert 'autocomplete="one-time-code"' in html
+        assert "Authenticator code" in html
+        clear_providers()
+        register_provider(PasswordProvider())
+        assert 'name="otp"' not in render_login_html()
+
+    def test_route_forwards_code_and_rejects_bad_one(self, otp_app):
+        client, provider = otp_app
+        r = client.post("/auth/password-login", json={
+            "provider": "testotp", "username": "admin", "password": "hunter2", "otp": "000000"})
+        assert r.status_code == 401 and r.json()["detail"] == "Invalid credentials"
+        assert provider.seen_otp == "000000"
+        assert SESSION_AT_COOKIE not in r.headers.get("set-cookie", "")
+
+    def test_route_accepts_good_code(self, otp_app):
+        client, _ = otp_app
+        r = client.post("/auth/password-login", json={
+            "provider": "testotp", "username": "admin", "password": "hunter2", "otp": "123456",
+            "next": "/sessions"})
+        assert r.status_code == 200 and r.json() == {"ok": True, "next": "/sessions"}
+        set_cookie = r.headers.get("set-cookie", "")
+        assert SESSION_AT_COOKIE in set_cookie and SESSION_RT_COOKIE in set_cookie
+
+    def test_missing_code_is_a_generic_401(self, otp_app):
+        client, _ = otp_app
+        r = client.post("/auth/password-login", json={
+            "provider": "testotp", "username": "admin", "password": "hunter2"})
+        assert r.status_code == 401
+
+    def test_legacy_provider_never_receives_otp_kwarg(self, gated_app, pw_provider):
+        # PasswordProvider's complete_password_login has no ``otp`` parameter; the route must
+        # not pass one to a provider that doesn't advertise ``requires_otp``.
+        r = gated_app.post("/auth/password-login", json={
+            "provider": "testpw", "username": "admin", "password": "hunter2", "otp": "123456"})
+        assert r.status_code == 200

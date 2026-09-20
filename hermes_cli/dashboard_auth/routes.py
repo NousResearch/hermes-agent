@@ -188,7 +188,8 @@ async def api_auth_providers() -> Any:
         return JSONResponse({"detail": "no auth providers registered"}, status_code=503)
     return {"providers": [
         {"name": p.name, "display_name": p.display_name,
-         "supports_password": bool(getattr(p, "supports_password", False))}
+         "supports_password": bool(getattr(p, "supports_password", False)),
+         "requires_otp": bool(getattr(p, "requires_otp", False))}
         for p in providers]}
 
 
@@ -393,6 +394,7 @@ class _PasswordLoginBody(BaseModel):
     provider: str
     username: str
     password: str
+    otp: str = ""  # authenticator code; only forwarded to a ``requires_otp`` provider
     next: str = ""
 
 
@@ -404,7 +406,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     opaquely) and sets the session cookies; with a native ``broker`` handle in the PKCE cookie,
     ``next`` is the desktop's loopback redirect and NO cookies are set. Failures are deliberately
     generic (no username/provider oracle): unknown/non-password provider 404, bad credentials
-    401, store unreachable 503, rate limited 429.
+    (either factor) 401, store unreachable 503, rate limited 429.
     """
     if _password_rate_limited(_client_ip(request)):
         _login_failure(request, body.provider, "rate_limited")
@@ -424,8 +426,10 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
                reason="provider_mismatch")
         raise _http(400, "This native sign-in was started for a different provider; "
                          "use that provider's form or restart sign-in.")
+    # Third-party password providers predate ``otp``; only a ``requires_otp`` one gets it.
+    otp_kw = {"otp": body.otp} if getattr(p, "requires_otp", False) else {}
     try:
-        session = p.complete_password_login(username=body.username, password=body.password)
+        session = p.complete_password_login(username=body.username, password=body.password, **otp_kw)
     except InvalidCredentialsError:
         _login_failure(request, body.provider, "invalid_credentials")
         raise _http(401, "Invalid credentials")

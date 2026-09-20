@@ -2006,3 +2006,231 @@ async def test_hygiene_miss_bounds_the_model_payload(monkeypatch, tmp_path):
     finally:
         release_worker.set()
         db.close()
+
+
+
+# ---------------------------------------------------------------------------
+# E16: hygiene trigger must charge stale reasoning exactly as the wire does
+# ---------------------------------------------------------------------------
+# Regression for the 2026-09-19 11:18 false trigger: the trigger estimated the
+# full history with charge_stale_thinking=True (the estimator default) while
+# the sanitizer strips historical reasoning_content on strict/OpenAI-compatible
+# routes (llama.cpp, Mistral, Cerebras, Groq, ...), so a reasoning-heavy session
+# fired hygiene on ~108K phantom tokens that never ride the wire. The trigger's
+# figure and the tail-budget walk's figure must share the SAME wire-truth
+# (agent.message_sanitization.stale_thinking_reaches_wire, same except->False
+# fallback) or preflight fires a compression the walk refuses to shrink — a
+# permanent fire-but-never-lands loop.
+
+
+def _e16_reasoning_history(n_msgs=60, reasoning_chars=12000, content_chars=200):
+    """Transcript whose assistant turns each carry a big stale reasoning_content
+    — the E16 shape (real incident: 159 msgs, ~108K reasoning the estimator
+    charged though the wire carried none of it)."""
+    history = []
+    for i in range(n_msgs):
+        if i % 2 == 0:
+            history.append({"role": "user", "content": "u" * content_chars})
+        else:
+            history.append({
+                "role": "assistant", "content": "a" * content_chars,
+                "reasoning_content": "r" * reasoning_chars,
+            })
+    return history
+
+
+def _e16_runner(monkeypatch, session_db=None):
+    """Minimal runner exposing only what _hmwa_hygiene_plan touches."""
+    gateway_run = importlib.import_module("gateway.run")
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db = session_db
+    runner._session_has_compression_in_flight = AsyncMock(return_value=False)
+    # 100K window => 85% hygiene threshold = 85,000 tokens.
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length_async",
+        AsyncMock(return_value=100000),
+    )
+    return runner
+
+
+def _e16_settings(provider, model, base_url, api_mode):
+    gateway_run = importlib.import_module("gateway.run")
+    return gateway_run.GatewayRunner._HygieneSettings(
+        model=model, threshold_pct=0.85, compression_enabled=True,
+        hard_msg_limit=5000, timeout_seconds=30.0, total_ceiling_seconds=600.0,
+        max_turn_hold_seconds=10.0, failure_cooldown_seconds=300.0,
+        config_context_length=None, provider=provider, base_url=base_url,
+        api_key="fake", api_mode=api_mode, data={},
+    )
+
+
+def _e16_entry(last_prompt_tokens=0):
+    return SessionEntry(
+        session_key="agent:main:telegram:dm:12345", session_id="sess-e16",
+        created_at=datetime.now(), updated_at=datetime.now(),
+        last_prompt_tokens=last_prompt_tokens,
+    )
+
+
+async def _e16_plan(monkeypatch, history, provider, model, base_url, api_mode,
+                    last_prompt_tokens=0, session_db=None):
+    runner = _e16_runner(monkeypatch, session_db)
+    hs = _e16_settings(provider, model, base_url, api_mode)
+    return await runner._hmwa_hygiene_plan(
+        hs, history, _e16_entry(last_prompt_tokens), "sess-e16"
+    )
+
+
+@pytest.mark.asyncio
+async def test_e16_strip_route_reasoning_history_does_not_false_trigger(monkeypatch):
+    """The 11:18 incident: llama.cpp/strict OpenAI-compatible route, reasoning-heavy
+    history. The estimator charged ~93K of stale reasoning the sanitizer strips,
+    pushing the figure past the 85K threshold on a session whose real wire cost is
+    far below it. Post-fix the plan must NOT compress and must report the
+    uncharged figure."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    history = _e16_reasoning_history()
+    charged = estimate_messages_tokens_rough(history, charge_stale_thinking=True)
+    uncharged = estimate_messages_tokens_rough(history, charge_stale_thinking=False)
+    # Fixture must be a genuine straddle: charged over threshold, uncharged under.
+    assert charged >= 85000 > uncharged
+
+    plan = await _e16_plan(monkeypatch, history, None, "qwen3-8-27b",
+                           "http://127.0.0.1:8091/v1", "custom")
+    assert plan.charge_stale_thinking is False
+    assert plan.approx_tokens == uncharged
+    assert plan.needs_compress is False
+
+
+@pytest.mark.asyncio
+async def test_e16_echo_route_still_charges_stale_reasoning(monkeypatch):
+    """Echo-back families (deepseek/kimi/mimo) REPLAY reasoning_content on the wire,
+    so the trigger must keep charging it — the fix must not under-charge there,
+    or a genuinely overflowing echo session would miss its hygiene window."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    history = _e16_reasoning_history()
+    charged = estimate_messages_tokens_rough(history, charge_stale_thinking=True)
+    uncharged = estimate_messages_tokens_rough(history, charge_stale_thinking=False)
+    assert charged >= 85000 > uncharged
+
+    plan = await _e16_plan(monkeypatch, history, "deepseek", "deepseek-chat",
+                           "https://api.deepseek.com", None)
+    assert plan.charge_stale_thinking is True
+    assert plan.approx_tokens == charged
+    assert plan.needs_compress is True
+
+
+@pytest.mark.asyncio
+async def test_e16_codex_responses_never_charges_stale_reasoning(monkeypatch):
+    """codex_responses continuity rides the encrypted sidecar; the text reasoning keys
+    are never replayed, so they must never be charged."""
+    history = _e16_reasoning_history()
+    plan = await _e16_plan(monkeypatch, history, None, "gpt-5-codex",
+                           "https://x.example", "codex_responses")
+    assert plan.charge_stale_thinking is False
+    assert plan.needs_compress is False
+
+
+@pytest.mark.asyncio
+async def test_e16_unknown_route_charges_false_like_the_walk(monkeypatch):
+    """Route facts absent (resolved nothing): the trigger must fall to the SAME
+    except/unknown -> False the tail walk uses (context_compressor.
+    _stale_thinking_on_wire). Diverging here (e.g. force-True) re-creates the
+    trigger/walk disagreement that loops compaction."""
+    from agent.message_sanitization import stale_thinking_reaches_wire
+    from agent.context_compressor import ContextCompressor
+
+    walk_value = ContextCompressor._stale_thinking_on_wire(
+        SimpleNamespace(api_mode=None, provider=None, model="m", base_url=None)
+    )
+    assert walk_value is False
+    assert stale_thinking_reaches_wire(None, None, "m", None) is False
+
+    plan = await _e16_plan(monkeypatch, _e16_reasoning_history(),
+                           None, "m", None, None)
+    assert plan.charge_stale_thinking is False
+
+
+@pytest.mark.asyncio
+async def test_e16_exception_in_route_resolution_falls_false_like_the_walk(monkeypatch):
+    """If stale_thinking_reaches_wire itself raises (corrupt route facts), the trigger's
+    fallback must equal the walk's except->False — not True — so a trigger/walk
+    disagreement (and its fire-but-never-lands loop) is impossible."""
+    import agent.message_sanitization as ms
+
+    def boom(*_a, **_k):
+        raise RuntimeError("route facts corrupted")
+
+    monkeypatch.setattr(ms, "stale_thinking_reaches_wire", boom)
+    plan = await _e16_plan(monkeypatch, _e16_reasoning_history(),
+                           None, "qwen3-8-27b", "http://127.0.0.1:8091/v1", "custom")
+    assert plan.charge_stale_thinking is False
+    assert plan.needs_compress is False
+
+
+@pytest.mark.asyncio
+async def test_e16_persisted_anchor_delta_charges_as_wire(monkeypatch):
+    """Anchored path (restart-recovered sessions): the delta over messages appended
+    since the persisted anchor must apply the SAME charge policy. Anchor base 83.5K +
+    a stale reasoning turn appended since: charging it crosses the 85K threshold
+    (false trigger), not charging stays under (correct)."""
+    from agent.usage_anchor import capture_usage_anchor, USAGE_ANCHOR_MODEL_CONFIG_KEY
+
+    prefix = [{"role": "user", "content": "q" * 200},
+              {"role": "assistant", "content": "a" * 100}]
+    anchor = capture_usage_anchor(83500, 0, prefix)
+    history = prefix + [
+        {"role": "user", "content": "z" * 100},
+        {"role": "assistant", "content": "ok", "reasoning_content": "r" * 36000},
+        {"role": "user", "content": "next " * 10},
+        {"role": "assistant", "content": "small answer"},
+    ]
+    from agent.usage_anchor import anchored_context_tokens
+    charged = anchored_context_tokens(history, anchor, charge_stale_thinking=True)
+    uncharged = anchored_context_tokens(history, anchor, charge_stale_thinking=False)
+    assert charged >= 85000 > uncharged
+
+    class _FakeDB:
+        def get_session_model_config_value(self, session_id, key, default=None):
+            assert key == USAGE_ANCHOR_MODEL_CONFIG_KEY
+            return anchor
+
+    plan = await _e16_plan(monkeypatch, history, None, "qwen3-8-27b",
+                           "http://127.0.0.1:8091/v1", "custom",
+                           session_db=_FakeDB())
+    assert plan.charge_stale_thinking is False
+    assert plan.approx_tokens == uncharged
+    assert plan.needs_compress is False
+
+
+@pytest.mark.asyncio
+async def test_e16_anchor_delta_still_charged_on_echo_route(monkeypatch):
+    """Same anchored shape on an echo-back route: the wire replays the appended
+    reasoning, so the delta MUST charge it and the trigger must fire."""
+    from agent.usage_anchor import capture_usage_anchor, USAGE_ANCHOR_MODEL_CONFIG_KEY, anchored_context_tokens
+
+    prefix = [{"role": "user", "content": "q" * 200},
+              {"role": "assistant", "content": "a" * 100}]
+    anchor = capture_usage_anchor(83500, 0, prefix)
+    history = prefix + [
+        {"role": "user", "content": "z" * 100},
+        {"role": "assistant", "content": "ok", "reasoning_content": "r" * 36000},
+        {"role": "user", "content": "next " * 10},
+        {"role": "assistant", "content": "small answer"},
+    ]
+    charged = anchored_context_tokens(history, anchor, charge_stale_thinking=True)
+    uncharged = anchored_context_tokens(history, anchor, charge_stale_thinking=False)
+    assert charged >= 85000 > uncharged
+
+    class _FakeDB:
+        def get_session_model_config_value(self, session_id, key, default=None):
+            assert key == USAGE_ANCHOR_MODEL_CONFIG_KEY
+            return anchor
+
+    plan = await _e16_plan(monkeypatch, history, "deepseek", "deepseek-chat",
+                           "https://api.deepseek.com", None, session_db=_FakeDB())
+    assert plan.charge_stale_thinking is True
+    assert plan.approx_tokens == charged
+    assert plan.needs_compress is True

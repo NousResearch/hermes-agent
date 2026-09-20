@@ -613,6 +613,10 @@ class GatewayTurnMixin:
         approx_tokens: int
         msg_count: int
         warn_token_threshold: int
+        # Wire-truth for stale assistant thinking on this route: when the sanitizer strips
+        # historical reasoning before transmission, every token figure used to DECIDE compression
+        # must mirror that (charge_stale_thinking=False) or the trigger fires on phantom tokens.
+        charge_stale_thinking: bool
 
     @staticmethod
     def _hmwa_hygiene_read_config(hs, data):
@@ -667,7 +671,7 @@ class GatewayTurnMixin:
             model="anthropic/claude-sonnet-4.6", threshold_pct=0.85, compression_enabled=True,
             hard_msg_limit=5000, timeout_seconds=30.0, total_ceiling_seconds=600.0,
             max_turn_hold_seconds=10.0, failure_cooldown_seconds=300.0, config_context_length=None,
-            provider=None, base_url=None, api_key=None, data={},
+            provider=None, base_url=None, api_key=None, api_mode=None, data={},
         )
         try:
             hs.data = _load_gateway_config()
@@ -683,6 +687,10 @@ class GatewayTurnMixin:
                 hs.provider = _hyg_runtime.get("provider") or hs.provider
                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
                 hs.api_key = _hyg_runtime.get("api_key") or hs.api_key
+                # api_mode drives the wire-truth charge policy in _hmwa_hygiene_plan; resolve it from
+                # the same runtime dict the live turn uses so the trigger never charges for
+                # historical reasoning the sanitizer strips on this route.
+                hs.api_mode = _hyg_runtime.get("api_mode") or None
 
             if hs.config_context_length is not None:
                 try:
@@ -730,6 +738,24 @@ class GatewayTurnMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
+        # Wire-truth for stale assistant thinking, computed ONCE and shared by every figure that
+        # decides compression (persisted-anchor delta + estimate fallback): when the sanitizer
+        # strips historical reasoning before transmission (strict OpenAI-compatible / llama.cpp
+        # routes), charging it makes the trigger fire on phantom tokens (E16: 177,391 estimated vs
+        # 69,403 on the wire). Must be the SAME value the tail-budget walk computes
+        # (agent.context_compressor._stale_thinking_on_wire, same predicate AND same except
+        # fallback): a trigger/walk disagreement re-triggers compression whose cut the walk
+        # refuses to shrink — a permanent fire-but-never-lands loop. Real usage (API-reported or
+        # the persisted anchor) stays the primary figure; the estimate is only the no-usage
+        # fallback, so a strip-side assumption there at worst delays a fallback compression.
+        try:
+            from agent.message_sanitization import stale_thinking_reaches_wire
+            _charge_stale_thinking = stale_thinking_reaches_wire(
+                hs.api_mode, hs.provider, hs.model, hs.base_url
+            )
+        except Exception:
+            _charge_stale_thinking = False
+
         # Real usage decides: the API-reported prompt count, else the anchor persisted on the session
         # row (real count + delta of what was appended since, survives gateway restarts), else the
         # rough estimate (runs 30-50% high, which only fires hygiene early — safe). Do NOT compensate
@@ -743,13 +769,17 @@ class GatewayTurnMixin:
                 _session_db = getattr(self, "_session_db", None)
                 _anchored = persisted_anchor_tokens(
                     getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
+                    charge_stale_thinking=_charge_stale_thinking,
                 )
             if session_entry.last_prompt_tokens > 0:
                 _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
             elif _anchored is not None:
                 _approx_tokens, _token_source = _anchored, "anchored"
             else:
-                _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
+                _approx_tokens, _token_source = (
+                    estimate_messages_tokens_rough(history, charge_stale_thinking=_charge_stale_thinking),
+                    "estimated",
+                )
 
         # Hard safety valve: force compression at an extreme message count regardless of tokens,
         # breaking the disconnect → no token data → no compression spiral. 5000 clears 1M+ sessions.
@@ -790,7 +820,10 @@ class GatewayTurnMixin:
                 _msg_count, f"{_approx_tokens:,}", _token_source,
                 int(hs.threshold_pct * 100), f"{_hyg_context_length:,}", f"{_compress_token_threshold:,}",
             )
-        return self._HygienePlan(_needs_compress, _approx_tokens, _msg_count, _warn_token_threshold)
+        return self._HygienePlan(
+            _needs_compress, _approx_tokens, _msg_count, _warn_token_threshold,
+            _charge_stale_thinking,
+        )
 
     async def _hmwa_hygiene_wait_for_summary(self, attempt, hs, session_entry):
         """Progress-aware inline wait for the detached hygiene compressor. Returns the compressed
@@ -1072,14 +1105,17 @@ class GatewayTurnMixin:
         FAILURE and an unconditional rewrite would leave only the summary. Write-before-repoint:
         a repoint-then-failed-rewrite would point the live entry at an empty session."""
         from agent.model_metadata import estimate_messages_tokens_rough
+        # Same wire-truth as the trigger: comparing two full-charge figures would never reject a
+        # legitimate stale-thinking compaction, so both sides use the plan's charge policy.
         _hyg_agent = attempt.agent
         # _compress_context rotates to a NEW session_id so the old transcript stays intact/searchable.
         _hyg_new_sid = _hyg_agent.session_id
         _hyg_rotated = _hyg_new_sid != session_entry.session_id
         _hyg_in_place = bool(getattr(_hyg_agent, "_last_compaction_in_place", False))
         # Anti-growth guard: refuse a compression that did not shrink the transcript (seen 427K→598K).
-        _hyg_in_toks = estimate_messages_tokens_rough(history)
-        _hyg_out_toks = estimate_messages_tokens_rough(_compressed)
+        _charge_stale_thinking = getattr(plan, "charge_stale_thinking", True)
+        _hyg_in_toks = estimate_messages_tokens_rough(history, charge_stale_thinking=_charge_stale_thinking)
+        _hyg_out_toks = estimate_messages_tokens_rough(_compressed, charge_stale_thinking=_charge_stale_thinking)
         if _hyg_rotated and _hyg_out_toks > _hyg_in_toks:
             logger.warning(
                 "Gateway hygiene compression for session %s would grow transcript (~%s -> ~%s "
@@ -1126,7 +1162,7 @@ class GatewayTurnMixin:
             session_entry.last_prompt_tokens = 0
             attempt.history = _compressed
             _new_count = len(_compressed)
-            _new_tokens = estimate_messages_tokens_rough(_compressed)
+            _new_tokens = estimate_messages_tokens_rough(_compressed, charge_stale_thinking=_charge_stale_thinking)
         else:
             # No rewrite happened — post-compression counts equal the pre-compression ones.
             _new_count = plan.msg_count

@@ -151,9 +151,15 @@ def restore_usage_anchor(agent: Any, conversation_history: Optional[List[Dict[st
         persist_usage_anchor(agent, None)
 
 
-def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any) -> Optional[int]:
+def persisted_anchor_tokens(
+    session_db: Any, session_id: Any, messages: Any, *, charge_stale_thinking: bool = True
+) -> Optional[int]:
     """Anchored token figure from the session row's persisted anchor, for callers without a live
-    agent (gateway hygiene); None when absent, unreadable, or stale against ``messages``."""
+    agent (gateway hygiene); None when absent, unreadable, or stale against ``messages``.
+    ``charge_stale_thinking`` is forwarded to the appended-message delta estimate — the anchor's
+    ``prompt_tokens`` already reflect what the wire actually carried (stripped reasoning excluded),
+    so charging stale thinking in the delta overstates the context on non-echo routes by the full
+    volume of historical reasoning appended since the anchor (gateway hygiene E16)."""
     getter = getattr(session_db, "get_session_model_config_value", None)
     if not session_id or not callable(getter) or not isinstance(messages, list):
         return None
@@ -162,4 +168,4 @@ def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any) -> 
     except Exception:
         logger.debug("usage anchor load failed", exc_info=True)
         return None
-    return anchored_context_tokens(messages, anchor) if anchor else None
+    return anchored_context_tokens(messages, anchor, charge_stale_thinking=charge_stale_thinking) if anchor else None

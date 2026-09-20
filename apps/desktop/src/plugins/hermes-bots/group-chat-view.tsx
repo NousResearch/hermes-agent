@@ -29,6 +29,7 @@ import {
   queryClient,
   relativeTime,
   RowButton,
+  Switch,
   Tip,
   useI18n,
   useValue
@@ -66,6 +67,7 @@ import {
   groupThreadOf,
   rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
+  setGroupChatHoldDetection,
   setGroupChatImage,
   updateGroupChat
 } from './group-chat'
@@ -386,13 +388,16 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
+  const currentHoldDetection = (rooms[group] || {}).holdDetection !== false
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [holdDetection, setHoldDetection] = useState(currentHoldDetection)
   const [compressing, setCompressing] = useState<null | string>(null)
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
+      setHoldDetection(currentHoldDetection)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
@@ -438,6 +443,10 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
       setGroupChatImage(finalName, image)
     }
 
+    if (holdDetection !== currentHoldDetection) {
+      setGroupChatHoldDetection(finalName, holdDetection)
+    }
+
     onClose()
 
     if (finalName !== group) {
@@ -479,6 +488,13 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
             value={name}
           />
         </form>
+        <label className="flex items-center justify-between gap-3 text-sm">
+          <span>
+            <span className="block">{b.group.holdDetection}</span>
+            <span className="block text-xs text-(--ui-text-tertiary)">{b.group.holdDetectionHint}</span>
+          </span>
+          <Switch checked={holdDetection} onCheckedChange={setHoldDetection} />
+        </label>
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {

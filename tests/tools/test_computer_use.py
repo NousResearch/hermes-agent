@@ -1315,6 +1315,20 @@ class TestCuaDriverWindowResultShapes:
         ]
 
 
+def _closed_transport_error(message: str = "Connection closed", code: int = -32000) -> Exception:
+    """Structural stand-in for the MCP SDK's closed-transport error (``exc.error.code``).
+
+    Deliberately not the SDK class itself: the name drifted across generations (``McpError`` in mcp 1.x,
+    ``MCPError`` in 2.x) and the runtime supports both, which is why the production check reads the
+    JSON-RPC code structurally instead of isinstance-ing on a type.
+    """
+    from types import SimpleNamespace
+
+    exc = Exception(message)
+    exc.error = SimpleNamespace(code=code)
+    return exc
+
+
 class TestCuaDriverSessionReconnect:
     """Verify reconnect-once on a closed-resource error. After the
     lifecycle-owner refactor (Sun Jun 21 2026) the session no longer goes
@@ -1396,6 +1410,93 @@ class TestCuaDriverSessionReconnect:
         assert result["structuredContent"]["next_step"] == "fresh_state"
         assert session._reconnect_log == ["stop", "start"]
         assert len(bridge.calls) == 1
+
+    def test_call_tool_reconnects_once_after_jsonrpc_connection_closed(self):
+        """Restarting the driver closes the channel as a JSON-RPC error, not an anyio one.
+
+        ``mcp.shared.jsonrpc_dispatcher`` raises that error when a send lands on a closed channel or an EOF
+        wakes a blocked waiter, so a driver restart/upgrade left the cached stdio channel dead, the reconnect
+        never fired, and every later call failed with ``Connection closed`` until the process restarted.
+        """
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                # 1st call_tool -> closed JSON-RPC transport; retried call_tool ok.
+                self.effects = [_closed_transport_error(), {"ok": True}]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        assert session._reconnect_log == ["stop", "start"]
+        assert len(bridge.calls) == 2
+
+    def test_mutation_is_not_replayed_after_jsonrpc_connection_closed(self):
+        """A closed JSON-RPC transport fails closed for mutations, exactly like a closed anyio stream."""
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise _closed_transport_error()
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("click", {"x": 20, "y": 30})
+
+        assert result["isError"] is True
+        assert result["structuredContent"]["code"] == "transport_outcome_unknown"
+        assert session._reconnect_log == ["stop", "start"]
+        assert len(bridge.calls) == 1
+
+    def test_unrelated_mcp_error_is_not_a_closed_transport(self):
+        """Only the closed-transport code reconnects; any other JSON-RPC failure surfaces as-is."""
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise _closed_transport_error("Method not found", code=-32601)
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        with pytest.raises(Exception, match="Method not found"):
+            session.call_tool("list_apps", {})
+        assert session._reconnect_log == []
+
+    def test_closed_transport_matched_structurally_not_by_sdk_type(self):
+        """Matched on the JSON-RPC code, so a renamed/rewrapped SDK error still reconnects."""
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
+
+        # Neutral message: proves the code is what matched, not a substring of the text.
+        assert _CuaDriverSession._is_closed_session_error(_closed_transport_error("eof")) is True
+        assert _CuaDriverSession._is_closed_session_error(
+            _closed_transport_error("boom", code=-32601)) is False
+        assert _CuaDriverSession._is_closed_session_error(RuntimeError("boom")) is False
+
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
+    def test_real_sdk_connection_closed_error_is_classified_as_closed(self):
+        """The SDK's own object classifies too — no class-name check, so a rename cannot break it."""
+        from mcp.shared.exceptions import MCPError
+
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
+
+        assert _CuaDriverSession._is_closed_session_error(
+            MCPError(code=-32000, message="Connection closed")) is True
 
     def test_timeout_marks_session_suspect_without_replaying(self):
         """An MCP timeout fails closed: outcome unknown, no silent replay (#74799)."""

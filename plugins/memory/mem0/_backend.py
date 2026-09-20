@@ -4,7 +4,40 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import closing, suppress
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _widen_qdrant_timeout(vector_store: dict) -> None:
+    """Give remote Qdrant enough time for Mem0's entity-boost fan-out."""
+    cfg = vector_store.get("config") or {}
+    if str(vector_store.get("provider") or "qdrant").lower() != "qdrant":
+        return
+    if cfg.get("client") is not None or cfg.get("path"):
+        return
+    try:
+        from qdrant_client import QdrantClient
+    except Exception:
+        return
+    kwargs: dict[str, Any] = {"timeout": 30}
+    if cfg.get("url"):
+        kwargs["url"] = cfg["url"]
+    else:
+        if not cfg.get("host"):
+            return
+        kwargs["host"] = cfg["host"]
+        if cfg.get("port"):
+            kwargs["port"] = cfg["port"]
+    if cfg.get("api_key"):
+        kwargs["api_key"] = cfg["api_key"]
+    if cfg.get("https") is not None:
+        kwargs["https"] = cfg["https"]
+    try:
+        cfg["client"] = QdrantClient(**kwargs)
+    except Exception:
+        return
 
 
 def _add_kwargs(user_id: str, agent_id: str, infer: bool, metadata: dict | None) -> dict[str, Any]:
@@ -171,7 +204,10 @@ class OSSBackend(Mem0Backend):
             vs_config["embedding_model_dims"] = dims
             self._recreate_collection_if_dims_changed(vector_store.get("provider", "qdrant"), vs_config, dims)
         vector_store["config"] = vs_config
+        _widen_qdrant_timeout(vector_store)
         config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": embedder, "version": "v1.1"}
+        if oss_config.get("history_db_path"):
+            config["history_db_path"] = os.path.expanduser(str(oss_config["history_db_path"]))
         self._reranker = None
         reranker_config = dict(oss_config.get("reranker") or {})
         if str(reranker_config.get("provider") or "").strip().lower() == "cloudflare":
@@ -247,6 +283,61 @@ class OSSBackend(Mem0Backend):
     def add(self, messages: list, *, user_id: str, agent_id: str, infer: bool = False, metadata: dict | None = None) -> dict:
         return self._memory.add(messages, **_add_kwargs(user_id, agent_id, infer, metadata))
 
+    def add_idempotent(self, operation_id: str, payload: dict) -> None:
+        """Replay explicit journal entries idempotently into Qdrant and history."""
+        import hashlib
+        import uuid
+        from datetime import datetime, timezone
+
+        point_id = str(uuid.UUID(str(operation_id)))
+        text = payload["content"]
+        user_id = payload.get("user_id")
+        agent_id = payload.get("agent_id")
+        now_iso = payload.get("observed_at") or datetime.now(timezone.utc).isoformat()
+        vs = getattr(self._memory, "vector_store", None)
+        if vs is None:
+            raise NotImplementedError("Vector store is not configured; cannot replay")
+        db = getattr(self._memory, "db", None)
+        if db is None or not (hasattr(db, "add_history") and hasattr(db, "get_history")):
+            raise RuntimeError("History database is required for durable replay")
+        existing_points = []
+        if hasattr(vs, "get") and callable(vs.get):
+            existing = vs.get(point_id)
+            if existing:
+                existing_points = [existing]
+        elif hasattr(vs, "retrieve") and callable(vs.retrieve):
+            existing_points = vs.retrieve(collection_name=getattr(vs, "collection_name", "mem0"), ids=[point_id], with_payload=True)
+        elif hasattr(vs, "client") and hasattr(vs.client, "retrieve") and callable(vs.client.retrieve):
+            existing_points = vs.client.retrieve(collection_name=getattr(vs, "collection_name", "mem0"), ids=[point_id], with_payload=True)
+        else:
+            raise NotImplementedError("Vector store does not support point retrieval by ID; cannot verify idempotent replay")
+        if existing_points:
+            point = existing_points[0]
+            existing_payload: Any = getattr(point, "payload", None)
+            if existing_payload is None and isinstance(point, dict):
+                existing_payload = point.get("payload") if "payload" in point else point
+            if not isinstance(existing_payload, dict):
+                raise ValueError(f"Existing point for operation_id {operation_id} has invalid or missing payload")
+            existing_data = existing_payload.get("data") or existing_payload.get("content")
+            if not existing_data:
+                raise ValueError(f"Existing point for operation_id {operation_id} is missing memory text in payload")
+            if existing_data != text or any(existing_payload.get(field) != payload.get(field) for field in ("user_id", "agent_id", "channel")):
+                raise ValueError(f"Conflicting payload for existing operation_id {operation_id}")
+            if not db.get_history(memory_id=point_id):
+                db.add_history(point_id, None, text, "ADD", created_at=existing_payload.get("created_at") or now_iso, updated_at=existing_payload.get("updated_at") or now_iso, actor_id=existing_payload.get("actor_id") or user_id, role="user")
+            return
+        try:
+            from mem0.memory.main import lemmatize_for_bm25
+            lemmatized = lemmatize_for_bm25(text)
+        except Exception:
+            lemmatized = text
+        vector = self._memory.embedding_model.embed(text, memory_action="add")
+        metadata = {key: payload[key] for key in ("user_id", "agent_id", "channel") if key in payload}
+        metadata.update(data=text, hash=hashlib.md5(text.encode()).hexdigest(), role="user", origin_type=payload.get("origin_type", "agent_write"), verification_status="unverified", observed_at=payload.get("observed_at"), pending_operation_id=str(operation_id), created_at=now_iso, updated_at=now_iso, text_lemmatized=lemmatized)
+        vs.insert(ids=[point_id], vectors=[vector], payloads=[metadata])
+        if not db.get_history(memory_id=point_id):
+            db.add_history(point_id, None, text, "ADD", created_at=metadata.get("created_at"), updated_at=metadata.get("updated_at"), actor_id=metadata.get("actor_id") or user_id, role="user")
+
     def _update(self, memory_id: str, text: str) -> None:
         self._memory.update(memory_id, data=text)
 
@@ -254,12 +345,12 @@ class OSSBackend(Mem0Backend):
         self._memory.delete(memory_id)
 
     def close(self):
+        # Mem0's vector client and history DB can be shared inside a multiplexed
+        # gateway. Closing either during one agent teardown breaks later writes.
         with suppress(Exception):
             telemetry = getattr(self._memory, "telemetry", None)
             if telemetry and hasattr(telemetry, "posthog"):
-                with suppress(Exception):
-                    telemetry.posthog.shutdown()
-            vs = getattr(self._memory, "vector_store", None)
-            for obj in filter(None, (self._reranker, self._memory, vs, getattr(vs, "client", None))):
-                if hasattr(obj, "close"):
-                    obj.close()
+                telemetry.posthog.shutdown()
+        if self._reranker and hasattr(self._reranker, "close"):
+            with suppress(Exception):
+                self._reranker.close()

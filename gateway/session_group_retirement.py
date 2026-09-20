@@ -8,6 +8,9 @@ def require_room_retired(conn, room_id, *, unavailable=False):
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     def refuse():
         raise RuntimeStoreError(reason)
+    from gateway.hosted_room_task_scan import pending
+    if pending(conn, room_id):
+        refuse()
     if 'session_admissions' in tables:
         # Retained canonical admissions are stronger evidence than driver inactivity.
         for row in conn.execute("SELECT request_id FROM session_admissions WHERE status IN ('started','unknown','queued') AND request_id LIKE 'hosted:%'"):

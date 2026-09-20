@@ -57,6 +57,10 @@ def progress(tmp_path):
             def corrupt(self) -> None:
                 status.write_text("}not json{")
 
+            def page(self) -> str:
+                with urlopen(f"http://127.0.0.1:{port}/", timeout=5) as r:
+                    return r.read().decode("utf-8")
+
             def poll(self) -> dict:
                 with urlopen(f"http://127.0.0.1:{port}/progress", timeout=5) as r:
                     return json.loads(r.read())
@@ -65,6 +69,10 @@ def progress(tmp_path):
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+def test_update_page_opts_out_of_automatic_translation(progress):
+    assert '<meta name="google" content="notranslate">' in progress.page()
 
 
 def test_elapsed_advances_between_publishes(progress):

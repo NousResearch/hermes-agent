@@ -40,12 +40,14 @@ _EDIT_REQUEST_RE = re.compile(
 )
 _RESUME_REQUEST_RE = re.compile(r"\b(?:proceed|continue|go ahead)[.!\s]*$")
 _REPORTED_REQUEST_RE = re.compile(r"\b(?:said|says|told|reported|quote|quoted|example)\b")
+_TASK_COMPLETION_RE = re.compile(r"\b(?:done|finished|complete(?:d)?|no (?:changes|work) remain)\b")
+_CONTRASTIVE_ANSWER_RE = re.compile(r"^no,\s+[^.!?;]+,\s+not\s+[^.!?;]+[.!]?$")
 _CLARIFIED_ACTION_RE = re.compile(
     _ACK_LEAD + r"(?:implement|change|update|edit|add|remove|show|hide|keep)\b"
 )
 _DECLINED_RE = re.compile(
     r"(?:^no\b|\b(?:cancel(?:led|ed)?|abort|stop|wait|declin(?:e|ed)|deny|skip|hold off|not yet|"
-    r"approval|permission|confirmation|credentials?|password|"
+    r"approval|permission|confirmation|credentials?|password|nothing|not now|not to|"
     r"do not|don['’]t|did not provide a response)\b)"
 )
 
@@ -65,11 +67,18 @@ def _answered_clarification(content: Any) -> bool:
             return False
         answer = response.get("user_response")
         answers = answer if isinstance(answer, list) else [answer]
-        if not answers or any(
-            not isinstance(a, str) or not a.strip() or _DECLINED_RE.search(a.strip().lower())
-            for a in answers
-        ):
+        if not answers:
             return False
+        for answer in answers:
+            if not isinstance(answer, str) or not answer.strip():
+                return False
+            text = answer.strip().lower()
+            # A contrastive answer corrects the question's premise; a bare No
+            # still declines. Explicit stop/wait language wins in either form.
+            if _CONTRASTIVE_ANSWER_RE.fullmatch(text):
+                text = text[3:].lstrip()
+            if _DECLINED_RE.search(text):
+                return False
     return True
 
 
@@ -102,6 +111,10 @@ def _clarification_task_request(user_text: str, messages: List[Dict[str, Any]]) 
         if not isinstance(row, dict):
             continue
         if row.get("role") == "tool" or row.get("tool_calls"):
+            return ""
+        if row.get("role") == "assistant" and _TASK_COMPLETION_RE.search(
+            _unquoted_prose(_message_text(row).lower())
+        ):
             return ""
         if row.get("role") == "user":
             if not _is_real_user_message(row):

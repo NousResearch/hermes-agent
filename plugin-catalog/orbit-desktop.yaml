@@ -1,13 +1,13 @@
 name: orbit-desktop
 repo: https://github.com/mojomast/orbitdesktop
-sha: f1c00796f43fd76d5eaaf0ac0398cab6f50e0897
+sha: 29f69de3b3210ce48ae85a62a221fa3961088a4c
 subdir: hermes-plugin
 description: Scoped control of an existing Orbit browser desktop with previews, revision-checked edits and checkpoints.
 maintainer: mojomast
 tier: community
 category: desktop
-version: "0.1.0"
-docs_url: https://github.com/mojomast/orbitdesktop/blob/f1c00796f43fd76d5eaaf0ac0398cab6f50e0897/hermes-plugin/README.md
+version: "0.1.1"
+docs_url: https://github.com/mojomast/orbitdesktop/blob/29f69de3b3210ce48ae85a62a221fa3961088a4c/hermes-plugin/README.md
 platforms: [linux]
 capabilities:
   provides_tools: [orbit_workspace]

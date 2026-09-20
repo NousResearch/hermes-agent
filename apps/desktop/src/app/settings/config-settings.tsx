@@ -46,7 +46,7 @@ import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { PoolLimitsSetting } from './pool-limits-setting'
-import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { EmptyState, ListRow, ListRowSkeleton, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 
@@ -59,10 +59,28 @@ export function ConfigSettings({
 }: ConfigSettingsProps) {
   // One concrete owner for drafts, requests and cache rows, including same-name hosts.
   const scopeProfile = useStore($settingsOwner)
-  const { t } = useI18n()
 
   if (!scopeProfile) {
-    return <PanelEmpty icon="error" title={t.settings.config.failedLoad} />
+    // A non-foreground owner is null while Electron acquires its exact
+    // connection and after an acquisition failure. Keep the scope selector
+    // mounted in both cases so the user can switch back to a working owner;
+    // failures already surface a retry notification from settings-scope.
+    return (
+      <SettingsContent>
+        <SettingsProfileScope className="mb-5" />
+        {activeSectionId === 'model' ? (
+          <div className="mb-6">
+            <ModelSettingsSkeleton subpage={subpage} />
+          </div>
+        ) : (
+          <div className="grid gap-1">
+            {Array.from({ length: 6 }, (_, row) => (
+              <ListRowSkeleton key={row} />
+            ))}
+          </div>
+        )}
+      </SettingsContent>
+    )
   }
 
   return (

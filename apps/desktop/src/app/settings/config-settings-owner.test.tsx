@@ -20,7 +20,7 @@ vi.mock('@/store/projects', () => ({
   repoDiscoveryPolicySignature: () => '',
   scanAndRecordRepos: vi.fn()
 }))
-vi.mock('./profile-scope', () => ({ SettingsProfileScope: () => null }))
+vi.mock('./profile-scope', () => ({ SettingsProfileScope: () => <button type="button">Settings owner selector</button> }))
 
 import { profileScopeKey, setApiRequestProfile, setApiRequestConnection as setRequestConnection } from '@/api/client'
 import { saveHermesConfig } from '@/api/config'
@@ -142,6 +142,21 @@ it('unknown and missing descriptors never send Settings requests to local', asyn
   await flush()
   expect(api.mock.calls.length).toBeGreaterThan(0)
   expect(api.mock.calls.every(([request]) => request.connectionId === 'registered-env')).toBe(true)
+})
+
+it('keeps the owner selector available while an exact profile owner is unresolved', async () => {
+  setup()
+  const pendingOwner = deferred<NonNullable<ReturnType<typeof $connection.get>>>()
+  const api = vi.fn(async (_request: HermesApiRequest) => ({}))
+  vi.stubGlobal('hermesDesktop', { getConnectionFor: () => pendingOwner.promise, api })
+  setApiRequestConnection('cloud-test')
+  $settingsScopeOverride.set('other')
+
+  render(page())
+  await flush()
+
+  expect(screen.getByRole('button', { name: 'Settings owner selector' })).toBeTruthy()
+  expect(api).not.toHaveBeenCalled()
 })
 
 it('keeps a pending autosave mounted across an equivalent legacy reconnect', async () => {

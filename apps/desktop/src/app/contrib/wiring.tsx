@@ -41,6 +41,7 @@ import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { setPrimaryRuntimeProvider } from '@/lib/model-pick-pending'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
@@ -438,6 +439,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onSessionRuntimeInfo: updateActiveSessionRuntimeInfo,
     requestGateway
   })
+
+  // v16 port: the model-pick reconciler repaints the PRIMARY composer atoms
+  // only when the confirming runtime IS the primary pane's runtime. Tile picks
+  // reconcile the sticky (and their own slice) without touching the primary.
+  setPrimaryRuntimeProvider(() => $activeSessionId.get())
 
   const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({ activeSessionIdRef })
 

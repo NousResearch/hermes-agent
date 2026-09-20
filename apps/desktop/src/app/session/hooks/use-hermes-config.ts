@@ -8,7 +8,7 @@ import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
   getComposerSelectionGeneration,
-  getCurrentModelSource,
+  isRefreshProtectedModel,
   setAvailablePersonalities,
   setCurrentFastMode,
   setCurrentPersonality,
@@ -112,7 +112,10 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         const shouldSeedComposer =
           !activeSessionIdRef.current &&
           getComposerSelectionGeneration() === selectionGeneration &&
-          (force || getCurrentModelSource() !== 'manual')
+          // v17 port: neither an explicit pick NOR a sticky-restored seed may be
+          // overwritten by an automatic config refresh (only `force` — an
+          // explicit profile/context switch — reseeds).
+          (force || !isRefreshProtectedModel())
 
         if (shouldSeedComposer) {
           if (!canPublish()) {

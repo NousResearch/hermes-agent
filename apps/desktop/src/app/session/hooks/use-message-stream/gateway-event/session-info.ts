@@ -1,5 +1,11 @@
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
+import {
+  consumePendingModelPick,
+  isPendingFresh,
+  isPrimaryRuntime,
+  resolvePendingModelPick
+} from '@/lib/model-pick-pending'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
@@ -11,12 +17,17 @@ import {
   $currentProvider,
   $selectedStoredSessionId,
   $sessions,
+  getCurrentComposerScope,
+  noteModelSelectionInUse,
   sessionMatchesStoredId,
   setActiveSessionId,
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
+  setCurrentModel,
+  setCurrentModelSource,
   setCurrentPersonality,
+  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
@@ -261,6 +272,47 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (sessionId && hasStatePatch) {
+      // v16 port: reconcile a PENDING model pick — ONLY on an event that
+      // EXPLICITLY names the runtime (the gateway's broadcast/fan-out re-emits
+      // session.info for every live session, often WITHOUT a pane-scoped id;
+      // such an event resolves to the active session via the fallback route
+      // and would consume the active session's pending with ANOTHER runtime's
+      // pair before the real confirmation ever arrives). Same pair + fresh →
+      // commit: the sticky always; the PRIMARY composer atoms only when the
+      // confirming runtime IS the primary pane's runtime (a tile pick is not a
+      // primary pick — the next New Session seeds from the sticky at create
+      // time). Divergent pair or stale entry → drop, sticky untouched.
+      const pendingPick = explicitSid ? consumePendingModelPick(sessionId) : undefined
+
+      if (
+        pendingPick &&
+        statePatch.model !== undefined &&
+        statePatch.provider !== undefined
+      ) {
+        const matchesPending =
+          statePatch.model === pendingPick.model && statePatch.provider === pendingPick.provider
+
+        const pendingFresh = isPendingFresh(pendingPick)
+
+        if (matchesPending && pendingFresh) {
+          const runtimeIsPrimary = isPrimaryRuntime(sessionId)
+
+          if (runtimeIsPrimary) {
+            setCurrentModel(statePatch.model)
+            setCurrentProvider(statePatch.provider)
+            setCurrentModelSource('manual')
+          }
+
+          // The STICKY reconciles regardless: the pair was adopted by a real
+          // session (whichever surface owns it).
+          noteModelSelectionInUse(statePatch.model, statePatch.provider, getCurrentComposerScope())
+        }
+
+        // Divergent or stale: the pending dies either way — the sticky stays
+        // as-is and the composer keeps whatever the active session reports.
+        resolvePendingModelPick(sessionId)
+      }
+
       updateSessionState(
         sessionId,
         state => applySessionInfoStatePatch(state, statePatch),

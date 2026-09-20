@@ -10,6 +10,8 @@ import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $activeSessionId,
   $messages,
+  getCurrentComposerScope,
+  noteModelSelectionInUse,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModel,
@@ -21,7 +23,13 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { $sessionStates, $sessionTiles, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $sessionStates,
+  $sessionTiles,
+  publishSessionState,
+  releaseSessionTranscript
+} from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 import { SessionStateCache } from '../session-state-cache'
@@ -41,7 +49,7 @@ interface SessionStateCacheOptions {
   setMessages: (messages: ChatMessage[]) => void
 }
 
-function syncRuntimeMetadataToView(state: ClientSessionState) {
+function syncRuntimeMetadataToView(state: ClientSessionState, sessionId: string) {
   setCurrentModel(state.model ?? '')
   setCurrentProvider(state.provider ?? '')
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
@@ -50,6 +58,23 @@ function syncRuntimeMetadataToView(state: ClientSessionState) {
   setCurrentFastMode(state.fast ?? false)
   setYoloActive(state.yolo ?? false)
   setCurrentPersonality(state.personality ?? '')
+
+  // v18 port focus authority: the pair a live session is actually running at
+  // is the last-used selection for the next New Session — but ONLY when that
+  // session is the one the user is focused on ($focusedRuntimeId mirrors the
+  // PRIMARY when no tile is focused, so the pre-tile behavior is unchanged).
+  // A NON-focused session may still update its own slice/cache/view — it just
+  // loses the authority to rewrite the global sticky. Proven repro: tile pick
+  // confirmed Flash → old primary's heartbeat glm-5.3 rolled the sticky back
+  // before the next session.create. Explicit writers (a confirmed manual pick,
+  // Settings→Model, the pending reconciler) stay unconditional.
+  if (
+    state.model &&
+    state.provider &&
+    sessionId === $focusedRuntimeId.get()
+  ) {
+    noteModelSelectionInUse(state.model, state.provider, getCurrentComposerScope())
+  }
 }
 
 export function useSessionStateCache({
@@ -258,7 +283,7 @@ export function useSessionStateCache({
 
     viewSessionIdRef.current = pending.sessionId
 
-    syncRuntimeMetadataToView(pending.state)
+    syncRuntimeMetadataToView(pending.state, pending.sessionId)
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
@@ -285,7 +310,7 @@ export function useSessionStateCache({
 
       const viewState = suppressTranscriptForView(state, transcriptViewGateByRuntimeIdRef.current.has(sessionId))
 
-      syncRuntimeMetadataToView(viewState)
+      syncRuntimeMetadataToView(viewState, sessionId)
       pendingViewStateRef.current = { sessionId, state: viewState }
 
       // Terminal / attention transitions (turn finished, error, or the agent is

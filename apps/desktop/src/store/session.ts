@@ -19,7 +19,31 @@ import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-rou
 import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
-export type ComposerModelSource = '' | 'default' | 'manual'
+/**
+ * v17 provenance for the composer's model/provider pair:
+ * - 'manual'       — an EXPLICIT user pick on the composer (picker click).
+ * - 'sticky_seed'  — a value RESTORED automatically from the last-used sticky
+ *                    (boot reseed / fresh-draft seed). Not a user choice.
+ * - 'default'      — the profile/Settings→Model default.
+ * Guards must ask the QUESTION they mean: session.create treats ONLY 'manual'
+ * as a user override (a sticky_seed must lose to the fresher sticky);
+ * automatic refreshes must preserve BOTH 'manual' and 'sticky_seed';
+ * explicit profile switches may reseed from the new profile's default.
+ */
+export type ComposerModelSource = '' | 'default' | 'manual' | 'sticky_seed'
+
+/** True when the composer pair is the user's own explicit choice. */
+export const isUserPickedModel = (): boolean => getCurrentModelSource() === 'manual'
+
+/** True when the composer pair must survive an AUTOMATIC refresh (config
+ *  poll, boot reseed, connection rescope): an explicit pick and a restored
+ *  sticky seed are both protected — only an explicit profile/context switch
+ *  (the `force` paths) may reseed them. */
+export const isRefreshProtectedModel = (): boolean => {
+  const source = getCurrentModelSource()
+
+  return source === 'manual' || source === 'sticky_seed'
+}
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
@@ -32,6 +56,12 @@ const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
+// v14 sticky-universal: cross-scope memory of the LAST model/provider pair used
+// (any surface — session switch, draft pick). Feeds `computeLastUsedSelection()`
+// so a New Session opens on it resolved BEFORE the first paint.
+const LAST_MODEL_KEY = 'hermes.desktop.composer.last-model'
+const LAST_PROVIDER_KEY = 'hermes.desktop.composer.last-provider'
+const LAST_SCOPE_KEY = 'hermes.desktop.composer.last-scope'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 
@@ -1436,8 +1466,49 @@ export const setCurrentProvider = (next: Updater<string>) => {
   }
 }
 
+/**
+ * v17: set by markComposerSelectionManual and cleared on UI boot. The legacy
+ * migration in getCurrentModelSource must not demote a 'manual' whose pair
+ * matches the sticky when that sticky was just FED by the pick itself (a fresh
+ * pick feeds the sticky with its own pair, and that 'manual' is real).
+ */
+let explicitManualPickInThisUiSession = false
+
+export const isExplicitManualPickInThisUiSession = (): boolean => explicitManualPickInThisUiSession
+
+/** Test-only: simulate a FRESH UI boot, where no explicit pick has happened
+ *  yet — the legacy migration may only demote pre-boot leftovers. */
+export const resetExplicitManualPickForTests = (): void => {
+  explicitManualPickInThisUiSession = false
+}
+
 export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
+
+  if (source === 'sticky_seed') {
+    return 'sticky_seed'
+  }
+
+  // v17 legacy migration: a pre-sticky_seed boot wrote the sticky-derived
+  // composer pair with source 'manual' — a RESTORED value masquerading as an
+  // explicit user pick, which then beat the fresher sticky at session.create.
+  // Demote it when the persisted pair IS the current sticky pair (the seed
+  // case); a pair the sticky does not explain stays a genuine manual pick.
+  // Never demote once THIS UI session has seen an explicit pick.
+  if (source === 'manual' && !isExplicitManualPickInThisUiSession()) {
+    const sticky = computeLastUsedSelection()
+
+    if (sticky.model && sticky.provider) {
+      const model = storedComposerString(COMPOSER_MODEL_KEY)
+      const provider = storedComposerString(COMPOSER_PROVIDER_KEY)
+
+      if (model === sticky.model && provider === sticky.provider) {
+        setCurrentModelSource('sticky_seed')
+
+        return 'sticky_seed'
+      }
+    }
+  }
 
   return source === 'default' || source === 'manual' ? source : ''
 }
@@ -1457,6 +1528,39 @@ export const setCurrentModelSource = (source: ComposerModelSource) => {
   $currentModelSource.set(source)
 }
 
+/** v14 sticky-universal: record the (provider, model) pair IN REAL USE — a live
+ *  session's confirmed state or an explicit user pick. Deliberately NOT called
+ *  from setCurrentModel/setCurrentProvider: those also fire for provisional
+ *  reseeds (profile activation, display mirrors) that must never become the
+ *  New Session sticky. */
+export const noteModelSelectionInUse = (model: string, provider: string, scope?: string): void => {
+  if (!model.trim() || !provider.trim()) {
+    return
+  }
+
+  persistString(LAST_MODEL_KEY, model)
+  persistString(LAST_PROVIDER_KEY, provider)
+  // v14b: the gateway scope the pair was used under. A forced reseed from a
+  // DIFFERENT gateway (profile/gateway swap) legitimately owns its own default;
+  // the sticky only wins when the New Session lands on the same scope.
+  persistString(LAST_SCOPE_KEY, scope ?? composerSelectionScope ?? '')
+}
+
+/** The composer-selection scope currently in effect (for sticky comparisons). */
+export const getCurrentComposerScope = (): string => composerSelectionScope ?? ''
+
+/** v14 sticky-universal: the last (provider, model) pair actually used, with
+ *  the gateway scope it was used under. A New Session seeds its composer
+ *  selection from this — resolved synchronously BEFORE the first paint —
+ *  instead of falling back to the profile default. */
+export const computeLastUsedSelection = (): { model: string; provider: string; scope: string } => {
+  const model = storedString(LAST_MODEL_KEY) ?? ''
+  const provider = storedString(LAST_PROVIDER_KEY) ?? ''
+  const scope = storedString(LAST_SCOPE_KEY) ?? ''
+
+  return model && provider ? { model, provider, scope } : { model: '', provider: '', scope: '' }
+}
+
 // Monotonic intent token for async default refreshes. A profile/config request
 // may start before the user opens the picker and finish after their click; the
 // token lets that older response stand down even when the selected value is
@@ -1467,6 +1571,9 @@ export const getComposerSelectionGeneration = (): number => composerSelectionGen
 
 export const markComposerSelectionManual = (): void => {
   composerSelectionGeneration += 1
+  // v17: seal this 'manual' against the legacy migration (a fresh pick feeds
+  // the sticky with its own pair and must never be demoted to sticky_seed).
+  explicitManualPickInThisUiSession = true
   setCurrentModelSource('manual')
 }
 

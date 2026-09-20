@@ -35,12 +35,15 @@ logger = logging.getLogger(__name__)
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
-# Patterns in schtasks stderr that mean "fall back to the Startup folder".
+# Patterns in schtasks stderr that mean "fall back to the Startup folder". A localized Windows
+# answers in its own language, so an entry is only reachable when _schtasks_encoding() decoded that
+# language correctly (see its docstring).
 _FALLBACK_PATTERNS = re.compile(
-    r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
+    r"(access is denied|acceso denegado|přístup byl odepřen|拒绝访问"
+    r"|schtasks timed out|schtasks produced no output)",
     re.IGNORECASE,
 )
-_ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
+_ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado|拒绝访问)", re.IGNORECASE)
 
 # Set by _spawn_detached() when the breakaway spawn failed and it retried WITHOUT
 # CREATE_BREAKAWAY_FROM_JOB — the child stays in the parent's Job Object and may be killed when this
@@ -56,13 +59,42 @@ _TASK_RESTART_COUNT = 999
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
 
+def _windows_console_codepage() -> int:
+    """Code page ``schtasks.exe`` writes its output in; 0 when it cannot be determined.
+
+    Console programs emit the console code page — an OEM page (936 on zh-CN, 437/850 elsewhere) —
+    which is a property of the console, not of the process locale. ``GetConsoleOutputCP()`` is the
+    authority whenever a console is attached; a detached child (``CREATE_NO_WINDOW``) falls back to
+    the system OEM page.
+    """
+    if sys.platform != "win32":
+        return 0
+    try:
+        codepage = int(ctypes.windll.kernel32.GetConsoleOutputCP() or 0)
+        return codepage or int(ctypes.windll.kernel32.GetOEMCP() or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _schtasks_encoding() -> str:
     """Console encoding for ``schtasks.exe`` output: localized Windows emits the OEM/ANSI code page,
     not UTF-8, and decoding with the wrong codec raised UnicodeDecodeError in subprocess' reader
-    threads. Prefer the locale's preferred encoding, fall back to UTF-8."""
+    threads. Prefer the console code page, fall back to the locale, then to UTF-8.
+
+    The locale cannot answer this on Windows: Hermes puts every process in UTF-8 mode
+    (``hermes_cli/__init__.py`` sets ``PYTHONUTF8=1``), so ``locale.getpreferredencoding(False)``
+    always reports ``utf-8`` here. Measured on zh-CN, ``schtasks /Query /TN <missing>`` returns
+    CP936 ``b'\\xb4\\xed\\xce\\xf3: ...'``; decoded as UTF-8 with ``errors="replace"`` (the previous
+    behaviour) it becomes ``'\\ufffd\\ufffd\\ufffd\\ufffd: ...'`` — no exception, just text that no
+    localized pattern can ever match, which silently disabled the Startup-folder fallback and the
+    elevation prompt on every non-English Windows.
+    """
+    codepage = _windows_console_codepage()
+    if codepage:
+        return f"cp{codepage}"
     try:
         return locale.getpreferredencoding(False) or "utf-8"
-    except Exception:
+    except Exception:  # noqa: BLE001
         return "utf-8"
 
 

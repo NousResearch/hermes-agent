@@ -121,6 +121,7 @@ def test_authoritative_catalog_is_shared_with_setup(monkeypatch, live):
     monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
     monkeypatch.setattr(models, "_api_key_credentials", lambda name: ("test-key", profile.base_url))
     monkeypatch.setattr(model_setup_flows, "_models_dev_merged", lambda *a: [])
+    monkeypatch.setitem(models._PROVIDER_MODELS, profile.name, ["stale-curated"])
     expected = ["fallback"] if live is None else live
     assert models._profile_live_catalog(profile.name) == expected
     assert model_setup_flows._api_key_provider_model_list(

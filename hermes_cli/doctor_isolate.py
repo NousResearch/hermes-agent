@@ -274,10 +274,12 @@ def _probe_candidate(
     config: dict[str, Any],
     runtime: dict[str, Any],
     probe: Callable[[Path, dict[str, Any], dict[str, Any]], dict[str, Any]],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
     token = set_hermes_home_override(candidate)
+    payload: dict[str, Any]
+    cleanup_safe = True
     try:
-        return probe(candidate, config, runtime)
+        payload = probe(candidate, config, runtime)
     finally:
         try:
             from hermes_cli.mcp_startup import (
@@ -287,15 +289,25 @@ def _probe_candidate(
             from hermes_cli.plugins import evict_plugin_manager
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
 
-            if not join_mcp_discovery(timeout=30.0):
-                raise RuntimeError("candidate MCP discovery did not stop")
+            try:
+                cleanup_safe = join_mcp_discovery(timeout=30.0)
+            except Exception:
+                cleanup_safe = False
             try:
                 shutdown_mcp_servers(scope=hermes_home_key(candidate))
-            finally:
-                clear_mcp_discovery_for_current_home(timeout=0.0)
+            except Exception:
+                cleanup_safe = False
+            try:
+                cleanup_safe = clear_mcp_discovery_for_current_home(timeout=0.0) and cleanup_safe
+            except Exception:
+                cleanup_safe = False
+            try:
                 evict_plugin_manager(candidate)
+            except Exception:
+                cleanup_safe = False
         finally:
             reset_hermes_home_override(token)
+    return payload, cleanup_safe
 
 
 def _probe_status(payload: dict[str, Any], control: dict[str, Any] | None = None) -> str:
@@ -357,6 +369,7 @@ def run_isolation_diagnostic(
     disk_effective = copy.deepcopy(disk_minimal)
     included_slices: list[str] = []
     unresolved = False
+    cleanup_safe = True
     state_snapshot: Path | None = None
     state_ready = True
     try:
@@ -364,7 +377,10 @@ def run_isolation_diagnostic(
             candidate_parent, source, "00-control", disk_effective, included_slices,
             state_snapshot, state_ready,
         )
-        control = _probe_candidate(candidate, effective, runtime, probe)
+        control, candidate_cleanup_safe = _probe_candidate(candidate, effective, runtime, probe)
+        cleanup_safe = cleanup_safe and candidate_cleanup_safe
+        if not candidate_cleanup_safe:
+            unresolved = True
         control_status = _probe_status(control)
         report.control = {"status": control_status, "runtime": control}
         if control_status != "pass":
@@ -394,7 +410,10 @@ def run_isolation_diagnostic(
                 report.slices.append(SliceResult(slice_id, "needs_quiescence"))
                 unresolved = True
                 continue
-            payload = _probe_candidate(candidate, effective, runtime, probe)
+            payload, candidate_cleanup_safe = _probe_candidate(candidate, effective, runtime, probe)
+            cleanup_safe = cleanup_safe and candidate_cleanup_safe
+            if not candidate_cleanup_safe:
+                unresolved = True
             status = _probe_status(payload, control)
             error_class = payload.get("error_class") if status == "fail" else None
             report.slices.append(SliceResult(slice_id, status, error_class, payload))
@@ -410,11 +429,16 @@ def run_isolation_diagnostic(
             report.classification = "needs_quiescence" if unresolved else "healthy"
         return report
     finally:
-        try:
-            shutil.rmtree(candidate_parent)
-            report.cleanup_status = "removed"
-        except OSError:
+        if not cleanup_safe:
             report.cleanup_status = "failed"
+            report.classification = "needs_quiescence"
+        else:
+            try:
+                shutil.rmtree(candidate_parent)
+                report.cleanup_status = "removed"
+            except OSError:
+                report.cleanup_status = "failed"
+                report.classification = "needs_quiescence"
         if _guarded_fingerprint(source) != source_fingerprint:
             report.classification = "needs_quiescence"
 

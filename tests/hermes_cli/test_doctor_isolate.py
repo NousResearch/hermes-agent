@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 from pathlib import Path
 import sqlite3
@@ -44,6 +45,9 @@ def _source_profile(tmp_path: Path) -> Path:
 
 def test_isolate_preserves_source_excludes_secrets_and_discovers_each_fresh_slice(tmp_path, monkeypatch):
     from hermes_cli import mcp_startup, plugins
+    from tools import mcp_tool
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers as real_shutdown
+    from tools.registry import registry
 
     source = _source_profile(tmp_path)
     monkeypatch.setenv("ISOLATE_SECRET", "expanded-secret")
@@ -57,18 +61,38 @@ def test_isolate_preserves_source_excludes_secrets_and_discovers_each_fresh_slic
     plugin_homes_before = set(plugins._plugin_managers_by_home)
     mcp_homes_before = set(mcp_startup._mcp_discovery_started)
     shutdown_scopes: list[str | None] = []
+    lazy_names_by_scope: dict[str, list[str]] = {}
+
+    def shutdown(*, scope=None, names=None):
+        shutdown_scopes.append(scope)
+        real_shutdown(scope=scope, names=names)
+
     monkeypatch.setattr(
         "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
-        lambda *, scope=None, names=None: shutdown_scopes.append(scope),
+        shutdown,
     )
 
     def probe(candidate, config, runtime):
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         from hermes_constants import hermes_home_key
+        from tools.mcp_tool_registration import _register_from_cache_sync
 
         candidates.append(candidate)
         candidate_configs.append((candidate / "config.yaml").read_text(encoding="utf-8"))
         mcp_startup._mcp_discovery_started.add(hermes_home_key())
+        lazy_names_by_scope[hermes_home_key()] = _register_from_cache_sync(
+            "isolate-cache",
+            {"command": "unused", "lazy": True},
+            {
+                "fingerprint": "candidate",
+                "tools": [{
+                    "name": "ping",
+                    "description": "Ping",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }],
+                "utility_tools": [],
+            },
+        )
         discover_plugins()
         discovered = {item["name"] for item in get_plugin_manager().list_plugins()}
         if "poisoned" in discovered:
@@ -105,14 +129,27 @@ def test_isolate_preserves_source_excludes_secrets_and_discovers_each_fresh_slic
     assert set(mcp_startup._mcp_discovery_started) == mcp_homes_before
     from hermes_constants import hermes_home_key
     assert shutdown_scopes == [hermes_home_key(candidate) for candidate in candidates]
+    for scope, names in lazy_names_by_scope.items():
+        assert all(registry.snapshot_registration(name, scope=scope) is None for name in names)
+        assert not any(
+            isinstance(key, tuple) and key[0] == scope
+            for ledger in (
+                mcp_tool._lazy_server_configs,
+                mcp_tool._lazy_server_fingerprints,
+                mcp_tool._lazy_server_tool_names,
+                mcp_tool._server_trust_levels,
+            )
+            for key in ledger
+        )
 
 
 def test_isolate_snapshots_sqlite_and_ignores_concurrent_runtime_writers(tmp_path, monkeypatch):
     source = _source_profile(tmp_path)
     (source / "state.db-wal").unlink()
-    with sqlite3.connect(source / "state.db") as conn:
-        conn.execute("create table evidence(value text)")
-        conn.execute("insert into evidence values ('closed')")
+    with closing(sqlite3.connect(source / "state.db")) as conn:
+        with conn:
+            conn.execute("create table evidence(value text)")
+            conn.execute("insert into evidence values ('closed')")
 
     seen_values: list[str] = []
     committed_after_session = False
@@ -131,10 +168,10 @@ def test_isolate_snapshots_sqlite_and_ignores_concurrent_runtime_writers(tmp_pat
         (logs / "gateway.log").write_text(str(len(seen_values)), encoding="utf-8")
         return {"status": "ok", "timings": {"hermes_first_chunk_ms": 10.0}}
 
-    with sqlite3.connect(source / "state.db") as writer:
-        writer.execute("pragma journal_mode=wal")
-        writer.execute("insert into evidence values ('wal')")
-        writer.commit()
+    with closing(sqlite3.connect(source / "state.db")) as writer:
+        with writer:
+            writer.execute("pragma journal_mode=wal")
+            writer.execute("insert into evidence values ('wal')")
         report = run_isolation_diagnostic(
             source=source, probe=probe, runtime_override={"provider": "custom", "api_key": "secret"}
         )
@@ -158,6 +195,35 @@ def test_isolate_snapshots_sqlite_and_ignores_concurrent_runtime_writers(tmp_pat
         source=source, probe=probe, runtime_override={"provider": "custom", "api_key": "secret"}
     )
     assert orphan.classification == "needs_quiescence"
+
+
+def test_isolate_discovery_timeout_keeps_candidate_and_reports_needs_quiescence(tmp_path, monkeypatch):
+    source = _source_profile(tmp_path)
+    teardown: list[str] = []
+    monkeypatch.setattr("hermes_cli.mcp_startup.join_mcp_discovery", lambda timeout=None: False)
+    monkeypatch.setattr(
+        "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
+        lambda **kwargs: teardown.append("mcp"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.clear_mcp_discovery_for_current_home",
+        lambda **kwargs: teardown.append("discovery") or False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.evict_plugin_manager",
+        lambda candidate: teardown.append("plugins"),
+    )
+
+    report = run_isolation_diagnostic(
+        source=source,
+        probe=lambda *_args: {"status": "ok", "timings": {"hermes_first_chunk_ms": 10.0}},
+        runtime_override={"provider": "custom", "api_key": "secret"},
+    )
+
+    assert report.classification == "needs_quiescence"
+    assert report.cleanup_status == "failed"
+    assert Path(report.candidate_location).is_dir()
+    assert teardown[:3] == ["mcp", "discovery", "plugins"]
 
 
 def test_isolate_stops_after_failed_sterile_control_and_parser_modes_are_exclusive(tmp_path):

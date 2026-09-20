@@ -137,22 +137,57 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     (no ``scope``, no ``names``) is the process-wide wildcard: the launch profile's registry
     scope IS ``None``, so ``scope=None, names={...}`` prunes that unscoped owner's servers and
     must leave a served profile's same-named ``(B, name)`` connection alone."""
-    from tools.mcp_tool_scope import _key_name
+    from tools.mcp_tool_scope import _key_name, _key_scope
     wildcard = scope is None and names is None
+
+    def selected_key(key) -> bool:
+        if wildcard:
+            return True
+        if _key_scope(key) != scope:
+            return False
+        return names is None or _key_name(key) in names
+
     with _core._lock:
         selected = [key for key in _core._servers if wildcard or _core._server_scope_keys.get(key) == scope]
         if names is not None:
             selected = [key for key in selected if _key_name(key) in names]
+        lazy_selected = [key for key in _core._lazy_server_configs if selected_key(key)]
         servers_snapshot = [_core._servers[key] for key in selected]
         if names is not None:
             selected_status = set(selected)
         elif wildcard:
-            selected_status = (
-                set(_core._servers) | set(_core._server_scope_keys)
-                | set(_core._server_tool_scopes)
-                | set(_core._server_connecting) | set(_core._server_connect_errors))
+            ledgers = (
+                _core._servers,
+                _core._server_scope_keys,
+                _core._server_tool_scopes,
+                _core._server_connecting,
+                _core._server_connect_errors,
+                _core._server_connect_retry_after,
+                _core._server_connect_failures,
+                _core._server_error_counts,
+                _core._server_breaker_opened_at,
+                _core._server_errors_all_application,
+                _core._server_trust_levels,
+                _core._tool_read_only_hints,
+                _core._parallel_safe_servers,
+            )
+            selected_status = {key for ledger in ledgers for key in ledger}
         else:
-            selected_status = {key for key, owner in _core._server_scope_keys.items() if owner == scope}
+            ledgers = (
+                _core._server_scope_keys,
+                _core._server_tool_scopes,
+                _core._server_connecting,
+                _core._server_connect_errors,
+                _core._server_connect_retry_after,
+                _core._server_connect_failures,
+                _core._server_error_counts,
+                _core._server_breaker_opened_at,
+                _core._server_errors_all_application,
+                _core._server_trust_levels,
+                _core._tool_read_only_hints,
+                _core._parallel_safe_servers,
+            )
+            selected_status = {key for ledger in ledgers for key in ledger if selected_key(key)}
         # Adopters of the connections being torn down lose their overlays with the tasks' own
         # ``_deregister_tools``; remember them so the next discovery pass re-registers them
         # (``_reregister_orphaned_adopters``).
@@ -168,6 +203,12 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
             _core._server_connect_errors.pop(key, None)
             _core._server_scope_keys.pop(key, None)
             _core._server_tool_scopes.pop(key, None)
+            _core._server_error_counts.pop(key, None)
+            _core._server_breaker_opened_at.pop(key, None)
+            _core._server_errors_all_application.pop(key, None)
+            _core._server_trust_levels.pop(key, None)
+            _core._tool_read_only_hints.pop(key, None)
+            _core._parallel_safe_servers.discard(key)
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still be populated here — a server that
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),
@@ -204,6 +245,10 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         if not servers_snapshot:
             clear_selected_status()
         _clear_connect_cooldowns(None if wildcard else selected_status)
+    if lazy_selected:
+        from tools.mcp_tool_discovery import _forget_lazy_server
+        for key in lazy_selected:
+            _forget_lazy_server(key)
     _loop._stop_mcp_loop(only_if_idle=not wildcard)
     # A removed subset still shares its profile's log with the remaining servers.
     # Full/profile shutdown must also release handles left by completed CLI/UI probes.

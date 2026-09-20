@@ -139,8 +139,18 @@ class StreamTransportMixin:
         already sees was delivered normally — it only deletes bubbles that a
         *different*, later message has already superseded, so there is no
         duplicate-display risk.
+
+        Guarded on ``_turn_split_delivery`` (set by ``seal_overflow_heads``,
+        see ``_try_fresh_final``'s identical guard): when a long answer was
+        split across several sealed messages, ``_message_id`` only tracks the
+        *last* continuation, so every earlier sealed head still sitting in
+        ``_preview_message_ids`` is *delivered content*, not a superseded
+        preview. Deleting them here would erase the earlier chunks of the
+        user's answer, leaving only the tail on screen.
         """
         if not getattr(self.cfg, "cleanup_interim_segments", False):
+            return
+        if self._turn_split_delivery:
             return
         final_id = self._message_id
         stale_ids = self._preview_message_ids

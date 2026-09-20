@@ -310,6 +310,11 @@ _CREDENTIAL_PROBES: dict[str, tuple[str, str]] = {
 }
 
 
+def _gemini_base_url_for_profile(profile: Optional[str]) -> str:
+    with _profile_scope(profile):
+        return str(load_env().get("GEMINI_BASE_URL") or "").strip()
+
+
 def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", coerce_provider_id(raw)).strip("-_").lower()
     return slug or fallback
@@ -915,12 +920,17 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 
     url, auth = probe
     if key == "GEMINI_API_KEY":
-        from agent.gemini_native_adapter import normalize_gemini_base_url
-        # A Vertex express key (AQ.) can only 403 on the Studio host; normalize routes it to aiplatform.
-        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0], value) + "/models"
+        configured_base = await asyncio.to_thread(_gemini_base_url_for_profile, body.profile)
+        if configured_base:
+            from agent.gemini_native_adapter import normalize_gemini_base_url
+
+            url = normalize_gemini_base_url(configured_base, value) + "/models"
+
     headers = {"Accept": "application/json"}
     params = {}
-    if auth == "bearer":
+    if key == "GEMINI_API_KEY":
+        headers["x-goog-api-key"] = value
+    elif auth == "bearer":
         headers["Authorization"] = f"Bearer {value}"
     else:
         params["key"] = value

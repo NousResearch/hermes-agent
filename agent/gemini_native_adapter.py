@@ -105,9 +105,8 @@ _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
 
 
 def is_vertex_express_key(api_key: str) -> bool:
-    """Vertex AI express-mode keys are ``AQ.…``; AI Studio keys are ``AIza…``."""
+    """Legacy key-shape helper; endpoint routing must use the configured base URL."""
     return str(api_key or "").strip().startswith("AQ.")
-
 
 def is_vertex_express_base_url(base_url: str) -> bool:
     """An aiplatform host without a project path — the express surface. The OAuth Vertex provider's
@@ -128,16 +127,16 @@ def normalize_gemini_base_url(base_url: Optional[str], api_key: str = "") -> str
     decide routing (see ``is_native_gemini_base_url``).
 
     A Vertex express base (``aiplatform.googleapis.com``, ``…/v1beta1`` or the full
-    ``…/v1beta1/publishers/google``) is completed to the ``publishers/google`` form. With ``api_key``
-    given, an express key (``AQ.``) that would land on the Studio host is routed to
-    ``VERTEX_EXPRESS_BASE_URL`` instead — it can only ever 403 there — while an explicit proxy or
-    Vertex base is left alone."""
+    ``…/v1beta1/publishers/google``) is completed to the ``publishers/google`` form.
+    Google transitioned AI Studio keys from legacy ``AIza…`` to ``AQ.…``, so keys must
+    not be routed to Vertex AI Express based on key prefix alone (#116053).
+    Vertex AI Express users configure ``GEMINI_BASE_URL=https://aiplatform.googleapis.com``,
+    while AI Studio keys (both ``AIza…`` and ``AQ.…``) default to ``DEFAULT_GEMINI_BASE_URL``.
+    """
     trimmed = str(base_url or "").strip().rstrip("/")
     trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
     if not trimmed:
         trimmed = DEFAULT_GEMINI_BASE_URL
-    if is_vertex_express_key(api_key) and "generativelanguage.googleapis.com" in trimmed.lower():
-        return VERTEX_EXPRESS_BASE_URL
     if is_vertex_express_base_url(trimmed):
         if trimmed.lower().endswith("/publishers/google"):
             return trimmed

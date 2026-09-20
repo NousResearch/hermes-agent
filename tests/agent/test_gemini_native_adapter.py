@@ -792,20 +792,23 @@ def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
 @pytest.mark.parametrize(
     "api_key, configured, expected_prefix",
     [
-        # Express key + default Studio host: the only place it can never work → aiplatform express surface.
-        ("AQ.express-key", None, "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
-        # Control: Studio key keeps the Studio host.
+        # By default, Gemini provider routes to Google AI Studio for both AQ.* and AIza keys (#116053).
+        ("AQ.studio-key", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
         ("AIza-test", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
-        # An explicit aiplatform base (host root or versioned) is completed to the publishers form.
+        # An explicit aiplatform base (host root or versioned) is completed to the publishers form for Vertex Express.
         ("AQ.express-key", "https://aiplatform.googleapis.com", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
         ("AIza-test", "https://aiplatform.googleapis.com/v1beta1", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
         # An explicit proxy is never overridden by the key shape.
         ("AQ.express-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
+        # Explicit Google AI Studio endpoint is respected even when key starts with AQ. (#116053).
+        ("AQ.studio-key", "https://generativelanguage.googleapis.com/v1beta", "https://generativelanguage.googleapis.com/v1beta/models/"),
+        ("AQ.studio-key", "https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta/models/"),
+        ("AQ.studio-key", "https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta/models/"),
     ],
 )
 def test_native_client_routes_vertex_express_keys_to_aiplatform(api_key, configured, expected_prefix):
-    """Vertex express keys (``AQ.``) 403 on generativelanguage; the request must hit
-    ``aiplatform.googleapis.com/v1beta1/publishers/google/models/…`` unless the user pointed elsewhere."""
+    """Gemini native client routes to Google AI Studio by default, and completes explicit aiplatform
+    bases to ``aiplatform.googleapis.com/v1beta1/publishers/google/models/…``."""
     from agent.gemini_native_adapter import GeminiNativeClient
 
     seen = []
@@ -819,6 +822,46 @@ def test_native_client_routes_vertex_express_keys_to_aiplatform(api_key, configu
     client = GeminiNativeClient(api_key=api_key, base_url=configured, http_client=_HTTP())
     client.chat.completions.create(model="gemini-3.7-flash", messages=[{"role": "user", "content": "hi"}])
     assert seen == [f"{expected_prefix}gemini-3.7-flash:generateContent"]
+
+
+def test_normalize_gemini_base_url_defaults_to_studio_for_aq_and_aiza_keys():
+    """Gemini base URL defaults to Google AI Studio for both AQ.* and AIza keys (#116053),
+    while explicit aiplatform bases are completed to the publishers form."""
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+
+    # Unset base URL defaults to Google AI Studio for all key formats.
+    assert (
+        normalize_gemini_base_url(None, "AQ.studio-key")
+        == "https://generativelanguage.googleapis.com/v1beta"
+    )
+    assert (
+        normalize_gemini_base_url("", "AQ.studio-key")
+        == "https://generativelanguage.googleapis.com/v1beta"
+    )
+    assert (
+        normalize_gemini_base_url(None, "AIza-studio-key")
+        == "https://generativelanguage.googleapis.com/v1beta"
+    )
+
+    # Explicit configured base URL is preserved.
+    assert (
+        normalize_gemini_base_url("https://generativelanguage.googleapis.com/v1beta", "AQ.studio-key")
+        == "https://generativelanguage.googleapis.com/v1beta"
+    )
+    assert (
+        normalize_gemini_base_url("https://generativelanguage.googleapis.com", "AQ.studio-key")
+        == "https://generativelanguage.googleapis.com/v1beta"
+    )
+
+    # Explicit Vertex AI base URL is completed to the publishers/google form.
+    assert (
+        normalize_gemini_base_url("https://aiplatform.googleapis.com", "AQ.express-key")
+        == "https://aiplatform.googleapis.com/v1beta1/publishers/google"
+    )
+    assert (
+        normalize_gemini_base_url("https://aiplatform.googleapis.com/v1beta1", "AQ.express-key")
+        == "https://aiplatform.googleapis.com/v1beta1/publishers/google"
+    )
 
 
 def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():

@@ -131,6 +131,24 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
 
+    gateway_restart = receipt.get("gateway_restart")
+    if isinstance(gateway_restart, dict):
+        # The fleet snapshot can be empty when a later, unrelated update step fails.
+        # A completed restart with a post-update identity is still proof that the
+        # gateways no longer serve the pre-pull interpreter.
+        restarted = any(
+            gateway_restart.get(key)
+            for key in ("restarted_services", "relaunched_profiles", "externally_supervised_profiles", "killed_pids")
+        )
+        if (
+            restarted
+            and not gateway_restart.get("incomplete")
+            and not gateway_restart.get("phase_error")
+            and not gateway_restart.get("failed_units")
+            and (receipt.get("post_update") or {}).get("sha") == expected_sha
+        ):
+            return False
+
     fleet = receipt.get("fleet")
     if isinstance(fleet, list) and fleet:
         return any(

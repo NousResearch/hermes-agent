@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 from tools.mcp_tool_errors import _format_connect_error
 from tools.mcp_tool_config import _node_fallback, _resolve_stdio_command
+from tools.mcp_tool_config import _which_with_config_pathext
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -105,6 +106,76 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     # /usr/local/bin must be prepended so npx's shebang (`/usr/bin/env node`)
     # can find node in the same directory.
     assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
+
+
+def test_resolve_stdio_command_absent_path_is_a_miss(tmp_path, monkeypatch):
+    """A server env without PATH must not resolve commands against the PARENT's PATH:
+    the child would be spawned without it and the lookup would pass on an env the
+    child never sees. Bare ``node`` still reaches the explicit well-known dirs."""
+    parent_bin = tmp_path / "parent-bin"
+    parent_bin.mkdir()
+    server_tool = parent_bin / "some-mcp-server"
+    server_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    server_tool.chmod(0o755)
+    node_tool = tmp_path / "node" / "bin" / "node"
+    node_tool.parent.mkdir(parents=True)
+    node_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    node_tool.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # the parent PATH contains BOTH names: an ambient hit would resolve either
+    monkeypatch.setenv("PATH", str(parent_bin))
+
+    command, _env = _resolve_stdio_command("some-mcp-server", {"OTHER": "1"})
+
+    assert command == "some-mcp-server"  # absent child PATH: honest miss, not an ambient hit
+
+    with patch.dict("os.environ", {"PATH": str(parent_bin)}):
+        command, _env = _resolve_stdio_command("node", {"OTHER": "1"})
+    assert command == str(node_tool)  # the explicit Node fallback dirs stay reachable
+
+
+def test_resolve_stdio_command_empty_path_is_a_miss(monkeypatch, tmp_path):
+    """An explicitly empty child PATH keeps its cwd-only meaning (never the parent's PATH):
+    ``which`` sees ``[""]`` -> cwd. The binary lives only in the parent's PATH dir, so the
+    lookup must miss rather than silently inheriting the parent's directories."""
+    parent_bin = tmp_path / "parent-bin"
+    parent_bin.mkdir()
+    server_tool = parent_bin / "other-mcp-server"
+    server_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    server_tool.chmod(0o755)
+    monkeypatch.setenv("PATH", str(parent_bin))
+
+    command, _env = _resolve_stdio_command("other-mcp-server", {"PATH": ""})
+
+    assert command == "other-mcp-server"  # cwd-only lookup: no ambient fallback
+
+
+def test_config_pathext_lookup_never_touches_parent_environ(tmp_path, monkeypatch):
+    """Resolving under a configured PATHEXT must not mutate the parent's ``os.environ``:
+    a multiplexed gateway resolves servers for several profiles from one process, and
+    any thread reading PATHEXT (or inheriting env for its own subprocess) inside the
+    lookup window would otherwise see this server's per-profile value."""
+    server_dir = tmp_path / "bin"
+    server_dir.mkdir()
+    (server_dir / "server.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    (server_dir / "server.cmd").chmod(0o755)
+    monkeypatch.delenv("PATHEXT", raising=False)
+    monkeypatch.setenv("PATH", str(server_dir))
+    seen = {}
+
+    import tools.mcp_tool_config as _cfg
+
+    def _spy(cmd, path=None):
+        seen["PATHEXT"] = os.environ.get("PATHEXT")
+        raise AssertionError("shutil.which must not be the lookup engine here")
+
+    with patch.object(_cfg.shutil, "which", side_effect=_spy):
+        cfg_env = {"PATHEXT": ".cmd;.exe"}
+        hit = _which_with_config_pathext("server", str(server_dir), cfg_env)
+
+    assert hit == str(server_dir / "server.cmd")
+    assert "PATHEXT" not in os.environ  # not written, not left behind
+    assert seen == {}  # and never consulted mid-lookup either
 
 
 # ---------------------------------------------------------------------------

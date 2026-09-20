@@ -864,7 +864,22 @@ function Intro() {
 }
 
 const UNASSIGNED_LANE = 'unassigned'
-const UNASSIGNED_ASSIGNEE_FILTER = '__unassigned__'
+export const UNASSIGNED_ASSIGNEE_FILTER = Symbol('unassigned-assignee-filter')
+type AssigneeFilter = string | typeof UNASSIGNED_ASSIGNEE_FILTER
+
+export function matchesBoardFilters(
+  task: KanbanTask,
+  { assignee, query, tenant }: { assignee: AssigneeFilter; query: string; tenant: string }
+): boolean {
+  const normalizedQuery = query.trim().toLowerCase()
+
+  return (
+    (!normalizedQuery || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(normalizedQuery)) &&
+    (!tenant || task.tenant === tenant) &&
+    (!assignee ||
+      (assignee === UNASSIGNED_ASSIGNEE_FILTER ? !task.assignee : task.assignee === assignee))
+  )
+}
 
 // ── filter kebab ─────────────────────────────────────────────────────────────
 
@@ -878,10 +893,10 @@ function FilterMenu({
   tenant
 }: {
   archived: boolean
-  assignee: string
+  assignee: AssigneeFilter
   board: KanbanBoard
   onArchived: (v: boolean) => void
-  onAssignee: (v: string) => void
+  onAssignee: (v: AssigneeFilter) => void
   onTenant: (v: string) => void
   tenant: string
 }) {
@@ -1104,7 +1119,7 @@ export function KanbanBoardPage() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [tenant, setTenant] = useState('')
-  const [assignee, setAssignee] = useState('')
+  const [assignee, setAssignee] = useState<AssigneeFilter>('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
@@ -1179,13 +1194,7 @@ export function KanbanBoardPage() {
       return null
     }
 
-    const q = search.trim().toLowerCase()
-
-    const keep = (task: KanbanTask) =>
-      (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
-      (!tenant || task.tenant === tenant) &&
-      (!assignee ||
-        (assignee === UNASSIGNED_ASSIGNEE_FILTER ? !task.assignee : task.assignee === assignee))
+    const keep = (task: KanbanTask) => matchesBoardFilters(task, { assignee, query: search, tenant })
 
     return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(keep) })) }
   }, [board, search, tenant, assignee])

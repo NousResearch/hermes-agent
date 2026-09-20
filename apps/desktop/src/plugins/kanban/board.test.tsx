@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
 
 import { bindApi } from './api'
-import { KanbanBoardPage } from './board'
+import { KanbanBoardPage, matchesBoardFilters, UNASSIGNED_ASSIGNEE_FILTER } from './board'
 import { en, KANBAN_LOCALES } from './i18n'
 
 let client: QueryClient
@@ -81,5 +81,28 @@ describe('board assignee filter', () => {
     expect(screen.getByText('Empty assignee')).toBeTruthy()
     expect(screen.queryByText('Assigned task')).toBeNull()
 
+  })
+
+  it('combines tenant filters with unassigned filtering without colliding with a real sentinel-named profile', () => {
+    const workerNamedLikeTheFormerSentinel = {
+      assignee: '__unassigned__',
+      id: 'sentinel-named-worker',
+      status: 'todo',
+      tenant: 'acme',
+      title: 'Assigned to a real profile'
+    }
+
+    const unassignedAcmeTask = {
+      assignee: null,
+      id: 'unassigned-acme',
+      status: 'todo',
+      tenant: 'acme',
+      title: 'Unassigned in Acme'
+    }
+
+    expect(matchesBoardFilters(unassignedAcmeTask, { assignee: UNASSIGNED_ASSIGNEE_FILTER, query: '', tenant: 'acme' })).toBe(true)
+    expect(matchesBoardFilters(workerNamedLikeTheFormerSentinel, { assignee: UNASSIGNED_ASSIGNEE_FILTER, query: '', tenant: 'acme' })).toBe(false)
+    expect(matchesBoardFilters(unassignedAcmeTask, { assignee: UNASSIGNED_ASSIGNEE_FILTER, query: '', tenant: 'other' })).toBe(false)
+    expect(matchesBoardFilters(workerNamedLikeTheFormerSentinel, { assignee: '__unassigned__', query: '', tenant: 'acme' })).toBe(true)
   })
 })

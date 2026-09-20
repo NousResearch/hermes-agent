@@ -133,6 +133,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     # Standalone = no systemd unit at all (CI runners inherit INVOCATION_ID).
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
+    monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
     monkeypatch.setattr(
         "tools.process_registry._systemd_run_user_scope_available",

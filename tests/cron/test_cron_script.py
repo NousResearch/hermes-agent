@@ -387,7 +387,9 @@ class TestRunJobScript:
         monkeypatch.setattr(sched_script, "_windows_cron_python_invocation",
             lambda python_exe: (python_exe, {}),
         )
-        monkeypatch.setattr(sched_mod.subprocess, "Popen", FakeProc)
+        # The spawn seam, not subprocess.Popen: on macOS fork_safe_popen wraps the argv in its
+        # posix_spawn trampoline (#97296), which is not what this test is about.
+        monkeypatch.setattr(sched_script, "fork_safe_popen", FakeProc)
 
         success, output = _run_job_script("probe.py")
 

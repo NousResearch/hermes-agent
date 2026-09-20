@@ -994,7 +994,7 @@ class TestPythonpathSelectiveStrip:
                    side_effect=_mock_handle_function_call), \
              patch("tools.code_execution_env._uses_hermes_python_environment",
                    return_value=same_env), \
-             patch("subprocess.Popen", side_effect=_fake_popen), \
+             patch("hermes_cli._subprocess_compat.fork_safe_popen", side_effect=_fake_popen), \
              patch.dict(os.environ, {
                  "PYTHONPATH": os.pathsep.join(
                      [hermes_root, venv_sp, user_a, user_b]),

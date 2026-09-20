@@ -1325,8 +1325,10 @@ class SessionSessionsMixin:
                     sessions.append(s)
         if project_compression_tips and not include_children:
             sessions = self._project_compression_tips(sessions, compact_rows)
+        tags = self.get_session_tags_batch([s["id"] for s in sessions])
         # last_read_at is lineage-stamped, so root and tip watermarks agree.
         for s in sessions:
+            s["tags"] = tags[s["id"]]
             s["unread"] = self.session_unread(s)
         return sessions
 

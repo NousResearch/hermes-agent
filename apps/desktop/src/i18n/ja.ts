@@ -2288,6 +2288,14 @@ export const ja = defineLocale({
   },
 
   sidebar: {
+    tags: {
+      label: 'タグ',
+      newTag: '新しいタグ',
+      createAndAssign: '作成して割り当て',
+      empty: 'タグなし',
+      loadError: 'タグを読み込めませんでした',
+      updateError: 'タグを更新できませんでした'
+    },
     gatewayGroups: {
       grouping: 'ゲートウェイとプロファイル',
       rename: 'グループ名を変更',

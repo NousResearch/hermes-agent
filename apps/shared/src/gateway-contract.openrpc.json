@@ -3103,6 +3103,42 @@
       }
     },
     {
+      "name": "session.tags.list",
+      "summary": "List the profile's persistent tag catalogue, including unassigned tags.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionTagsListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionTagsResult"
+        }
+      }
+    },
+    {
+      "name": "session.tags.set",
+      "summary": "Assign/unassign a tag on a stored session's compression root; assigning creates the tag.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionTagsSetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionTagsResult"
+        }
+      }
+    },
+    {
       "name": "session.title",
       "summary": "Read or set a live session's title; a title set before the row exists is queued.",
       "params": [
@@ -21006,6 +21042,13 @@
             "default": null,
             "title": "Parent Session Id"
           },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
           "pinned": {
             "anyOf": [
               {
@@ -26057,6 +26100,13 @@
             "default": "",
             "title": "Source",
             "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
           }
         },
         "required": [
@@ -26906,6 +26956,78 @@
           "output"
         ],
         "title": "SessionStatusResult",
+        "type": "object"
+      },
+      "SessionTagsListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "SessionTagsListParams",
+        "type": "object"
+      },
+      "SessionTagsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tags"
+        ],
+        "title": "SessionTagsResult",
+        "type": "object"
+      },
+      "SessionTagsSetParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "assigned": {
+            "title": "Assigned",
+            "type": "boolean"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "assigned",
+          "session_id"
+        ],
+        "title": "SessionTagsSetParams",
         "type": "object"
       },
       "SessionTitleParams": {

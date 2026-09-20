@@ -325,7 +325,7 @@ def _project_tree_row(r: dict) -> dict:
     row.update(
         started_at=r.get("started_at") or 0, ended_at=r.get("ended_at"),
         last_active=r.get("last_active") or r.get("started_at") or 0,
-        source=r.get("source"), archived=bool(r.get("archived")),
+        source=r.get("source"), archived=bool(r.get("archived")), tags=r.get("tags") or [],
         **{k: r.get(k) or 0 for k in (
             "message_count", "tool_call_count", "input_tokens", "output_tokens")},
         **{k: r.get(k) for k in ("actual_cost_usd", "estimated_cost_usd", "model")},

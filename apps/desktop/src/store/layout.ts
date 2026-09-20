@@ -349,6 +349,12 @@ function sameRowMeta(a: SidebarRowMeta[], b: SidebarRowMeta[]): boolean {
 // flag both filters the list and drives the fetch.
 export const $sidebarShowArchived = persistentAtom(SIDEBAR_SHOW_ARCHIVED_STORAGE_KEY, false, Codecs.bool)
 
+export const $sidebarTagFilter = atom<string[]>([])
+
+export function toggleSidebarTagFilter(tag: string) {
+  toggleIn($sidebarTagFilter, tag)
+}
+
 export const $sidebarStatusFilter = persistentAtom<SessionStatusBucket[]>(
   SIDEBAR_STATUS_FILTER_STORAGE_KEY,
   [],
@@ -393,9 +399,16 @@ export const $sidebarOrdering: ReadableAtom<SidebarOrdering> = computed(
 )
 
 export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
-  [$sidebarStatusFilter, $sidebarProjectFilter, $sidebarProfileFilter, $sidebarPrFilter, $sidebarShowArchived],
-  (statuses, projects, profiles, prs, archived) =>
-    statuses.length > 0 || projects.length > 0 || profiles.length > 0 || prs.length > 0 || archived
+  [
+    $sidebarStatusFilter,
+    $sidebarProjectFilter,
+    $sidebarProfileFilter,
+    $sidebarPrFilter,
+    $sidebarShowArchived,
+    $sidebarTagFilter
+  ],
+  (statuses, projects, profiles, prs, archived, tags) =>
+    statuses.length > 0 || projects.length > 0 || profiles.length > 0 || prs.length > 0 || archived || tags.length > 0
 )
 
 /** Anything at all moved off the shipped view — what makes a reset worth
@@ -710,6 +723,7 @@ export function toggleSidebarPrFilter(bucket: PullRequestBucket) {
 }
 
 function clearSidebarFilters() {
+  $sidebarTagFilter.set([])
   $sidebarStatusFilter.set([])
   $sidebarProjectFilter.set([])
   $sidebarProfileFilter.set([])

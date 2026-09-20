@@ -330,14 +330,14 @@ def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
         return False
 
 
-def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
+def _iter_named_profile_dirs(*, live_only: bool = True, profiles_root: Optional[Path] = None) -> List[Path]:
     """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones.
 
     A dir is a profile only when it carries an identity marker (``named_profile_has_identity``):
     cron/logging side-effects and pre-tombstone ghost shells leave marker-less dirs that must
     not be listed, served, ticked, or ``.env``-seeded — that seeding is what turned a ghost
     shell into a "real" profile on the next ``hermes update`` (#95188, #94823, #99392)."""
-    profiles_root = _get_profiles_root()
+    profiles_root = profiles_root if profiles_root is not None else _get_profiles_root()
     if not profiles_root.is_dir():
         return []
     return [

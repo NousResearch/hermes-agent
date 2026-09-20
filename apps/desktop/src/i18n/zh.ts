@@ -2922,6 +2922,14 @@ export const zh = defineLocale({
   },
 
   sidebar: {
+    tags: {
+      label: '标签',
+      newTag: '新标签',
+      createAndAssign: '创建并分配',
+      empty: '暂无标签',
+      loadError: '无法加载标签',
+      updateError: '无法更新标签'
+    },
     profileRail: '配置档案栏',
     gatewayGroups: {
       grouping: '网关与配置',

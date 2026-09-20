@@ -35,6 +35,14 @@ vi.mock('@/i18n', () => ({
       },
       errors: { genericFailure: 'Something went wrong' },
       sidebar: {
+        tags: {
+          label: 'Tags',
+          newTag: 'New tag',
+          createAndAssign: 'Create and assign',
+          empty: 'No tags',
+          loadError: 'Could not load tags',
+          updateError: 'Could not update tags'
+        },
         projects: {
           menuAppearance: 'Appearance',
           moveFailed: 'Could not move session',

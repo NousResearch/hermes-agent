@@ -1954,6 +1954,14 @@ export const ar = defineLocale({
     missingBody: 'لم يعد هذا الناتج موجودًا في السجل المحلي.'
   },
   sidebar: {
+    tags: {
+      label: 'الوسوم',
+      newTag: 'وسم جديد',
+      createAndAssign: 'إنشاء وتعيين',
+      empty: 'لا توجد وسوم',
+      loadError: 'تعذر تحميل الوسوم',
+      updateError: 'تعذر تحديث الوسوم'
+    },
     gatewayGroups: {
       grouping: 'البوابة والملف الشخصي',
       rename: 'إعادة تسمية المجموعة',

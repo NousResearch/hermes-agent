@@ -51,6 +51,8 @@ import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal }
 
 import type { SessionTitleResponse } from '../../types'
 
+import { SessionTagsMenu } from './session-tags-menu'
+
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
 // A freshly *branched* session (and any brand-new chat) lives only in the
@@ -103,6 +105,8 @@ interface SessionActions {
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
   profile?: string
+  connectionId?: string | null
+  tags?: string[]
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -188,6 +192,8 @@ function useSessionActions({
   pinned = false,
   unread = false,
   profile,
+  connectionId,
+  tags,
   onPin,
   onToggleUnread,
   onBranch,
@@ -465,6 +471,12 @@ function useSessionActions({
       {openItems.map(item => renderActionItem(kit, item))}
       {openItems.length > 0 && <kit.Separator />}
       {identityItems.map(item => renderActionItem(kit, item))}
+      <kit.Sub>
+        <kit.SubTrigger disabled={!sessionId}>{t.sidebar.tags.label}</kit.SubTrigger>
+        <kit.SubContent className="max-h-80 overflow-y-auto">
+          <SessionTagsMenu connectionId={connectionId} kit={kit} profile={profile} sessionId={sessionId} tags={tags} />
+        </kit.SubContent>
+      </kit.Sub>
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>
           <Codicon name="symbol-color" size="0.875rem" />

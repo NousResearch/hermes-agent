@@ -231,12 +231,7 @@ export async function runGroupRoundMember(
   }
 
   if (reply !== null && !isGroupPassText(reply)) {
-    appendGroupChatEntry(
-      context.group,
-      groupMemberAuthor(member),
-      reply,
-      thread
-    )
+    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
     // A reply cannot acknowledge user entries that arrived during inference.
     updateGroupChat(context.group, (r: GroupChatRoom) => {
       if (r.watermarks[markKey] === r.log.length - 1) {

@@ -136,17 +136,26 @@ test('resolveBehindLocally: unreachable tip is unknown, reachable tip is ahead, 
   // A tip missing from the object database (truly stale checkout) stays unknown.
   const stale = fakeGit({ 'cat-file': { code: 1 } })
   assert.equal(await resolveBehindLocally(stale.runGit, '/repo', SHA_A, SHA_B), null)
-  assert.deepEqual(stale.calls.map(args => args[0]), ['cat-file'])
+  assert.deepEqual(
+    stale.calls.map(args => args[0]),
+    ['cat-file']
+  )
 
   // The remote tip reachable from HEAD is a local commit AHEAD, not an update.
   const ahead = fakeGit({})
   assert.equal(await resolveBehindLocally(ahead.runGit, '/repo', SHA_A, SHA_B), 0)
-  assert.deepEqual(ahead.calls.map(args => args[0]), ['cat-file', 'merge-base'])
+  assert.deepEqual(
+    ahead.calls.map(args => args[0]),
+    ['cat-file', 'merge-base']
+  )
 
   // Otherwise the honest local count of HEAD..tip (merge-base must fail first).
   const behind = fakeGit({ 'merge-base': { code: 1 }, 'rev-list': { code: 0, stdout: '3\n' } })
   assert.equal(await resolveBehindLocally(behind.runGit, '/repo', SHA_A, SHA_B), 3)
-  assert.deepEqual(behind.calls.map(args => args[0]), ['cat-file', 'merge-base', 'rev-list'])
+  assert.deepEqual(
+    behind.calls.map(args => args[0]),
+    ['cat-file', 'merge-base', 'rev-list']
+  )
 
   // A git failure mid-walk is never silently read as zero.
   const broken = fakeGit({ 'merge-base': { code: 1 }, 'rev-list': { code: 128 } })
@@ -156,6 +165,7 @@ test('resolveBehindLocally: unreachable tip is unknown, reachable tip is ahead, 
 test('listLocalCommits renders the local gap newest-first in the parseCompare shape', async () => {
   const OLDEST = '1'.repeat(40)
   const NEWEST = '2'.repeat(40)
+
   const gitLog = fakeGit({
     log: {
       code: 0,

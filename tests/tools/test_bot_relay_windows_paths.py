@@ -22,6 +22,8 @@ Two failures on a Windows desktop install talking to a remote gateway:
 import shlex
 from pathlib import Path
 
+import pytest
+
 import tools.bot_mode_dm as bot_mode_dm
 import tools.bot_relay as bot_relay
 
@@ -29,10 +31,10 @@ import tools.bot_relay as bot_relay
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
 
 
-def test_waiter_argv_uses_forward_slashes_on_windows(monkeypatch):
+@pytest.mark.windows_only
+def test_waiter_argv_uses_forward_slashes_on_windows():
     """On native Windows the reply path rides as a forward-slash argv element, like the delivery
     runner's paths: Git Bash runs those, and parses a backslash path as a command name."""
-    monkeypatch.setattr(bot_relay.sys, "platform", "win32")
     parts = shlex.split(bot_relay.waiter_command("C:\\Users\\joshu\\.hermes", ENV))
 
     assert "-c" not in parts and "--wait-reply" in parts

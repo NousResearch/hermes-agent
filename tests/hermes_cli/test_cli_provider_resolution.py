@@ -363,6 +363,107 @@ def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_pat
     assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
+def _quota_auth_error():
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+    return AuthError(
+        "Codex provider quota exhausted (429); retry after 1839s. Credentials are still valid.",
+        provider="openai-codex",
+        code=CODEX_RATE_LIMITED_CODE,
+        relogin_required=False,
+    )
+
+
+def test_fallback_runtime_quota_outage_is_not_labeled_auth_failure(monkeypatch, tmp_path):
+    """A 429 at credential resolution is quota, not bad credentials (#117482)."""
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    printed = []
+    monkeypatch.setattr("cli._cprint", printed.append, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"provider": "custom", "base_url": "http://x/v1", "api_key": "k"},
+    )
+    monkeypatch.setattr("hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: "k")
+
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    shell._fallback_model = [{"provider": "custom", "model": "local-model"}]
+    runtime = shell._resolve_fallback_runtime(_quota_auth_error())
+
+    assert runtime is not None
+    assert printed
+    assert "quota exhausted" in printed[-1]
+    assert "auth failed" not in printed[-1]
+
+
+def test_fallback_runtime_keeps_auth_failed_wording_for_bad_credentials(monkeypatch, tmp_path):
+    from hermes_cli.auth import AuthError
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    printed = []
+    monkeypatch.setattr("cli._cprint", printed.append, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"provider": "custom", "base_url": "http://x/v1", "api_key": "k"},
+    )
+    monkeypatch.setattr("hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: "k")
+
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    shell._fallback_model = [{"provider": "custom", "model": "local-model"}]
+    runtime = shell._resolve_fallback_runtime(
+        AuthError("no key", provider="openai-codex", code="missing_api_key"))
+
+    assert runtime is not None
+    assert printed
+    assert "Primary auth failed" in printed[-1]
+    assert "quota exhausted" not in printed[-1]
+
+
+def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_path):
+    """Kanban workers need this flag: a quota wall at startup is not a worker failure (#117482)."""
+    from hermes_cli.auth import AuthError
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+
+    def _raise_quota(**kw):
+        raise _quota_auth_error()
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise_quota)
+
+    quota_shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    quota_shell.model = "gpt-x"
+    quota_shell.requested_provider = "openai-codex"
+    quota_shell._explicit_api_key = None
+    quota_shell._explicit_base_url = None
+    quota_shell._fallback_model = []
+    quota_shell.tool_progress_mode = "off"
+    assert quota_shell._ensure_runtime_credentials() is False
+    assert quota_shell._credentials_rate_limited is True
+
+    def _raise_missing(**kw):
+        raise AuthError("no key", provider="openai-codex", code="missing_api_key")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise_missing)
+    bad_shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    bad_shell.model = "gpt-x"
+    bad_shell.requested_provider = "openai-codex"
+    bad_shell._explicit_api_key = None
+    bad_shell._explicit_base_url = None
+    bad_shell._fallback_model = []
+    bad_shell.tool_progress_mode = "off"
+    assert bad_shell._ensure_runtime_credentials() is False
+    assert bad_shell._credentials_rate_limited is False
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)

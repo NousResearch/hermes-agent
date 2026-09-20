@@ -86,3 +86,49 @@ def test_dispatcher_spawned_worker_keeps_a_plain_failure_at_one(monkeypatch):
 )
 def test_a_plain_one_shot_run_reports_its_outcome(monkeypatch, turn_result, expected):
     assert _run_non_quiet(monkeypatch, turn_result) == expected
+
+
+def test_kanban_worker_quota_during_credential_resolution_is_tempfail_not_auth(monkeypatch):
+    """A 429 at startup never produces a turn result; the worker must still exit 75 (#117482)."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    assert cli._single_query_exit_code(None, credentials_rate_limited=True) == KANBAN_RATE_LIMIT_EXIT_CODE
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    assert cli._single_query_exit_code(None, credentials_rate_limited=True) == 1
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    assert cli._single_query_exit_code(None, credentials_rate_limited=False) == 1
+
+
+def test_quiet_kanban_worker_exits_tempfail_when_credentials_are_rate_limited(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    monkeypatch.setattr(cli, "_should_seed_interactive", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_collect_query_images", lambda q, i: (q, []))
+    monkeypatch.setattr(cli, "_collect_kanban_task_images", lambda imgs: [])
+    monkeypatch.setattr(cli, "_finalize_single_query", lambda c: None)
+    stub = SimpleNamespace(
+        _claim_active_session=lambda *a, **k: True,
+        _ensure_runtime_credentials=lambda: False,
+        _credentials_rate_limited=True,
+        session_id="s1",
+        model="gpt-x",
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli._run_single_query_mode(stub, "do the thing", None, True, True)
+    assert exc.value.code == KANBAN_RATE_LIMIT_EXIT_CODE
+
+
+def test_quiet_kanban_worker_still_exits_one_on_real_credential_failure(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    monkeypatch.setattr(cli, "_should_seed_interactive", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_collect_query_images", lambda q, i: (q, []))
+    monkeypatch.setattr(cli, "_collect_kanban_task_images", lambda imgs: [])
+    monkeypatch.setattr(cli, "_finalize_single_query", lambda c: None)
+    stub = SimpleNamespace(
+        _claim_active_session=lambda *a, **k: True,
+        _ensure_runtime_credentials=lambda: False,
+        _credentials_rate_limited=False,
+        session_id="s1",
+        model="gpt-x",
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli._run_single_query_mode(stub, "do the thing", None, True, True)
+    assert exc.value.code == 1

@@ -16,6 +16,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
+import { compactNumber } from '@/lib/format'
 import {
   Activity,
   AlertCircle,
@@ -30,7 +31,7 @@ import {
   Zap
 } from '@/lib/icons'
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { cacheHitLabel, contextBarLabel, LiveDuration, sessionUsageTotalLabel, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -56,7 +57,6 @@ import {
   sessionMatchesStoredId
 } from '@/store/session'
 import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
-import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
 import {
@@ -260,16 +260,13 @@ export function useStatusbarItems({
 
   // The backend only knows a session's MEASURED occupancy once a turn has run
   // in this process, so a resumed conversation reports none and the gauge had
-  // nothing to paint — turning it on looked like it did nothing until you sent
-  // a message. Estimate from the live prompt + transcript instead, on the same
-  // read-only RPC the popover uses, so the readout is right the moment it's on
-  // screen. Gated on the gauge being shown — the bar itself is unmounted while
-  // toggled off, so this covers the rest.
-  const contextItemHidden = useStore($statusbarHiddenIds).includes('context-usage')
-
+  // nothing to paint. Estimate from the live prompt + transcript instead, on
+  // the same read-only RPC the popover uses, so the readout is right the
+  // moment it's on screen. Always enabled — the meter is a locked-visible,
+  // persistent element of the bar, so there is no toggle left to gate on.
   const { breakdown: contextBreakdown, loading: contextBreakdownLoading } = useContextBreakdown({
     busy,
-    enabled: !contextItemHidden,
+    enabled: true,
     requestGateway,
     sessionId: activeSessionId
   })
@@ -298,6 +295,42 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])
+
+  // The bar line: the context meter plus the session's lifetime total, so the
+  // current window and the cumulative usage read side by side. The total only
+  // joins once the window is known — without one the label already falls back
+  // to the total, and echoing it twice reads as a glitch.
+  const contextDetail = useMemo(
+    () => (contextBar ? [contextBar, sessionUsageTotalLabel(gaugeUsage)].filter(Boolean).join(' · ') : undefined),
+    [contextBar, gaugeUsage]
+  )
+
+  // Hover detail: the exact window figures plus the in/out/Σ/calls split,
+  // mirroring `hermes /usage` wording. `~` marks estimated figures.
+  const contextTitle = useMemo(() => {
+    const totals = copy.contextMeterTotals(
+      compactNumber(gaugeUsage.input),
+      compactNumber(gaugeUsage.output),
+      compactNumber(gaugeUsage.total || gaugeUsage.input + gaugeUsage.output),
+      gaugeUsage.calls || 0
+    )
+
+    if (!gaugeUsage.context_max) {
+      return totals
+    }
+
+    const mark = gaugeUsage.context_estimated ? '~' : ''
+
+    return [
+      copy.contextMeterTitle(
+        `${mark}${compactNumber(gaugeUsage.context_used ?? 0)}`,
+        compactNumber(gaugeUsage.context_max),
+        `${mark}${Math.max(0, Math.min(100, Math.round(gaugeUsage.context_percent ?? 0)))}%`
+      ),
+      totals
+    ].join(' · ')
+  }, [copy, gaugeUsage])
+
   // Both ride the same usage payload the context meter does (session.usage
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
@@ -623,18 +656,20 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: contextBar || undefined,
-        // Never self-hide: the user opted this item in (it's hidden-by-
-        // default), so an empty label must render as a waiting placeholder,
-        // not a vanished item — an enabled-but-invisible toggle reads as
-        // "another item took its spot".
+        detail: contextDetail,
+        // Persistent session context bar: locked visible, so it always renders
+        // — hiding it is not on offer, this is the standing context readout.
+        // An empty label still paints '—' as a waiting placeholder rather than
+        // vanishing.
         id: 'context-usage',
         label: contextUsage || '—',
+        lockedVisible: true,
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
           <ContextUsagePanel breakdown={contextBreakdown} loading={contextBreakdownLoading} usage={gaugeUsage} />
         ),
+        title: contextTitle,
         toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
       },
@@ -691,9 +726,10 @@ export function useStatusbarItems({
       cacheHit,
       chatOpen,
       clientVersionItem,
-      contextBar,
       contextBreakdown,
       contextBreakdownLoading,
+      contextDetail,
+      contextTitle,
       contextUsage,
       copy,
       gaugeUsage,

@@ -71,8 +71,12 @@ export function errText(err: unknown): string {
   return raw
 }
 
-/** Backend timestamps are epoch SECONDS; the canonical formatter takes ms. */
-export const ago = (seconds?: null | number): null | string => (seconds ? relativeTime(seconds * 1000) : null)
+/** Backend timestamps are epoch seconds; the canonical formatter takes ms. */
+export const ago = (seconds?: null | number): null | string => {
+  const ms = Number(seconds) * 1000
+
+  return seconds && Number.isFinite(ms) ? relativeTime(ms) : null
+}
 
 const ELAPSED_SUFFIX = { day: 'd', hour: 'h', minute: 'm', second: 's' } as const
 

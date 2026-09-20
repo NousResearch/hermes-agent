@@ -261,6 +261,41 @@ def test_terminal_account_state_gets_a_direct_reauthentication_grant(portal):
     assert "last_auth_error" not in refreshed
 
 
+def test_cancelling_direct_reauthentication_during_token_poll_persists_nothing(portal):
+    from hermes_cli.auth import _load_auth_store, _save_auth_store, _save_provider_state
+    store = _load_auth_store()
+    _save_provider_state(store, "nous", {
+        "auth_method": "oauth_device_code",
+        "portal_base_url": PORTAL,
+        "last_auth_error": {"code": "invalid_grant", "relogin_required": True},
+    })
+    _save_auth_store(store)
+    before = _auth_file_path().read_bytes()
+    polling = threading.Event()
+    stop = threading.Event()
+    real_handler = portal.handler
+
+    def _pending_token(request):
+        if request.url.path == "/api/oauth/token":
+            polling.set()
+            return httpx.Response(400, json={"error": "authorization_pending"})
+        return real_handler(request)
+
+    portal.handler = _pending_token
+    states = []
+    worker = threading.Thread(
+        target=lambda: states.extend(_drain(
+            cancelled=stop.is_set, cancel_wins_after_promotion=False)))
+    worker.start()
+    assert polling.wait(2)
+    stop.set()
+    worker.join(3)
+
+    assert not worker.is_alive()
+    assert [state.kind for state in states] == ["code", "waiting", "superseded"]
+    assert _auth_file_path().read_bytes() == before
+
+
 def test_free_tier_off_yields_unavailable(portal, monkeypatch):
     monkeypatch.setattr(anon_auth, "guest_enabled", lambda: False)
     portal.calls.clear()

@@ -342,7 +342,7 @@ def run_sign_in(
     """
     from hermes_cli import anon_auth as _core
     from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
-    from hermes_cli.auth_device_flow import _request_device_code
+    from hermes_cli.auth_device_flow import _DeviceFlowCancelled, _request_device_code
     from hermes_cli.auth_nous import _nous_http_client
 
     is_cancelled = cancelled or (lambda: False)
@@ -438,12 +438,17 @@ def run_sign_in(
                 return
 
             remaining = max(1, int(deadline - time.monotonic()))
+            token_poll_cancelled = post_promotion_cancelled if promoting_guest else is_cancelled
             token_data = _core._poll_for_token(
                 client=client, portal_base_url=portal, client_id=client_id,
-                device_code=str(device["device_code"]), expires_in=remaining, poll_interval=interval)
+                device_code=str(device["device_code"]), expires_in=remaining, poll_interval=interval,
+                cancelled=token_poll_cancelled)
         account_state = _core._account_state_from_token(
             token_data, portal_base_url=portal, client_id=client_id, scope=scope_str,
             verify=verify, timeout_seconds=timeout_seconds)
+    except _DeviceFlowCancelled:
+        yield Superseded()
+        return
     except _core.AnonCredentialDead:
         # Best effort: the credential is provably dead at the account service, so the outcome is
         # Retired whatever the local write does. A clear that fails (locked or read-only store)
@@ -461,10 +466,11 @@ def run_sign_in(
         return
 
     try:
-        if post_promotion_cancelled():
+        persist_cancelled = post_promotion_cancelled if promoting_guest else is_cancelled
+        if persist_cancelled():
             yield Superseded()
             return
-        guard = persist_guard or _default_persist_guard(post_promotion_cancelled)
+        guard = persist_guard or _default_persist_guard(persist_cancelled)
         with open_scope():
             with guard() as may_persist:
                 if may_persist:

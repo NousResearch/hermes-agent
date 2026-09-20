@@ -27,6 +27,10 @@ from utils import is_truthy_value
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")
 
+
+class _DeviceFlowCancelled(Exception):
+    """Internal signal that a device-code poll was cancelled by its owner."""
+
 # Console/text-mode browsers that ``webbrowser`` will launch INSIDE the terminal, hijacking the
 # user's TTY with an unusable text browser. When the resolved browser is one of these we refuse
 # to auto-open and fall back to the print-the-URL path, same as a remote session.
@@ -317,16 +321,29 @@ def _poll_device_token_generic(
     validate_success: Callable[[Dict[str, Any]], None],
     on_non_json_error: Callable[["httpx.Response"], Exception],
     on_error: Callable[["httpx.Response", Dict[str, Any]], Exception],
-    on_timeout: Callable[[], Exception]) -> Dict[str, Any]:
+    on_timeout: Callable[[], Exception],
+    cancelled: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
 
     ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
     Every other error, a non-JSON error body, and the deadline become provider-specific exceptions
     via the supplied factories so each caller keeps its exact error contract.
     """
+    def _wait(seconds: int) -> None:
+        wait_deadline = time.monotonic() + seconds
+        while True:
+            if cancelled is not None and cancelled():
+                raise _DeviceFlowCancelled()
+            remaining = wait_deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 1.0))
+
     deadline = time.monotonic() + max(1, expires_in)
     current_interval = poll_interval
     while time.monotonic() < deadline:
+        if cancelled is not None and cancelled():
+            raise _DeviceFlowCancelled()
         response = post()
         if response.status_code == 200:
             payload = response.json()
@@ -339,11 +356,11 @@ def _poll_device_token_generic(
             raise on_non_json_error(response)
         error_code = str(error_payload.get("error") or "")
         if error_code == "authorization_pending":
-            time.sleep(current_interval)
+            _wait(current_interval)
             continue
         if error_code == "slow_down":
             current_interval = min(current_interval + 1, 30)
-            time.sleep(current_interval)
+            _wait(current_interval)
             continue
         raise on_error(response, error_payload)
     raise on_timeout()
@@ -351,7 +368,8 @@ def _poll_device_token_generic(
 
 def _poll_for_token(
     client: httpx.Client, portal_base_url: str, client_id: str, device_code: str,
-    expires_in: int, poll_interval: int) -> Dict[str, Any]:
+    expires_in: int, poll_interval: int,
+    cancelled: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Poll the Nous token endpoint until the user approves or the code expires."""
     def _validate(payload: Dict[str, Any]) -> None:
         if "access_token" not in payload:
@@ -377,7 +395,8 @@ def _poll_for_token(
             "Token endpoint returned a non-JSON error response"),
         # Enriched at the SOURCE so the CLI login and the dashboard/desktop poller
         # (web_server_oauth._nous_promotion_poller surfaces it to the UI) both inherit the guidance.
-        on_timeout=lambda: TimeoutError(_nous_device_auth_timeout_message(portal_base_url)))
+        on_timeout=lambda: TimeoutError(_nous_device_auth_timeout_message(portal_base_url)),
+        cancelled=cancelled)
 
 
 def _prompt_yes_no(prompt: str, *, default: str) -> bool:

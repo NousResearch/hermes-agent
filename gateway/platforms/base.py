@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import ipaddress
 import logging
+import math
 import os
 import random
 import re
@@ -2383,6 +2384,36 @@ class BasePlatformAdapter(ABC):
     _SPLIT_THRESHOLD: int = 4000
     _text_batch_delay_seconds: float = 0.0
     _text_batch_split_delay_seconds: float = 0.0
+    # Shared cadence for adapters that batch: a quiet period long enough to merge a client-side
+    # split (Telegram's measured envelope), short enough that a single short message is not
+    # visibly delayed (#44883). Ceilings bound a misconfigured value fed to asyncio.sleep().
+    _TEXT_BATCH_DEFAULT_DELAY_S: float = 0.3
+    _TEXT_BATCH_MAX_DELAY_S: float = 2.0
+    _TEXT_BATCH_DEFAULT_SPLIT_DELAY_S: float = 1.0
+    _TEXT_BATCH_MAX_SPLIT_DELAY_S: float = 4.0
+
+    def _coerce_float_extra(self, key: str, default: float, *, min_value: float = 0.0, max_value: Optional[float] = None) -> float:
+        """Float from ``config.extra``; NaN/Inf/negative/unparseable → ``default``; clamped to ``[min_value, max_value]``."""
+        extra = getattr(self.config, "extra", None) or {}
+        try:  # float(None) → TypeError → default
+            parsed = float(extra.get(key))
+        except (TypeError, ValueError):
+            parsed = float(default)
+        if not math.isfinite(parsed) or parsed < 0:
+            parsed = float(default)
+        parsed = max(parsed, min_value)
+        if max_value is not None and parsed > max_value:
+            logger.warning("%s=%s exceeds the %s ceiling; clamped", key, parsed, max_value)
+            parsed = max_value
+        return parsed
+
+    def _configure_text_batch_delays(self) -> None:
+        """Read ``text_batch_delay_seconds`` / ``text_batch_split_delay_seconds`` from ``config.extra`` at the shared cadence."""
+        self._text_batch_delay_seconds = self._coerce_float_extra(
+            "text_batch_delay_seconds", self._TEXT_BATCH_DEFAULT_DELAY_S, max_value=self._TEXT_BATCH_MAX_DELAY_S)
+        self._text_batch_split_delay_seconds = self._coerce_float_extra(
+            "text_batch_split_delay_seconds", self._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S,
+            min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_MAX_SPLIT_DELAY_S)
 
     def _event_session_key(self, event: "MessageEvent") -> str:
         """Adapter-level session key for ``event``, profile-namespaced like the agent run."""

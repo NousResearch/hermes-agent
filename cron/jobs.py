@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from cron.constants import FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
+from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
@@ -188,10 +188,8 @@ def get_cron_output_dir() -> Path:
 # mid-run.
 ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
 
-# Derived TTL = inactivity timeout × this headroom. The TTL only recovers a claim left by a tick
-# that DIED mid-run; the timeout is an *inactivity* limit, not a wall-clock cap, so healthy runs may
-# legitimately exceed it — hence the headroom.
-_ONESHOT_RUN_CLAIM_TTL_HEADROOM = 3
+# Derived TTL = inactivity timeout × CLAIM_TTL_INACTIVITY_HEADROOM (cron/constants.py). The TTL
+# only recovers a claim left by a tick that DIED mid-run.
 
 _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
 
@@ -206,7 +204,7 @@ def _oneshot_run_claim_ttl_seconds() -> float:
         timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
     if timeout <= 0:
         return float(ONESHOT_RUN_CLAIM_TTL_SECONDS)
-    return max(timeout * _ONESHOT_RUN_CLAIM_TTL_HEADROOM, float(ONESHOT_RUN_CLAIM_TTL_SECONDS))
+    return max(timeout * CLAIM_TTL_INACTIVITY_HEADROOM, float(ONESHOT_RUN_CLAIM_TTL_SECONDS))
 
 
 def _job_running_in_this_process(job_id: str) -> bool:

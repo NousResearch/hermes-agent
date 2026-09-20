@@ -288,17 +288,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Set by disconnect() before SIGTERMing so _check_managed_bridge_exit() can tell an intentional exit (-15/-2/0) from a crash.
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
-        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 5.0)
-        self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 10.0)
-
-    def _coerce_float_extra(self, key: str, default: float) -> float:
-        """Read a float from ``config.extra``; NaN/Inf/negative/unparseable → ``default`` (fed to asyncio.sleep)."""
-        import math
-        try:  # float(None) → TypeError → default
-            parsed = float(self.config.extra.get(key) if getattr(self.config, "extra", None) else None)
-        except (TypeError, ValueError):
-            return float(default)
-        return parsed if math.isfinite(parsed) and parsed >= 0 else float(default)
+        # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
+        self._configure_text_batch_delays()
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"

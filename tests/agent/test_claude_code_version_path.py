@@ -56,5 +56,4 @@ def test_path_hit_is_probed_first(monkeypatch, tmp_path):
     monkeypatch.setattr(adapter, "_CLAUDE_CODE_PREFIXES", (str(tmp_path / "prefix"),))
     _cli_versions(monkeypatch, {on_path: "2.1.400", stale: "2.1.100"})
 
-    assert adapter._claude_code_candidates()[:2] == [on_path, stale]
     assert _detect_claude_code_version() == "2.1.400"

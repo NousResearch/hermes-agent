@@ -4,6 +4,7 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 """
 
 import contextlib
+import json
 import os
 import shutil
 import signal
@@ -95,9 +96,14 @@ def _emergency_cleanup_all_sessions():
                 _bt._recording_sessions.clear()
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
     _best_effort("Lightpanda cleanup on exit", _stop_all_lightpanda)
+    # Reap EVERY browser_harness daemon this process owns (not just idle ones) so a clean
+    # exit leaves none running; the orphan reaper would catch them on the next sibling's
+    # sweep, but a clean exit should not bleed them for up to a full reap interval.
+    _best_effort("browser_harness cleanup on exit", _reap_all_owned_harness_daemons)
     # Safe even if we never used the browser — owner_pid liveness protects daemons
     # owned by other live hermes processes.
     _best_effort("Orphan reap on exit", _reap_orphaned_browser_sessions)
+    _best_effort("browser_harness orphan reap on exit", _reap_orphaned_browser_harness_daemons)
 
 
 @contextlib.contextmanager
@@ -384,6 +390,221 @@ def _reap_orphaned_browser_sessions():
         _bt.logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
 
 
+# ----------------------------------------------------------------------------
+# Pod-wide concurrent-local-browser cap (shared PID namespace)
+# ----------------------------------------------------------------------------
+def _count_local_chromium_browsers() -> int:
+    """Count LOCAL Chromium *browser* processes pod-wide (shared PID namespace).
+
+    Renderers/GPU/utility children all carry ``--type=…`` on their argv; only the
+    browser process (no ``--type=``) is one chromium instance — the unit we cap,
+    and the resident-memory hog (the 2026-09-19 leak was 21 chrome-headless-shell
+    main procs / 1028 MiB). Missing psutil → 0 (fail open: browsing is never bricked).
+    """
+    try:
+        import psutil
+    except ImportError:
+        return 0
+    count = 0
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            cmdline = list(proc.info.get("cmdline") or [])
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        # chrome-headless-shell only (the leaked binary); the browser process's argv
+        # has no --type= flag, its renderer/GPU/utility children do.
+        if "chrome-headless-shell" not in name and not any(
+            "chrome-headless-shell" in c for c in (cmdline[:1] or [""])
+        ):
+            continue
+        if any(c.startswith("--type=") for c in cmdline):
+            continue
+        count += 1
+    return count
+
+
+def _local_chromium_capacity_exhausted() -> bool:
+    """True when launching another LOCAL Chromium would exceed the pod-wide cap."""
+    return _count_local_chromium_browsers() >= _bt.BROWSER_MAX_CONCURRENT_LOCAL_BROWSERS
+
+
+# ----------------------------------------------------------------------------
+# browser_harness (browser-use CLI) daemon lifecycle
+# ----------------------------------------------------------------------------
+def _harness_runtime_root() -> str:
+    """Shared, profile-namespaced runtime root for browser_harness daemons.
+
+    The browser-use CLI spawns one ``browser_harness.daemon`` (python) per BU_NAME that
+    ATTACHES to Hermes-packaged Chromium over CDP (BU_CDP_WS); it never self-idles, so
+    Hermes must reap it. Pointing its runtime dir at a SHARED tmpdir location (namespaced
+    by profile to avoid BU_NAME collisions across profiles) lets ANY hermes process's
+    orphan reaper see every daemon's pid/owner files in one scan — the same contract the
+    agent-browser reaper already uses for ``/tmp/agent-browser-*`` socket dirs.
+    """
+    from hermes_constants import profile_name_for_home
+
+    try:
+        slug = profile_name_for_home(get_hermes_home()) or "default"
+    except Exception:
+        slug = "default"
+    slug = "".join(c if (c.isalnum() or c in "-_") else "_" for c in slug) or "default"
+    return os.path.join(_bt._socket_safe_tmpdir(), "hermes-browser-harness", slug)
+
+
+def _harness_runtime_dir() -> str:
+    d = os.path.join(_harness_runtime_root(), "runtime")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def _write_harness_owner_pid(name: str) -> None:
+    """Record this hermes PID as owner of ``name``'s browser_harness daemon so the orphan
+    reaper can tell a live-owner daemon from a SIGKILL'd-owner one (mirrors the
+    agent-browser ``<session>.owner_pid`` contract)."""
+    try:
+        path = os.path.join(_harness_runtime_dir(), f"bu-{name}.owner_pid")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError as exc:
+        _bt.logger.debug("Could not write browser_harness owner_pid for %s: %s", name, exc)
+
+
+def _read_harness_daemon_pid(name: str, runtime_dir: str) -> Optional[int]:
+    """browser_harness daemon PID for ``name`` from ``runtime_dir``; None when
+    missing/corrupt. The daemon writes a bare int or JSON ``{"pid": N}`` (and may leave a
+    start-time fingerprint), so parse all three."""
+    path = os.path.join(runtime_dir, f"bu-{name}.pid")
+    try:
+        raw = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        if raw.startswith("{"):
+            return int(json.loads(raw)["pid"])
+        return int(raw.split()[0])
+    except (ValueError, KeyError, TypeError, IndexError):
+        return None
+
+
+def _verify_reapable_harness_daemon(daemon_pid: int) -> bool:
+    """Confirm a live PID is genuinely a browser_harness daemon (fail-closed)."""
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        cmdline = " ".join(psutil.Process(daemon_pid).cmdline() or []).lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return False
+    return "browser_harness" in cmdline
+
+
+def _reap_harness_daemon(daemon_pid: int, name: str) -> bool:
+    """Terminate one browser_harness daemon (a single python process — no chromium
+    children; it ATTACHES to agent-browser's Chromium over CDP). Tree-kill via the
+    registry's start-time-fingerprinted reaper; True when a kill was issued."""
+    from gateway.status import get_process_start_time
+    from tools.process_registry import ProcessRegistry
+
+    start = get_process_start_time(daemon_pid)
+    if start is None:
+        _bt.logger.warning("Refusing to reap browser_harness daemon %s (pid %d): no start-time fingerprint",
+                           name, daemon_pid)
+        return False
+    try:
+        ProcessRegistry._terminate_host_pid(daemon_pid, start)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _reap_orphaned_browser_harness_daemons() -> None:
+    """Kill browser_harness daemons whose owning hermes process is gone. Scans the shared
+    ``hermes-browser-harness/*/runtime`` dirs for ``bu-*.pid`` + ``bu-*.owner_pid``; a dead
+    owner (or bogus/stale pid file) gets reaped, a live owner is left alone. Because the
+    runtime dir is shared and profile-namespaced, ANY hermes process reaps another
+    profile's SIGKILL'd orphans within BROWSER_ORPHAN_REAP_INTERVAL."""
+    import glob
+
+    root = os.path.join(_bt._socket_safe_tmpdir(), "hermes-browser-harness", "*", "runtime")
+    pid_files = glob.glob(os.path.join(root, "bu-*.pid"))
+    if not pid_files:
+        return
+
+    from gateway.status import _pid_exists
+
+    reaped = 0
+    for pid_file in pid_files:
+        runtime_dir = os.path.dirname(pid_file)
+        name = os.path.basename(pid_file)[len("bu-"):-len(".pid")]
+        if not name:
+            continue
+        daemon_pid = _read_harness_daemon_pid(name, runtime_dir)
+        try:
+            owner_pid = _read_pid_file(os.path.join(runtime_dir, f"bu-{name}.owner_pid"))
+        except OSError:
+            owner_pid = None
+        if owner_pid is not None and _pid_exists(owner_pid):
+            continue  # a live hermes process owns it
+        if daemon_pid is None or not _pid_exists(daemon_pid):
+            continue  # daemon already gone (SIGKILL/OOM leaves a zombie pid file; nothing to reap)
+        if not _verify_reapable_harness_daemon(daemon_pid):
+            continue  # recycled PID onto a stranger — leave it
+        if _reap_harness_daemon(daemon_pid, name):
+            reaped += 1
+    if reaped:
+        _bt.logger.info("Reaped %d orphaned browser_harness daemon(s)", reaped)
+
+
+def _cleanup_inactive_harness_daemons() -> None:
+    """Reap THIS process's browser_harness daemons idle past the inactivity timeout —
+    the browser_harness analogue of ``_cleanup_inactive_browser_sessions``. The daemon
+    never self-idles, so without this its count grows unboundedly per BU_NAME."""
+    current_time = time.time()
+    with _bt._cleanup_lock:
+        stale = [name for name, last in list(_bt._harness_last_activity.items())
+                 if current_time - last > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
+    for name in stale:
+        runtime_dir = _harness_runtime_dir()
+        daemon_pid = _read_harness_daemon_pid(name, runtime_dir)
+        if daemon_pid is not None and _pid_exists(daemon_pid) and _verify_reapable_harness_daemon(daemon_pid):
+            _bt.logger.info("Cleaning up inactive browser_harness daemon %s (pid %d)", name, daemon_pid)
+            _reap_harness_daemon(daemon_pid, name)
+        else:
+            _bt.logger.debug("browser_harness daemon %s already gone; dropping tracking", name)
+        with _bt._cleanup_lock:
+            _bt._harness_last_activity.pop(name, None)
+            _bt._harness_owner_homes.pop(name, None)
+
+
+def _touch_harness_activity(name: str) -> None:
+    """Record activity (and this process's ownership) for ``name``'s browser_harness
+    daemon; called by browser_exec on every run so the idle reaper keys off real use."""
+    with _bt._cleanup_lock:
+        _bt._harness_last_activity[name] = time.time()
+        _bt._harness_owner_homes.setdefault(name, str(get_hermes_home()))
+
+
+def _reap_all_owned_harness_daemons() -> None:
+    """Reap EVERY browser_harness daemon this process owns (clean-exit path), regardless
+    of idle time. The inactivity janitor handles the steady-state idle case; this is the
+    atexit sweep so a clean exit leaves none running."""
+    with _bt._cleanup_lock:
+        names = list(_bt._harness_owner_homes.keys())
+    runtime_dir = _harness_runtime_dir()
+    for name in names:
+        daemon_pid = _read_harness_daemon_pid(name, runtime_dir)
+        if daemon_pid is not None and _pid_exists(daemon_pid) and _verify_reapable_harness_daemon(daemon_pid):
+            _bt.logger.info("Reaping browser_harness daemon %s (pid %d) on exit", name, daemon_pid)
+            _reap_harness_daemon(daemon_pid, name)
+        with _bt._cleanup_lock:
+            _bt._harness_last_activity.pop(name, None)
+            _bt._harness_owner_homes.pop(name, None)
+
+
 def _browser_cleanup_thread_worker():
     """Every 30s: close sessions idle past BROWSER_SESSION_INACTIVITY_TIMEOUT; reap
     orphans on startup AND every BROWSER_ORPHAN_REAP_INTERVAL seconds."""
@@ -396,12 +617,21 @@ def _browser_cleanup_thread_worker():
                 _reap_orphaned_browser_sessions()
             except Exception as e:
                 _bt.logger.warning("Orphan reap error: %s", e)
+            try:
+                _reap_orphaned_browser_harness_daemons()
+            except Exception as e:
+                _bt.logger.warning("browser_harness orphan reap error: %s", e)
         cycle += 1
 
         try:
             _cleanup_inactive_browser_sessions()
         except Exception as e:
             _bt.logger.warning("Cleanup thread error: %s", e)
+
+        try:
+            _cleanup_inactive_harness_daemons()
+        except Exception as e:
+            _bt.logger.warning("browser_harness cleanup thread error: %s", e)
 
         for _ in range(30):  # 1s granularity so stop is quick
             if not _bt._cleanup_running:

@@ -180,6 +180,17 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     if _bt._is_browser_use_cli_mode() and _lp._using_lightpanda_engine():
         return _create_lightpanda_session(task_id)
 
+    # Pod-wide cap: don't launch yet another local Chromium when the shared PID
+    # namespace is already at the configured ceiling. Lightpanda + real-profile
+    # (the single shared copy-browser) are not per-task chrome — they bypass the cap.
+    if _lifecycle._local_chromium_capacity_exhausted():
+        raise RuntimeError(
+            f"Local browser capacity reached ({_bt.BROWSER_MAX_CONCURRENT_LOCAL_BROWSERS} concurrent "
+            f"Chromium browsers pod-wide). An idle browser is reclaimed within "
+            f"{_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT}s; retry, or raise "
+            f"browser.max_concurrent_local_browsers in config.yaml."
+        )
+
     info = _session_record("h", None, {"local": True})
     _bt.logger.info("Created local browser session %s for task %s", info["session_name"], task_id)
     return info

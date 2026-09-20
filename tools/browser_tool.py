@@ -355,6 +355,28 @@ def _get_session_inactivity_timeout() -> int:
 
 
 BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
+
+# Pod-wide cap on concurrent LOCAL Chromium browsers, enforced against a POD-WIDE
+# process count (shared PID namespace) so every Hermes profile in the pod obeys one
+# ceiling instead of each process accumulating its own. Fixes the 2026-09-19 leak:
+# 21 chrome-headless-shell procs / 1028 MiB across N hermes processes → dashboard 502s.
+# Configurable via config.yaml (``browser.max_concurrent_local_browsers``) or
+# ``BROWSER_MAX_CONCURRENT_LOCAL_BROWSERS``; floored at 1 so a 0/negative typo can't
+# brick browsing. Default 4 ≈ ~600 MiB of resident chromium — a safe fraction of a
+# 6 GiB pod; operators on smaller pods should lower it.
+DEFAULT_MAX_CONCURRENT_LOCAL_BROWSERS = 4
+
+
+def _get_max_concurrent_local_browsers() -> int:
+    env_default = env_int("BROWSER_MAX_CONCURRENT_LOCAL_BROWSERS", DEFAULT_MAX_CONCURRENT_LOCAL_BROWSERS)
+    return _browser_cfg(
+        "max_concurrent_local_browsers", env_default,
+        lambda v: env_default if v is None else max(int(v), 1),
+        "max_concurrent_local_browsers from config",
+    )
+
+
+BROWSER_MAX_CONCURRENT_LOCAL_BROWSERS = _get_max_concurrent_local_browsers()
 # Orphan reaper cadence: a startup-only reap can never recover from a leak that
 # appears after boot in a long-lived process.
 BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds
@@ -369,6 +391,12 @@ _session_last_activity: Dict[str, float] = {}
 # pin the first profile's secrets onto every other profile's teardown).
 # See #86402.
 _session_owner_homes: Dict[str, str] = {}
+# browser_harness (browser-use CLI) daemon tracking, keyed by BU_NAME: last-activity
+# timestamp + owning home, so the janitor reaps idle daemons this process spawned
+# (the daemon never self-idles). Cross-process orphans are handled by the shared
+# runtime-dir owner_pid scan in browser_tool_lifecycle.
+_harness_last_activity: Dict[str, float] = {}
+_harness_owner_homes: Dict[str, str] = {}
 # Consecutive janitor failures per session; force-reaped after MAX_INACTIVITY_CLEANUP_FAILURES.
 # See #100738.
 _cleanup_failures: Dict[str, int] = {}

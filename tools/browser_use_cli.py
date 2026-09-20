@@ -150,7 +150,25 @@ def _base_subprocess_env() -> dict:
     env.pop("PYTHONHOME", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
+    _apply_harness_runtime_env(env)
     return env
+
+
+def _apply_harness_runtime_env(env: dict) -> None:
+    """Point browser_harness's runtime dir at a SHARED, profile-namespaced tmpdir location.
+
+    The browser-use CLI spawns a ``browser_harness.daemon`` (python) per BU_NAME that never
+    self-idles; Hermes must reap it (see ``tools.browser_tool_lifecycle``). Defaulting to
+    ``~/.config/browser-harness/runtime`` (per-profile home) would make each process's daemons
+    invisible to every OTHER profile's orphan reaper. A shared dir lets any hermes process
+    find/reap any profile's orphaned daemon within one reap interval.
+    """
+    try:
+        from tools.browser_tool_lifecycle import _harness_runtime_dir
+        env["BH_RUNTIME_DIR"] = _harness_runtime_dir()
+        env["BH_RUNTIME_DIR_SHARED"] = "1"
+    except Exception as e:  # never break browser_exec over a reap-path bookkeeping detail
+        logger.debug("Could not set shared browser_harness runtime dir: %s", e)
 
 
 def _floor_subprocess_path(path: str) -> str:
@@ -578,6 +596,17 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+def _track_harness_daemon(name: str) -> None:
+    """Record this process's ownership + activity for ``name``'s browser_harness daemon so
+    the lifecycle janitor can idle-reap it and the orphan reaper can owner-check it."""
+    try:
+        from tools.browser_tool_lifecycle import _touch_harness_activity, _write_harness_owner_pid
+        _write_harness_owner_pid(name)
+        _touch_harness_activity(name)
+    except Exception as e:  # never break browser_exec over reap-path bookkeeping
+        logger.debug("Could not track browser_harness daemon %s: %s", name, e)
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
@@ -601,6 +630,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
+    _track_harness_daemon(session or "default")
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)

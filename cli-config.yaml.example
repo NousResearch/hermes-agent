@@ -531,6 +531,14 @@ browser:
   # (same per-page budget as web_extract).
   # snapshot_threshold: 15000
 
+  # POD-WIDE cap on concurrent LOCAL Chromium browsers (number of
+  # chrome-headless-shell *browser* processes across every Hermes profile sharing
+  # the pod's PID namespace). A local browser is reclaimed after inactivity_timeout,
+  # so the cap only bounds concurrency, not total throughput. Prevents the many-
+  # profiles-spawning-browsers-at-once condition that OOMs the pod (dashboard 502s).
+  # Minimum 1; default 4 (~600 MiB of resident chromium — tune to your pod limit).
+  # max_concurrent_local_browsers: 4
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

@@ -112,7 +112,6 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
     "kimi": "kimi-for-coding", "kimi-coding": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
-    # One catalog per StepFun region+endpoint; only the China plan one carries step-router-v1.
     "stepfun": "stepfun-ai", "stepfun-cn": "stepfun",
     "stepfun-plan": "stepfun-ai-step-plan", "stepfun-plan-cn": "stepfun-step-plan",
     "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",

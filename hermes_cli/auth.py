@@ -195,8 +195,6 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
     ("kimi-coding", "Kimi / Moonshot", "https://api.moonshot.ai/v1",
      ("KIMI_API_KEY", "KIMI_CODING_API_KEY"), "KIMI_BASE_URL"),
     ("kimi-coding-cn", "Kimi / Moonshot (China)", "https://api.moonshot.cn/v1", ("KIMI_CN_API_KEY",)),
-    # StepFun accounts are regional: an api.stepfun.ai key 401s on api.stepfun.com, hence one id
-    # per region with its own key var (as with minimax / minimax-cn).
     ("stepfun", "StepFun", STEPFUN_STD_INTL_BASE_URL, ("STEPFUN_API_KEY",), "STEPFUN_BASE_URL"),
     ("stepfun-cn", "StepFun (China)", STEPFUN_STD_CN_BASE_URL, ("STEPFUN_CN_API_KEY",), "STEPFUN_CN_BASE_URL"),
     ("stepfun-plan", "StepFun Step Plan", STEPFUN_STEP_PLAN_INTL_BASE_URL, ("STEPFUN_API_KEY",),

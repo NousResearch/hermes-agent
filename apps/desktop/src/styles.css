@@ -1910,11 +1910,11 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='composer-root'] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading

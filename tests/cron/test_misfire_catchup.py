@@ -161,3 +161,28 @@ class TestFireOverdueJobs:
         assert time.monotonic() - start < 1.0  # returned before the run
         assert provider.wait_fired(timeout=10)
         assert provider.fired == [job["id"]]
+
+    def test_estop_skips_sweep_and_next_sweep_after_resume_catches_up(
+        self, tmp_cron_dir, tmp_path, monkeypatch
+    ):
+        """`hermes pause` must silence the backstop too — otherwise it force-fires every job
+        that ESTOP held back. Nothing to unwind: the first sweep after `hermes resume`
+        catches up through the ordinary claim_fire path."""
+        from agent import estop
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        estop._logged_components.clear()
+        job = create_job(prompt="p", schedule="every 1h")
+        _park_in_past(job["id"], minutes=30)
+        parked_at = get_job(job["id"])["next_run_at"]
+        provider = RecordingProvider()
+
+        estop.engage(reason="runaway fan-out")
+        assert fire_overdue_jobs(provider) == 0
+        assert provider.fired == []
+        assert get_job(job["id"])["next_run_at"] == parked_at  # nothing claimed or re-armed
+
+        estop.disengage()
+        assert fire_overdue_jobs(provider) == 1
+        assert provider.wait_fired()
+        assert provider.fired == [job["id"]]

@@ -32,10 +32,16 @@ export interface AgentPluginRow {
   installed_sha?: string
   /** Current catalog pin for this entry (backend-computed). */
   catalog_sha?: string
+  /** Human label the catalog attaches to that pin ("1.4.0"); shown on the Update button when present. */
+  catalog_version?: string | null
   /** Installed SHA differs from the catalog pin — an update is available. */
   update_available?: boolean
   /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
   pinned_sha?: string
+  /** The package folder also ships `desktop/plugin.js` (unified agent+desktop package). */
+  has_desktop_half?: boolean
+  /** Absolute install dir on the backend (informational). */
+  install_dir?: string
 }
 
 /** A `--ref` pin is a full 40-hex commit SHA; branches and tags are refused server-side. */

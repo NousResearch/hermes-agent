@@ -49,6 +49,7 @@ from tools.terminal_tool_config import (
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
+    _record_unavailable_reason, terminal_backend_unavailable_reason,  # noqa: F401 — re-exported
 )
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 from tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled
@@ -160,8 +161,8 @@ TERMINAL_TOOL_DESCRIPTION = """Execute shell commands. The host OS, shell, and t
 Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers — anything that needs a shell. Output is auto-truncated with the full text saved to a file — never pipe through tail/head to shorten it.
 Environment state persists: activate a virtualenv or export variables once per session, not before every command.
 
-Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
-Background: set background=true (returns a session_id); add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
+Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds and fixed waits.
+Background: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true — to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
 Working directory: use 'workdir' for per-command cwd; when a command changes the session cwd (cd, pushd), trust the result's "cwd" field instead of prefixing every command with 'cd'.
 PTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process(action="write"/"submit"). Local backend only.
 """
@@ -272,6 +273,35 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(session_key, None)
 
 
+def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
+    """Cwd to write into a LIVE cached env, or None to leave it untouched.
+
+    On container backends a raw host path (a desktop/TUI session registering its
+    workspace, e.g. ``C:\\Users\\me`` or ``/Users/me/workspace``) cannot be the
+    in-sandbox workdir: every file-tools ``_exec`` wrapper does
+    ``builtin cd -- <env.cwd> || exit 126``, so a host cwd poisons all later
+    file operations with an unrelated ``cd:`` error. The creation paths already
+    sanitize this (``_is_unusable_container_cwd`` guards); the live-env write
+    here is the one remaining unsanitized site. When the host path is the one
+    mounted at ``/workspace`` (docker cwd passthrough), the session's directory
+    is still reachable — remap instead of discarding, mirroring the env-creation
+    remap in ``terminal_tool()``. Non-container backends apply the override
+    verbatim (ACP project-root switching must keep working).
+    """
+    env_type = getattr(env, "env_type", None)
+    if not env_type or not _is_container_backend(env_type):
+        return new_cwd
+    if not _is_unusable_container_cwd(new_cwd):
+        return new_cwd
+    host_mount = getattr(env, "host_cwd", None)
+    if isinstance(host_mount, str) and host_mount:
+        candidate = os.path.abspath(os.path.expanduser(new_cwd))
+        mounted = os.path.abspath(os.path.expanduser(host_mount))
+        if candidate == mounted:
+            return "/workspace"
+    return None
+
+
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """Register per-task sandbox overrides (``docker_image``/``modal_image``/
     ``singularity_image``/``daytona_image``, ``env_type``, ``cwd``) before the
@@ -280,7 +310,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     A ``cwd`` override takes effect immediately: it becomes the session's
     recorded cwd (until a ``cd`` changes it) and any live env's cwd is updated
     too, so env-side seeding stays consistent (ACP switching project root
-    mid-session via ``session/load``).
+    mid-session via ``session/load``). The session record keeps the RAW path
+    (host workspaces are tracked there on purpose); only the live-env write is
+    sanitized, since a host cwd can never be a container workdir.
     """
     _task_env_overrides[task_id] = overrides
 
@@ -294,7 +326,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         with _env_lock:
             env = _active_environments.get(task_id) or _active_environments.get(container_id)
         if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            sanitized = _sanitize_cwd_for_live_env(env, new_cwd)
+            if sanitized is not None:
+                env.cwd = sanitized
 
 
 def clear_task_env_overrides(task_id: str):
@@ -540,11 +574,24 @@ def _ensure_terminal_env_bridged() -> None:
     suppresses the bridge entirely: writing scope values into the process-global
     env would re-create the first-writer-wins cross-profile leak the scope fixes.
 
+    Ambient ``os.environ`` is the *launch* profile's authority only. Under a
+    context-local ``HERMES_HOME`` override (multiplexed dashboard / gateway
+    secondary profile), this bridge is a no-op — otherwise the first unscoped
+    call under that override would latch the secondary profile's ``terminal.*``
+    into process-global env and poison later unscoped launch-profile turns
+    (#107422 residual of #68559). Routed profiles must bind a terminal scope
+    instead (same rule as ``env_loader._reapply_terminal_config_bridge``).
+
     terminal_tool reads ALL terminal settings from os.environ (TERMINAL_*). See #61115, #65696.
     """
     from tools.terminal_scope import get_terminal_scope
 
     if get_terminal_scope() is not None:
+        return
+    # Never write a secondary profile's terminal.* into process-global env.
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override() is not None:
         return
     global _terminal_config_bridge_attempted
     if _terminal_config_bridge_attempted:
@@ -857,7 +904,8 @@ def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
             f"Command denied: {desc}. "
             "Use the approval prompt to allow it, or rephrase the command."
         )
-        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked"))
+        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
+                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
         return _ApprovalVerdict(
@@ -1112,6 +1160,12 @@ def _run_foreground(
     )
 
 
+# Floor for the pre-exec guard's share of the command deadline: a short command timeout
+# (1s in tests, a few seconds in practice) must not turn the guard's own cold-start cost
+# (module imports, git probes under load) into a refusal; the wedge it bounds lasted an hour.
+_PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
+
+
 def _pre_exec_block(
     command: str, *, env: Any, env_type: str, cwd: str,
     workdir: Optional[str], session_key: str,
@@ -1207,7 +1261,37 @@ def terminal_tool(
 
         session_key = get_current_session_key(default="") or (task_id or "")
 
-        _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
+        # The supervised-gateway identity probe ends in a kernel process query
+        # (psutil create_time) that has wedged for the better part of an hour on
+        # macOS; ``env.execute`` is already behind ``run_bounded_sync`` but this
+        # chain ran ahead of it, so the tool call never returned and the cron
+        # slot stayed occupied (#111922). Share the command's own deadline. A
+        # guard that never rendered a verdict fails CLOSED: these checks apply
+        # unconditionally (``force`` cannot bypass them), so the command is
+        # refused with a retryable error instead of running unguarded.
+        from agent.deadline import run_bounded_sync
+        from tools.interrupt import acting_for_tid
+
+        # The guard chain runs on the deadline worker; keep it answerable to /stop
+        # aimed at this tool thread (a remote-backend script read polls is_interrupted()).
+        guard_timeout = max(plan.effective_timeout, _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+        _acting_token = acting_for_tid.set(threading.current_thread().ident)
+        try:
+            bounded_guard = run_bounded_sync(
+                lambda: _pre_exec_block(
+                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+                ),
+                guard_timeout,
+                label="terminal.pre-exec-guard",
+            )
+        finally:
+            acting_for_tid.reset(_acting_token)
+        if bounded_guard.timed_out:
+            raise _Rejected(_error_json(
+                f"Terminal pre-execution guard did not finish within {guard_timeout}s "
+                "(process-identity probe wedged); the command was not run. Retry the call.",
+                status="error",
+            ))
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
@@ -1242,13 +1326,15 @@ def terminal_tool(
 
 
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
+    """Check if all requirements for the terminal tool are met. The reason for a failure is kept for
+    :func:`terminal_backend_unavailable_reason` (CLI startup notice / doctor)."""
     try:
         config = _get_env_config()
         checker = _REQUIREMENT_CHECKERS.get(config["env_type"], _check_plugin_requirements)
         return checker(config)
     except Exception as e:
         logger.error("Terminal requirements check failed: %s", e, exc_info=True)
+        _record_unavailable_reason(f"the requirements check failed: {e}")
         return False
 
 
@@ -1300,6 +1386,8 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    from agent.terminal_approval_batch import validate_prepared_terminal
+    validate_prepared_terminal(args)
     # Models sometimes send execute_code's ``code`` here; name the stray
     # argument and the right tool instead of failing on command=None.
     if "command" not in args and "code" in args:

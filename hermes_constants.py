@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import sys
+from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -42,6 +43,11 @@ def get_hermes_home_override() -> str | None:
     return str(override) if override is not _UNSET and override else None
 
 
+def _expand_hermes_home(path: str) -> Path:
+    """Expand environment and user-home syntax in a Hermes home path."""
+    return Path(os.path.expanduser(os.path.expandvars(path)))
+
+
 def _get_platform_default_hermes_home() -> Path:
     """Return the platform-native default Hermes home path."""
     if sys.platform == "win32":
@@ -49,6 +55,25 @@ def _get_platform_default_hermes_home() -> Path:
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
         return base / "hermes"
     return Path.home() / ".hermes"
+
+
+def sudo_invoker_default_home() -> Path | None:
+    """The invoking user's native ``~/.hermes`` when this process is root under ``sudo``, else None.
+
+    sudo strips HERMES_HOME and sets HOME=/root, so the process's own default is root's; the profile
+    store and the system service being operated on belong to SUDO_USER.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if not sudo_user or sudo_user == "root":
+        return None
+    import pwd
+
+    try:
+        return Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes"
+    except KeyError:  # SUDO_USER not in passwd (chroot/container)
+        return None
 
 
 def _warn_profile_fallback_once() -> None:
@@ -83,7 +108,7 @@ def get_hermes_home() -> Path:
     """Hermes home: context-local override → ``HERMES_HOME`` env var → platform default."""
     override = get_hermes_home_override()
     if override:
-        return Path(override)
+        return _expand_hermes_home(override)
     if not os.environ.get("HERMES_HOME", "").strip():
         _warn_profile_fallback_once()
     return get_process_hermes_home()
@@ -135,11 +160,17 @@ def get_process_hermes_home() -> Path:
     request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
     """
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else _get_platform_default_hermes_home()
+    return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
 
 
-# get_default_hermes_root() memo keyed on (native home, HERMES_HOME) so it stays
-# fresh when a test or plugin mutates HERMES_HOME; saves ~80us/call at 31+ sites.
+# Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
+# managed Node): re-downloadable on demand and routinely tens to hundreds of GB. Shared by
+# ``hermes backup`` (excludes them) and ``profile create --clone-all`` (skips them from the
+# default profile) so the two lists cannot drift apart.
+LOCAL_RUNTIME_ROOT_DIRS: frozenset[str] = frozenset({"models", "runtimes", "node"})
+
+# get_default_hermes_root() memo keyed on (native home, expanded HERMES_HOME) so it stays
+# fresh when a test or plugin mutates either input; saves ~80us/call at 31+ sites.
 _default_hermes_root_memo: "tuple[str, str, Path] | None" = None
 
 
@@ -147,18 +178,19 @@ def get_default_hermes_root() -> Path:
     """Root Hermes dir for profile-level ops: ``<root>`` when ``HERMES_HOME=<root>/profiles/<name>``."""
     global _default_hermes_root_memo
     native_home = _get_platform_default_hermes_home()
-    env_home = os.environ.get("HERMES_HOME", "")
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    env_path = _expand_hermes_home(env_home) if env_home else None
+    memo_key = (str(native_home), str(env_path) if env_path is not None else "")
     memo = _default_hermes_root_memo
-    if memo is not None and memo[:2] == (str(native_home), env_home):
+    if memo is not None and memo[:2] == memo_key:
         return memo[2]
     result = native_home
-    if env_home:
-        env_path = Path(env_home)
+    if env_path is not None:
         try:
             env_path.resolve().relative_to(native_home.resolve())  # under ~/.hermes (normal or profile mode)
         except ValueError:  # Docker/custom root: <root>/profiles/<name> -> <root>, else HERMES_HOME itself
             result = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-    _default_hermes_root_memo = (str(native_home), env_home, result)
+    _default_hermes_root_memo = (*memo_key, result)
     return result
 
 
@@ -238,6 +270,28 @@ def profile_tombstone_path(profile_home: Path) -> Path:
 
 def named_profile_is_deleted(profile_home: str | Path) -> bool:
     return profile_tombstone_path(Path(profile_home)).exists()
+
+
+# A directory under profiles/ is a profile only when something identifies it as one.
+# Runtime side-effects (cron heartbeats, log rotation, caches) create dirs that carry
+# none of these; a pre-tombstone ghost shell or a stray infrastructure dir must never be
+# listed, served, ticked, or seeded with the default install's credentials.
+_PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+
+
+def named_profile_has_identity(profile_home: str | Path) -> bool:
+    # A dangling symlinked marker (clone/migration leftover) is still an identity claim:
+    # ``is_file()`` follows links, so it alone would make such a profile unlistable.
+    home = Path(profile_home)
+    return any((home / marker).is_file() or (home / marker).is_symlink() for marker in _PROFILE_IDENTITY_MARKERS)
+
+
+def named_profile_is_live(profile_home: str | Path) -> bool:
+    """A resolvable named profile: an existing dir with identity that has not been deleted.
+    ``-p``/``--profile`` resolution and ``profile_exists`` share this so a stale ghost shell can
+    never be started as a backend (whose ``ensure_hermes_home`` would rebuild the full tree)."""
+    home = Path(profile_home)
+    return home.is_dir() and named_profile_has_identity(home) and not named_profile_is_deleted(home)
 
 
 def mark_named_profile_deleted(profile_home: str | Path) -> None:
@@ -762,13 +816,27 @@ def _legacy_path_has_content(path: Path) -> bool:
     return True
 
 
-def display_hermes_home() -> str:
-    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``)."""
-    home = get_hermes_home()
+def display_hermes_home(home: Path | None = None) -> str:
+    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``).
+
+    ``home`` overrides the lookup for callers that run before the CLI has applied the sticky
+    ``active_profile`` (``get_hermes_home()`` would emit the wrong-profile fallback warning there).
+    """
+    if home is None:
+        home = get_hermes_home()
     try:  # as_posix(): str() on Windows yields chimeras like ~/AppData\Local\hermes/skills/
         return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:
         return str(home)
+
+
+def profile_cli_selector() -> str:
+    """``-p <name> `` (trailing space) pinning copy-pasteable ``hermes ...`` guidance to the
+    active NAMED profile, else ``""``: a bare ``hermes`` follows the sticky ``active_profile``
+    file, which can name a different database than the one that failed (#105887). A custom
+    home outside the profile tree has no selector (only HERMES_HOME names it)."""
+    name = profile_name_for_home(get_hermes_home())
+    return f"-p {name} " if name and name != "default" else ""
 
 
 def secure_parent_dir(path: Path) -> None:
@@ -808,7 +876,7 @@ def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
     hermes_home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
-    profile_home = os.path.join(hermes_home, "home")
+    profile_home = str(_expand_hermes_home(hermes_home) / "home")
     return profile_home if os.path.isdir(profile_home) else None
 
 
@@ -853,7 +921,12 @@ def get_real_home(env: dict[str, str] | None = None) -> str:
         seen.add(key)
         if not _is_profile_home(candidate, profile_home):
             return candidate
-    return "/tmp"
+    import tempfile
+    try:
+        return tempfile.gettempdir()
+    except (RuntimeError, OSError):
+        # no HOME/USERPROFILE at all (env-less child on Windows): tempfile cannot expand ``~``
+        return "/tmp"  # no-tmp: ok — last-resort fallback for an env with no home; not a write target we choose
 
 
 _HOME_MODE_ALIASES = {"isolated": "profile", "profile_home": "profile", "profile-home": "profile",
@@ -886,14 +959,160 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     return None
 
 
-def apply_subprocess_home_env(env: dict[str, str]) -> None:
-    """Apply Hermes' subprocess HOME contract to *env* in-place."""
+def apply_subprocess_home_env(env: MutableMapping[str, str]) -> None:
+    """Apply Hermes' subprocess HOME contract to *env* in-place: ``HOME``/``HERMES_REAL_HOME``
+    per the home mode, and the temp vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
     real_home = get_real_home(env)
     if real_home:
         env["HERMES_REAL_HOME"] = real_home
     home = get_subprocess_home(env)
     if home:
         env["HOME"] = home
+    apply_scratch_tmp_env(env)
+
+
+# --- Scratch dir: Hermes' own temp space, never the system /tmp ---
+# System temp is tmpfs on most Linux distros and containers, so browser profiles, PTY probes,
+# download spools and every ``tempfile.mkdtemp()`` a Hermes-launched script performs eat RAM
+# and vanish on reboot. ``HERMES_HOME/cache/scratch`` is real storage with a fixed retention.
+SCRATCH_TMP_ENV_VARS = ("TMPDIR", "TMP", "TEMP")
+SCRATCH_DIR_MARKER_ENV = "HERMES_SCRATCH_DIR"
+SCRATCH_MAX_AGE_HOURS = 72
+_SCRATCH_PRUNE_STAMP = ".last_prune"
+_SCRATCH_PRUNE_INTERVAL_SECONDS = 3600
+_scratch_pruned_once = False
+
+# AF_UNIX socket paths cap at 104 bytes (macOS) / 108 (Linux). Chrome appends
+# ``com.google.Chrome.XXXXXX/SingletonSocket`` (~45) and the code kernel
+# ``hermes_rpc_<32 hex>.sock`` (~49) to the temp root, so a root longer than this budget
+# makes the bind fail (Chrome: "Socket path too long" at startup).
+SOCKET_TMPDIR_MAX_LEN = 50
+
+
+def socket_safe_tmpdir() -> str:
+    """Temp root short enough for AF_UNIX sockets. The scratch dir usually fits; macOS
+    ``TMPDIR`` never does and a deep profile home may not, so those fall back to the OS
+    default root for sockets only (everything else stays in the scratch dir)."""
+    import tempfile
+    if sys.platform == "darwin":
+        return "/tmp"  # no-tmp: ok — AF_UNIX 104-byte socket path limit on darwin
+    candidate = tempfile.gettempdir()
+    if len(candidate) <= SOCKET_TMPDIR_MAX_LEN or not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
+        return candidate
+    return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
+
+
+def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:
+    """``<home>/cache/scratch`` (created, owner-only); *home* defaults to the active Hermes home.
+
+    Every Hermes process and child gets ``TMPDIR``/``TMP``/``TEMP`` pointed here at boot (see
+    :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
+    knowing. Entries older than ``SCRATCH_MAX_AGE_HOURS`` are pruned at most once per process
+    and once per hour across processes (stamp file), so a fan-out of children stays cheap.
+    """
+    base = Path(home) if home is not None else get_hermes_home()
+    scratch = base / "cache" / "scratch"
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            os.chmod(scratch, 0o700)
+    except OSError:
+        pass
+    if prune:
+        _prune_scratch_dir_once(scratch)
+    return scratch
+
+
+def prune_scratch_dir(scratch: Path | None = None, max_age_hours: float = SCRATCH_MAX_AGE_HOURS) -> int:
+    """Delete top-level scratch entries untouched for *max_age_hours*; return the count removed."""
+    import time
+    root = scratch if scratch is not None else get_scratch_dir(prune=False)
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        if entry.name == _SCRATCH_PRUNE_STAMP:
+            continue
+        try:
+            if entry.lstat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _prune_scratch_dir_once(scratch: Path) -> None:
+    global _scratch_pruned_once
+    if _scratch_pruned_once:
+        return
+    _scratch_pruned_once = True
+    import time
+    stamp = scratch / _SCRATCH_PRUNE_STAMP
+    try:
+        if time.time() - stamp.stat().st_mtime < _SCRATCH_PRUNE_INTERVAL_SECONDS:
+            return
+    except OSError:
+        pass
+    with contextlib.suppress(Exception):
+        stamp.touch()
+        prune_scratch_dir(scratch)
+
+
+def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
+    """Total bytes under the scratch dir (for ``hermes doctor``); 0 when unreadable."""
+    root = scratch if scratch is not None else get_scratch_dir(prune=False)
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+        for name in filenames:
+            with contextlib.suppress(OSError):
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+    return total
+
+
+def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
+    """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
+
+    A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
+    respected and nothing changes. A value Hermes itself exported earlier — recognisable
+    because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
+    profile's home gets that home's scratch dir rather than its parent's. Returns True when
+    the vars were (re)written.
+    """
+    ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
+    for key in SCRATCH_TMP_ENV_VARS:
+        value = env.get(key, "").strip()
+        if value and value != ours:
+            return False
+    home = env.get("HERMES_HOME", "").strip()
+    try:
+        scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
+    except (RuntimeError, OSError):
+        # No HERMES_HOME and no resolvable user home (a child env built from nothing on
+        # Windows): there is no scratch dir to point at; the child keeps the OS default.
+        return False
+    for key in SCRATCH_TMP_ENV_VARS:
+        env[key] = scratch
+    env[SCRATCH_DIR_MARKER_ENV] = scratch
+    return True
+
+
+def export_scratch_tmp_env() -> bool:
+    """Boot hook: apply :func:`apply_scratch_tmp_env` to this process and reset ``tempfile``'s
+    cached default so ``tempfile.gettempdir()`` follows. Call again after anything that
+    re-homes the process (``--profile`` resolution); a user-set temp var is never overridden."""
+    changed = apply_scratch_tmp_env(os.environ)
+    if changed:
+        import tempfile
+        tempfile.tempdir = None
+    return changed
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
@@ -904,9 +1123,20 @@ def parse_reasoning_effort(effort) -> dict | None:
 
     ``None`` for empty/unrecognized input (caller uses the default); ``{"enabled": False}`` for
     "none"/"false"/"disabled"/YAML False — ``reasoning_effort: false`` must mean disabled.
+
+    The dict form ``{"enabled": true, "effort": "<level>"}`` passes ``effort`` through verbatim so
+    providers with bespoke thinking tiers (``fast``/``thinking`` relays) can be asked for their real
+    level; bare strings stay strict so a typo like ``hgih`` never reaches the wire. The wire layer
+    already tolerates unknown names (``agent.reasoning_effort.clamp_effort``).
     """
     if effort is None or effort is True:
         return None
+    if isinstance(effort, dict):
+        if effort.get("enabled", True) is False:
+            return {"enabled": False}
+        # ``or ""``: a falsy effort (0/False) is "no level", never the string "0" on the wire.
+        level = str(effort.get("effort") or "").strip()
+        return {"enabled": True, "effort": level} if level else None
     effort = str(effort).strip().lower()  # False -> "false" -> disabled; "" matches neither set
     if effort in {"none", "false", "disabled"}:
         return {"enabled": False}
@@ -955,13 +1185,33 @@ def _canonical_model_variants(model: str) -> list[str]:
 def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> dict | None:
     """Per-model reasoning_effort override with spelling tolerance; first non-None parse wins.
 
-    Order: exact → dots↔dashes → provider stripped → aggregator stripped → known prefixes added.
+    Order: exact → dots↔dashes → provider stripped → aggregator stripped → known prefixes added →
+    reverse lookup of prefixed keys whose stripped forms match (custom provider slugs are not
+    enumerable, so a key like ``ollama-local/qwen3.6:27b`` must still match the bare
+    ``qwen3.6:27b`` model string a fallback swap feeds after stripping the prefix).
     """
     if not overrides or not isinstance(overrides, dict) or not model:
         return None
-    for variant in _canonical_model_variants(model):
+    variants = _canonical_model_variants(model)
+    for variant in variants:
         if variant in overrides:
             result = parse_reasoning_effort(overrides[variant])
+            if result is not None:
+                return result
+    # Reverse lookup: the key may carry a custom-provider prefix the model string lost
+    # (fallback entries and custom-provider resolution feed the bare slug, while the
+    # documented key spelling keeps the ``provider/model`` form). Direct and variant
+    # matches above still win, so provider-qualified keys stay most specific.
+    variant_set = set(variants)
+    for key, raw in overrides.items():
+        if not isinstance(key, str) or "/" not in key:
+            continue
+        parts = key.split("/")
+        key_forms = _canonical_model_variants(parts[-1])
+        if len(parts) >= 3:
+            key_forms += _canonical_model_variants("/".join(parts[1:]))
+        if any(form in variant_set for form in key_forms):
+            result = parse_reasoning_effort(raw)
             if result is not None:
                 return result
     return None
@@ -1147,6 +1397,47 @@ PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 FINISH_REASON_LENGTH = "length"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+
+# OpenRouter request-time routing variants (docs: guides/routing/model-variants).
+# These suffixes are per-request routing modifiers valid on ANY model id —
+# ":nitro" sorts the endpoint pool by throughput and admits priority-tier
+# endpoints, ":floor" sorts by price and admits flex-tier endpoints, ":exacto"
+# applies quality-first provider sorting, ":online" attaches the web plugin.
+# They are never separate catalog entries: /models lists only the base id, so
+# every catalog lookup must key on the BASE while the suffixed id stays on the
+# wire.
+# NOT in this set: ":free", ":batch", ":thinking", ":extended" — those ARE
+# distinct catalog SKUs with their own /models entries (and their own context
+# windows), so stripping them would resolve the wrong window.
+OPENROUTER_VARIANT_SUFFIXES: frozenset[str] = frozenset(
+    {"nitro", "floor", "exacto", "online"}
+)
+
+
+def openrouter_variant_base(model_id: str) -> str | None:
+    """Return the base model id when ``model_id`` carries a recognized
+    OpenRouter routing-variant suffix (e.g. ``x-ai/grok-4:nitro`` →
+    ``x-ai/grok-4``), else ``None``.
+
+    Lives here rather than in ``hermes_cli.models`` so the metadata layer
+    (``agent.model_metadata``) can share one definition without importing the
+    CLI — this module is dependency-free by contract.
+
+    >>> openrouter_variant_base("x-ai/grok-4:nitro")
+    'x-ai/grok-4'
+    >>> openrouter_variant_base("x-ai/grok-4:free") is None
+    True
+    >>> openrouter_variant_base("x-ai/grok-4") is None
+    True
+    """
+    base, sep, suffix = (model_id or "").rpartition(":")
+    if not sep or not base:
+        return None
+    if suffix.lower() in OPENROUTER_VARIANT_SUFFIXES:
+        return base
+    return None
+
+
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 

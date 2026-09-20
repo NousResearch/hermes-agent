@@ -8,16 +8,17 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
+from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
-    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
-    _placeholders as _session_ids_placeholders,
+    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
+    _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
+    _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -31,7 +32,7 @@ def workspace_key(row: Dict[str, Any]) -> Optional[str]:
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
-    return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+    return _sql_json_extract(col, "$._delegate_from")
 
 
 # _merge_model_config_json's "no such row" result — distinct from the legal None
@@ -141,29 +142,39 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     found: set[str] = set(seeds)
     frontier = list(seeds)
     while frontier:
-        ph = _session_ids_placeholders(frontier)
-        cursor = conn.execute(
-            f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
-            f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)", frontier + frontier,
-        )
-        frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
-        found.update(frontier)
+        next_frontier: List[str] = []
+        for chunk in _id_chunks(frontier, _SQL_IN_CHUNK // 2):  # each id is bound twice below
+            ph = _session_ids_placeholders(chunk)
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
+                f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)", chunk + chunk,
+            )
+            for row in cursor.fetchall():
+                if row["id"] not in found:
+                    found.add(row["id"])
+                    next_frontier.append(row["id"])
+        frontier = next_frontier
     return [sid for sid in found if sid not in seeds]
 
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
-    if ids:
-        ph = _session_ids_placeholders(ids)
-        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
+    for chunk in _id_chunks(ids):
+        ph = _session_ids_placeholders(chunk)
+        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
-        conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", ids)
-        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
+        conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
+        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
     return ids
 
 
 # Lifecycle statuses surfaced by session pickers; classified from the final
 # message row ONLY so it stays O(1) per session.
+# Sessions that are not human conversations (kanban workers, third-party tool integrations, finite one-shot
+# runs): every human picker — TUI/Desktop session lists, ``/sessions`` in the CLI, ``sessions list`` in the
+# console — excludes them. A deny-list, so new interactive platforms surface automatically.
+INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot")
+
 SESSION_STATUS_COMPLETE = "complete"
 SESSION_STATUS_INTERRUPTED = "interrupted"
 SESSION_STATUS_ERROR = "error"
@@ -202,7 +213,7 @@ _SAME_KEY_NAMESPACE_SQL = (
 _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
     f"                       {col} = COALESCE(sessions.{col}, excluded.{col})" for col in (
         "session_key", "chat_id", "chat_type", "thread_id", "parent_session_id", "cwd", "profile_name",
-        "git_repo_root", "origin_json", "display_name",
+        "transport_profile", "git_repo_root", "origin_json", "display_name",
     )
 )
 
@@ -225,10 +236,20 @@ _INHERIT_PARENT_META_SQL = (
     ))
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL"
 )
+# A delegate/branch fork of a row that happens to have ended on compression is still not that
+# conversation's continuation. Markers are matched against the QUERIED parent id rather than mere
+# presence, for the same reason as _NON_CONTINUATION_CHILD_FILTER_SQL: a continuation inherits its
+# parent's model_config verbatim, so presence-matching would misclassify it as a delegate.
+_FORK_EDGE_EXCLUSION_SQL = "".join(
+    f"\n                       AND COALESCE({_sql_json_extract('model_config', f'$.{marker}')}, '')"
+    "\n                           != parent_session_id"
+    for marker in ("_delegate_from", "_branched_from")
+)
 _INHERIT_PARENT_ROUTING_SQL = (
     "UPDATE sessions\n                       SET "
     + _INHERIT_SEP.join(_inherit_col_sql(c) for c in (
         "user_id", "session_key", "chat_id", "chat_type", "thread_id", "display_name", "origin_json",
+        "transport_profile",
     ))
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL\n"
     "                       AND EXISTS (\n"
@@ -236,6 +257,7 @@ _INHERIT_PARENT_ROUTING_SQL = (
     "                           WHERE p.id = sessions.parent_session_id\n"
     "                             AND p.end_reason = 'compression'\n"
     "                       )"
+    + _FORK_EDGE_EXCLUSION_SQL
 )
 
 
@@ -264,7 +286,10 @@ class SessionSessionsMixin:
         """NULL-fill a child's cwd/git/profile from its parent (profile_name only within the same
         ``agent:<ns>:`` namespace). Gateway routing columns are inherited ONLY by compression forks
         (a crash before the gateway re-records the peer would strand the child unroutable); delegate
-        children must NOT inherit them (peer recovery could repoint traffic into a subagent's session)."""
+        and branch children must NOT inherit them (peer recovery could repoint traffic into a
+        subagent's session), including when their parent row itself ended on compression — a long
+        batch outlives its coordinator's rotation, and two live rows holding one routing key is the
+        shape reported in #92859."""
         conn.execute(_INHERIT_PARENT_META_SQL, (session_id,))
         conn.execute(_INHERIT_PARENT_ROUTING_SQL, (session_id,))
 
@@ -274,9 +299,13 @@ class SessionSessionsMixin:
         chat_id: str = None, chat_type: str = None, thread_id: str = None,
         parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
+        transport_profile: Optional[str] = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
-        bare row before create_session carries the real model/prompt). chat_id/thread_id scope gateway
+        bare row before create_session carries the real model/prompt) — the one exception is the
+        token-accounting guard's placeholder ``source='unknown'``, which a later writer's real surface
+        replaces (#111999): once minted, that placeholder otherwise labelled a real session anonymous
+        for life, because this upsert is the only writer that could correct it. chat_id/thread_id scope gateway
         /resume (IDOR). Children backfill from the parent; a missing profile_name is stamped with THIS
         store's own (NULL reads as unowned).
 
@@ -309,11 +338,16 @@ class SessionSessionsMixin:
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
-                   parent_session_id, cwd, profile_name, git_repo_root,
+                   parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
+                       source = CASE
+                           WHEN sessions.source = 'unknown'
+                           THEN COALESCE(excluded.source, 'unknown')
+                           ELSE sessions.source
+                       END,
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = CASE
                            WHEN excluded.model_config IS NOT NULL
@@ -348,8 +382,8 @@ class SessionSessionsMixin:
                 (
                     session_id, source, user_id, session_key, chat_id, chat_type, thread_id, model,
                     json.dumps(model_config) if model_config else None, system_prompt_hash,
-                    parent_session_id, cwd, profile_name, git_repo_root, origin_json, display_name,
-                    time.time(),
+                    parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
+                    display_name, time.time(),
                 ),
             )
             if system_prompt_hash is not None:
@@ -416,14 +450,15 @@ class SessionSessionsMixin:
     # quiet and its unkeyed successor (incident was ~60s; 15 min without spanning conversations).
     _ORPHAN_ADOPTION_MAX_GAP_S = 900.0
 
-    # Children that are NOT compression continuations (branches, delegates, tool sessions). Markers
-    # are bound to the queried parent id: continuations inherit model_config verbatim, so
-    # presence-matching misclassified them as delegates.
+    # Children that are NOT compression continuations (branches, delegates, reset forks, tool
+    # sessions). Markers are bound to the queried parent id: continuations inherit model_config
+    # verbatim, so presence-matching misclassified them as delegates. Callers bind the parent id
+    # three times for this filter.
     _NON_CONTINUATION_CHILD_FILTER_SQL = (
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._branched_from'), '') != ?\n"
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._delegate_from'), '') != ?\n  AND COALESCE({alias}source, '') != 'tool'\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._branched_from')}, '') != ?\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._delegate_from')}, '') != ?\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._reset_from')}, '') != ?\n"
+        "  AND COALESCE({alias}source, '') != 'tool'\n"
     )
 
     def end_session(self, session_id: str, end_reason: str) -> None:
@@ -443,15 +478,19 @@ class SessionSessionsMixin:
         return changed
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed; first stamp markerless legacy reset
-        children that depend on the parent's mutable end_reason (WHERE shared with the listing predicate
-        so they cannot drift)."""
+        """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
+        children, skipping explicit fork/delegate provenance and children that predate the parent itself.
+        The guard compares against the parent's started_at, not its current ended_at: a parent that was
+        reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "
-                "WHERE child.parent_session_id = ? AND json_extract(COALESCE(child.model_config, '{}'), "
-                "                 '$._reset_from') IS NULL "
+                f"WHERE child.parent_session_id = ? AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
+                f"AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
+                f"AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
+                "AND COALESCE(child.source, '') != 'tool' "
+                "AND child.started_at >= (SELECT p.started_at FROM sessions p WHERE p.id = child.parent_session_id) "
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
             )
@@ -741,9 +780,13 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
-    def get_dominant_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Main-loop model route that served most API calls (``session_model_usage`` keeps the coherent
-        per-call tuple; ``sessions`` mixes route changes)."""
+    def get_recent_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Most recently used main-loop model route as one coherent per-call tuple
+        (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).
+        Recency, not lifetime call count: on a long session a route retired weeks ago can hold the
+        highest ``api_call_count`` forever, and /status and /usage would keep calling it current.
+        ``rowid DESC`` breaks same-timestamp ties toward the route that first appeared later; without
+        it SQLite's temp-sort order is unspecified and the retired route can win."""
         self.flush_token_counts()
         row = self._read_one(
             """SELECT model, billing_provider, billing_base_url, billing_mode,
@@ -753,10 +796,7 @@ class SessionSessionsMixin:
                   AND task = ''
                   AND model <> 'unknown'
                   AND billing_provider <> ''
-                ORDER BY api_call_count DESC,
-                         (input_tokens + output_tokens + cache_read_tokens +
-                          cache_write_tokens + reasoning_tokens) DESC,
-                         last_seen DESC
+                ORDER BY last_seen DESC, rowid DESC
                 LIMIT 1""",
             (session_id,),
         )
@@ -1200,7 +1240,11 @@ class SessionSessionsMixin:
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
-        if not include_hidden:
+        # The archived-only view is the recovery surface for rows that dropped out of every
+        # default list: a session that is archived AND hidden (Bot Mode marks its sessions
+        # hidden) must still be reachable there, or nothing but direct DB access can bring
+        # it back (#90946).
+        if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
         where_sql = _where_sql(where_clauses)
         base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET
@@ -1231,8 +1275,9 @@ class SessionSessionsMixin:
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
                     WHERE parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                 ),
                 chain_max AS (
@@ -1268,10 +1313,7 @@ class SessionSessionsMixin:
             seen_ids = {s["id"] for s in sessions}
             pinned_where = f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
             pinned_query = f"""
-                {select_head}COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                        s.started_at
-                    ) AS last_active
+                {select_head}{_sql_session_last_active("s")} AS last_active
                 {from_sessions}
                 {pinned_where}
                 ORDER BY s.started_at DESC
@@ -1359,15 +1401,17 @@ class SessionSessionsMixin:
         return list(reversed(chain)) or [session_id]
 
     def search_sessions(
-        self, source: str = None, limit: int = 20, offset: int = 0, workspace_key: str = None,
+        self, source: Union[str, Sequence[str], None] = None, limit: int = 20, offset: int = 0,
+        workspace_key: str = None,
     ) -> List[Dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
-        so ``hermes -c``/``--resume`` picks its last session."""
+        so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several."""
         where_clauses = []
         params: list = []
         if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+            sources = [source] if isinstance(source, str) else list(source)
+            where_clauses.append(f"s.source IN ({','.join('?' * len(sources))})")
+            params.extend(sources)
         if workspace_key:
             ws_clause, ws_params = _workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)
@@ -1525,19 +1569,19 @@ class SessionSessionsMixin:
             return 0
         removed_ids: list[str] = []
         def _do(conn):
-            existing = [row["id"] for row in conn.execute(
-                f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(unique_ids)})",
-                unique_ids,
+            existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
             ).fetchall()]
             if not existing:
                 return 0
-            ph = _session_ids_placeholders(existing)
             removed_ids.extend(_delete_delegate_children(conn, existing))
-            conn.execute(  # orphan children whose parent is in the kill list (FK)
-                f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", existing,
-            )
-            conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", existing)
-            conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", existing)
+            for chunk in _id_chunks(existing):
+                ph = _session_ids_placeholders(chunk)
+                conn.execute(  # orphan children whose parent is in the kill list (FK)
+                    f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk,
+                )
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
             return len(existing)
@@ -1569,16 +1613,14 @@ class SessionSessionsMixin:
             ).fetchall()}
             if not session_ids:
                 return 0
-            conn.execute(
-                "UPDATE sessions SET parent_session_id = NULL "
-                f"WHERE parent_session_id IN ({_session_ids_placeholders(session_ids)})", list(session_ids),
-            )
-            for sid in session_ids:
+            for chunk in _id_chunks(session_ids):
+                ph = _session_ids_placeholders(chunk)
+                conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
                 # DELETE FROM messages: a row inserted between the SELECT and here
                 # would otherwise dangle (clean FK state).
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
@@ -1612,6 +1654,10 @@ class SessionSessionsMixin:
             if last and now - last < min_interval_hours * 3600:
                 result["skipped"] = True
                 return result
+            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
+            # which the watchdog's CPU fallback misreads as a parked deadlock.
+            # No-op when the watchdog is not armed; never raises.
+            report_startup_progress(900.0, phase="state_db_auto_archive")
             archived = result["archived"] = self.archive_stale_sessions(idle_days, exclude_pinned=exclude_pinned)
             # Record even a zero-archive run so we don't re-sweep every call.
             self.set_meta("last_auto_archive", str(now))

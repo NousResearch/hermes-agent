@@ -46,9 +46,13 @@ export interface CanonicalSession {
 }
 
 export interface SessionPreview {
+  /** Stored session id — what `host.openSession` takes. */
+  id?: string
   /** Unix seconds, not milliseconds. */
   last_active?: number
+  message_count?: number
   preview?: string
+  title?: string
 }
 
 /** Per-bot presentation state, persisted in the profile's `ui_meta`. */
@@ -59,6 +63,11 @@ export interface BotMeta {
    *  the assignment rides the same profile.yaml sync every other bot setting
    *  already uses — so sections follow the profile to another machine. */
   sectionId?: null | string
+  /** The section's display name, written beside `sectionId` on every filing.
+   *  Section RECORDS live in the creating desktop's plugin storage; carrying
+   *  the name with the membership lets another desktop on the same backend
+   *  rebuild a section it never created instead of drawing a flat list. */
+  sectionName?: null | string
   color?: string
   /** Set when the user has customized the avatar, so defaults stop applying. */
   custom?: boolean
@@ -150,6 +159,8 @@ export interface GroupMessage {
   text: string
   /** Messages predating threading carry the sentinel thread `'legacy'`. */
   thread?: string
+  /** Set on the ui_meta projection when `text` was cut to the sync budget. */
+  truncated?: boolean
 }
 
 export interface GroupHold {
@@ -178,8 +189,15 @@ export interface GroupChat {
   tombstone?: boolean
   /** Local display order, deliberately excluded from the gateway mirror. */
   rosterOrder?: number
-  /** Read when ordering rooms; no write site in the plugin today. */
+  /** "Pin to top" on the room row (`group-pin.ts`); the outer band of the room order. */
   pinned?: boolean
+  /** Which user-made sidebar section this group chat is filed under
+   *  (`user-sections.ts`). Like a bot's `sectionId` it is membership on the
+   *  item, but a group's only durable identity is its room record, so the
+   *  field rides the room's plugin-storage persistence — local, like the
+   *  section list itself, and deliberately absent from the bounded gateway
+   *  sync projection, which carries conversations, not sidebar layout. */
+  sectionId?: null | string
   /** How far each `<thread>::<member>` has read into `log`. Required: unlike
    *  the gateway-sourced shapes above, a room record is plugin-owned — every
    *  writer (hydrate, server-sync merge, updateGroupChat, room reset) seeds
@@ -216,6 +234,9 @@ export interface GroupPrompt {
   questions?: GroupPromptQuestion[] | null
   requestId: string
   sessionId?: null | string
+  /** The thread the blocking question belongs to — part of the mirror key,
+   *  since a member can be blocked in two threads at once. */
+  thread?: string
 }
 
 export type GroupActivityKind =

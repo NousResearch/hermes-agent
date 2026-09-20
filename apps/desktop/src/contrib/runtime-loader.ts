@@ -28,9 +28,12 @@
  * trust seam.
  */
 
+import { atom } from 'nanostores'
+
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
+import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, type HermesPlugin } from './plugin'
 import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
@@ -46,6 +49,9 @@ interface LoadOptions {
   integrity?: string
   /** Inventory bucket; the disk door is the default runtime source. */
   kind?: PluginKind
+  /** Agent package whose desktop half this is (unified packages). */
+  packageName?: string
+  packageOrigin?: PackageMarker['origin']
 }
 
 /** Live runtime plugins: id -> disposers (unload/reload support). */
@@ -169,14 +175,19 @@ export async function loadRuntimePlugin(
       name: plugin.name ?? plugin.id,
       description: plugin.description,
       kind: options.kind ?? 'disk',
-      file: options.file
+      file: options.file,
+      packageName: options.packageName,
+      packageOrigin: options.packageOrigin
     }
 
     const activate = () => {
       // Reload = dispose the previous incarnation, then register fresh.
       unloadRuntimePlugin(plugin.id)
       const disposers: (() => void)[] = []
-      plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+      trackGatewayEventDisposers(
+        dispose => disposers.push(dispose),
+        () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+      )
       loaded.set(plugin.id, disposers)
       publishPlugin({ ...record, status: 'loaded' })
     }
@@ -200,6 +211,8 @@ export async function loadRuntimePlugin(
       name: origin,
       kind: options.kind ?? 'disk',
       file: options.file,
+      packageName: options.packageName,
+      packageOrigin: options.packageOrigin,
       status: 'error',
       error: error instanceof Error ? error.message : String(error)
     })
@@ -209,13 +222,13 @@ export async function loadRuntimePlugin(
 }
 
 // ---------------------------------------------------------------------------
-// The on-disk plugin door — TWO roots, one pipeline:
-//  - `<hermes home>/desktop-plugins/<name>/plugin.js` — the standalone door
-//    (agent- or user-written desktop-only plugins);
-//  - `<hermes home>/plugins/<name>/desktop/plugin.js` — the desktop HALF of a
-//    unified agent-plugin package: the same installed folder that carries the
-//    Python plugin (plugin.yaml / plugin.json) ships its desktop UI beside it,
-//    so one feature is ONE install instead of two co-dependent plugins.
+// The on-disk plugin door — ONE app-level root, `<hermes home>/desktop-plugins/`:
+//  - `<id>/plugin.js` — a standalone desktop plugin (agent- or user-written);
+//  - `<package>/plugin.js` + `.hermes-package.json` — the desktop HALF of a
+//    unified agent+desktop package, COPIED here by Electron from the package's
+//    `plugins/<package>/desktop/` folder (electron/desktop-plugins-root.ts).
+//    The agent half stays in its profile; the desktop half lives with the app,
+//    so it neither appears nor disappears when the active profile changes.
 // SELF-MAINTAINING — no reload ceremony:
 //  - each plugin.js is fs-watched (the preview watcher IPC, debounced in
 //    main): saving the file hot-reloads the plugin in place;
@@ -230,49 +243,68 @@ export async function loadRuntimePlugin(
 const DISK_POLL_MS = 5_000
 
 interface DiskRoot {
-  /** Root-level enable posture, forwarded to the loader (see LoadOptions). */
-  defaultEnabled?: boolean
   dir: string
-  /** Path segments below each scanned package folder. Discovery walks
-   *  directory metadata to this file instead of throwing a content read for
-   *  every ordinary package that has no Desktop half. */
+  /** Path segments below each scanned folder to the entry file. */
   entrySegments: readonly string[]
 }
 
-/** Both scan roots, resolved fresh each pass (Electron-local, never the
- *  backend's hermes_home — #66899). `agentPluginsRoot` is optional: older
- *  shells predate it and the unified-package half simply doesn't scan. */
+/** The app-level root, resolved fresh each pass (Electron-local, never the
+ *  backend's hermes_home — #66899). Resolving it also runs Electron's
+ *  reconcile, so unified packages' desktop halves are current before we scan. */
 async function diskRoots(): Promise<DiskRoot[]> {
-  const desktop = window.hermesDesktop
+  const root = await window.hermesDesktop?.desktopPluginsRoot?.()
 
-  if (!desktop) {
-    return []
+  return root ? [{ dir: root, entrySegments: ['plugin.js'] }] : []
+}
+
+/** Marker Electron writes beside a materialized unified-package half. Its
+ *  presence means: opt-in posture (the Python half is installed-but-inert
+ *  until allowlisted — GHSA-mcfc-hp25-cjv7 — so the desktop half matches), and
+ *  the record carries the package name so the Plugins page pairs it with the
+ *  agent row. */
+const PACKAGE_MARKER = '.hermes-package.json'
+
+interface PackageMarker {
+  origin?: { catalogName?: string; repo?: string; sha?: string }
+  package: string
+}
+
+async function readPackageMarker(desktop: Window['hermesDesktop'], folder: string): Promise<null | PackageMarker> {
+  try {
+    const { entries } = await desktop.readDir(folder)
+    const marker = entries.find(entry => entry.name === PACKAGE_MARKER && !entry.isDirectory)
+
+    if (!marker) {
+      return null
+    }
+
+    const parsed = JSON.parse((await desktop.readFileText(marker.path)).text) as {
+      catalogName?: string
+      package?: string
+      repo?: string
+      sha?: string
+    }
+
+    if (!parsed.package) {
+      return null
+    }
+
+    return {
+      origin: parsed.repo ? { catalogName: parsed.catalogName, repo: parsed.repo, sha: parsed.sha } : undefined,
+      package: parsed.package
+    }
+  } catch {
+    return null
   }
-
-  const roots: DiskRoot[] = []
-  const standalone = await desktop.desktopPluginsRoot?.()
-
-  if (standalone) {
-    roots.push({ dir: standalone, entrySegments: ['plugin.js'] })
-  }
-
-  const unified = await desktop.agentPluginsRoot?.()
-
-  if (unified) {
-    // Opt-in by default: `~/.hermes/plugins` is installed-but-inert until the
-    // user allowlists the Python half (plugins.enabled), so the desktop half
-    // matches that posture — inventoried in Capabilities → Plugins, off until
-    // toggled. The standalone desktop-plugins door keeps its default-on trust.
-    roots.push({ defaultEnabled: false, dir: unified, entrySegments: ['desktop', 'plugin.js'] })
-  }
-
-  return roots
 }
 
 interface DiskPlugin {
   /** Root posture, forwarded on every (re)load of this entry. */
   defaultEnabled?: boolean
   file: string
+  /** Agent package this folder is the desktop half of (unified packages). */
+  packageName?: string
+  packageOrigin?: PackageMarker['origin']
   /** Loaded plugin id (null while broken — kept so a fixing save reloads). */
   id: null | string
   /** Origin label (folder name) — the toast/inventory name for load errors. */
@@ -336,7 +368,9 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
 
     const id = await loadRuntimePlugin(text, entry.origin, {
       defaultEnabled: entry.defaultEnabled,
-      file: entry.file
+      file: entry.file,
+      packageName: entry.packageName,
+      packageOrigin: entry.packageOrigin
     })
 
     // A hot-edit that changes `plugin.id`: loadRuntimePlugin only disposes the
@@ -460,11 +494,16 @@ async function scanDiskPlugins(): Promise<void> {
           continue
         }
 
+        const marker = await readPackageMarker(desktop, dir.path)
+
         const record: DiskPlugin = {
-          defaultEnabled: root.defaultEnabled,
+          // A unified package's desktop half ships opt-in, like its agent half.
+          defaultEnabled: marker ? false : undefined,
           file,
           id: null,
           origin: dir.name,
+          packageName: marker?.package,
+          packageOrigin: marker?.origin,
           watchId: null
         }
 
@@ -514,6 +553,11 @@ async function scanDiskPlugins(): Promise<void> {
 /** Manual rescan (the ⌘K "Reload desktop plugins" fallback). */
 export const discoverRuntimePlugins = scanDiskPlugins
 
+/** True while the disk door's FIRST scan is in flight. Boot code that must
+ *  not mistake a not-yet-registered plugin route for a stale one
+ *  (remembered-route restore) waits on this instead of on timing. */
+export const $diskPluginsScanPending = atom(false)
+
 /** Start the self-maintaining disk door: initial scan, per-file hot reload,
  *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent. */
 export function watchRuntimePlugins(): void {
@@ -524,6 +568,7 @@ export function watchRuntimePlugins(): void {
   }
 
   watching = true
+  $diskPluginsScanPending.set(true)
 
   const dirWatchIds = new Set<string>()
   const watchedDirs = new Set<string>()
@@ -581,7 +626,7 @@ export function watchRuntimePlugins(): void {
     return all
   }
 
-  void scanDiskPlugins()
+  void scanDiskPlugins().then(() => $diskPluginsScanPending.set(false))
   void startDirWatches().then(watched => {
     if (watched) {
       return

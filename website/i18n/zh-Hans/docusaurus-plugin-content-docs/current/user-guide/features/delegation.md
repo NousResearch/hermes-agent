@@ -264,7 +264,7 @@ TUI 提供 `/agents` 浮层（别名 `/tasks`），将递归 `delegate_task` 扇
 
 在经典 CLI 和 TUI 中按 **F7**，可将实时栏折叠为单行摘要，再按一次恢复多行预览。单行保留运行数量和展开/恢复提示，空间允许时显示活动。输入和发送不受影响；关闭监视器后保留草稿及光标位置。此选项不写入配置。
 
-经典 CLI 的 `/agents` 和 `/tasks` 仍打印文本摘要；父智能体忙碌时可直接按 **F6** 打开交互式监视器。参见 [TUI — 斜杠命令](/user-guide/tui#slash-commands)。
+经典 CLI 的 `/agents` 和 `/tasks` 仍打印文本摘要；父智能体忙碌时可直接按 **F6** 打开交互式监视器。参见 [TUI — 斜杠命令](../tui.md#slash-commands)。
 
 ## 深度限制与嵌套编排 {#depth-limit-and-nested-orchestration}
 

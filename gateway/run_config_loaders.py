@@ -21,7 +21,8 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT, parse_cron_drain_timeout,
     parse_restart_after_turn_timeout, parse_restart_drain_timeout,
-    parse_signal_interrupt_grace_timeout,
+    launchd_service_label, parse_signal_interrupt_grace_timeout, read_launchd_exit_timeout_s,
+    resolve_launchd_capped_drain,
 )
 from gateway.session import SessionSource
 from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
@@ -45,8 +46,8 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _cfg_str(section: str, key: str) -> str:
         """``<section>.<key>`` from the gateway runtime config as a stripped string ("" when unset)."""
-        from gateway.run import _load_gateway_runtime_config
-        return str(cfg_get(_load_gateway_runtime_config(), section, key, default="") or "").strip()
+        from gateway.run import _load_gateway_config
+        return str(cfg_get(_load_gateway_config(), section, key, default="") or "").strip()
 
     @classmethod
     def _env_or_cfg_str(cls, env_var: str, section: str, key: str) -> str:
@@ -60,10 +61,10 @@ class GatewayConfigLoadersMixin:
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
         then legacy agent.prefill_messages_file. Relative paths resolve from ~/.hermes/.
         """
-        from gateway.run import _hermes_home, _load_gateway_runtime_config
+        from gateway.run import _gateway_config_home, _load_gateway_config
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
-            cfg = _load_gateway_runtime_config()
+            cfg = _load_gateway_config()
             file_path = str(
                 cfg.get("prefill_messages_file", "") or cfg_get(cfg, "agent", "prefill_messages_file", default="") or ""
             )
@@ -71,7 +72,7 @@ class GatewayConfigLoadersMixin:
             return []
         path = Path(file_path).expanduser()
         if not path.is_absolute():
-            path = _hermes_home / path
+            path = _gateway_config_home() / path
         if not path.exists():
             logger.warning("Prefill messages file not found: %s", path)
             return []
@@ -89,11 +90,11 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
         """HERMES_EPHEMERAL_SYSTEM_PROMPT env first, then ``display.personality`` / ``agent.system_prompt``."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
             return prompt
-        return resolve_ephemeral_system_prompt_from_config(_load_gateway_runtime_config())
+        return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
     def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
         """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
@@ -151,9 +152,9 @@ class GatewayConfigLoadersMixin:
 
         Closes #21256.
         """
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         from hermes_constants import resolve_reasoning_config
-        return resolve_reasoning_config(_load_gateway_runtime_config(), model)
+        return resolve_reasoning_config(_load_gateway_config(), model)
 
     @staticmethod
     def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
@@ -234,8 +235,8 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_show_reasoning() -> bool:
         """``display.show_reasoning`` toggle."""
-        from gateway.run import _load_gateway_runtime_config
-        return is_truthy_value(cfg_get(_load_gateway_runtime_config(), "display", "show_reasoning"), default=False)
+        from gateway.run import _load_gateway_config
+        return is_truthy_value(cfg_get(_load_gateway_config(), "display", "show_reasoning"), default=False)
 
     @classmethod
     def _load_busy_input_mode(cls) -> str:
@@ -325,17 +326,50 @@ class GatewayConfigLoadersMixin:
             cls._warn_unparsable_timeout("restart_drain_timeout", raw, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
         return value
 
+    @staticmethod
+    def _load_launchd_exit_timeout(drain_timeout: float) -> Optional[float]:
+        """Read the live launchd ``ExitTimeOut`` this job runs under, if any.
+
+        launchd is the one supervisor the gateway cannot size from config: the per-user (gui)
+        domain clamps ``ExitTimeOut`` (measured 60s on macOS 26), and any signal-driven stop that
+        drains past it is SIGKILLed mid-teardown — the unclean-exit half of the state.db
+        corruption class. Returns ``None`` (fail-open, drain unchanged) when not launchd-owned or
+        when ``launchctl print`` is unavailable. Logs a WARNING when the configured drain exceeds
+        the live budget so the misconfiguration is visible at boot, not at the next SIGKILL.
+        """
+        label = launchd_service_label()
+        if label is None:
+            return None
+        # read_launchd_exit_timeout_s is already fail-open (returns None on any probe failure).
+        exit_timeout = read_launchd_exit_timeout_s(label)
+        if exit_timeout is None:
+            return None
+        effective = resolve_launchd_capped_drain(drain_timeout, exit_timeout)
+        if effective < drain_timeout:
+            logger.warning(
+                "restart_drain_timeout=%.0fs exceeds the live launchd exit timeout (%.0fs) for %s; "
+                "signal-driven stops will drain at most %.0fs so teardown finishes before launchd "
+                "SIGKILLs (launchd clamps ExitTimeOut in the per-user domain).",
+                drain_timeout, exit_timeout, label, effective,
+            )
+        else:
+            logger.info(
+                "launchd exit timeout for %s is %.0fs (drain %.0fs fits)",
+                label, exit_timeout, drain_timeout,
+            )
+        return exit_timeout
+
     @classmethod
     def _load_env_or_agent_cfg_timeout(cls, env_var: str, cfg_key: str, parse, default: float) -> float:
         """Env var (non-empty) else ``agent.<cfg_key>``; warn once when a supplied value fails to parse.
 
         ``0`` is a valid value; the parser falls back to ``default`` on garbage."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         env_raw = os.getenv(env_var)
         if env_raw is not None and str(env_raw).strip() != "":
             raw: object = env_raw
         else:
-            raw = cfg_get(_load_gateway_runtime_config(), "agent", cfg_key, default=None)
+            raw = cfg_get(_load_gateway_config(), "agent", cfg_key, default=None)
         value = parse(raw)
         if raw is not None and str(raw).strip() != "":
             cls._warn_unparsable_timeout(cfg_key, raw, default)
@@ -363,8 +397,8 @@ class GatewayConfigLoadersMixin:
     @classmethod
     def _load_signal_interrupt_grace_timeout(cls) -> float:
         """``gateway.signal_interrupt_grace_timeout``: unexpected-signal post-interrupt grace in seconds."""
-        from gateway.run import _load_gateway_runtime_config
-        raw = cfg_get(_load_gateway_runtime_config(), "gateway", "signal_interrupt_grace_timeout", default=None)
+        from gateway.run import _load_gateway_config
+        raw = cfg_get(_load_gateway_config(), "gateway", "signal_interrupt_grace_timeout", default=None)
         value = parse_signal_interrupt_grace_timeout(raw)
         if raw is not None and raw != "":
             cls._warn_unparsable_timeout(
@@ -381,11 +415,15 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
-        """Background process notification mode from env/config (default ``concise``)."""
-        from gateway.run import _load_gateway_runtime_config
-        mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
+        """Background process notification mode from env/config (default ``concise``), resolved for
+        the AMBIENT profile — callers deciding for another profile's event enter its scope first
+        (``_completion_event_scope``). The env override reads through the secret scope so a served
+        secondary sees its own ``.env`` value, not the launch profile's ``os.environ``."""
+        from gateway.run import _load_gateway_config
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        mode = _platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS")
         if not mode:
-            raw = cfg_get(_load_gateway_runtime_config(), "display", "background_process_notifications")
+            raw = cfg_get(_load_gateway_config(), "display", "background_process_notifications")
             if raw is False:
                 mode = "off"
             elif raw not in {None, ""}:
@@ -399,19 +437,19 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_provider_routing() -> dict:
         """OpenRouter provider routing preferences (canonical fail-open loader: managed overlay + ${VAR})."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         try:
-            return _load_gateway_runtime_config().get("provider_routing", {}) or {}
+            return _load_gateway_config().get("provider_routing", {}) or {}
         except Exception:
             return {}
 
     @staticmethod
     def _load_fallback_model() -> list | None:
         """Fallback chain: ``fallback_providers`` (kept first) merged with legacy ``fallback_model``."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         try:
             # Canonical gateway loader (fail-open): managed overlay + ${VAR} expansion apply here too.
-            return get_fallback_chain(_load_gateway_runtime_config()) or None
+            return get_fallback_chain(_load_gateway_config()) or None
         except Exception:
             return None
 
@@ -426,30 +464,32 @@ class GatewayConfigLoadersMixin:
         ``self._fallback_model`` at process start, so a chain configured (or changed) after ``hermes
         gateway`` was running never reached messaging sessions even though the same process's cron jobs fell
         back correctly. Fixes #60955.
+
+        Reads the ACTIVE gateway home (the routed profile under multiplexing, else the launch home)
+        and keeps one last-known-good chain per home: a single runner-wide slot filled from the launch
+        home handed every secondary profile the default profile's fallback chain.
         """
-        from gateway.run import _hermes_home
+        from gateway.run import _gateway_config_home
+        from hermes_constants import hermes_home_key
+        home = _gateway_config_home()
+        by_home = getattr(self, "_fallback_model_by_home", None)
+        if by_home is None:
+            by_home = self._fallback_model_by_home = {}
+        home_key = hermes_home_key(home)
         try:
-            from hermes_cli.config import read_user_config_raw
-            cfg_path = _hermes_home / "config.yaml"
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg_path = home / "config.yaml"
             if not cfg_path.exists():
-                self._fallback_model = None
+                by_home[home_key] = self._fallback_model = None
                 return self._fallback_model
-            # Raw primitive (raises on parse failure) is required here: the canonical fail-open
-            # loader would return {} on a torn mid-edit write and WIPE the last known-good chain.
-            # The overlay/expansion below fixes the managed-scope/${VAR} drift without losing that.
-            cfg = read_user_config_raw(cfg_path)
-            with suppress(Exception):
-                from hermes_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            with suppress(Exception):
-                from hermes_cli.config import _expand_env_vars
-                expanded = _expand_env_vars(cfg)
-                if isinstance(expanded, dict):
-                    cfg = expanded
+            # fail_closed: a torn mid-edit write must raise so the per-home last known-good chain
+            # below survives, instead of being WIPED by an empty fail-open result.
+            cfg = load_user_config_effective(cfg_path, fail_closed=True)
         except Exception:
             logger.debug("fallback_providers refresh: config.yaml read failed; keeping last known-good chain", exc_info=True)
+            self._fallback_model = by_home.get(home_key, self._fallback_model)
             return self._fallback_model
-        self._fallback_model = get_fallback_chain(cfg) or None
+        by_home[home_key] = self._fallback_model = get_fallback_chain(cfg) or None
         return self._fallback_model
 
     @staticmethod

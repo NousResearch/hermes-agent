@@ -8,17 +8,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    AUTO_VACUUM_MIN_FREELIST_RATIO, _placeholders, _sql_session_last_active, escape_like as _escape_like
+    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
 )
+from hermes_startup_watchdog import report_startup_progress
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
-_LAST_ACTIVE_SQL = """COALESCE(
-                       (SELECT MAX(m.timestamp) FROM messages m
-                        WHERE m.session_id = s.id),
-                       s.started_at
-                   )"""
+_LAST_ACTIVE_SQL = _sql_session_last_active("s")
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
 _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
 
@@ -95,8 +92,9 @@ class SessionMaintenanceMixin:
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id
                   )
             """, (cutoff,)).fetchall()]
+            for chunk in _id_chunks(ids):
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
             if ids:
-                conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(ids)})", ids)
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
@@ -205,21 +203,21 @@ class SessionMaintenanceMixin:
         """Translate the legacy age window into the shared activity filter, then build WHERE."""
         if (older_than_days is not None and filters.get("last_active_before") is None
                 and filters.get("started_before") is None):
+            if older_than_days < 0:
+                raise ValueError(
+                    f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
+                    "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
         return self._prune_filter_where(source=source, **filters)
 
     def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None,
                               **filters) -> List[Dict[str, Any]]:
         """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
-        = inactivity threshold: latest message, else ``started_at``)."""
+        = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
         where, params = self._prune_where(older_than_days, source, filters)
         return [dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
-                           COALESCE(
-                               (SELECT MAX(m.timestamp) FROM messages m
-                                WHERE m.session_id = s.id),
-                               s.started_at
-                           ) AS last_active,
+                           {_LAST_ACTIVE_SQL} AS last_active,
                            s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
@@ -245,7 +243,9 @@ class SessionMaintenanceMixin:
         latest message / ``started_at``); may archive unended sessions.  ``archived = 0`` makes
         repeats no-ops; only lineage tips (``end_reason <> 'compression'``) are candidates — a
         stale tip archives its chain via :meth:`set_session_archived`, so an old compressed-away
-        root with a recent continuation is never matched."""
+        root with a recent continuation is never matched.  The hidden canonical Bot Chat (same
+        predicate as :meth:`set_session_pinned`) is exempt: only a deliberate archive may retire
+        it, since archiving releases its registry title to the next Bot open."""
         if idle_days is None or idle_days < 0:
             return 0
         cutoff = time.time() - float(idle_days) * 86400.0
@@ -256,9 +256,10 @@ class SessionMaintenanceMixin:
             WHERE s.archived = 0
               AND COALESCE(s.end_reason, '') <> 'compression'
               {pin_clause}
-              AND {_sql_session_last_active("s")} < ?
+              AND NOT (COALESCE(s.hidden, 0) <> 0 AND COALESCE(s.title, '') = ?)
+              AND {_LAST_ACTIVE_SQL} < ?
             ORDER BY s.started_at ASC
-            """, (cutoff,))
+            """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:
             self.set_session_archived(row[0], True)
         return len(rows)
@@ -282,12 +283,13 @@ class SessionMaintenanceMixin:
                                 if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
             if not session_ids:
                 return 0
-            conn.execute(f"UPDATE sessions SET parent_session_id = NULL "
-                         f"WHERE parent_session_id IN ({_placeholders(session_ids)})", list(session_ids))
-            for sid in session_ids:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+            # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
+            for chunk in _id_chunks(session_ids):
+                ph = _placeholders(chunk)
+                conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
@@ -384,6 +386,15 @@ class SessionMaintenanceMixin:
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        if retention_days is None or retention_days < 0:
+            # A negative retention would build a future cutoff and match every ended
+            # session; auto_prune=false is the disable switch, not a negative bound.
+            logger.warning(
+                "state.db auto-maintenance skipped: sessions.retention_days=%r is outside the allowed "
+                "range (a whole number of days >= 0); set sessions.auto_prune: false to disable pruning",
+                retention_days)
+            result["skipped"] = True
+            return result
         maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)
         if maintenance_lock is None:
             result["skipped"] = True
@@ -395,8 +406,14 @@ class SessionMaintenanceMixin:
                 result["skipped"] = True
                 return result
             # Prune first: orphans closed below get a full retention window.
+            # Startup-watchdog leases: each long step is I/O-bound (near-zero CPU), which the
+            # watchdog's CPU fallback misreads as a parked deadlock. Leases are clamped to
+            # _MAX_LEASE_S=900 per call, so a multi-minute step renews per step rather than
+            # once at entry. No-op when the watchdog is not armed; never raises.
+            report_startup_progress(900.0, phase="state_db_auto_prune")
             result["pruned"] = pruned = self.prune_sessions(
                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+            report_startup_progress(900.0, phase="state_db_auto_sweep")
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,
                 sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES, exclude_pinned=True,
@@ -411,6 +428,9 @@ class SessionMaintenanceMixin:
                 result["freelist_ratio"] = ratio = self._freelist_ratio()
                 if ratio is None or ratio > min_vacuum_freelist_ratio:
                     try:
+                        # VACUUM rewrites every page with ~zero CPU: renew the lease here so
+                        # a multi-minute rewrite on a large state.db never outlives the clamp.
+                        report_startup_progress(900.0, phase="state_db_auto_vacuum")
                         self.vacuum()
                         result["vacuumed"] = True
                         self.set_meta("last_vacuum", str(now))

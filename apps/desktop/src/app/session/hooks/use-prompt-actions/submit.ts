@@ -133,6 +133,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         Boolean(a)
       )
 
+      const titlePreview = attachments.find(a => typeof a.titlePreview === 'string' && a.titlePreview.trim())?.titlePreview
+
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
 
@@ -765,12 +767,17 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // rather than at Hermes. The gateway turns this into a per-turn hint
           // to read the window underneath and work in it.
           ...($hudMode.get() && { surface: 'hud' }),
+          // A GPT-Live delegation: the text is a voice transcript and the reply
+          // will be spoken by the voice model. Wins over HUD for this turn.
+          ...(options?.surface && { surface: options.surface }),
+          ...(options?.surface && options.voiceContext && { voice_context: options.voiceContext }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for
           // the next turn untouched — without it, losing the settle race
           // (client saw idle, server still unwinding) redirects or interrupts
           // the live turn with text the user explicitly queued.
-          ...(options?.fromQueue && { queued: true })
+          ...(options?.fromQueue && { queued: true }),
+          ...(titlePreview && { title_preview: titlePreview })
         })
 
         // On sleep/wake the gateway's in-memory session may have been cleared

@@ -64,8 +64,14 @@ end-to-end and exposes no knobs:
   overflow in system RAM in the order that hurts least (expert weights
   first, never the attention cache), trading some speed to protect the
   context guarantee.
-- **Conversation compression only kicks in at the model's maximum
-  window** — growth always comes first.
+- **Memory fit includes the launch configuration**, not just the model file:
+  context state, runtime buffers, the vision projector, and MTP buffers all
+  count. For multi-token prediction (MTP), Hermes uses smaller batches when
+  larger batches would spill at the same context window. MTP stays enabled.
+  The same calculation runs when a grown window is restored after restart.
+- **Conversation compression follows a growth check.** If a larger window
+  cannot fit, generation is too slow, or the native maximum is reached,
+  Hermes compresses instead of claiming a window the server did not receive.
 - Idle models are unloaded after 15 minutes to free GPU memory; they
   reload automatically on the next message.
 
@@ -96,10 +102,13 @@ models** section on the same page searches all of Hugging Face:
 If a llama-server is already running on your machine, Hermes detects it
 and uses it instead of starting its own. Point a custom endpoint at any
 OpenAI-compatible server for full manual control — the managed runtime is
-a default, not a requirement. For manual setups (Ollama, MLX, custom
+a default, not a requirement. You can enter the server root (for example
+`http://127.0.0.1:8080`) or the full `/v1` URL: the endpoint test tries
+both and saves the variant that actually served `/models`, so chat
+requests go to the same prefix the model list came from. For manual setups (Ollama, MLX, custom
 builds, headless CLI machines), see
-[Run Hermes Locally with Ollama](/guides/local-ollama-setup) and
-[Run Local LLMs on Mac](/guides/local-llm-on-mac).
+[Run Hermes Locally with Ollama](../guides/local-ollama-setup.md) and
+[Run Local LLMs on Mac](../guides/local-llm-on-mac.md).
 
 ## Configuration
 

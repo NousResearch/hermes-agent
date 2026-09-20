@@ -15,16 +15,18 @@ from urllib.parse import quote
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
+from hermes_cli.dashboard_auth.base import ProviderError
 from hermes_cli.dashboard_auth.cookies import (
     clear_session_cookies, clear_sso_attempt_cookie, detect_https, read_session_cookies,
     read_session_provider, read_sso_attempt_cookie, set_session_cookies,
     set_session_provider_cookie, set_sso_attempt_cookie)
 from hermes_cli.dashboard_auth.prefix import prefix_from_request
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age as _expires_in_seconds, client_ip as _client_ip,
     extract_bearer as _extract_bearer, is_safe_next_path, scan_session_providers,
@@ -187,7 +189,8 @@ async def gated_auth_middleware(
         # Rotate via the refresh token before forcing re-login; on success the request is
         # served transparently with the rotated cookies re-set.
         try:
-            refreshed = _attempt_refresh(request, refresh_token=_rt, provider_hint=provider_hint)
+            refreshed = await run_in_threadpool(
+                _attempt_refresh, request, refresh_token=_rt, provider_hint=provider_hint)
         except ProviderError as e:
             # Uncertain (provider unreachable), not rejected: keep the cookies.
             return unreachable_response(str(e))
@@ -206,9 +209,12 @@ async def gated_auth_middleware(
 
 def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | None = None):
     """Rotate an expired session via the refresh token; ``(Session, provider_name)`` or ``None``.
-    ``RefreshExpiredError`` rejects that candidate only (Basic raises it for foreign opaque tokens
-    too); if none succeeds and any raised ``ProviderError`` it is re-raised so the caller returns
-    503 without clearing cookies."""
+    Concurrent requests carrying the same stale RT are coalesced (``refresh_singleflight``): a
+    burst of parallel fetches after AT expiry must not replay a rotated RT into the provider's
+    reuse detection. ``RefreshExpiredError`` rejects that candidate only (Basic raises it for
+    foreign opaque tokens too); if none succeeds and any raised ``ProviderError`` it is
+    re-raised so the caller returns 503 without clearing cookies. Synchronous: the gate runs it
+    in the threadpool so a slow IdP never blocks the event loop."""
     if not refresh_token:
         return None
 
@@ -217,13 +223,9 @@ def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | No
             AuditEvent.REFRESH_FAILURE, provider=provider.name, reason=reason,
             ip=_client_ip(request))
 
-    def _refresh(provider):
-        new_session = provider.refresh_session(refresh_token=refresh_token)
-        return None if new_session is None else (new_session, provider.name)
-
-    return scan_session_providers(
-        provider_hint, _refresh, phase="refresh", log=_log, swallow=(RefreshExpiredError,),
-        on_swallow=_audit_failure("refresh_expired"),
+    return refresh_session_coalesced(
+        refresh_token, provider_hint or "", phase="refresh", log=_log,
+        on_rejected=_audit_failure("refresh_expired"),
         on_unreachable=_audit_failure("provider_unreachable"))
 
 

@@ -709,6 +709,7 @@ const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
       },
       Math.max(0, fireAt - Date.now())
     )
+
     const tick = window.setInterval(() => setNow(Date.now()), 1000)
 
     return () => {

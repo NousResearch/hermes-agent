@@ -134,7 +134,11 @@ describe('ConnectorTool operation card', () => {
       ]
     })
 
-    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['Connect', 'Try again', 'Continue'])
+    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual([
+      'Connect',
+      'Try again',
+      'Continue'
+    ])
     expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
   })
 
@@ -220,7 +224,9 @@ describe('ConnectorTool operation card', () => {
   it('never binds to a tool row from a different call, even for the same apps', () => {
     // A second connect for gmail opens a new operation on a new tool_call_id. The old row must stay
     // dead: it is matched by id only, never by connector names.
-    expect(connectionRequestOwnsPart(props(), { ...REQUEST, opId: 'operation-2', toolCallId: 'connector-call-2' })).toBe(false)
+    expect(
+      connectionRequestOwnsPart(props(), { ...REQUEST, opId: 'operation-2', toolCallId: 'connector-call-2' })
+    ).toBe(false)
     expect(connectionRequestOwnsPart(props(), REQUEST)).toBe(true)
   })
 

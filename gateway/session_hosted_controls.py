@@ -5,7 +5,7 @@ from tui_gateway.hosted_room_driver import HostedRoomBinding
 
 
 class HostedControls:
-    def _control_task(self, room_id, member_id, task_id, execution_generation):
+    def _control_task(self, room_id, member_id, task_id, execution_generation, *, proven_peer_retry=False):
         if (type(execution_generation) is not int or execution_generation < 1
                 or not isinstance(member_id, str) or not member_id
                 or not isinstance(task_id, str) or not task_id):
@@ -21,7 +21,8 @@ class HostedControls:
                    for m in self._room(room_id)['members']):
             raise RuntimeStoreError('permission_denied')
         if self._member_is_peer(room_id, member_id):
-            raise RuntimeStoreError('unsupported_operation')
+            if not proven_peer_retry or not tasks.is_proven_nonadmission(task):
+                raise RuntimeStoreError('unsupported_operation')
         return task, HostedRoomBinding(room_id, gateway, epoch)
 
     def discard_room_task(self, room_id, *, member_id, task_id, execution_generation):
@@ -47,7 +48,11 @@ class HostedControls:
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:
-            task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
+            task, binding = self._control_task(room_id, member_id, task_id, execution_generation,
+                                               proven_peer_retry=True)
+            if self._member_is_peer(room_id, member_id):
+                from gateway.session_hosted_peer_retry import retry_peer
+                return retry_peer(self, task, binding)
             # Unknown is not non-admission. Never advance its hosted generation
             # while leaving the canonical unknown head behind it.
             if task['status'] == 'indeterminate':
@@ -74,7 +79,10 @@ class HostedControls:
                 continue
             member = task['payload'].get('target_member_id') or task['payload']['target_profile']
             if self._member_is_peer(room_id, member):
-                continue
+                from gateway.session_hosted_peer_retry import retry_available
+                gateway, epoch = self._owned_authority(room_id)
+                if not retry_available(self, task, HostedRoomBinding(room_id, gateway, epoch)):
+                    continue
             actions.append({'kind': 'discard' if task['status'] == 'indeterminate' else 'retry',
                             'member_id': member, 'task_id': task['identity'].task_id,
                             'execution_generation': task['execution_generation']})

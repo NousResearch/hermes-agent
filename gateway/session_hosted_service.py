@@ -185,7 +185,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
     def _resolve_member_transport(self, binding, task):
         if self._member_is_peer(binding.room_id, str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))):
-            return super()._resolve_member_transport(binding, task)
+            transport = super()._resolve_member_transport(binding, task)
+            if task.get('status') == 'queued':
+                from gateway.session_hosted_peer_retry import capture_retry_binding
+                transport.nonadmission_retry_binding = capture_retry_binding(
+                    self, binding, task, transport.route, transport.client)
+            return transport
         from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
         payload = task['payload']
         member = str(payload.get('target_member_id') or payload.get('target_profile'))

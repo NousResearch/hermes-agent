@@ -199,6 +199,9 @@ def _group(authority, actor, home, method, params):
         result = {'room': room}
         if service is not None and room.get('disbanded_at') is None:
             result['driver_status'] = service.status(room['room_id'])
+            if 'session:control' not in actor.capabilities:
+                result['driver_status']['pending_actions'] = [
+                    a for a in result['driver_status']['pending_actions'] if a['kind'] not in {'retry', 'discard'}]
         return result
 
     handlers = {

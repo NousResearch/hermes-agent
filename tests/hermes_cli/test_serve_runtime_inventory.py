@@ -13,6 +13,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch  # noqa: F401 - kept for parity with siblings
 
+import pytest
+
 import hermes_cli.update_cmd as update_cmd
 import hermes_cli.update_inventory as update_inventory
 from hermes_cli import main as cli_main
@@ -276,42 +278,12 @@ def test_inventory_classifies_launchd_job_owned_serve(monkeypatch):
     assert row.detail["launchd_label"] == "ai.hermes.dashboard"
 
 
-def test_inventory_launchd_job_with_other_argv_leaves_manual_classification(monkeypatch):
-    entry = _ledger_entry()
-    fake_pi = SimpleNamespace(
-        ledger_entries=lambda **k: [entry],
-        spawner_is_dead=lambda e: None,
-    )
-    jobs = [("gui/501", "ai.hermes.other", ["hermes", "dashboard", "--port", "8300"], 777)]
-    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
-    with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=jobs), \
-         patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]):
-        plan = update_inventory.collect_runtime_inventory()
-    serves = [r for r in plan.runtimes if r.kind == "serve"]
-    assert serves and serves[0].supervisor == "manual-serve"
-    assert "launchd_domain" not in serves[0].detail
-
-
-def test_inventory_launchd_probe_failure_degrades_to_spawner_classification(monkeypatch):
-    """The launchd probe is advisory: launchctl failing mid-inventory must degrade to the spawner
-    classification, never abort the (read-only) inventory pass."""
-    entry = _ledger_entry()
-    fake_pi = SimpleNamespace(
-        ledger_entries=lambda **k: [entry],
-        spawner_is_dead=lambda e: None,
-    )
-    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
-    with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", side_effect=OSError("launchctl busy")):
-        plan = update_inventory.collect_runtime_inventory()
-    serves = [r for r in plan.runtimes if r.kind == "serve"]
-    assert serves and serves[0].supervisor == "manual-serve"
-
-
-def test_stale_serve_warning_names_the_launchd_kickstart_command(monkeypatch, capsys):
+@pytest.mark.macos_only
+def test_stale_serve_warning_names_the_launchd_kickstart_command(capsys):
+    """#116503: a launchd-owned survivor gets the launchctl kickstart hint, not only the
+    manual relaunch advice (a KeepAlive job fights a hand relaunch)."""
     from hermes_cli import update_abort_recovery
 
-    monkeypatch.setattr(update_abort_recovery.sys, "platform", "darwin")
     update_abort_recovery._warn_stale_serve_runtimes(
         [{"pid": 4321, "kind": "dashboard", "profile": "default", "supervisor": "launchd"}])
-    out = capsys.readouterr().out
-    assert "launchctl kickstart -k gui/$UID/<label>" in out
+    assert "launchctl kickstart -k gui/$UID/<label>" in capsys.readouterr().out

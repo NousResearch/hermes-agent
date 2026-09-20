@@ -11,6 +11,8 @@ Covers:
 
 import asyncio
 import hashlib
+import json
+import sqlite3
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,6 +22,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from gateway.browser_control_artifacts import ArtifactNotFound, ArtifactStore
+from gateway.platforms.api_server_runs import _run_artifact_scope
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
@@ -101,6 +105,10 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     )
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    app.router.add_get(
+        "/v1/runs/{run_id}/artifacts/{artifact_id}",
+        adapter._handle_run_artifact,
+    )
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/steer", adapter._handle_steer_run)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
@@ -154,6 +162,62 @@ def auth_adapter():
 
 
 class TestStartRun:
+    @pytest.mark.asyncio
+    async def test_media_image_is_published_as_reusable_run_artifact(self, adapter, tmp_path):
+        image = tmp_path / "diagram.png"
+        image_bytes = b"\x89PNG\r\n\x1a\nartifact-test"
+        image.write_bytes(image_bytes)
+        adapter._run_artifact_store = ArtifactStore(
+            tmp_path / "artifacts",
+            ttl_seconds=300,
+            max_bytes=1024,
+            allowed_mime_types=frozenset({"image/png"}),
+            one_shot=False,
+        )
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": f"Rendered below.\n\nMEDIA:{image}",
+                }
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                started = await cli.post("/v1/runs", json={"input": "render it"})
+                run_id = (await started.json())["run_id"]
+                event_body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+                events = [
+                    json.loads(line.removeprefix("data: "))
+                    for line in event_body.splitlines()
+                    if line.startswith("data: ")
+                ]
+                for _ in range(100):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert status["output"] == "Rendered below."
+                assert len(status["artifacts"]) == 1
+                artifact = status["artifacts"][0]
+                assert artifact["content_type"] == "image/png"
+                assert artifact["filename"] == "diagram.png"
+                assert artifact["download_path"] == (
+                    f"/v1/runs/{run_id}/artifacts/{artifact['artifact_id']}"
+                )
+                assert str(image) not in str(artifact)
+                available = next(event for event in events if event["event"] == "artifact.available")
+                assert available["artifact"] == artifact
+
+                first = await cli.get(artifact["download_path"])
+                second = await cli.get(artifact["download_path"])
+                assert first.status == second.status == 200
+                assert await first.read() == await second.read() == image_bytes
+
     @pytest.mark.asyncio
     async def test_room_auth_is_validated_before_body_parse_or_work_reservation(
         self, auth_adapter
@@ -2378,3 +2442,418 @@ class TestHostedRoomRuns:
                 )
             assert rejected.status == 403
             create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/runs/{run_id}/artifacts/{artifact_id} — reusable run image artifacts
+# ---------------------------------------------------------------------------
+
+
+_ARTIFACT_RUN_ID = "run_" + "a" * 32
+_PNG = b"\x89PNG\r\n\x1a\ngenerated-bytes"
+
+
+def _artifact_index_path(tmp_path):
+    """Mirror production layout: the index sits beside the artifact root, never inside it."""
+    return tmp_path / "run_artifacts.db"
+
+
+def _stage_artifact_store(adapter, tmp_path, *, clock=None, max_bytes=1024 * 1024, mime="image/png"):
+    """Swap in a test-local artifact store so nothing touches the real Hermes home. Durable like
+    the real run store, so calling this twice over one ``tmp_path`` is a process restart."""
+    store = ArtifactStore(
+        tmp_path / "artifacts",
+        ttl_seconds=300,
+        max_bytes=max_bytes,
+        allowed_mime_types=frozenset({mime}),
+        clock=clock,
+        one_shot=False,
+        index_path=_artifact_index_path(tmp_path),
+    )
+    adapter._run_artifact_store = store
+    return store
+
+
+def _seed_index_row(index_path, **overrides):
+    """Write a raw receipt row, standing in for an index left by an older gateway version."""
+    row = {
+        "artifact_id": "b" * 32, "sha256": "0" * 64, "size_bytes": len(_PNG),
+        "content_type": "image/png", "filename": "seeded.png", "created_at": 0.0,
+        "expires_at": 1e12, "ttl_seconds": 300.0, "scope_key": "c" * 64, "one_shot": 0}
+    row.update(overrides)
+    connection = sqlite3.connect(str(index_path))
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS artifact_receipts (
+            artifact_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+            content_type TEXT NOT NULL, filename TEXT NOT NULL, created_at REAL NOT NULL,
+            expires_at REAL NOT NULL, ttl_seconds REAL NOT NULL, scope_key TEXT NOT NULL,
+            one_shot INTEGER NOT NULL DEFAULT 0)""")
+    connection.execute(
+        f"INSERT OR REPLACE INTO artifact_receipts ({','.join(row)}) "
+        f"VALUES ({','.join('?' * len(row))})", tuple(row.values()))
+    connection.commit()
+    connection.close()
+    return row
+
+
+def _stage_completed_run(adapter, run_id, *, artifacts, output="Rendered below."):
+    """Record a terminal run status owned by the default request scope."""
+    _claim_run(adapter, run_id)
+    adapter._run_statuses[run_id] = {
+        "object": "hermes.run", "run_id": run_id, "status": "completed",
+        "output": output, "artifacts": artifacts, "updated_at": time.time(),
+    }
+
+
+def _publish(adapter, store, run_id, *, data=_PNG, filename="diagram.png"):
+    """Store bytes under *run_id*'s owner scope and return the wire receipt."""
+    receipt = store.store(
+        data, filename=filename, content_type="image/png",
+        scope=_run_artifact_scope(adapter._run_owners[run_id]),
+    )
+    return receipt.to_dict(
+        download_path=f"/v1/runs/{run_id}/artifacts/{receipt.artifact_id}")
+
+
+class TestRunArtifacts:
+    @pytest.mark.asyncio
+    async def test_status_carries_artifacts_so_a_client_that_missed_the_stream_can_hydrate(
+        self, adapter, tmp_path
+    ):
+        """A reconnecting client never sees ``artifact.available``; ``GET /v1/runs/{id}`` is
+        the recovery path, and the receipts it returns must be downloadable on their own."""
+        image = tmp_path / "diagram.png"
+        image.write_bytes(_PNG)
+        _stage_artifact_store(adapter, tmp_path)
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {
+                    "final_response": f"Rendered below.\n\nMEDIA:{image}"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = 0
+                agent.session_total_tokens = 0
+                mock_create.return_value = agent
+
+                started = await cli.post("/v1/runs", json={"input": "render it"})
+                run_id = (await started.json())["run_id"]
+                # Deliberately never open /events: this is the reconnect path.
+                for _ in range(200):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+
+            assert status["status"] == "completed"
+            assert status["output"] == "Rendered below."
+            assert str(image) not in json.dumps(status)
+            assert str(tmp_path) not in json.dumps(status)
+            [artifact] = status["artifacts"]
+            assert set(artifact) >= {"artifact_id", "content_type", "filename", "size_bytes"}
+            fetched = await cli.get(artifact["download_path"])
+            assert fetched.status == 200
+            assert fetched.headers["Content-Type"].startswith("image/png")
+            assert fetched.headers["X-Content-Type-Options"] == "nosniff"
+            assert await fetched.read() == _PNG
+
+    @pytest.mark.asyncio
+    async def test_media_path_is_stripped_even_when_nothing_could_be_published(
+        self, adapter, tmp_path
+    ):
+        """An image too large for the store yields no artifact — and the ``MEDIA:`` directive
+        still must not ride out to the client as a readable gateway filesystem path."""
+        image = tmp_path / "huge.png"
+        image.write_bytes(_PNG * 64)
+        _stage_artifact_store(adapter, tmp_path, max_bytes=8)
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {
+                    "final_response": f"Rendered below.\n\nMEDIA:{image}"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = 0
+                agent.session_total_tokens = 0
+                mock_create.return_value = agent
+
+                started = await cli.post("/v1/runs", json={"input": "render it"})
+                run_id = (await started.json())["run_id"]
+                body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+                for _ in range(200):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+
+            assert status["artifacts"] == []
+            assert status["output"] == "Rendered below."
+            assert str(image) not in json.dumps(status)
+            assert "MEDIA:" not in json.dumps(status)
+            assert str(image) not in body
+            assert "artifact.available" not in body
+
+    @pytest.mark.asyncio
+    async def test_non_image_media_is_never_published_or_disclosed(self, adapter, tmp_path):
+        """Only the image MIME allowlist becomes an artifact; a PDF is dropped, path and all."""
+        report = tmp_path / "report.pdf"
+        report.write_bytes(b"%PDF-1.4 secret")
+        _stage_artifact_store(adapter, tmp_path)
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {
+                    "final_response": f"Here it is.\n\nMEDIA:{report}"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = 0
+                agent.session_total_tokens = 0
+                mock_create.return_value = agent
+
+                started = await cli.post("/v1/runs", json={"input": "write it"})
+                run_id = (await started.json())["run_id"]
+                for _ in range(200):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+
+            assert status["artifacts"] == []
+            assert str(report) not in json.dumps(status)
+
+    @pytest.mark.asyncio
+    async def test_one_runs_artifact_is_not_readable_through_another_run(
+        self, adapter, tmp_path
+    ):
+        """Same owner, same scope key, different run: the id must still be a miss, because a
+        run's artifact list — not the scope — is what authorizes the download."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        other_run = "run_" + "b" * 32
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        _claim_run(adapter, other_run)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
+        _stage_completed_run(adapter, other_run, artifacts=[])
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            crossed = await cli.get(
+                f"/v1/runs/{other_run}/artifacts/{mine['artifact_id']}")
+            assert crossed.status == 404
+            assert (await crossed.json())["error"]["code"] == "artifact_not_found"
+            assert (await cli.get(mine["download_path"])).status == 200
+
+    @pytest.mark.asyncio
+    async def test_a_run_owned_by_another_scope_is_not_found(self, adapter, tmp_path):
+        """An artifact of a run this caller does not own reports the run as missing, not the
+        artifact: the response must not confirm that the run exists."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
+        adapter._run_owners[_ARTIFACT_RUN_ID] = "a-different-principal"
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            denied = await cli.get(mine["download_path"])
+            assert denied.status == 404
+            assert (await denied.json())["error"]["code"] != "artifact_not_found"
+
+    @pytest.mark.asyncio
+    async def test_artifact_download_requires_the_api_key(self, auth_adapter, tmp_path):
+        store = _stage_artifact_store(auth_adapter, tmp_path)
+        _claim_run(auth_adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(auth_adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(auth_adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
+        app = _create_runs_app(auth_adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            assert (await cli.get(mine["download_path"])).status == 401
+            wrong = await cli.get(
+                mine["download_path"], headers={"Authorization": "Bearer sk-wrong"})
+            assert wrong.status == 401
+            allowed = await cli.get(
+                mine["download_path"], headers={"Authorization": "Bearer sk-secret"})
+            assert allowed.status == 200
+            assert await allowed.read() == _PNG
+
+    @pytest.mark.asyncio
+    async def test_expired_artifact_reads_as_missing(self, adapter, tmp_path):
+        now = [1_000.0]
+        store = _stage_artifact_store(adapter, tmp_path, clock=lambda: now[0])
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            assert (await cli.get(mine["download_path"])).status == 200
+            now[0] += 301.0
+            gone = await cli.get(mine["download_path"])
+            assert gone.status == 404
+            assert (await gone.json())["error"]["code"] == "artifact_not_found"
+            # The status record still advertises it; hydration must degrade, not crash.
+            assert (await (await cli.get(f"/v1/runs/{_ARTIFACT_RUN_ID}")).json())["artifacts"]
+
+    @pytest.mark.asyncio
+    async def test_artifact_bytes_survive_a_gateway_restart(self, adapter, tmp_path):
+        """Run status is durable, so the receipts behind it must be too: reopening a saved
+        conversation after a restart has to serve the image the status still advertises."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
+        store.close()
+        # A fresh store over the same root and index is what process restart looks like.
+        restarted = _stage_artifact_store(adapter, tmp_path)
+        assert restarted.count() == 1
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            served = await cli.get(mine["download_path"])
+            assert served.status == 200
+            assert await served.read() == _PNG
+
+    @pytest.mark.asyncio
+    async def test_restart_does_not_resurrect_an_expired_artifact(self, adapter, tmp_path):
+        """Surviving a restart must not mean outliving the TTL."""
+        now = [1000.0]
+        store = _stage_artifact_store(adapter, tmp_path, clock=lambda: now[0])
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
+        store.close()
+        now[0] += 301.0
+        restarted = _stage_artifact_store(adapter, tmp_path, clock=lambda: now[0])
+        assert restarted.count() == 0
+        # Reclaimed from disk on the way, not merely made unreachable.
+        assert not (tmp_path / "artifacts" / mine["artifact_id"]).exists()
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            gone = await cli.get(mine["download_path"])
+            assert gone.status == 404
+            assert (await gone.json())["error"]["code"] == "artifact_not_found"
+
+    def test_restart_drops_a_receipt_whose_bytes_vanished(self, adapter, tmp_path):
+        """A file removed out of band must not come back as a live receipt that then fails its
+        checksum mid-download."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        store.close()
+        (tmp_path / "artifacts" / mine["artifact_id"]).unlink()
+
+        assert _stage_artifact_store(adapter, tmp_path).count() == 0
+
+    def test_restart_drops_a_receipt_outside_the_current_allowlist(self, adapter, tmp_path):
+        """The allowlist can tighten between versions; a receipt minted under the looser one must
+        not keep being served after the upgrade."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        store.close()
+
+        tightened = _stage_artifact_store(adapter, tmp_path, mime="image/webp")
+        assert tightened.count() == 0
+        assert not (tmp_path / "artifacts" / mine["artifact_id"]).exists()
+
+    @pytest.mark.parametrize(
+        "artifact_id",
+        ["../../../etc/passwd", "not-hex", "", "A" * 32, "0" * 31, "0" * 33, "a/b"],
+    )
+    def test_restart_ignores_a_malformed_id_in_the_index(self, adapter, tmp_path, artifact_id):
+        """The index is state from an older process, so a row that is not a minted id is dropped
+        without ever being turned into a path."""
+        _seed_index_row(_artifact_index_path(tmp_path), artifact_id=artifact_id)
+
+        assert _stage_artifact_store(adapter, tmp_path).count() == 0
+
+    def test_index_never_records_a_filesystem_path(self, adapter, tmp_path):
+        """Paths are re-derived from the live root on restore and never written down, so a leaked
+        or tampered index cannot redirect a read out of the controlled root."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        _publish(adapter, store, _ARTIFACT_RUN_ID)
+        store.close()
+
+        assert str(tmp_path).encode() not in _artifact_index_path(tmp_path).read_bytes()
+
+    def test_one_shot_consumption_survives_a_restart(self, tmp_path):
+        """One-shot means once, not once per process: the browser-control contract must not be
+        weakened by giving a store an index."""
+        scope = _run_artifact_scope("principal-one-shot")
+        shared = {
+            "allowed_mime_types": frozenset({"image/png"}), "one_shot": True,
+            "index_path": _artifact_index_path(tmp_path)}
+        store = ArtifactStore(tmp_path / "artifacts", **shared)
+        receipt = store.store(_PNG, filename="a.png", content_type="image/png", scope=scope)
+        assert store.load(receipt.artifact_id, scope=scope)[0] == _PNG
+        store.close()
+
+        restarted = ArtifactStore(tmp_path / "artifacts", **shared)
+        with pytest.raises(ArtifactNotFound):
+            restarted.load(receipt.artifact_id, scope=scope)
+        restarted.close()
+
+    def test_durability_is_opt_in(self, tmp_path):
+        """Browser-control transport passes no index and keeps its sweep-on-start behaviour."""
+        scope = _run_artifact_scope("principal-ephemeral")
+        root = tmp_path / "artifacts"
+        store = ArtifactStore(root, allowed_mime_types=frozenset({"image/png"}), one_shot=False)
+        receipt = store.store(_PNG, filename="a.png", content_type="image/png", scope=scope)
+
+        restarted = ArtifactStore(root, allowed_mime_types=frozenset({"image/png"}), one_shot=False)
+        assert restarted.count() == 0
+        assert not (root / receipt.artifact_id).exists()
+
+    @pytest.mark.parametrize(
+        "artifacts",
+        [
+            "not-a-list",
+            None,
+            42,
+            [None, 7, "x"],
+            [{"artifact_id": 5}],
+            [{"artifact_id": "../../../etc/passwd"}],
+            [{"filename": "diagram.png"}],
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_malformed_artifact_metadata_is_a_miss_not_a_crash(
+        self, adapter, tmp_path, artifacts
+    ):
+        """Run status is durable state that outlives a gateway version, so the download route
+        treats anything that is not a well-formed receipt list as "no artifacts"."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=artifacts)
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            missed = await cli.get(
+                f"/v1/runs/{_ARTIFACT_RUN_ID}/artifacts/{mine['artifact_id']}")
+            assert missed.status == 404
+            assert (await missed.json())["error"]["code"] == "artifact_not_found"
+
+    @pytest.mark.parametrize(
+        "artifact_id",
+        ["0" * 31, "0" * 33, "Z" * 32, "." * 32, "..", "0123456789abcdef0123456789abcdeF"],
+    )
+    @pytest.mark.asyncio
+    async def test_ids_outside_the_minted_shape_are_rejected(
+        self, adapter, tmp_path, artifact_id
+    ):
+        """``[0-9a-f]{32}`` is the whole alphabet on both sides of the wire; nothing else
+        reaches the store, so no id can be shaped into a path."""
+        store = _stage_artifact_store(adapter, tmp_path)
+        _claim_run(adapter, _ARTIFACT_RUN_ID)
+        mine = _publish(adapter, store, _ARTIFACT_RUN_ID)
+        _stage_completed_run(adapter, _ARTIFACT_RUN_ID, artifacts=[mine])
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            rejected = await cli.get(
+                f"/v1/runs/{_ARTIFACT_RUN_ID}/artifacts/{artifact_id}")
+            assert rejected.status == 404

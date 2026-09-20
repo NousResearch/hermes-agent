@@ -5,10 +5,13 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
@@ -24,6 +27,9 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.browser_control_artifacts import ArtifactError, ArtifactStore
+from gateway.platforms.base import validate_media_delivery_path
+from hermes_constants import get_hermes_home
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -50,6 +56,45 @@ _FIXED_EVENT_FIELDS = {
         "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False)},
     "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
 _TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
+_RUN_ARTIFACT_MIME_TYPES = {
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+_RUN_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024
+_RUN_ARTIFACT_CONTENT_TYPES = frozenset(_RUN_ARTIFACT_MIME_TYPES.values())
+#: Server-minted artifact id shape, mirrored byte for byte by the Glass client.
+_RUN_ARTIFACT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+# Per-argument cap for ``tool.started`` args: a whole command survives, a pasted file does not flood the stream.
+_TOOL_ARG_MAX_CHARS = 2000
+
+
+def _tool_started_args(args: Any, redact_sensitive_text: Callable[..., str]) -> Optional[Dict[str, Any]]:
+    """The call's arguments for the public run stream, so a client can show the whole command
+    rather than the display preview (cut to a few dozen characters).
+
+    Redacted value by value, before any cut. Strings stay strings; anything else passes through
+    only if its redacted JSON form is unchanged and small, and otherwise travels as that redacted
+    string, so a secret nested in a structure can never reach the wire."""
+    if not isinstance(args, dict) or not args:
+        return None
+
+    def _bound(text: str) -> str:
+        return text if len(text) <= _TOOL_ARG_MAX_CHARS else text[:_TOOL_ARG_MAX_CHARS] + "…"
+
+    out: Dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str):
+            out[str(key)] = _bound(redact_sensitive_text(value, force=True))
+            continue
+        dumped = json.dumps(value, ensure_ascii=False, default=str)
+        redacted = redact_sensitive_text(dumped, force=True)
+        out[str(key)] = value if redacted == dumped and len(dumped) <= 500 else _bound(redacted)
+    return out
 
 
 def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., str]) -> str:
@@ -117,6 +162,17 @@ def _uses_room_run_auth(self, request: "web.Request") -> bool:
 def _initialize_run_state(self, *, store_factory) -> None:
     """Initialize adapter-owned durable and live ``/v1/runs`` state."""
     self._run_idempotency_store = store_factory()
+    # Run status is durable, so the receipts have to be too: without the index a restart leaves
+    # every saved conversation advertising artifacts whose download 404s. It lives beside the
+    # artifact root, not inside it, so the orphan sweep never has to reason about it.
+    self._run_artifact_store = ArtifactStore(
+        Path(get_hermes_home()) / "artifacts" / "runs",
+        ttl_seconds=float(self._RUN_STATUS_TTL),
+        max_bytes=_RUN_ARTIFACT_MAX_BYTES,
+        allowed_mime_types=frozenset(_RUN_ARTIFACT_MIME_TYPES.values()),
+        one_shot=False,
+        index_path=Path(get_hermes_home()) / "artifacts" / "run_artifacts.db",
+    )
     self._run_owner_pid = os.getpid()
     try:
         from gateway.status import get_process_start_time
@@ -141,6 +197,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
     return [
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
+        ("GET", "/v1/runs/{run_id}/artifacts/{artifact_id}", self._handle_run_artifact),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
@@ -215,6 +272,10 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
             event_fields = fields(tool_name, preview, kwargs)
+            if event_type == "tool.started":
+                started_args = _tool_started_args(args, redact_sensitive_text)
+                if started_args is not None:
+                    event_fields["args"] = started_args
             if event_type == "tool.completed":
                 event_fields["preview"] = _tool_completed_preview(
                     kwargs.get("result"), redact_sensitive_text)
@@ -232,6 +293,52 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
             _push(event)
 
     return _callback
+
+
+def _make_run_live_callbacks(
+    self, run_id: str, loop: "asyncio.AbstractEventLoop", *, _api_server,
+) -> tuple[Callable[..., None], Callable[..., None], Callable[..., None]]:
+    """Build constructor-time callbacks for live reasoning, status, and run notices."""
+    redact_sensitive_text = _api_server.redact_sensitive_text
+
+    def _emit(name: str, **fields: Any) -> None:
+        if run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(
+                _put_run_event, self, run_id, _run_event(run_id, name, **fields))
+
+    def _reasoning(text: Optional[str]) -> None:
+        # Match message.delta: chunk-wise redaction would corrupt split secrets and text.
+        if text:
+            _emit("reasoning.delta", text=text)
+
+    def _status(kind: str, message: str) -> None:
+        if message:
+            _emit(
+                "status",
+                kind=str(kind or "lifecycle"),
+                text=redact_sensitive_text(str(message), force=True),
+            )
+
+    def _notice(notice: Any) -> None:
+        text = notice if isinstance(notice, str) else getattr(notice, "text", None)
+        if text:
+            _emit(
+                "notice",
+                text=redact_sensitive_text(str(text), force=True),
+                level=getattr(notice, "level", "info"),
+                key=getattr(notice, "key", None),
+            )
+
+    return _reasoning, _status, _notice
+
+
+def _put_run_event(self, run_id: str, event: Dict[str, Any]) -> None:
+    """Enqueue on the event loop if the live run transport still exists."""
+    queue = self._run_streams.get(run_id)
+    if queue is not None:
+        queue.put_nowait(event)
 
 
 def _room_permission_for(request: "web.Request") -> str:
@@ -645,6 +752,56 @@ def _run_usage(agent) -> Dict[str, int]:
     return usage
 
 
+def _run_artifact_scope(owner: str) -> SimpleNamespace:
+    """Adapt the opaque run-owner namespace to the shared artifact scope contract."""
+    return SimpleNamespace(principal_id=owner, transport_family="runs")
+
+
+def _publish_run_artifacts(self, run: _RunLaunch, output: str) -> tuple[str, list[dict[str, Any]]]:
+    """Register safe image directives and return display text plus path-free receipts.
+
+    A ``MEDIA:`` directive names a gateway-local file. ``/v1/runs`` is a remote API, so the
+    path is useless to the caller and is a disclosure of the host filesystem either way: the
+    returned text is stripped of directives *whether or not* publication succeeded (#117405).
+    """
+    if not isinstance(output, str):
+        return "", []
+    if "MEDIA:" not in output:
+        return output, []
+    media, cleaned = self.extract_media(output)
+    # ``cleaned`` drops the tags extract_media claimed; the display stripper also removes tags it
+    # declined (missing file, unreadable path) so no variant of the directive survives.
+    safe_output = self.strip_media_directives_for_display(cleaned)
+    owner = self._run_owners.get(run.run_id)
+    if not owner:
+        return safe_output, []
+    artifacts: list[dict[str, Any]] = []
+    for raw_path, _is_voice in media:
+        safe_path = validate_media_delivery_path(raw_path, session_key=run.session_id or "")
+        path = Path(safe_path) if safe_path else None
+        content_type = _RUN_ARTIFACT_MIME_TYPES.get(path.suffix.lower()) if path else None
+        if path is None or content_type is None:
+            continue
+        try:
+            if path.stat().st_size > self._run_artifact_store.max_bytes:
+                continue
+            receipt = self._run_artifact_store.store(
+                path.read_bytes(),
+                filename=path.name,
+                content_type=content_type,
+                scope=_run_artifact_scope(owner),
+            )
+        except (ArtifactError, OSError) as exc:
+            # Basename and exception class only: an OSError's own text carries the absolute
+            # source path, and run logs are shipped to operators who are not the run's owner.
+            logger.warning(
+                "[api_server] could not publish run artifact %s (%s)", path.name, type(exc).__name__)
+            continue
+        download_path = f"/v1/runs/{run.run_id}/artifacts/{receipt.artifact_id}"
+        artifacts.append(receipt.to_dict(download_path=download_path))
+    return safe_output, artifacts
+
+
 def _served_runtime(agent) -> Dict[str, str]:
     """The ``{provider, model}`` pair that actually served the turn. After a ``fallback_providers``
     switch the agent keeps the fallback runtime until the NEXT turn restores the primary, so when
@@ -839,10 +996,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
+        reasoning_cb, status_cb, notice_cb = _make_run_live_callbacks(
+            self, run_id, loop, _api_server=_api_server)
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+                interim_assistant_callback=_interim_cb, reasoning_callback=reasoning_cb,
+                status_callback=status_cb, notice_callback=notice_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await loop.run_in_executor(
@@ -863,7 +1023,18 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
-            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
+            output, artifacts = await asyncio.to_thread(
+                _publish_run_artifacts, self, run, result.get("final_response", ""))
+            for artifact in artifacts:
+                run.put_event(_run_event(run_id, "artifact.available", artifact=artifact))
+            _finish(
+                status,
+                fields,
+                output=output,
+                artifacts=artifacts,
+                usage=usage,
+                runtime=served_runtime,
+            )
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
@@ -939,6 +1110,61 @@ async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.
     _, status, _, _, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="status", active_fallback=True)
     return err or web.json_response(status)
+
+
+def _run_artifact_ids(status: Any) -> set:
+    """Artifact ids this run published. Defensive: a status record is durable state that may
+    predate the field, or have been written by an older or newer gateway, so anything that is not
+    a list of dicts with a well-formed id contributes nothing."""
+    entries = status.get("artifacts") if isinstance(status, dict) else None
+    if not isinstance(entries, list):
+        return set()
+    return {
+        item["artifact_id"] for item in entries
+        if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
+        and _RUN_ARTIFACT_ID_RE.fullmatch(item["artifact_id"])
+    }
+
+
+def _artifact_not_found(_openai_error) -> "web.Response":
+    """One shape for every miss — unknown id, wrong run, wrong scope, expired, swept — so the
+    response never distinguishes "exists but not yours" from "never existed"."""
+    return _json_error(_openai_error, "Artifact not found", code="artifact_not_found", status=404)
+
+
+async def _handle_run_artifact(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """GET a run-owned artifact without disclosing its source filesystem path."""
+    _, status, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="status", active_fallback=True)
+    if err is not None:
+        return err
+    artifact_id = request.match_info["artifact_id"]
+    # Format-check before the store sees it, and admit only ids *this* run published: a caller
+    # who owns run A must not be able to read run B's artifact even though the scope key matches.
+    if not _RUN_ARTIFACT_ID_RE.fullmatch(artifact_id or "") or artifact_id not in _run_artifact_ids(status):
+        return _artifact_not_found(_api_server._openai_error)
+    try:
+        data, receipt = self._run_artifact_store.load(
+            artifact_id,
+            scope=_run_artifact_scope(self._run_idempotency_scope(request)),
+        )
+    except ArtifactError:
+        # Expired, swept by a gateway restart, or scope-mismatched: all indistinguishable.
+        return _artifact_not_found(_api_server._openai_error)
+    if receipt.content_type not in _RUN_ARTIFACT_CONTENT_TYPES:
+        # The store's allowlist is the gate; this is the belt to its braces, so a store
+        # configured with a wider allowlist can never turn this route into a file server.
+        return _artifact_not_found(_api_server._openai_error)
+    return web.Response(
+        body=data,
+        content_type=receipt.content_type,
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+            # Never ``inline``: the filename is model-chosen and the bytes are model-produced.
+            "Content-Disposition": "attachment",
+        },
+    )
 
 
 async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "web.StreamResponse":
@@ -1131,3 +1357,9 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
         if (status.get("status") in {"completed", "failed", "cancelled"}
                 and now - float(status.get("updated_at", 0) or 0) > self._RUN_STATUS_TTL):
             _forget_run(self, run_id, self._run_statuses, self._run_idempotency_ids)
+    # Run artifacts share the status TTL, but nothing reads an artifact nobody downloads, so
+    # without this sweep their bytes would sit on disk until the next gateway start.
+    store = getattr(self, "_run_artifact_store", None)
+    if store is not None:
+        with suppress(Exception):
+            store.prune_expired(now)

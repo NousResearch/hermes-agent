@@ -2357,6 +2357,21 @@ class TestCORS:
             assert resp.status == 200
             assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
 
+    @pytest.mark.asyncio
+    async def test_cors_allows_session_key_header(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/runs",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "X-Hermes-Session-Key",
+                },
+            )
+            assert resp.status == 200
+            assert "X-Hermes-Session-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
 
     @pytest.mark.asyncio
     async def test_cors_options_preflight_allowed_for_configured_origin(self):

@@ -61,13 +61,15 @@ def test_claimless_complete_refuses_live_run_until_forced(conn):
     assert run["ended_at"] is not None and run["outcome"] == "completed"
 
 
-def test_claimless_complete_of_claim_without_live_worker_unchanged(conn):
-    """A claim whose worker never spawned (or is gone) protects no live run: the
-    library / CLI flow that claims and then completes keeps working."""
+def test_claimless_complete_of_pidless_claim_refused_without_ownership(conn):
+    """A pid-less claim is protected by the claim record, not by a worker process
+    (#113004): a run-id-less complete is refused even though no worker ever
+    spawned. The claiming lane passes its run id; an operator passes force."""
     tid, run_id = _claimed_running_task(conn, live_worker=False)
-    assert kb.complete_task(conn, tid, result="done") is True
-    run = conn.execute("SELECT ended_at FROM task_runs WHERE id = ?", (run_id,)).fetchone()
-    assert run["ended_at"] is not None
+    with pytest.raises(kb.LiveClaimError):
+        kb.complete_task(conn, tid, result="someone else says done")
+    assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"] == "running"
+    assert kb.complete_task(conn, tid, result="owner done", expected_run_id=run_id) is True
 
 
 def test_claimless_complete_of_unclaimed_card_unchanged(conn):
@@ -78,11 +80,13 @@ def test_claimless_complete_of_unclaimed_card_unchanged(conn):
 
 
 def test_request_review_shares_the_live_worker_fence(conn):
-    """``request_review`` keys on the same liveness as ``complete_task``: a claim
-    without a live worker process is not a live claim (the human/library flow
-    ``claim`` -> ``request_review`` works), a live worker's claim still is."""
-    tid, _ = _claimed_running_task(conn, live_worker=False)
-    assert kb.request_review(conn, tid, summary="handoff") is True
+    """``request_review`` keys on the same liveness as ``complete_task``: a
+    fresh pid-less claim is live (#113004), so a run-id-less
+    ``request_review`` is refused; the claiming lane passes its run id."""
+    tid, run_id = _claimed_running_task(conn, live_worker=False)
+    ok, reason = kb.request_review(conn, tid, summary="steal", with_reason=True)
+    assert ok is False and "live claim" in reason
+    assert kb.request_review(conn, tid, summary="handoff", expected_run_id=run_id) is True
     assert kb.get_task(conn, tid).status == "review"
 
     tid2, run2 = _claimed_running_task(conn)

@@ -49,8 +49,9 @@ async def test_native_audio_routing_buffers_paths_when_model_supports_audio(monk
     event = _voice_event(source, "/tmp/voice_note.oga")
 
     runner._decide_audio_input_mode = lambda **_: "native"
+    runner._should_echo_stt_transcripts = lambda: False
 
-    # Mock enrich with transcription to verify it is NOT called
+    # Mock enrich with transcription to verify it is NOT called when echo is disabled
     mock_stt = AsyncMock(return_value=("enriched", []))
     runner._enrich_message_with_transcription = mock_stt
 
@@ -60,9 +61,34 @@ async def test_native_audio_routing_buffers_paths_when_model_supports_audio(monk
         history=[],
     )
 
-    # In native mode, STT is bypassed
+    # In native mode with quiet transcripts, STT is bypassed
     assert mock_stt.await_count == 0
     # Pending audio paths are buffered for the session
+    session_key = build_session_key(source)
+    buffered = runner._consume_pending_native_audio_paths(session_key)
+    assert buffered == ["/tmp/voice_note.oga"]
+
+
+@pytest.mark.asyncio
+async def test_native_audio_routing_echoes_transcripts_when_configured(monkeypatch):
+    runner = _make_runner()
+    source = _source()
+    event = _voice_event(source, "/tmp/voice_note.oga")
+
+    runner._decide_audio_input_mode = lambda **_: "native"
+    runner._should_echo_stt_transcripts = lambda: True
+
+    mock_stt = AsyncMock(return_value=("enriched", ["User said hi"]))
+    runner._enrich_message_with_transcription = mock_stt
+
+    text = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    # When echo is enabled, STT is called even in native mode to produce chat quote
+    assert mock_stt.await_count == 1
     session_key = build_session_key(source)
     buffered = runner._consume_pending_native_audio_paths(session_key)
     assert buffered == ["/tmp/voice_note.oga"]

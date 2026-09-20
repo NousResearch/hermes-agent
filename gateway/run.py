@@ -20723,6 +20723,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source=source,
                     session_key=session_key,
                 )
+                _successful_transcripts: List[str] = []
                 if _audio_mode == "native":
                     self._session_state(
                         session_key
@@ -20731,6 +20732,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Audio routing: native (model supports audio). %d audio file(s) will be attached inline.",
                         len(audio_paths),
                     )
+                    if self._should_echo_stt_transcripts():
+                        try:
+                            _, _successful_transcripts = await self._enrich_message_with_transcription(
+                                "",
+                                audio_paths,
+                            )
+                        except Exception as _echo_tx_exc:
+                            logger.debug("Native audio STT echo enrichment failed: %s", _echo_tx_exc)
                 else:
                     message_text, _successful_transcripts = await self._enrich_message_with_transcription(
                         message_text,

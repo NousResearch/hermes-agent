@@ -10293,6 +10293,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 if _m.caption:
                     _event.text = self._clean_bot_trigger_text(_m.caption)
                 await self._cache_observed_media(_m, _event)
+                if (_m.voice or _observe_type == MessageType.VOICE) and _event.media_urls:
+                    try:
+                        from tools.transcription_tools import (
+                            transcribe_audio,
+                            transcribe_audio_local_fallback,
+                        )
+                        for _apath in _event.media_urls:
+                            _res = await asyncio.to_thread(
+                                transcribe_audio, _apath, None, "gateway"
+                            )
+                            if not _res.get("success"):
+                                _res = await asyncio.to_thread(
+                                    transcribe_audio_local_fallback, _apath
+                                )
+                            if _res.get("success") and _res.get("transcript"):
+                                _tx = _res["transcript"].strip()
+                                if _tx:
+                                    try:
+                                        await _m.reply_text(f'🎙️ "{_tx}"')
+                                    except Exception as _reply_exc:
+                                        logger.warning(
+                                            "[%s] Failed to reply with observed voice transcript: %s",
+                                            getattr(self, "name", "telegram"),
+                                            _reply_exc,
+                                        )
+                                    _event.text = self._append_observed_note(
+                                        _event.text, f'🎙️ "{_tx}"'
+                                    )
+                    except Exception as _stt_exc:
+                        logger.warning(
+                            "[%s] Failed to transcribe observed group voice: %s",
+                            getattr(self, "name", "telegram"),
+                            _stt_exc,
+                        )
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
                 )

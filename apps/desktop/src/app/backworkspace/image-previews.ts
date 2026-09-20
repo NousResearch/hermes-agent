@@ -35,9 +35,19 @@ export function imageTarget(pageDir: null | string, href: string): null | string
 // already said where the picture is.
 const attachments = new Map<string, string>()
 
+// The picture a paste has just stored. A block widget is placed AFTER its line,
+// so the caret the paste leaves behind sits above it and keeping the caret in
+// view keeps the picture out of it — paste at the foot of a long page and the
+// thing that just arrived is below the fold. Held here so the one that arrived
+// can be brought into view, and cleared the moment it is: every other picture
+// on the page belongs where it is, and pulling the page to one that happened to
+// finish loading would take the page away from whoever was reading it.
+let arriving: null | string = null
+
 /** Remember where a freshly stored picture went, so it shows before the first save. */
 export function rememberAttachment(href: string, path: string) {
   attachments.set(href, path)
+  arriving = path
 }
 
 // A file on the backend host is not something an <img> can load by path: the
@@ -96,11 +106,27 @@ class ImageWidget extends WidgetType {
     // The picture arrives after its line has been measured, and it is nearly
     // all of that line's height. Asking for another measurement is what keeps
     // the caret, a click and the scroll position right below it.
-    image.addEventListener('load', () => view.requestMeasure())
+    image.addEventListener('load', () => {
+      view.requestMeasure()
+
+      if (this.target !== arriving) {
+        return
+      }
+
+      arriving = null
+      // In the write phase, after the measure: the block's height is the
+      // picture's, and that is only known once the picture has decoded.
+      // Scrolling any earlier aims at the height the editor guessed.
+      view.requestMeasure({ read: () => null, write: () => block.scrollIntoView({ block: 'nearest' }) })
+    })
     // One that cannot be read leaves the line's text, which still says what it
     // points at, rather than a broken-image box. Hidden, not removed: the
     // element belongs to the editor, which syncs its own DOM against it.
     image.addEventListener('error', () => {
+      if (this.target === arriving) {
+        arriving = null
+      }
+
       block.style.display = 'none'
       view.requestMeasure()
     })

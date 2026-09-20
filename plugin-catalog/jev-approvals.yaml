@@ -1,0 +1,16 @@
+name: jev-approvals
+repo: https://github.com/anpicasso/hermes-jev-approvals
+sha: 9ad19018900f21636d86faa3d563adb019538e29
+subdir: plugin
+description: "TypeSafe's Jev decision model as the smart-approval reviewer only: it cannot generate text and refuses any other prompt. Dual route - TypeSafe direct (default, needs a TYPESAFE_API_KEY) or OpenRouter (needs an OPENROUTER_API_KEY in the credential pool, not key_env - see README). Live upstream model listing, decision log, retries. Disclosure — every flagged command (redacted best-effort) and your smart-approval policy text leave the machine to a third-party AI (api.typesafe.ai, or openrouter.ai on the OpenRouter route) to decide APPROVE/DENY/ESCALATE; upstream errors fail closed to ESCALATE."
+maintainer: anpicasso
+tier: community
+category: models
+docs_url: https://github.com/anpicasso/hermes-jev-approvals#readme
+version: "0.2.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []  # none unconditional: TYPESAFE_API_KEY for the default TypeSafe route, OPENROUTER_API_KEY for the OpenRouter route (see README)

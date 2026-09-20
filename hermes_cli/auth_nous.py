@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from hermes_cli.auth_codex import _pool_entries
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError, DEFAULT_NOUS_CLIENT_ID,
-    DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE,
+    DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE, DEFAULT_NOUS_WELCOME_URL,
     DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     _nous_err, httpx)
@@ -36,12 +36,17 @@ _UNUSABLE_JWT_RELOGIN = "Re-authenticate with: hermes auth add nous"
 
 
 def _unusable_invoke_jwt_error(reason: str, *, no_refresh_token: bool = False) -> AuthError:
-    """Shared ``relogin=True`` error for an access token that is not a usable inference JWT."""
+    """Shared ``relogin=True`` error for an access token that is not a usable inference JWT.
+
+    With no refresh token the failure is a state-shape one (nothing to redeem), so it carries the
+    terminal ``nous_auth_missing_refresh_token`` code the pool recognises instead of the JWT
+    ``reason``, which would bench the row as a transient outage (#113718).
+    """
     detail = " and no refresh token is available" if no_refresh_token else ""
     return _nous_err(
         f"Nous Portal access token is not a usable inference JWT ({reason}){detail}. "
         f"{_UNUSABLE_JWT_RELOGIN}",
-        reason, relogin=True)
+        "nous_auth_missing_refresh_token" if no_refresh_token else reason, relogin=True)
 
 
 def _token_fingerprint(token: Any) -> Optional[str]:
@@ -103,7 +108,28 @@ def _migrate_stale_nous_portal_url(providers: Dict[str, Any]) -> None:
 # else would leak. Consulted only for URLs from the NETWORK side (Portal refresh responses);
 # the NOUS_INFERENCE_BASE_URL env override bypasses it (documented dev/staging escape hatch, the
 # user set it themselves).
-_ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({"inference-api.nousresearch.com"})
+_ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
+    "inference-api.nousresearch.com",
+    # Free-tier (anonymous) host: serves the single ``nous/welcome`` model.
+    "welcome-api.nousresearch.com"})
+
+def _nous_inference_host_allowed(hostname: Optional[str]) -> bool:
+    """Production hosts always; otherwise only the host the operator named in
+    ``NOUS_INFERENCE_BASE_URL``.
+
+    A non-production Portal's refresh response names that environment's inference gateway. The
+    Portal-returned value is network provenance, so it does not get bearer-receive authority on
+    its own — not even for a Nous-owned host: the operator's explicit override is the authority,
+    and the network value is accepted exactly when it agrees with it. Then the persisted endpoint,
+    the pricing scope and the proxy all follow the environment the operator chose, and the
+    per-turn "refusing inference URL host" warning stops.
+    """
+    if hostname in _ALLOWED_NOUS_INFERENCE_HOSTS:
+        return True
+    if not hostname:
+        return False
+    override = _nous_inference_env_override()
+    return override is not None and urlparse(override).hostname == hostname
 
 
 def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
@@ -123,7 +149,7 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
         logger.warning(
             "nous: refusing non-https inference URL scheme %r from Portal response", parsed.scheme)
         return None
-    if parsed.hostname not in _ALLOWED_NOUS_INFERENCE_HOSTS:
+    if not _nous_inference_host_allowed(parsed.hostname):
         logger.warning(
             "nous: refusing inference URL host %r from Portal response "
             "(not in allowlist); falling back to default",
@@ -132,14 +158,44 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
     return cleaned.rstrip("/")
 
 
+def _scoped_operator_override(*names: str) -> Optional[str]:
+    """The first set operator routing override among ``names`` (``NOUS_INFERENCE_BASE_URL``,
+    ``HERMES_PORTAL_BASE_URL`` / its ``NOUS_PORTAL_BASE_URL`` alias), resolved through the profile
+    secret scope, or None.
+
+    ``get_secret`` already reads ``os.environ`` for a single-profile process, so the only time it
+    raises is a multi-profile call that has lost its profile scope. That call has no authority to
+    route on the launch profile's value — returning the ambient env there would send a secondary's
+    tokens to the launch profile's Portal or inference host — so the override is simply absent.
+    Absent is not free: default routing then applies, so a non-production deployment's token is
+    spent against the production hosts. One WARNING per lost-scope event names the override; the
+    downstream "ignoring invalid portal_base_url" line never says which caller lost its scope.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        for name in names:
+            value = get_secret(name)
+            if value:
+                return value
+        return None
+    except UnscopedSecretError:
+        logger.warning(
+            "nous: %s unreadable — no profile secret scope on a multiplexed call; treating the "
+            "override as absent (default routing applies). The caller needs a profile scope binding.",
+            "/".join(names))
+        return None
+
+
 def _nous_inference_env_override() -> Optional[str]:
     """User-set ``NOUS_INFERENCE_BASE_URL`` override (trailing slash stripped) or None.
 
     Documented dev/staging escape hatch; the env source is trusted, so unlike Portal-returned URLs
-    it is intentionally NOT gated by the network host allowlist.
+    it is intentionally NOT gated by the network host allowlist. Read through the profile-aware
+    resolver so a multiplexed profile uses its own override and never inherits the default
+    profile's process-wide value (#65941).
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
+    return _optional_base_url(_scoped_operator_override("NOUS_INFERENCE_BASE_URL"))
 
 
 def _nous_portal_env_override() -> Optional[str]:
@@ -147,11 +203,13 @@ def _nous_portal_env_override() -> Optional[str]:
 
     Documented dev/staging escape hatch (e.g. hosted agents on the staging Portal). Trusted env
     source: must NOT be gated by ``_NOUS_PORTAL_ALLOWED_HOSTS``, which rejects untrusted
-    NETWORK-provided values persisted to auth.json, not operator config.
+    NETWORK-provided values persisted to auth.json, not operator config. Read through the
+    profile secret scope like ``_nous_inference_env_override``: it is reached on every routed
+    turn (``_nous_effective_routing``), and a raw environ read would POST a multiplexed
+    secondary's refresh token to the DEFAULT profile's Portal.
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(
-        os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL"))
+    return _optional_base_url(_scoped_operator_override("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL"))
 
 
 def _scope_values(raw_scope: Any) -> set[str]:
@@ -329,7 +387,9 @@ def _shared_lock_timeout(timeout_seconds: float) -> float:
 # OAuth fields mirrored between a profile's Nous state and the shared cross-profile store.
 _NOUS_SHARED_STATE_KEYS = (
     "access_token", "refresh_token", "token_type", "scope", "client_id", "portal_base_url",
-    "inference_base_url", "obtained_at", "expires_at")
+    "inference_base_url", "obtained_at", "expires_at",
+    # Guest (``auth_method: anonymous``) identity: the ``anon_`` credential is the refresh material.
+    "auth_method", "account_tier", "anon_token", "user_id", "org_id")
 
 
 def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
@@ -338,7 +398,7 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
     shared = _read_shared_nous_state() or {}
     shared_refresh = shared.get("refresh_token")
     if not _nonempty_str(shared_refresh):
-        return False
+        return False  # a free-tier identity has no refresh token; nothing to merge into an OAuth state
     shared_access_exp = _parse_iso_timestamp(shared.get("expires_at")) or 0.0
     local_access_exp = _parse_iso_timestamp(state.get("expires_at")) or 0.0
     refresh_changed = shared_refresh.strip() != str(state.get("refresh_token") or "").strip()
@@ -359,8 +419,12 @@ def _nous_shared_shape(src: Dict[str, Any]) -> Dict[str, Any]:
         "scope": src.get("scope") or DEFAULT_NOUS_SCOPE,
         "client_id": src.get("client_id") or DEFAULT_NOUS_CLIENT_ID,
         "portal_base_url": src.get("portal_base_url") or DEFAULT_NOUS_PORTAL_URL,
-        "inference_base_url": src.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL,
-        "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at")}
+        # A guest's route defaults to the welcome host: the paid host cross-refuses its JWT.
+        "inference_base_url": src.get("inference_base_url") or (
+            DEFAULT_NOUS_WELCOME_URL if src.get("auth_method") == "anonymous" else DEFAULT_NOUS_INFERENCE_URL),
+        "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at"),
+        **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id")
+           if src.get(k) not in (None, "")}}
 
 
 def _write_shared_nous_state(state: Dict[str, Any]) -> None:
@@ -368,10 +432,12 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
 
     Best-effort: failures are logged and swallowed; per-profile auth.json stays the source of truth.
     """
-    from hermes_cli.auth import _nonempty_str, _write_private_file_atomic
+    from hermes_cli.auth import _nonempty_str, _save_private_json
     refresh_token = state.get("refresh_token")
-    # No refresh_token = nothing worth sharing across profiles
-    if not (_nonempty_str(refresh_token) and _nonempty_str(state.get("access_token"))):
+    # Nothing worth sharing without refresh material: an OAuth refresh_token (with its access token),
+    # or a guest's anon_ credential, which is the whole identity and may not have been exchanged yet.
+    is_guest = _nonempty_str(state.get("anon_token"))
+    if not is_guest and not (_nonempty_str(refresh_token) and _nonempty_str(state.get("access_token"))):
         return
     shared = {
         "_schema": 1, **_nous_shared_shape(state),
@@ -379,8 +445,7 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
-            _write_private_file_atomic(
-                path, json.dumps(shared, indent=2, sort_keys=True), replace=os.replace)
+            _save_private_json(path, shared, sort_keys=True)
         _oauth_trace(
             "nous_shared_store_written", path=str(path),
             refresh_token_fp=_token_fingerprint(refresh_token))
@@ -407,8 +472,8 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(payload, dict):
         return None
-    has_tokens = (
-        _nonempty_str(payload.get("refresh_token")) and _nonempty_str(payload.get("access_token")))
+    has_tokens = _nonempty_str(payload.get("anon_token")) or (
+        _nonempty_str(payload.get("access_token")) and _nonempty_str(payload.get("refresh_token")))
     return payload if has_tokens else None
 
 
@@ -726,7 +791,9 @@ def refresh_nous_oauth_from_state(
                 if current_invoke_jwt_status is not None:
                     raise _unusable_invoke_jwt_error(
                         current_invoke_jwt_status, no_refresh_token=True)
-                raise _nous_err("No refresh token is available for Nous Portal.", relogin=True)
+                raise _nous_err(
+                    "No refresh token is available for Nous Portal.", "nous_auth_missing_refresh_token",
+                    relogin=True)
             refreshed = _refresh_access_token(
                 client=client, portal_base_url=state["portal_base_url"],
                 client_id=state["client_id"], refresh_token=refresh_token_value)
@@ -776,9 +843,7 @@ def _nous_effective_routing(state: Dict[str, Any]) -> tuple[str, str, str, str]:
     layers the runtime-only ``NOUS_INFERENCE_BASE_URL`` override on top and is never persisted.
     """
     from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
-    portal_url = (
-        _optional_base_url(state.get("portal_base_url")) or os.getenv("HERMES_PORTAL_BASE_URL")
-        or os.getenv("NOUS_PORTAL_BASE_URL") or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+    portal_url = (_optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
     # A persisted/stale portal_base_url is where the refresh token gets POSTed — reject any host
     # outside the allowlist so a poisoned value can't exfiltrate the bearer, healing to the
     # default. Trusted operator env overrides bypass this network-value gate.
@@ -796,10 +861,13 @@ def _nous_effective_routing(state: Dict[str, Any]) -> tuple[str, str, str, str]:
                 "(host %r or scheme not allowed), using default",
                 portal_url, portal_host)
             portal_url = DEFAULT_NOUS_PORTAL_URL
+    # A guest never falls back to the paid host: the gateway cross-refuses an anonymous JWT there
+    # (400 naming the welcome host), so an absent or disallowed URL heals to the welcome literal.
+    from hermes_cli.anon_auth import is_guest_state
     stored_inference_url = (
         _validate_nous_inference_url_from_network(
             _optional_base_url(state.get("inference_base_url")))
-        or DEFAULT_NOUS_INFERENCE_URL)
+        or (DEFAULT_NOUS_WELCOME_URL if is_guest_state(state) else DEFAULT_NOUS_INFERENCE_URL))
     return (
         portal_url, stored_inference_url, _nous_inference_env_override() or stored_inference_url,
         str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID))
@@ -919,12 +987,24 @@ class _NousRuntimeResolve:
 
     def ensure_usable_access_token(self, client: httpx.Client) -> None:
         """Merge from the shared store / refresh until the access token is a usable invoke JWT."""
+        from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+        if is_guest_state(self.state):
+            # Guest seam: the anon_ credential is the refresh material; re-exchange instead of
+            # redeeming a rotating refresh token. Quarantine never applies to a guest.
+            if self.force_refresh or self.invoke_jwt_status() is not None:
+                refresh_guest_state(self.state, client)
+                self.access_token = self.state["access_token"]
+                self.stored_inference_base_url = self.state.get("inference_base_url") or self.stored_inference_base_url
+                self.inference_base_url = _nous_inference_env_override() or self.stored_inference_base_url
+                self.persist("guest_exchange")
+            return
         if not self.has_access_token():
             with self.shared_lock():
                 if self.merge_shared():
                     self.persist("runtime_shared_merge_missing_access_token")
         if not self.has_access_token():
-            raise _nous_err("No access token found for Nous Portal login.", relogin=True)
+            raise _nous_err(
+                "No access token found for Nous Portal login.", "nous_auth_missing_access_token", relogin=True)
         invoke_jwt_status = self.invoke_jwt_status()
         self.skip_refresh_if_peer_rotated()
         if not (self.force_refresh or invoke_jwt_status is not None):
@@ -944,6 +1024,34 @@ def resolve_nous_runtime_credentials(
     stale_access_token: Optional[str] = None) -> Dict[str, Any]:
     """Resolve Nous inference credentials for runtime use (refreshing under the auth-store lock).
 
+    A guest whose ``anon_`` credential NAS no longer knows (reaped or claimed) is retired and a new
+    identity is set up once, transparently -- the one client rule covering both reap and claim.
+    """
+    from hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest, ensure_portal_identity
+    try:
+        return _resolve_nous_runtime_credentials(
+            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
+            force_refresh=force_refresh, stale_access_token=stale_access_token)
+    except AnonCredentialDead as dead_exc:
+        from hermes_cli.auth import get_provider_auth_state
+        from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED
+        dead = get_provider_auth_state("nous") or {}
+        clear_dead_guest(str(dead_exc.code or "anon_credential_dead"), dead_token=dead.get("anon_token"))
+        # A locked account is retired but never silently replaced: the way forward is a sign-in.
+        if dead_exc.code == ANON_ACCOUNT_LOCKED:
+            raise
+        if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
+            raise
+        return _resolve_nous_runtime_credentials(
+            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle)
+
+
+def _resolve_nous_runtime_credentials(
+    *, timeout_seconds: float = 15.0, insecure: Optional[bool] = None,
+    ca_bundle: Optional[str] = None, force_refresh: bool = False,
+    stale_access_token: Optional[str] = None) -> Dict[str, Any]:
+    """Resolve Nous inference credentials for runtime use (refreshing under the auth-store lock).
+
     ``stale_access_token`` is the bearer that just failed upstream (401): with ``force_refresh``,
     the refresh POST is skipped if the store (re-read under the lock) already holds a *different*
     usable token — a peer won the rotation; adopt it rather than invalidate a sibling's token.
@@ -954,7 +1062,7 @@ def resolve_nous_runtime_credentials(
         _tls_state_from_verify)
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
         if not state:
-            raise _nous_err("Hermes is not logged into Nous Portal.", relogin=True)
+            raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing", relogin=True)
         run = _NousRuntimeResolve(
             auth_store, state, state_source_path, force_refresh=force_refresh,
             stale_access_token=stale_access_token, timeout_seconds=timeout_seconds)
@@ -1042,7 +1150,9 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 def _nous_status_from_state(
     state: Dict[str, Any], *, logged_in: bool, source: str) -> Dict[str, Any]:
     """Auth-store-backed Nous status snapshot (shared by the live and refresh-free variants)."""
+    from hermes_cli.anon_auth import is_guest_state
     access_token = state.get("access_token")
+    account_tier = state.get("account_tier")
     return {
         "logged_in": logged_in, "portal_base_url": state.get("portal_base_url"),
         "inference_base_url": state.get("inference_base_url"),
@@ -1050,7 +1160,10 @@ def _nous_status_from_state(
         "agent_key_expires_at": state.get("agent_key_expires_at"),
         "has_refresh_token": bool(state.get("refresh_token")), "access_token": access_token,
         "inference_credential_present": bool(access_token or state.get("agent_key")),
-        "credential_source": "auth_store", "source": source}
+        "credential_source": "auth_store", "source": source,
+        # Free tier: display surfaces render it with the free-tier copy, never as an account login.
+        "account_tier": account_tier if isinstance(account_tier, str) else None,
+        "free_tier": is_guest_state(state)}
 
 
 def _compute_nous_auth_status() -> Dict[str, Any]:
@@ -1167,13 +1280,19 @@ def _pool_first_oauth_status(
 
     Pool first (where `hermes auth` / `hermes model` store device_code tokens), then
     *on_pool_miss* for a pool-derived degraded status, then the legacy state via *resolve*.
+
+    The pool read is an observation (``peek``), not a lease: ``select()`` refreshes an expiring
+    single-use token and, when that speculative POST fails transiently, benches the entry with a
+    persisted cooldown — every credential-gated listing (``/model`` picker, doctor) then shows the
+    provider as unconfigured while the runtime resolver still serves it. Refreshing stays with the
+    runtime resolver reached through *resolve*, whose failures persist nothing.
     """
     from hermes_cli.auth import _auth_file_path
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
-            entry = pool.select()
+            entry = pool.peek()
             if entry is not None:
                 api_key = (
                     getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", ""))
@@ -1394,8 +1513,11 @@ def _offer_shared_nous_import(timeout_seconds: float) -> Optional[Dict[str, Any]
     auth state when the user accepted and the import succeeded, else None.
     """
     from hermes_cli.auth import _prompt_yes_no, _read_shared_nous_state
+    from hermes_cli.anon_auth import is_guest_state
     shared = _read_shared_nous_state()
-    if not shared:
+    if not shared or is_guest_state(shared):
+        # A free-tier identity is not an OAuth credential to import; a real sign-in replaces it
+        # (persist_nous_credentials overwrites the singleton and the shared store).
         return None
     try:
         shared_path = _nous_shared_store_path()
@@ -1483,5 +1605,13 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         print("\nLogin cancelled.")
         raise SystemExit(130)
     except Exception as exc:
-        print(f"Login failed: {exc}")
+        from hermes_cli.auth_error_copy import sign_in_failure_lines
+        logger.debug("nous login failed: %r", exc)
+        print()
+        for line in sign_in_failure_lines(exc, service_host=_portal_host(getattr(args, "portal_url", None))):
+            print(line)
         raise SystemExit(1)
+
+
+def _portal_host(portal_url: Optional[str]) -> str:
+    return urlparse(portal_url or DEFAULT_NOUS_PORTAL_URL).hostname or "portal.nousresearch.com"

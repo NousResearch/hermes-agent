@@ -27,7 +27,7 @@ export function stableHash(value: string): string {
   return Math.abs(hash).toString(36)
 }
 
-export function toolPartDisclosureId(part: ToolPart): string {
+export function toolPartDisclosureId(part: Pick<ToolPart, 'toolCallId' | 'toolName' | 'args'>): string {
   if (part.toolCallId) {
     return `tool:${part.toolCallId}`
   }
@@ -37,6 +37,14 @@ export function toolPartDisclosureId(part: ToolPart): string {
 
 export function toolGroupDisclosureId(parts: ToolPart[]): string {
   return `tool-group:${parts.map(toolPartDisclosureId).join('|')}`
+}
+
+/** Shared by a tool row and the activity summaries that open it. */
+export function toolEntryDisclosureId(
+  messageId: string,
+  part: Pick<ToolPart, 'toolCallId' | 'toolName' | 'args'>
+): string {
+  return `tool-entry:${messageId}:${toolPartDisclosureId(part)}`
 }
 
 export const URL_PATTERN = /https?:\/\/[^\s'"<>)\]]+/i

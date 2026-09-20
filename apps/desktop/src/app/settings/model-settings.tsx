@@ -1,3 +1,5 @@
+import type { ModelOptionProvider } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -18,15 +20,15 @@ import {
 } from '@/hermes'
 import type {
   AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
-  ModelOptionProvider,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -34,6 +36,7 @@ import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAu
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+import { PanelEmpty } from '../overlays/panel'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
@@ -43,43 +46,47 @@ import { useDeepLinkHighlight } from './use-deep-link-highlight'
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
 // spinner. Same containers/rhythm as the real render below.
-export function ModelSettingsSkeleton() {
+export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'subpage'> = {}) {
   return (
     <div className="grid gap-6" data-slot="model-settings-skeleton">
-      <section>
-        <Skeleton className="mb-3 h-3 w-72 max-w-full" />
-        <div className="flex flex-wrap items-center gap-2">
-          <Skeleton className="h-8 w-40" />
-          <Skeleton className="h-8 w-60 max-w-full" />
-          <Skeleton className="h-8 w-16" />
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-          <Skeleton className="h-3 w-16" />
-          <Skeleton className="h-8 w-28" />
-          <Skeleton className="h-6 w-20" />
-        </div>
-      </section>
+      {(subpage === undefined || subpage === 'main') && (
+        <section>
+          <Skeleton className="mb-3 h-3 w-72 max-w-full" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Skeleton className="h-8 w-40" />
+            <Skeleton className="h-8 w-60 max-w-full" />
+            <Skeleton className="h-8 w-16" />
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-8 w-28" />
+            <Skeleton className="h-6 w-20" />
+          </div>
+        </section>
+      )}
 
-      <section>
-        <div className="mb-2.5 flex items-center gap-2 pt-2">
-          <Skeleton className="size-4" />
-          <Skeleton className="h-4 w-36" />
-        </div>
-        <div className="grid gap-1">
-          {[0, 1, 2, 3].map(row => (
-            <div
-              className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center"
-              key={row}
-            >
-              <div className="min-w-0 space-y-1.5">
-                <Skeleton className="h-3.5 w-32" />
-                <Skeleton className="h-3 w-52 max-w-full" />
+      {(subpage === undefined || subpage === 'auxiliary' || subpage === 'moa') && (
+        <section>
+          <div className="mb-2.5 flex items-center gap-2 pt-2">
+            <Skeleton className="size-4" />
+            <Skeleton className="h-4 w-36" />
+          </div>
+          <div className="grid gap-1">
+            {[0, 1, 2, 3].map(row => (
+              <div
+                className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center"
+                key={row}
+              >
+                <div className="min-w-0 space-y-1.5">
+                  <Skeleton className="h-3.5 w-32" />
+                  <Skeleton className="h-3 w-52 max-w-full" />
+                </div>
+                <Skeleton className="h-8 w-full @2xl:justify-self-end @2xl:w-56" />
               </div>
-              <Skeleton className="h-8 w-full @2xl:justify-self-end @2xl:w-56" />
-            </div>
-          ))}
-        </div>
-      </section>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -116,6 +123,11 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'mcp' },
   { key: 'title_generation' },
   { key: 'review' },
+  // Same three canonical slots the backend serves but the list below used to
+  // omit (#97297): triage_specifier, kanban_decomposer, profile_describer.
+  { key: 'triage_specifier' },
+  { key: 'kanban_decomposer' },
+  { key: 'profile_describer' },
   { key: 'curator' }
 ]
 
@@ -144,6 +156,32 @@ export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
       preset.reference_models.every(moaSlotComplete) &&
       moaSlotComplete(preset.aggregator)
   )
+
+// Persistent mismatch: any aux slot pinned to a provider different from the
+// current main, regardless of whether the user just switched. Catches the
+// "I pinned aux months ago and forgot, now it bills a dead provider" case.
+// A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box)
+// never bills a provider, so the backend's `local_endpoint` verdict exempts it.
+export function staleAuxAssignments(
+  tasks: readonly AuxiliaryTaskAssignment[],
+  mainProvider: string
+): StaleAuxAssignment[] {
+  const main = mainProvider.toLowerCase()
+
+  if (!main) {
+    return []
+  }
+
+  return tasks
+    .filter(entry => {
+      const p = (entry.provider ?? '').toLowerCase()
+
+      // 'main' is a backend alias meaning "follow the current main provider"
+      // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
+      return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
+    })
+    .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
+}
 
 interface StaleAuxWarningProps {
   applying: boolean
@@ -180,6 +218,8 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
 }
 
 interface ModelSettingsProps {
+  /** Visibility only: changing pages must not reset drafts or cancel autosave. */
+  subpage?: string
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
   /** Shared settings "Applies to" scope: a concrete profile to edit instead of
@@ -189,9 +229,12 @@ interface ModelSettingsProps {
   scopeProfile?: string
 }
 
-export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSettingsProps) {
+export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
+  const showMain = subpage === undefined || subpage === 'main'
+  const showAuxiliary = subpage === undefined || subpage === 'auxiliary'
+  const showMoa = subpage === undefined || subpage === 'moa'
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [skewRestart, setSkewRestart] = useState(false)
@@ -210,7 +253,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
-  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
+
+  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string; reasoningEffort: string }>({
+    model: '',
+    provider: '',
+    reasoningEffort: '__inherit__'
+  })
+
   // Aux slots reported stale by the backend immediately after a main-model
   // switch (provider differs from the new main). Cleared on next switch/reset.
   const [switchStaleAux, setSwitchStaleAux] = useState<StaleAuxAssignment[]>([])
@@ -224,7 +273,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   useDeepLinkHighlight({
     elementId: task => `aux-task-${task}`,
     param: 'aux',
-    ready: task => AUX_TASKS.some(meta => meta.key === task)
+    ready: task => showAuxiliary && !loading && AUX_TASKS.some(meta => meta.key === task)
   })
 
   // Every profile-scoped async here captures this and bails before writing back,
@@ -500,24 +549,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
   const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
 
-  // Persistent mismatch: any aux slot pinned to a provider different from the
-  // current main, regardless of whether the user just switched. Catches the
-  // "I pinned aux months ago and forgot, now it bills a dead provider" case.
-  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(() => {
-    const mainProvider = (mainModel?.provider ?? '').toLowerCase()
-
-    if (!mainProvider || !auxiliary) {
-      return []
-    }
-
-    return auxiliary.tasks
-      .filter(entry => {
-        const p = (entry.provider ?? '').toLowerCase()
-
-        return p && p !== 'auto' && p !== mainProvider
-      })
-      .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
-  }, [auxiliary, mainModel])
+  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(
+    () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
+    [auxiliary, mainModel]
+  )
 
   // Capabilities of the APPLIED main model — gates the profile-default
   // reasoning/speed controls the same way the composer picker gates per-model
@@ -541,8 +576,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 
-  // Persist a single agent.* default by round-tripping the whole config record
-  // (PUT /api/config replaces it) — optimistic, with rollback on failure.
+  // Persist a single agent.* default as a sparse patch (PUT /api/config
+  // deep-merges onto disk). Never send the whole cached record: it is a
+  // default-expanded snapshot, and echoing it back rewrites every key another
+  // surface changed meanwhile — a CLI-pinned auxiliary slot came back as
+  // provider "auto" / model "" (#95460). Optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
     async (key: string, value: string) => {
       if (!config) {
@@ -554,7 +592,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       setConfig(next)
 
       try {
-        await saveHermesConfig(next, scopeProfile)
+        await saveHermesConfig(setNested({}, key, value), scopeProfile)
       } catch (err) {
         setConfig(prev)
         notifyError(err, m.defaultsFailed)
@@ -746,6 +784,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           {
             model: auxDraft.model,
             provider: auxDraft.provider,
+            reasoning_effort: auxDraft.reasoningEffort === '__inherit__' ? null : auxDraft.reasoningEffort,
             scope: 'auxiliary',
             task,
             ...endpointForProvider(auxDraft.provider)
@@ -771,7 +810,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         current?.provider && current.provider !== 'auto' ? current.provider : (mainModel?.provider ?? '')
 
       const initialModel = current?.model || mainModel?.model || ''
-      setAuxDraft({ provider: initialProvider, model: initialModel })
+      const initialReasoningEffort = current?.reasoning_effort ?? '__inherit__'
+      setAuxDraft({ provider: initialProvider, model: initialModel, reasoningEffort: initialReasoningEffort })
       setEditingAuxTask(task)
     },
     [auxiliary, mainModel]
@@ -819,281 +859,333 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     }
   }, [m.restartFailed, refresh, scopeProfile, setCaughtError])
 
-  if (loading && !mainModel) {
-    return <ModelSettingsSkeleton />
+  // Fallbacks are schema-backed controls in ConfigSettings. Keep this
+  // controller alive there without rendering controls from another child page.
+  if (!showMain && !showAuxiliary && !showMoa) {
+    return null
   }
+
+  if (loading && !mainModel) {
+    return <ModelSettingsSkeleton subpage={subpage} />
+  }
+
+  const errorNotice = error && (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-destructive">
+      <span>{error}</span>
+      {skewRestart && (
+        <Button
+          disabled={restartingBackend}
+          onClick={() => void recycleStaleBackend()}
+          size="sm"
+          variant="textStrong"
+        >
+          {restartingBackend && <Loader2 className="size-3.5 animate-spin" />}
+          {restartingBackend ? m.restartingBackend : m.restartBackend}
+        </Button>
+      )}
+    </div>
+  )
 
   return (
     <div className="grid gap-6">
-      <section>
-        <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
-        <div className="flex flex-wrap items-center gap-2">
-          <Select onValueChange={setSelectedProvider} value={selectedProvider}>
-            <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-              <SelectValue placeholder={m.provider} />
-            </SelectTrigger>
-            <SelectContent>
-              {mainProviderOptions.map(provider => (
-                <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                  {provider.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {needsSetup ? (
-            setupIsApiKey ? (
-              <>
-                <Input
-                  autoComplete="off"
-                  className={cn('min-w-60 flex-1', CONTROL_TEXT)}
-                  onChange={event => setApiKeyDraft(event.target.value)}
-                  onKeyDown={event => {
-                    if (event.key === 'Enter') {
-                      void activateApiKeyProvider()
-                    }
-                  }}
-                  placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
-                  type="password"
-                  value={apiKeyDraft}
-                />
-                <Button
-                  disabled={!apiKeyDraft.trim() || activating}
-                  onClick={() => void activateApiKeyProvider()}
-                  size="sm"
-                >
-                  {activating && <Loader2 className="size-3.5 animate-spin" />}
-                  {activating ? 'Activating...' : 'Activate'}
+      {!showMain && errorNotice}
+      {showMain && (
+        <section>
+          <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Select onValueChange={setSelectedProvider} value={selectedProvider}>
+              <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
+                <SelectValue placeholder={m.provider} />
+              </SelectTrigger>
+              <SelectContent>
+                {mainProviderOptions.map(provider => (
+                  <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                    {provider.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {needsSetup ? (
+              setupIsApiKey ? (
+                <>
+                  <Input
+                    autoComplete="off"
+                    className={cn('min-w-60 flex-1', CONTROL_TEXT)}
+                    onChange={event => setApiKeyDraft(event.target.value)}
+                    onKeyDown={event => {
+                      if (isSubmitEnter(event)) {
+                        void activateApiKeyProvider()
+                      }
+                    }}
+                    placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
+                    type="password"
+                    value={apiKeyDraft}
+                  />
+                  <Button
+                    disabled={!apiKeyDraft.trim() || activating}
+                    onClick={() => void activateApiKeyProvider()}
+                    size="sm"
+                  >
+                    {activating && <Loader2 className="size-3.5 animate-spin" />}
+                    {activating ? 'Activating...' : 'Activate'}
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={startProviderSetup} size="sm" variant="textStrong">
+                  Set up {selectedProviderRow?.name ?? 'provider'}
                 </Button>
-              </>
+              )
             ) : (
-              <Button onClick={startProviderSetup} size="sm" variant="textStrong">
-                Set up {selectedProviderRow?.name ?? 'provider'}
-              </Button>
-            )
-          ) : (
-            <>
-              <Select onValueChange={setSelectedModel} value={selectedModel}>
-                <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
-                  <SelectValue placeholder={m.model} />
-                </SelectTrigger>
-                <SelectContent>
-                  {withActive(selectedProviderModels, selectedModel).map(model => (
-                    <SelectItem key={model} value={model}>
-                      {model}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                disabled={!selectedProvider || !selectedModel || applying}
-                onClick={() => void applyMainModel()}
-                size="sm"
-              >
-                {applying && <Loader2 className="size-3.5 animate-spin" />}
-                {applying ? m.applying : t.common.apply}
-              </Button>
-            </>
-          )}
-        </div>
-        {needsSetup && !setupIsApiKey && selectedProviderRow && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            {selectedProviderRow?.auth_type === 'api_key'
-              ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
-              : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
-          </p>
-        )}
-        {config && mainModel && (reasoningSupported || fastSupported) && (
-          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-            <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
-            {reasoningSupported && (
-              <div className="flex items-center gap-2 text-xs">
-                {m.reasoning}
-                <Select
-                  onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
-                  value={effortValue}
-                >
-                  <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
-                    <SelectValue />
+              <>
+                <Select onValueChange={setSelectedModel} value={selectedModel}>
+                  <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
+                    <SelectValue placeholder={m.model} />
                   </SelectTrigger>
                   <SelectContent>
-                    {REASONING_EFFORT_VALUES.map(value => (
-                      <SelectItem key={value} value={value}>
-                        {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                    {withActive(selectedProviderModels, selectedModel).map(model => (
+                      <SelectItem key={model} value={model}>
+                        {model}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-            )}
-            {fastSupported && (
-              <label className="flex items-center gap-2 text-xs">
-                {t.shell.modelOptions.fast}
-                <Switch
-                  checked={fastOn}
-                  onCheckedChange={checked => void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')}
-                  size="xs"
-                />
-              </label>
+                <Button
+                  disabled={!selectedProvider || !selectedModel || applying}
+                  onClick={() => void applyMainModel()}
+                  size="sm"
+                >
+                  {applying && <Loader2 className="size-3.5 animate-spin" />}
+                  {applying ? m.applying : t.common.apply}
+                </Button>
+              </>
             )}
           </div>
-        )}
-        {error && (
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-destructive">
-            <span>{error}</span>
-            {skewRestart && (
-              <Button
-                disabled={restartingBackend}
-                onClick={() => void recycleStaleBackend()}
-                size="sm"
-                variant="textStrong"
-              >
-                {restartingBackend && <Loader2 className="size-3.5 animate-spin" />}
-                {restartingBackend ? m.restartingBackend : m.restartBackend}
-              </Button>
-            )}
-          </div>
-        )}
-        {switchStaleAux.length > 0 && (
-          <div className="mt-2">
-            <StaleAuxWarning
-              applying={applying}
-              onReset={() => void resetAuxiliaryModels()}
-              slots={switchStaleAux}
-              taskLabel={auxiliaryTaskLabel}
-            />
-          </div>
-        )}
-      </section>
+          {needsSetup && !setupIsApiKey && selectedProviderRow && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {selectedProviderRow?.auth_type === 'api_key'
+                ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
+                : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
+            </p>
+          )}
+          {config && mainModel && (reasoningSupported || fastSupported) && (
+            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+              <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
+              {reasoningSupported && (
+                <div className="flex items-center gap-2 text-xs">
+                  {m.reasoning}
+                  <Select
+                    onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
+                    value={effortValue}
+                  >
+                    <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {REASONING_EFFORT_VALUES.map(value => (
+                        <SelectItem key={value} value={value}>
+                          {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {fastSupported && (
+                <label className="flex items-center gap-2 text-xs">
+                  {t.shell.modelOptions.fast}
+                  <Switch
+                    checked={fastOn}
+                    onCheckedChange={checked => void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')}
+                    size="xs"
+                  />
+                </label>
+              )}
+            </div>
+          )}
+          {errorNotice}
+          {switchStaleAux.length > 0 && (
+            <div className="mt-2">
+              <StaleAuxWarning
+                applying={applying}
+                onReset={() => void resetAuxiliaryModels()}
+                slots={switchStaleAux}
+                taskLabel={auxiliaryTaskLabel}
+              />
+            </div>
+          )}
+        </section>
+      )}
 
-      <section>
-        <div className="mb-2.5 flex items-center justify-between">
-          <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />
-          <Button
-            disabled={!mainModel || applying}
-            onClick={() => void resetAuxiliaryModels()}
-            size="sm"
-            variant="textStrong"
-          >
-            {m.resetAllToMain}
-          </Button>
-        </div>
-        <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
-        {switchStaleAux.length === 0 && persistentStaleAux.length > 0 && (
-          <div className="mb-2.5">
-            <StaleAuxWarning
-              applying={applying}
-              onReset={() => void resetAuxiliaryModels()}
-              slots={persistentStaleAux}
-              taskLabel={auxiliaryTaskLabel}
-            />
-          </div>
-        )}
-        <div className="grid gap-1">
-          {AUX_TASKS.map(meta => {
-            const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
-            const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
-            const isAuto = !current || !current.provider || current.provider === 'auto'
-            const isEditing = editingAuxTask === meta.key
-
-            return (
-              <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
-                <ListRow
-                  action={
-                    !isEditing && (
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <Button
-                          disabled={!mainModel || applying}
-                          onClick={() => void setAuxiliaryToMain(meta.key)}
-                          size="sm"
-                          variant="text"
-                        >
-                          {m.setToMain}
-                        </Button>
-                        <Button
-                          disabled={!providers.length || applying}
-                          onClick={() => beginAuxiliaryEdit(meta.key)}
-                          size="sm"
-                          variant="textStrong"
-                        >
-                          {m.change}
-                        </Button>
-                      </div>
-                    )
-                  }
-                  below={
-                    isEditing && (
-                      <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                          value={auxDraft.provider}
-                        >
-                          <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.provider} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {providerOptions.map(provider => (
-                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                                {provider.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                          value={auxDraft.model}
-                        >
-                          <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.model} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                              <SelectItem key={model} value={model}>
-                                {model}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          disabled={!auxDraft.provider || !auxDraft.model || applying}
-                          onClick={() => void applyAuxiliaryDraft(meta.key)}
-                          size="sm"
-                        >
-                          {applying ? m.applying : t.common.apply}
-                        </Button>
-                        <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                          {t.common.cancel}
-                        </Button>
-                      </div>
-                    )
-                  }
-                  description={
-                    <span className="font-mono text-[0.68rem]">
-                      {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
-                    </span>
-                  }
-                  title={
-                    <span className="flex items-baseline gap-2">
-                      {copy.label}
-                      <Pill>{copy.hint}</Pill>
-                    </span>
-                  }
-                />
-              </div>
-            )
-          })}
-        </div>
-      </section>
-      {moa && currentMoaPreset && (
+      {showAuxiliary && (
         <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
-          <p className="mb-2 text-xs text-muted-foreground">
-            Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
-            acting model.
-          </p>
+          <div className={cn('mb-2.5 flex items-center', subpage === undefined ? 'justify-between' : 'justify-end')}>
+            {subpage === undefined && <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />}
+            <Button
+              disabled={!mainModel || applying}
+              onClick={() => void resetAuxiliaryModels()}
+              size="sm"
+              variant="textStrong"
+            >
+              {m.resetAllToMain}
+            </Button>
+          </div>
+          <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
+          {(switchStaleAux.length === 0 || !showMain) && persistentStaleAux.length > 0 && (
+            <div className="mb-2.5">
+              <StaleAuxWarning
+                applying={applying}
+                onReset={() => void resetAuxiliaryModels()}
+                slots={persistentStaleAux}
+                taskLabel={auxiliaryTaskLabel}
+              />
+            </div>
+          )}
+          <div className="grid gap-1">
+            {AUX_TASKS.map(meta => {
+              const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
+              const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
+              const isAuto = !current || !current.provider || current.provider === 'auto'
+              const isEditing = editingAuxTask === meta.key
+
+              return (
+                <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
+                  <ListRow
+                    action={
+                      !isEditing && (
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <Button
+                            disabled={!mainModel || applying}
+                            onClick={() => void setAuxiliaryToMain(meta.key)}
+                            size="sm"
+                            variant="text"
+                          >
+                            {m.setToMain}
+                          </Button>
+                          <Button
+                            disabled={!providers.length || applying}
+                            onClick={() => beginAuxiliaryEdit(meta.key)}
+                            size="sm"
+                            variant="textStrong"
+                          >
+                            {m.change}
+                          </Button>
+                        </div>
+                      )
+                    }
+                    below={
+                      isEditing && (
+                        <div className="mt-2 grid gap-2 pt-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Select
+                              onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                              value={auxDraft.provider}
+                            >
+                              <SelectTrigger
+                                aria-label={`${copy.label} provider`}
+                                className={cn('min-w-32', CONTROL_TEXT)}
+                              >
+                                <SelectValue placeholder={m.provider} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {providerOptions.map(provider => (
+                                  <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                                    {provider.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                              value={auxDraft.model}
+                            >
+                              <SelectTrigger aria-label={`${copy.label} model`} className={cn('min-w-48', CONTROL_TEXT)}>
+                                <SelectValue placeholder={m.model} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
+                                  <SelectItem key={model} value={model}>
+                                    {model}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="text-muted-foreground">{m.reasoning}</span>
+                            <Select
+                              onValueChange={value => setAuxDraft(prev => ({ ...prev, reasoningEffort: value }))}
+                              value={auxDraft.reasoningEffort}
+                            >
+                              <SelectTrigger
+                                aria-label={`${copy.label} reasoning effort`}
+                                className={cn('min-w-32', CONTROL_TEXT)}
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
+                                {REASONING_EFFORT_VALUES.map(value => (
+                                  <SelectItem key={value} value={value}>
+                                    {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              disabled={!auxDraft.provider || !auxDraft.model || applying}
+                              onClick={() => void applyAuxiliaryDraft(meta.key)}
+                              size="sm"
+                            >
+                              {applying ? m.applying : t.common.apply}
+                            </Button>
+                            <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
+                              {t.common.cancel}
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    }
+                    description={
+                      <span className="font-mono text-[0.68rem]">
+                        {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                        {!isAuto && current.base_url && (
+                          <span className="text-muted-foreground"> · {current.base_url}</span>
+                        )}
+                        {current?.reasoning_effort && (
+                          <span className="text-muted-foreground">
+                            {' · '}
+                            {current.reasoning_effort === 'none'
+                              ? `${m.reasoning} ${m.reasoningOff}`
+                              : (isReasoningEffort(current.reasoning_effort)
+                                  ? t.shell.modelOptions[current.reasoning_effort]
+                                  : current.reasoning_effort)}
+                          </span>
+                        )}
+                      </span>
+                    }
+                    title={
+                      <span className="flex items-baseline gap-2">
+                        {copy.label}
+                        <Pill>{copy.hint}</Pill>
+                      </span>
+                    }
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
+      {showMoa && moa && currentMoaPreset && (
+        <section>
+          {subpage === undefined && <SectionHeading icon={Cpu} title={m.moaTitle} />}
+          <p className="mb-2 text-xs text-muted-foreground">{m.moaDescription}</p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
+                <SelectValue placeholder={m.moaPreset} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
@@ -1278,7 +1370,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   </span>
                 }
                 key={`${selectedMoaPreset}-${index}`}
-                title={`Reference ${index + 1}`}
+                title={
+                  <span className="flex items-baseline gap-2">
+                    {`Reference ${index + 1}`}
+                    <Pill>{m.moaReferenceHint}</Pill>
+                  </span>
+                }
               />
             ))}
             <Button
@@ -1354,10 +1451,26 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title="Aggregator"
+              title={
+                <span className="flex items-baseline gap-2">
+                  {m.moaAggregator}
+                  <Pill>{m.moaAggregatorBilled}</Pill>
+                </span>
+              }
             />
           </div>
         </section>
+      )}
+      {subpage === 'moa' && !loading && (!moa || !currentMoaPreset) && (
+        <PanelEmpty
+          action={
+            <Button onClick={() => void refresh()} size="sm">
+              {t.skills.refresh}
+            </Button>
+          }
+          icon="error"
+          title={m.loadFailed}
+        />
       )}
     </div>
   )

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -142,12 +144,15 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
+    # The pack double writes text, not a PE. The real integrity gate has its
+    # own filesystem tests; this test owns build/launch orchestration.
+    monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda _: None)
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -312,7 +317,7 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     # discriminator reads the staging dir, so the fake pack lays it down there.
     pack_fail = _pack_into_staging(root, content="half-signed", returncode=1)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
@@ -330,6 +335,115 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     mock_dl.assert_not_called()
     assert mock_run.call_count == 1
     assert "Desktop GUI build failed" in capsys.readouterr().out
+
+
+def _make_electron_dist(root: Path) -> Path:
+    """Lay a complete Electron install where ``_electron_dist_ok`` looks on THIS host.
+
+    Resolved through ``_electron_dist_binary()`` rather than a hardcoded path so
+    the fixture and the code agree by construction on every OS lane.
+    """
+    binary = main_desktop._electron_dist_binary(root)
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("", encoding="utf-8")
+    return binary
+
+
+def _pack_that_never_reaches_the_builder():
+    """A ``subprocess.run`` stand-in for a pack that dies before electron-builder.
+
+    It lays NOTHING down in the staging output — that is the signature of a
+    compile, bundler or native-link failure — and records each attempt's env so
+    a test can see whether the mirror rung was entered.
+    """
+    attempts: list[dict] = []
+
+    def _run(cmd, **kwargs):
+        if len(cmd) >= 3 and cmd[1:3] == ["run", "pack"]:
+            attempts.append(dict(kwargs.get("env") or {}))
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    return attempts, _run
+
+
+def test_gui_skips_mirror_retry_when_electron_dist_is_intact(tmp_path, monkeypatch, capsys):
+    """A pack that never reached electron-builder has no mirror problem to repair.
+
+    "The pack failed and the staging output holds no exe" is ALSO true of a
+    compile / bundler / native-link failure, so on its own it cannot select the
+    mirror rung — yet that rung re-ran the whole pack while telling the user the
+    Electron download from GitHub looked blocked. The mirror retry additionally
+    requires the Electron distributable to be missing.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_electron_dist(root)
+    live_exe = _make_packaged_executable(root, monkeypatch)
+    live_exe.write_text("good build", encoding="utf-8")
+    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
+
+    attempts, run_pack = _pack_that_never_reaches_the_builder()
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]) as mock_purge, \
+         patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main.subprocess.run", side_effect=run_pack), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    # One pack, no mirror env on it, no false accusation of a blocked download.
+    assert len(attempts) == 1
+    assert not any(a.get("ELECTRON_MIRROR") for a in attempts)
+    assert "looks blocked" not in capsys.readouterr().out
+    # Nothing recovery-shaped ran either.
+    mock_purge.assert_not_called()
+    mock_dl.assert_not_called()
+
+
+def test_gui_still_retries_via_mirror_when_electron_dist_is_missing(tmp_path, monkeypatch, capsys):
+    """The blocked-download recovery the mirror rung exists for still fires.
+
+    Guard so a later tightening of the gate cannot silently drop the last rung:
+    Electron staged its package but ``dist`` was never populated, the pack
+    produces no exe, and the user hasn't pinned a mirror — refresh via
+    npmmirror.com and pack once more.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    # electron present, dist half-populated (a blocked postinstall download).
+    (root / "node_modules" / "electron" / "dist").mkdir(parents=True)
+    live_exe = _make_packaged_executable(root, monkeypatch)
+    live_exe.write_text("good build", encoding="utf-8")
+    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
+
+    attempts, run_pack = _pack_that_never_reaches_the_builder()
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]) as mock_purge, \
+         patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main.subprocess.run", side_effect=run_pack), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    # The whole ladder still runs: pack, refreshed-download retry, mirror retry.
+    assert len(attempts) == 3
+    assert not attempts[0].get("ELECTRON_MIRROR")
+    assert not attempts[1].get("ELECTRON_MIRROR")
+    assert attempts[2].get("ELECTRON_MIRROR") == main_desktop._ELECTRON_FALLBACK_MIRROR
+    assert "looks blocked" in capsys.readouterr().out
+    # And the mirror run reached the dist re-download, mirror in hand.
+    assert mock_purge.called
+    assert any(a.kwargs.get("mirror") == main_desktop._ELECTRON_FALLBACK_MIRROR
+               for a in mock_dl.call_args_list)
 
 
 
@@ -974,9 +1088,10 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
 
 @pytest.mark.linux_only
 def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
-    """`hermes desktop` gives the app a launcher presence on Linux."""
+    """A terminal launch (no DESKTOP_STARTUP_ID) still installs the entry before spawning Electron."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("DESKTOP_STARTUP_ID", raising=False)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
 
     registered: list[Path] = []
@@ -996,6 +1111,46 @@ def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
         cli_main.cmd_gui(_ns())
 
     assert registered == [root]
+
+
+@pytest.mark.linux_only
+def test_gui_shell_launch_defers_desktop_entry_until_window_reveal(tmp_path, monkeypatch):
+    """An app-grid launch (DESKTOP_STARTUP_ID set) writes the entry only after Electron reports
+    its window on screen — never before the spawn, while gnome-shell has the app in STARTING
+    (#111906). Electron gets the pipe's write end via HERMES_DESKTOP_READY_FD."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setenv("DESKTOP_STARTUP_ID", "gnome-shell/Hermes/1-0_TIME1")
+    monkeypatch.setattr("hermes_cli.linux_desktop_entry.time.sleep", lambda _s: None)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    events: list[str] = []
+    monkeypatch.setattr("hermes_cli.linux_desktop_entry.is_supported", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.linux_desktop_entry.install_desktop_entry",
+        lambda project_root: events.append(f"install:{project_root}") or (tmp_path / "hermes.desktop"),
+    )
+
+    def fake_electron(cmd, **kwargs):
+        events.append("spawn")
+        fd = int(kwargs["env"]["HERMES_DESKTOP_READY_FD"])
+        assert fd in kwargs["pass_fds"]
+        os.write(fd, b"r")  # main window revealed
+        deadline = time.monotonic() + 10
+        while not any(e.startswith("install:") for e in events) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", side_effect=fake_electron), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    assert events == ["spawn", f"install:{root}"]
+    assert packaged_exe.exists()
 
 
 @pytest.mark.linux_only
@@ -1099,11 +1254,12 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda _: None)
 
     ok = subprocess.CompletedProcess([], 0)
     cfg = {"desktop": {"ozone_platform_hint": "x11"}}
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -1119,7 +1275,7 @@ def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
     assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "x11"
 
     monkeypatch.setenv("ELECTRON_OZONE_PLATFORM_HINT", "wayland")
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -1200,7 +1356,7 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -1225,7 +1381,7 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -1251,7 +1407,7 @@ def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
     ok = subprocess.CompletedProcess([], 0)
     cfg = {"desktop": {"password_store": "kwallet6"}}
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -1280,7 +1436,7 @@ def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path
     ok = subprocess.CompletedProcess([], 0)
     cfg = {"desktop": {"password_store": "kwallet6"}}
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -1307,7 +1463,7 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
@@ -1334,7 +1490,10 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
 
 def _gui_build_patches(root: Path, run_side_effect):
     return [
-        patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"),
+        patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"),
+        # These staging doubles write text payloads; PE parsing is tested in
+        # test_desktop_exe_integrity.py with structurally valid binaries.
+        patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None),
         patch("hermes_cli.main_web_build._run_npm_install_deterministic",
               return_value=subprocess.CompletedProcess(["npm", "ci"], 0)),
         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True),

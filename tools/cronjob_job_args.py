@@ -48,7 +48,12 @@ def _first_fire_within_thread_horizon(
     now = hermes_time.now()
     if fire_at.tzinfo is None:
         fire_at = fire_at.replace(tzinfo=now.tzinfo)
-    return fire_at - now <= timedelta(minutes=_THREAD_HORIZON_MINUTES)
+    # Bounded interval: an already-expired run_at gives a negative delta that would
+    # otherwise sail through a bare upper bound — a conversation that is already over
+    # must fail closed to the channel-level drop, while a fire at this instant still
+    # happens inside the live conversation and keeps the thread.
+    delta = fire_at - now
+    return timedelta(0) <= delta <= timedelta(minutes=_THREAD_HORIZON_MINUTES)
 
 
 def _origin_from_env(

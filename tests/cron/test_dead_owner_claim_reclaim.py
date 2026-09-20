@@ -27,6 +27,7 @@ from unittest.mock import patch
 import pytest
 
 import cron.scheduler as scheduler_mod
+from hermes_constants import hermes_home_key
 
 
 @pytest.fixture()
@@ -129,7 +130,7 @@ class TestTickReapsDeadOwnerClaims:
         monkeypatch.setattr(
             scheduler_mod,
             "_last_dead_owner_reap_at",
-            {scheduler_mod._reap_throttle_key():
+            {hermes_home_key(scheduler_mod._get_hermes_home()):
              time.monotonic() - scheduler_mod._DEAD_OWNER_REAP_INTERVAL_SECONDS - 1},
         )
         _run_tick()

@@ -35,7 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
@@ -3746,14 +3746,6 @@ def _release_tick_lock(lock_fd) -> None:
     lock_fd.close()
 
 
-def _reap_throttle_key() -> str:
-    """Profile scope for the dead-owner reap throttle (multiplex-safe)."""
-    try:
-        return str(_get_hermes_home().resolve())
-    except Exception:
-        return "default"
-
-
 def _maybe_reap_dead_owners() -> None:
     """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Rows
     whose owner process is proved gone are released (_owner_is_live), as are rows whose live owner
@@ -3764,7 +3756,7 @@ def _maybe_reap_dead_owners() -> None:
     # the long-lived gateway ticker kept running — blocking every future run of that job. Reap provably-dead
     # owners periodically so stale claims auto-clear without a gateway restart. Throttled so idle 60s ticks
     # don't pay a ledger connection every cycle (#33612).
-    _reap_key = _reap_throttle_key()
+    _reap_key = hermes_home_key(_get_hermes_home())
     _reap_now = time.monotonic()
     _last_reap = _last_dead_owner_reap_at.get(_reap_key)
     if (

@@ -1208,6 +1208,59 @@ class TestClearFunctions:
         # Store preserved
         assert (base / "store" / "HEAD").exists()
 
+    @staticmethod
+    def _drop_write_bits(root: Path) -> None:
+        """Make every entry under ``root`` (and ``root`` itself) read-only: POSIX then denies
+        unlink/rmdir the same way Windows denies them for Git's read-only loose objects."""
+        for p in sorted(root.rglob("*"), reverse=True):
+            p.chmod(p.stat().st_mode & ~0o222)
+        root.chmod(root.stat().st_mode & ~0o222)
+
+    def test_clear_all_removes_readonly_git_objects(self, tmp_path, monkeypatch, work_dir):
+        # Regression for #117170: `hermes checkpoints clear` stopped at the first read-only
+        # Git object (WinError 5). With the write-bit recovery the whole base is removed.
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        m = CheckpointManager(enabled=True)
+        m.ensure_checkpoint(str(work_dir), "initial")
+        self._drop_write_bits(base / "store")
+
+        result = clear_all()
+        assert result["deleted"] is True
+        assert result["bytes_freed"] > 0
+        assert not base.exists()
+
+    def test_clear_legacy_removes_readonly_entries(self, tmp_path, monkeypatch):
+        # The legacy-archive cleanup shares the same recovery (#117170's second path).
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        legacy = base / "legacy-20200101-000000"
+        obj = legacy / "objects" / "0f" / "0f623848e86fd81b7e4a89256dc9597f8dff418a"
+        obj.parent.mkdir(parents=True)
+        obj.write_bytes(b"x" * 100)
+        self._drop_write_bits(legacy)
+
+        result = clear_legacy()
+        assert result["deleted"] == 1
+        assert result["errors"] == 0
+        assert not legacy.exists()
+
+    def test_clear_legacy_still_counts_unrecoverable_failures(self, tmp_path, monkeypatch):
+        # Failures the write-bit recovery cannot fix keep the pre-existing error accounting.
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        legacy = base / "legacy-20200101-000000"
+        legacy.mkdir(parents=True)
+
+        def boom(path):
+            raise OSError("file in use")
+        monkeypatch.setattr("tools.checkpoint_manager._rmtree_force", boom)
+
+        result = clear_legacy()
+        assert result["deleted"] == 0
+        assert result["errors"] == 1
+        assert legacy.exists()
+
 
 # =========================================================================
 # Orphan pruning must not act on an unreachable volume

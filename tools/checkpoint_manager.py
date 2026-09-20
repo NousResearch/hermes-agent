@@ -1045,11 +1045,40 @@ def _sweep(entries, result: Dict[str, int], delete) -> None:
             delete(item, reason)
 
 
+def _rmtree_recover_permissions(func, path, exc):
+    """onexc/onerror handler: on PermissionError add +w to the entry and its parent so rmtree
+    can proceed — Git marks loose object files read-only on Windows, where unlink/rmdir needs
+    the write bit (the same recovery ``hermes_cli/profiles.py`` applies). Other errors propagate
+    unchanged so per-caller failure accounting is preserved."""
+    # onexc(func, path, exc_instance) on 3.12+; onerror(func, path, exc_info_tuple) on 3.11.
+    if isinstance(exc, tuple):
+        exc = exc[1]
+    if not isinstance(exc, PermissionError):
+        raise
+    for target in (path, os.path.dirname(path)):  # parent needed for unlink/rmdir
+        if target:
+            try:
+                os.chmod(target, os.stat(target).st_mode | stat_mod.S_IWUSR)
+            except OSError:
+                pass
+    func(path)
+
+
+def _rmtree_force(path: Path) -> None:
+    """``shutil.rmtree`` with the read-only recovery above, for deletions that must remove a
+    populated store: Windows Git objects are read-only, and a bare rmtree stops at the first
+    one with ``WinError 5``."""
+    try:
+        shutil.rmtree(path, onexc=_rmtree_recover_permissions)
+    except TypeError:  # ``onexc`` is 3.12+; 3.11 has ``onerror``
+        shutil.rmtree(path, onerror=_rmtree_recover_permissions)
+
+
 def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str, label) -> None:
     """rmtree ``child``, crediting bytes + ``result[key]``; failures count as ``errors`` when tracked."""
     try:
         size = _dir_size_bytes(child)
-        shutil.rmtree(child)
+        _rmtree_force(child)
         result["bytes_freed"] += size
         result[key] += 1
     except OSError as exc:
@@ -1266,7 +1295,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        _rmtree_force(base)
         out.update(bytes_freed=size, deleted=True)
     except OSError as exc:
         logger.warning("Could not clear checkpoint base %s: %s", base, exc)

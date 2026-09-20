@@ -75,7 +75,7 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     env = object.__new__(LocalEnvironment)
     proc = SimpleNamespace(
         pid=12345,
-        _hermes_pgid=67890,
+        _hermes_pgid=12345,  # cached at spawn: a start_new_session wrapper LEADS its group
         poll=lambda: 0,
         kill=lambda: None,
     )
@@ -94,7 +94,7 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
 
     env._kill_process(proc)
 
-    assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
+    assert killpg_calls == [(12345, signal.SIGTERM), (12345, 0)]
 
 
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():

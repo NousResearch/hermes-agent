@@ -11,6 +11,7 @@ outside the (now-dead) group with SIGKILL afterwards.
 
 import os
 import signal
+import subprocess
 import textwrap
 import time
 from types import SimpleNamespace
@@ -118,7 +119,7 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
     env = object.__new__(LocalEnvironment)
     proc = SimpleNamespace(
         pid=12345,
-        _hermes_pgid=67890,
+        _hermes_pgid=12345,  # wrapper leads its own group (start_new_session)
         poll=lambda: 0,
         wait=lambda timeout=None: 0,
         kill=lambda: None,
@@ -126,7 +127,7 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
     killpg_calls = []
 
     def fake_getpgid(_pid):
-        return 67890
+        return 12345
 
     def fake_killpg(pgid, sig):
         killpg_calls.append((pgid, sig))
@@ -144,8 +145,8 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
 
     # SIGTERM was delivered to the group and the alive-probe ran: the
     # escalation path completed despite the snapshot failure.
-    assert killpg_calls[0] == (67890, signal.SIGTERM)
-    assert (67890, 0) in killpg_calls
+    assert killpg_calls[0] == (12345, signal.SIGTERM)
+    assert (12345, 0) in killpg_calls
 
 
 def test_kill_process_swallows_killpg_permissionerror(monkeypatch):
@@ -157,7 +158,6 @@ def test_kill_process_swallows_killpg_permissionerror(monkeypatch):
 
     proc = SimpleNamespace(
         pid=12345,
-        _hermes_pgid=67890,
         poll=lambda: 0,
         wait=lambda timeout=None: 0,
         kill=lambda: None,
@@ -165,7 +165,7 @@ def test_kill_process_swallows_killpg_permissionerror(monkeypatch):
     killpg_calls = []
 
     def fake_getpgid(_pid):
-        return 67890
+        return 12345  # rg spawns with start_new_session: it LEADS the group
 
     def fake_killpg(pgid, sig):
         killpg_calls.append((pgid, sig))
@@ -179,5 +179,99 @@ def test_kill_process_swallows_killpg_permissionerror(monkeypatch):
     # (_run_rg_native): that path has no _kill_process OSError wrapper.
     _kill_process_group_posix(proc)  # must not raise
 
-    # Only the TERM was attempted; the EPERM skip means no probe, no SIGKILL.
-    assert killpg_calls == [(67890, signal.SIGTERM)]
+    # Only the TERM was attempted; the EPERM (zombie-only group: wrapper
+    # exited, nothing to signal) skip means no probe, no SIGKILL.
+    assert killpg_calls == [(12345, signal.SIGTERM)]
+
+
+def test_child_not_leading_its_group_never_killpgs(monkeypatch):
+    """#107029: a wrapper spawned without setsid shares the CALLER's process
+    group — on Darwin, the gateway's. Killing "its" group would signal the
+    caller itself, so teardown must never ``killpg`` and must take the child
+    down by PID."""
+    pytest.importorskip("psutil")
+    proc = subprocess.Popen(["sleep", "30"])  # no start_new_session: our group
+
+    killpg_calls = []
+
+    def recording_killpg(pgid, sig):
+        killpg_calls.append((pgid, sig))  # the real call would kill OUR group
+
+    monkeypatch.setattr(os, "killpg", recording_killpg)
+    try:
+        _kill_process_group_posix(proc)  # getpgid(proc.pid) == our pgid != pid
+        assert killpg_calls == []
+        assert proc.poll() is not None  # taken down by PID (terminate)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+def test_genuine_killpg_eperm_falls_back_to_pid_teardown(monkeypatch):
+    """#104696: EPERM alone must not be read as "group gone". While the child
+    itself still lives, the failed group TERM must not skip the escalation
+    (the same-pgid sweep skip would leak it) — teardown falls back to PID
+    kills."""
+    pytest.importorskip("psutil")
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+
+    def eperm_killpg(pgid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", eperm_killpg)
+    try:
+        _kill_process_group_posix(proc)  # TERM EPERMs against a live group
+        assert proc.poll() is not None  # PID teardown killed the live child
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+def test_unreaped_wrapper_without_cached_pgid_falls_back_to_pid(monkeypatch):
+    """A wrapper whose getpgid() ESRCHs with no spawn-cached pgid used to
+    raise out of the teardown; it must fall back to PID teardown instead —
+    the _kill_process OSError wrapper is not on every caller (#116855's rg
+    path calls the helper directly)."""
+    pytest.importorskip("psutil")
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+
+    killpg_calls = []
+
+    def esrch_getpgid(_pid):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(os, "getpgid", esrch_getpgid)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+    try:
+        _kill_process_group_posix(proc)  # pgid None != pid -> PID teardown
+        assert killpg_calls == []
+        assert proc.poll() is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+def test_group_members_gone_truth_table():
+    """The EPERM disambiguation probe (#116855 vs #104696): only a fully
+    exited (or zombie-only) member set proves the group emptied."""
+    psutil = pytest.importorskip("psutil")
+    from tools.environments.local import _group_members_gone
+
+    live_proc = SimpleNamespace(poll=lambda: None)
+    dead_proc = SimpleNamespace(poll=lambda: 0)
+    zombie_child = SimpleNamespace(status=lambda: psutil.STATUS_ZOMBIE)
+    running_child = SimpleNamespace(status=lambda: psutil.STATUS_RUNNING)
+
+    def _raise_gone():
+        raise psutil.NoSuchProcess(1)
+
+    gone_child = SimpleNamespace(status=_raise_gone)
+
+    assert _group_members_gone(live_proc, []) is False  # child itself lives
+    assert _group_members_gone(dead_proc, []) is True
+    assert _group_members_gone(dead_proc, [zombie_child]) is True
+    assert _group_members_gone(dead_proc, [zombie_child, gone_child]) is True
+    assert _group_members_gone(dead_proc, [running_child]) is False  # live member

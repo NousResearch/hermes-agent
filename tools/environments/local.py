@@ -760,21 +760,73 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
             continue
 
 
+def _kill_tree_by_pid(proc, descendants: list) -> None:
+    """TERM the child and its snapshotted descendants by PID, allow the group path's
+    grace, then KILL survivors — never ``killpg``: this is the path for a child that
+    does not lead its process group, which it may share with its caller. psutil's
+    identity-aware Process skips recycled PIDs and ``Popen`` never signals a reaped
+    child. POSIX-only (see _IS_WINDOWS gate in caller)."""
+    for method, grace in (("terminate", 1.0), ("kill", 2.0)):
+        for target in (*descendants, proc):
+            with contextlib.suppress(Exception):  # already gone
+                getattr(target, method)()
+        deadline = time.monotonic() + grace
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+            proc.wait(timeout=grace)
+        with contextlib.suppress(Exception):
+            import psutil
+            descendants = psutil.wait_procs(
+                descendants, timeout=max(0.0, deadline - time.monotonic()))[1]
+        if proc.returncode is not None and not descendants:
+            return
+
+
+def _group_members_gone(proc, descendants: list) -> bool:
+    """True when nothing in the child's own group can still be signalled: the child
+    has exited and every snapshotted descendant is gone or an unreaped zombie.
+    macOS answers ``killpg`` with EPERM — not ESRCH — for a zombie-only group
+    (#116855), so the EPERM alone cannot distinguish that from a permission failure
+    against a live group (#104696); reaping the known members can. POSIX-only."""
+    if proc.poll() is None:
+        return False  # the child itself is still alive
+    try:
+        import psutil
+    except Exception:
+        return not descendants  # without psutil the snapshot above is empty anyway
+    for child in descendants:
+        try:
+            if child.status() != psutil.STATUS_ZOMBIE:
+                return False  # a live descendant still holds the group
+        except psutil.Error:
+            continue  # fully gone
+    return True
+
+
 def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
     init — and we wait on the group, not the wrapper, which can exit before
-    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
+    grandchildren under load. Only a group the child LEADS is signalled: a child in
+    a group it does not lead (a spawner that skipped setsid) shares it with its
+    caller — the gateway itself on Darwin (#107029) — and is torn down by PID
+    instead. POSIX-only (_IS_WINDOWS handled by the caller)."""
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
-        if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
-            raise
+        # Gone — or exited but unreaped on macOS, where getpgid() can fail for a
+        # zombie: only a group cached at spawn is still known.
+        pgid = getattr(proc, "_hermes_pgid", None)
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
+    if pgid != proc.pid:
+        # Group-ownership guard (#107029): the child does not lead this group, so
+        # killing "its" group would signal unrelated processes — including the
+        # caller's own when the spawner skipped setsid. Tear the tree down by PID.
+        _kill_tree_by_pid(proc, descendants)
+        return
     try:
         os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
         if not _wait_for_group_exit(proc, pgid, 1.0):
@@ -782,12 +834,18 @@ def _kill_process_group_posix(proc) -> None:
             _wait_for_group_exit(proc, pgid, 2.0)
             with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                 proc.wait(timeout=0.2)
-    except (ProcessLookupError, PermissionError):
-        # macOS raises EPERM, not ESRCH, when the group has emptied (rg dying
-        # between the caller's poll() liveness check and the TERM — #116855):
-        # nothing is left to signal, so skip the escalation like a vanished
-        # group. ``_wait_for_group_exit`` already treats probe EPERM the same way.
+    except ProcessLookupError:
         pass
+    except PermissionError:
+        # macOS raises EPERM, not ESRCH, while the group's only members are
+        # unreaped zombies (#116855: rg dying between the caller's poll() liveness
+        # check and the TERM) — nothing left to signal. But EPERM does not prove
+        # the group emptied (#104696): a live group we cannot signal must not skip
+        # the escalation, because _sweep_escaped_descendants skips same-pgid
+        # children. Suppress only once the known members are confirmed gone;
+        # otherwise fall back to PID teardown so nothing escapes both paths.
+        if not _group_members_gone(proc, descendants):
+            _kill_tree_by_pid(proc, descendants)
     _sweep_escaped_descendants(descendants, pgid)
 
 

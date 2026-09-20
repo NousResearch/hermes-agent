@@ -230,3 +230,41 @@ class TestRateLimitBackoffEscalation:
         ):
             agent._try_activate_fallback(reason=FailoverReason.rate_limit)
         assert agent._rate_limited_until == frozen + 60
+
+
+class TestProviderResetCooldown:
+    """Provider reset timestamps override backoff while invalid values do not."""
+
+    def test_short_provider_reset_is_used(self):
+        from agent.fallback_cooldown import _arm_rate_limit_cooldown
+
+        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+        with (
+            patch("agent.fallback_cooldown.time.time", return_value=1_000.0),
+            patch("agent.fallback_cooldown.time.monotonic", return_value=500.0),
+        ):
+            assert _arm_rate_limit_cooldown(agent, FailoverReason.rate_limit, reset_at=1_090.0) == 90
+        assert agent._rate_limited_until == 590.0
+
+    def test_long_provider_reset_is_not_capped(self):
+        from agent.fallback_cooldown import _arm_rate_limit_cooldown
+
+        agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+        with (
+            patch("agent.fallback_cooldown.time.time", return_value=1_000.0),
+            patch("agent.fallback_cooldown.time.monotonic", return_value=500.0),
+        ):
+            assert _arm_rate_limit_cooldown(agent, FailoverReason.rate_limit, reset_at=20_000.0) == 19_000
+        assert agent._rate_limited_until == 19_500.0
+
+    def test_invalid_or_expired_reset_uses_exponential_fallback(self):
+        from agent.fallback_cooldown import _arm_rate_limit_cooldown
+
+        for reset_at in ("not-a-time", 999.0, None, float("nan"), float("inf")):
+            agent = _make_agent(fallback_model=[{"provider": "openai", "model": "gpt-4o"}])
+            with (
+                patch("agent.fallback_cooldown.time.time", return_value=1_000.0),
+                patch("agent.fallback_cooldown.time.monotonic", return_value=500.0),
+            ):
+                assert _arm_rate_limit_cooldown(agent, FailoverReason.rate_limit, reset_at=reset_at) == 60
+            assert agent._rate_limited_until == 560.0

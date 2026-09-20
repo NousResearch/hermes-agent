@@ -23,6 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from hermes_cli.github_cli import gh_argv
+
 API_BASE = "https://api.github.com"
 EVIDENCE_START = "<!-- hermes-e2e-evidence:start -->"
 EVIDENCE_END = "<!-- hermes-e2e-evidence:end -->"
@@ -235,15 +241,17 @@ def upload_evidence(
     environment["GH_SESSION_TOKEN"] = session_token
     attachment_urls: dict[str, str] = {}
     for item in files:
+        command = gh_argv(
+            "image",
+            "--repo",
+            source_repo,
+            str(evidence_dir / item.filename),
+        )
+        if command is None:
+            raise RuntimeError("GitHub CLI is not configured or on PATH")
         try:
             result = subprocess.run(
-                [
-                    "gh",
-                    "image",
-                    "--repo",
-                    source_repo,
-                    str(evidence_dir / item.filename),
-                ],
+                command,
                 check=True,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",

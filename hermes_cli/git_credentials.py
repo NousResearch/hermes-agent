@@ -35,6 +35,7 @@ import urllib.parse
 from typing import Mapping, Optional
 
 from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+from hermes_cli.github_cli import resolve_gh_binary
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def _github_token() -> Optional[str]:
     token = get_secret("GITHUB_TOKEN") or get_secret("GH_TOKEN")
     if token:
         return token
-    gh = shutil.which("gh")
+    gh = resolve_gh_binary()
     if not gh:
         return None
     try:

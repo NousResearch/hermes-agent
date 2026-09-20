@@ -396,7 +396,11 @@ def _gh_authenticated() -> bool:
     when logged in, and the doctor falsely reported "No GITHUB_TOKEN".
     """
     try:
-        result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
+        from hermes_cli.github_cli import gh_argv
+        command = gh_argv("auth", "status")
+        if command is None:
+            return False
+        result = subprocess.run(command, capture_output=True, timeout=10)
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False

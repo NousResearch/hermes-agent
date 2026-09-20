@@ -376,6 +376,7 @@ def test_pull_request_changed_files_skips_without_pr_number(tmp_path, monkeypatc
 
 
 def test_pull_request_changed_files_parses_gh_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_GH_BIN", "gh")
     monkeypatch.setenv("EVENT_NAME", "pull_request")
     monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path)))
@@ -396,6 +397,7 @@ def test_pull_request_changed_files_parses_gh_output(tmp_path, monkeypatch):
 
 
 def test_pull_request_changed_files_returns_empty_when_gh_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_GH_BIN", "gh")
     monkeypatch.setenv("EVENT_NAME", "pull_request")
     monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path)))

@@ -664,8 +664,12 @@ def _worktree_branch_pr_merged(
                 if cache.get(cache_key) is True:
                     return True
 
+        from hermes_cli.github_cli import gh_argv
+        command = gh_argv("pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1")
+        if command is None:
+            return False
         result = subprocess.run(
-            ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
+            command,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
         )
         if result.returncode != 0:

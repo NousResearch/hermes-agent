@@ -184,6 +184,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `STT_OPENAI_MODEL` | Override the OpenAI STT model (default: `whisper-1`) |
 | `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) and the desktop app's update check (`GH_TOKEN` also honoured; without either, the desktop falls back to the `gh` CLI login, then anonymous) |
+| `HERMES_GH_BIN` | Explicit GitHub CLI/wrapper executable path for Hermes GitHub subprocesses. The value is used as one literal argv element; when unset Hermes uses `shutil.which("gh")`. Example for a managed technical identity: `/opt/data/bin/gh-hermes`. |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
 | `HINDSIGHT_API_KEY` | Hindsight API key for graph-aware persistent memory ([hindsight.vectorize.io](https://hindsight.vectorize.io)) |

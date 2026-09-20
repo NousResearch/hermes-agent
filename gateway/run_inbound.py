@@ -63,6 +63,39 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
+    async def _hm_release_approval_intercept(self, event, source) -> tuple[bool, Optional[str]]:
+        """Consume an enabled exact ``freigegeben`` reply before it reaches the model."""
+        if (event.text or "") != "freigegeben":
+            return False, None
+        from hermes_cli.config_effective import load_user_config_effective
+        config = load_user_config_effective()
+        release = ((config.get("kanban") or {}).get("release_approval") or {})
+        if not release.get("enabled"):
+            return False, None
+        argv = release.get("promotion_argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(v, str) and v for v in argv):
+            return True, "Fehler: Freigabe konnte nicht verarbeitet werden. Release-ID: unbekannt. Dev: not_started. Test: not_started. Prod: not_started. Aktiv: unbekannt. Vorgänger: keiner. Rollback verfügbar: nein."
+        from hermes_cli.kanban_release_approval import (
+            ApprovalContext, process_current_board_approval,
+        )
+        platform = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", ""))
+        actor = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None) or ""
+        reply_to = getattr(event, "reply_to_message_id", None) or ""
+        context = ApprovalContext(
+            platform=platform,
+            chat_id=str(getattr(source, "chat_id", "") or ""),
+            thread_id=str(getattr(source, "thread_id", "") or ""),
+            actor_id=str(actor),
+            reply_to_message_id=str(reply_to),
+        )
+        result = await asyncio.to_thread(
+            process_current_board_approval,
+            text=event.text or "",
+            context=context,
+            promotion_argv=argv,
+        )
+        return True, result.user_message()
+
     def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
     ) -> Optional["MessageEvent"]:
@@ -1281,6 +1314,11 @@ class GatewayInboundMixin:
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
             return _paused_notice
+
+        if not is_internal:
+            _release_handled, _release_reply = await self._hm_release_approval_intercept(event, source)
+            if _release_handled:
+                return _release_reply
 
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)

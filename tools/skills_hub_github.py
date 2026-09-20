@@ -114,8 +114,12 @@ class GitHubAuth:
 
     def _try_gh_cli(self) -> Optional[str]:
         try:
+            from hermes_cli.github_cli import gh_argv
+            command = gh_argv("auth", "token")
+            if command is None:
+                return None
             result = subprocess.run(
-                ["gh", "auth", "token"], capture_output=True, text=True, encoding='utf-8', errors='replace',
+                command, capture_output=True, text=True, encoding='utf-8', errors='replace',
                 timeout=5, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
             )
             if result.returncode == 0 and result.stdout.strip():

@@ -92,6 +92,7 @@ async def test_delivery_fails_closed_instead_of_crossing_profiles(profile_homes)
 @pytest.mark.asyncio
 async def test_github_comment_authenticates_with_routed_profile_token(profile_homes, monkeypatch):
     seen = {}
+    monkeypatch.setenv("HERMES_GH_BIN", "gh")
 
     def fake_run(cmd, **kw):
         seen["GH_TOKEN"] = kw["env"].get("GH_TOKEN") if kw.get("env") is not None else os.environ.get("GH_TOKEN")

@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -316,7 +317,7 @@ class TestGitHubCommentDelivery:
         mock_result.stdout = "Comment posted"
         mock_result.stderr = ""
 
-        with patch(
+        with patch.dict(os.environ, {"HERMES_GH_BIN": "gh"}), patch(
             "gateway.platforms.webhook.subprocess.run",
             return_value=mock_result,
         ) as mock_run:

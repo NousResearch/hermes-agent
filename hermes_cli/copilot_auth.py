@@ -87,8 +87,13 @@ def resolve_copilot_token() -> tuple[str, str]:
 
 
 def _gh_cli_candidates() -> list[str]:
-    """Candidate ``gh`` binary paths, including common Homebrew installs."""
-    candidates: list[str] = [c for c in (shutil.which("gh"),) if c]
+    """Configured client, else PATH-resolved ``gh`` plus common Homebrew installs."""
+    from hermes_cli.github_cli import resolve_gh_binary
+    configured = os.environ.get("HERMES_GH_BIN", "").strip()
+    if configured:
+        return [configured]
+    resolved = resolve_gh_binary()
+    candidates: list[str] = [resolved] if resolved else []
     candidates += [
         c for c in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", str(Path.home() / ".local/bin/gh"))
         if c not in candidates and os.path.isfile(c) and os.access(c, os.X_OK)]

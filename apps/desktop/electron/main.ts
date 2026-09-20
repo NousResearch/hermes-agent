@@ -187,6 +187,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
+import { selectEmergencyBackupsToDelete } from './emergency-backup-prune'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import {
   buildTerminalScript,
@@ -4619,6 +4620,12 @@ function runningAppBundle() {
 // desktop Electron process itself, before the backend is killed and
 // before the updater is spawned — a separate safety net from the
 // Python-level pre-update snapshot inside `hermes update`.
+
+// How many pre-update emergency `state.db` copies to keep, INCLUDING the one the current
+// update writes. `state.db` is routinely multi-GB, so each extra retained copy is a
+// multi-GB cost that accumulates silently across updates.
+const MAX_EMERGENCY_BACKUPS = 2
+
 function preflightStateDb(hermesHome, rememberLog) {
   const stateDbPath = path.join(hermesHome, 'state.db')
 
@@ -4664,21 +4671,17 @@ function preflightStateDb(hermesHome, rememberLog) {
 
         rememberLog(`[updates] emergency state.db backup: ${emergencyPath} ` + `(${emergStat.size} bytes)`)
 
-        // Prune to the 2 most recent emergency backups.
+        // Prune so only MAX_EMERGENCY_BACKUPS copies survive, counting the one just
+        // written. `state.db` is routinely multi-GB, so keeping one extra copy per update
+        // silently costs gigabytes.
         try {
           const homeDir = fs.readdirSync(hermesHome)
 
-          const backups = homeDir
-            .filter(
-              f =>
-                f.startsWith('state.db.pre-update-emergency-') &&
-                f.endsWith('.bak') &&
-                f !== path.basename(emergencyPath)
-            )
-            .sort()
-            .reverse()
-
-          for (const old of backups.slice(2)) {
+          for (const old of selectEmergencyBackupsToDelete(
+            homeDir,
+            path.basename(emergencyPath),
+            MAX_EMERGENCY_BACKUPS
+          )) {
             try {
               fs.unlinkSync(path.join(hermesHome, old))
             } catch {

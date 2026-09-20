@@ -493,3 +493,47 @@ describe('the mention middleware', () => {
     expect((await handler({ text: untouched })).text).toBe(untouched)
   })
 })
+
+describe('plugin startup group chat hydration (#117472)', () => {
+  it('rehydrates holdDetection toggle and holds from storage', async () => {
+    vi.resetModules()
+    cache.clear()
+    const { $groupChats } = await import('./group-chat')
+    const plugin = (await import('./plugin')).default
+
+    const seeded = {
+      HydratedRoom: {
+        log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'm1', text: 'hi', thread: 't1' }],
+        holdDetection: 'off',
+        holds: { impl: { at: 100 } },
+        sessionOwners: { impl: { name: 'impl' } }
+      }
+    }
+
+    try {
+      plugin.register({
+        i18n: { register: () => () => undefined },
+        onDispose: () => undefined,
+        register: () => undefined,
+        storage: {
+          get: async (key: string) => (key === 'group-chats' ? seeded : undefined),
+          remove: async () => undefined,
+          set: async () => undefined
+        }
+      } as never)
+    } catch {
+      // ignore UI stub walking
+    }
+
+    await vi.waitFor(() => {
+      expect($groupChats.get().HydratedRoom).toBeDefined()
+    })
+
+    const room = $groupChats.get().HydratedRoom
+    expect(room).toBeDefined()
+    expect(room.holdDetection).toBe('off')
+    expect(room.holds?.impl?.at).toBe(100)
+    expect(room.sessionOwners?.impl?.name).toBe('impl')
+  })
+})
+

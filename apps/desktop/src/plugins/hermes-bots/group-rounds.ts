@@ -310,7 +310,8 @@ export function applyGroupHoldDirective(
   mentions: GroupMentionParse | null | undefined,
   text: string,
   stamp: GroupHoldStamp | null | undefined,
-  allMemberKeys: string[] = []
+  allMemberKeys: string[] = [],
+  opts?: { suppressHold?: boolean }
 ): Record<string, GroupHoldStamp> {
   const prior: Record<string, GroupHoldStamp> = holds && typeof holds === 'object' ? holds : {}
   const action = classifyGroupHoldDirective(text, mentions?.mentioned || [], Boolean(mentions?.everyone))
@@ -320,7 +321,9 @@ export function applyGroupHoldDirective(
   }
 
   // "@all stop": expand to every member key the caller knows about.
-  const toHold = action.holdAll ? [...allMemberKeys] : action.hold
+  // #117472: suppressHold (holdDetection off) still applies releases — only
+  // prose-created NEW holds are suppressed; Stop UI holds must stay clearable.
+  const toHold = opts?.suppressHold ? [] : action.holdAll ? [...allMemberKeys] : action.hold
   let next = prior
 
   for (const key of toHold) {
@@ -819,6 +822,9 @@ export function sendToGroupChat(
     // explicit "stop @member" sets a sticky hold; "@member resume" (or
     // @all resume, or any direct non-stop mention of the held member)
     // releases it. Bot replies never flow through this function.
+    // #117472: per-room kill switch — prose stop/hold *creation* is opt-out.
+    // Explicit Stop UI (stopGroupThread) still sets holds when detection is
+    // off; release vocabulary must still clear those holds.
     room.holds = applyGroupHoldDirective(
       room.holds,
       parseGroupChatMentions(trimmed, members),
@@ -828,7 +834,8 @@ export function sendToGroupChat(
         byMessageId: sent?.id,
         thread: target
       },
-      members.map((member: GroupMember) => groupMemberKey(member))
+      members.map((member: GroupMember) => groupMemberKey(member)),
+      room.holdDetection === 'off' ? { suppressHold: true } : undefined
     )
 
     return room

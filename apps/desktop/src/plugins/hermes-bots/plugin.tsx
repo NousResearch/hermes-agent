@@ -269,6 +269,9 @@ export default {
                   // guard as the other maps — a held bot stays held across
                   // window restarts until explicitly released.
                   holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
+                  // #117472: rehydrate holdDetection toggle with the same shape
+                  // guard as the other room settings.
+                  holdDetection: room.holdDetection === 'off' ? 'off' : room.holdDetection === 'on' ? 'on' : undefined,
                   externalCursors: room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,

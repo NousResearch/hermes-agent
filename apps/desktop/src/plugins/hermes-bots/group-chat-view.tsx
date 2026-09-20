@@ -14,6 +14,7 @@ import * as sdk from '@hermes/plugin-sdk'
 import {
   atom,
   Button,
+  Checkbox,
   cn,
   Codicon,
   ConfirmDialog,
@@ -64,8 +65,10 @@ import {
   $groupClarify,
   $groupNeedsYou,
   groupThreadOf,
+  persistGroupChatRooms,
   rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
+  setGroupChatHoldDetection,
   setGroupChatImage,
   updateGroupChat
 } from './group-chat'
@@ -197,26 +200,10 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   clearGroupClarify(group)
 
   // Persist the room map WITHOUT the disbanded room so it can't come back
-  // on the next window load.
+  // on the next window load. persistGroupChatRooms excludes tombstones while
+  // preserving holds, holdDetection, pinned status, and section assignments.
   try {
-    const durable: Record<string, GroupChat> = {}
-
-    for (const [name, room] of Object.entries($groupChats.get())) {
-      if (name !== group && Array.isArray(room.log)) {
-        durable[name] = {
-          log: room.log,
-          watermarks: room.watermarks,
-          sessions: room.sessions || {},
-          sessionOwners: room.sessionOwners || {},
-          members: Array.isArray(room.members) ? room.members : [],
-          roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-          image: room.image || null,
-          syncRevision: Math.max(0, Number(room.syncRevision || 0))
-        }
-      }
-    }
-
-    await Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durable))
+    await persistGroupChatRooms($groupChats.get())
   } catch {
     /* storage unavailable — the atom reset above still empties the room */
   }
@@ -387,13 +374,16 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
+  const currentHoldDetection = (rooms[group] || {}).holdDetection === 'off' ? 'off' : 'on'
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [holdDetection, setHoldDetection] = useState<'off' | 'on'>(currentHoldDetection)
   const [compressing, setCompressing] = useState<null | string>(null)
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
+      setHoldDetection((rooms[group] || {}).holdDetection === 'off' ? 'off' : 'on')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
@@ -439,6 +429,10 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
       setGroupChatImage(finalName, image)
     }
 
+    if (holdDetection !== currentHoldDetection) {
+      setGroupChatHoldDetection(finalName, holdDetection)
+    }
+
     onClose()
 
     if (finalName !== group) {
@@ -480,6 +474,18 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
             value={name}
           />
         </form>
+        <div className="flex flex-col gap-1 py-1">
+          <label className="flex items-center gap-2 text-sm text-(--ui-text-primary) cursor-pointer select-none">
+            <Checkbox
+              checked={holdDetection !== 'off'}
+              onCheckedChange={value => setHoldDetection(value ? 'on' : 'off')}
+            />
+            <span className="font-medium">{b.group.holdDetectionLabel}</span>
+          </label>
+          <span className="text-[0.7rem] text-(--ui-text-tertiary) pl-6">
+            {b.group.holdDetectionHint}
+          </span>
+        </div>
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {

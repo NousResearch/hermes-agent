@@ -1190,17 +1190,138 @@ describe('member holds (#93129)', () => {
     expect(next.docs).toBeTruthy()
   })
 
-  it('consumes a held skip exactly once so the loop cannot spin', async () => {
-    const { rounds } = await loadRoom()
-    const { heldMemberWatermarkAdvance } = await import('./group-round-members')
+  it('delivers the message that triggered a hold when the member is released (#117472)', async () => {
+    const room = await loadRoom()
+    const members: GroupMember[] = [
+      { name: 'impl', title: '' },
+      { name: 'docs', title: '' }
+    ]
 
-    // Fresh delta → advance to log length.
-    expect(heldMemberWatermarkAdvance(3, 7)).toBe(7)
-    // Already consumed → no write, no spin.
-    expect(heldMemberWatermarkAdvance(7, 7)).toBeNull()
-    expect(heldMemberWatermarkAdvance(9, 7)).toBeNull()
-    // Unset watermark treated as 0.
-    expect(heldMemberWatermarkAdvance(undefined, 2)).toBe(2)
+    // 1. User holds 'impl' with a message containing instructions
+    const thread = room.rounds.sendToGroupChat('DeliverHold', members, 'stop @impl, do not run tests, fix schema instead')!
+    await settle(room, 'DeliverHold')
+
+    // 'impl' took no turn while held
+    expect(room.gateway.calls.filter(c => c.profile === 'impl')).toHaveLength(0)
+
+    // 2. User releases 'impl'
+    room.rounds.sendToGroupChat('DeliverHold', members, '@impl resume', thread)
+    await settle(room, 'DeliverHold')
+
+    // 3. 'impl' takes its turn and receives the context from the message that held it
+    const implCalls = room.gateway.calls.filter(c => c.profile === 'impl')
+    expect(implCalls.length).toBeGreaterThan(0)
+    expect(implCalls[0].prompt).toContain('fix schema instead')
+  })
+
+  it('suppressHold skips prose holds but still clears on resume / @all (#117472)', async () => {
+    const { rounds } = await loadRoom()
+    const stamp = { at: 1000, byMessageId: 'm1', thread: 't1' }
+    const prior = { impl: { at: 1 }, docs: { at: 2 } }
+
+    expect(
+      rounds.applyGroupHoldDirective({}, { everyone: false, mentioned: ['impl'] }, 'stop @impl', stamp, [], {
+        suppressHold: true
+      })
+    ).toEqual({})
+
+    expect(
+      rounds.applyGroupHoldDirective(prior, { everyone: false, mentioned: ['impl'] }, '@impl resume', stamp, [], {
+        suppressHold: true
+      }).impl
+    ).toBeUndefined()
+
+    expect(
+      rounds.applyGroupHoldDirective(prior, { everyone: true, mentioned: [] }, '@all resume', stamp, ['impl', 'docs'], {
+        suppressHold: true
+      })
+    ).toEqual({})
+  })
+
+  it("does not create holds from prose when room.holdDetection is 'off' (#117472)", async () => {
+    const room = await loadRoom()
+    const members: GroupMember[] = [
+      { name: 'impl', title: '' },
+      { name: 'docs', title: '' }
+    ]
+
+    room.chat.updateGroupChat('KillSwitch', r => {
+      r.holdDetection = 'off'
+      return r
+    })
+
+    room.rounds.sendToGroupChat('KillSwitch', members, 'stop @impl, do not run tests, fix schema instead')
+    await settle(room, 'KillSwitch')
+
+    const state = room.chat.$groupChats.get().KillSwitch || {}
+    expect(state.holds || {}).toEqual({})
+
+    // 'impl' was NOT held and took its turn
+    const implCalls = room.gateway.calls.filter(c => c.profile === 'impl')
+    expect(implCalls.length).toBeGreaterThan(0)
+  })
+
+  it("clears Stop-UI holds via resume when holdDetection is 'off' (#117472)", async () => {
+    const room = await loadRoom()
+    const members: GroupMember[] = [
+      { name: 'impl', title: '' },
+      { name: 'docs', title: '' }
+    ]
+
+    room.chat.updateGroupChat('KillSwitch', r => {
+      r.holdDetection = 'off'
+      return r
+    })
+
+    await room.rounds.stopGroupThread('KillSwitch', 't1', members)
+    expect(room.chat.$groupChats.get().KillSwitch.holds?.impl).toBeTruthy()
+
+    room.rounds.sendToGroupChat('KillSwitch', members, '@impl resume', 't1')
+    await settle(room, 'KillSwitch')
+
+    expect(room.chat.$groupChats.get().KillSwitch.holds?.impl).toBeUndefined()
+  })
+
+  it('repeated preparation of a held member returns null with zero state writes (#117472)', async () => {
+    const room = await loadRoom()
+    const { runGroupRoundMember } = await import('./group-round-members')
+    const member: GroupMember = { name: 'impl', title: '' }
+
+    room.chat.appendGroupChatEntry('HoldTest', { kind: 'user', name: 'You' }, 'work on task', 't1')
+    room.chat.updateGroupChat('HoldTest', r => {
+      r.holds = { impl: { at: 100 } }
+      r.running = true
+      r.epoch = 1
+      return r
+    })
+
+    const context = {
+      group: 'HoldTest',
+      members: [member],
+      thread: 't1',
+      startEpoch: 1,
+      binding: { isLive: () => true },
+      isCurrent: () => true
+    }
+
+    // First run: notes the hold, records activity, does NOT advance watermark
+    const firstResult = await runGroupRoundMember(context, member)
+    expect(firstResult).toBe(false)
+    expect(room.chat.$groupChats.get().HoldTest.holds?.impl.noted).toBe(true)
+    expect(room.chat.$groupChats.get().HoldTest.watermarks['t1::impl']).toBeUndefined()
+    const activityBefore = room.activity.$groupActivity.get().HoldTest?.events || []
+    expect(activityBefore.filter(e => e.kind === 'held')).toHaveLength(1)
+
+    // Snapshot state before repeat run
+    const chatStateBefore = room.chat.$groupChats.get().HoldTest
+
+    // Second run: already noted, so zero writes to room atom and zero new activity
+    const secondResult = await runGroupRoundMember(context, member)
+    expect(secondResult).toBe(false)
+    expect(room.chat.$groupChats.get().HoldTest).toBe(chatStateBefore)
+    const activityAfter = room.activity.$groupActivity.get().HoldTest?.events || []
+    expect(activityAfter.filter(e => e.kind === 'held')).toHaveLength(1)
+    expect(room.chat.$groupChats.get().HoldTest.watermarks['t1::impl']).toBeUndefined()
   })
 })
 

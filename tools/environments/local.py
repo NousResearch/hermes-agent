@@ -452,7 +452,13 @@ def _windows_bash_candidates(custom: "str | None") -> list[str]:
     candidates = list(dict.fromkeys(c for c in raw if c and os.path.isfile(c)))
     found = shutil.which("bash")
     if found and found not in candidates:
-        candidates.append(found)
+        # Skip WSL/system bash.exe (C:\Windows\System32\bash.exe or
+        # WindowsApps bash.exe) — it is a stub launcher, not a usable shell.
+        norm = os.path.normpath(found).lower()
+        if "system32" in norm or "windowsapps" in norm:
+            logger.debug("Skipping WSL/system bash.exe at %s", found)
+        else:
+            candidates.append(found)
     return candidates
 
 

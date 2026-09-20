@@ -169,16 +169,6 @@ def add_conditional(ws, spec):
     ws.conditional_formatting.add(rng, rule)
 
 
-def ranges_overlap(range1, range2):
-    if not range1 or not range2:
-        return False
-    min_c1, min_r1, max_c1, max_r1 = range_boundaries(range1)
-    min_c2, min_r2, max_c2, max_r2 = range_boundaries(range2)
-    if None in (min_c1, min_r1, max_c1, max_r1, min_c2, min_r2, max_c2, max_r2):
-        return False
-    return not (max_c1 < min_c2 or min_c1 > max_c2 or max_r1 < min_r2 or min_r1 > max_r2)
-
-
 def validate_table_header(ws, rng):
     min_col, min_row, max_col, _ = range_boundaries(rng)
     if min_col is None or min_row is None or max_col is None:
@@ -197,9 +187,7 @@ def validate_table_header(ws, rng):
     return headers
 
 
-def build_sheet(ws, spec, warnings=None):
-    if warnings is None:
-        warnings = []
+def build_sheet(ws, spec):
     for row in spec.get("rows", []):
         values, styled = [], []
         for item in row:
@@ -270,19 +258,16 @@ def main(argv=None):
 
     wb = Workbook()
     wb.remove(wb.active)
-    warnings = []
     for sheet_spec in spec.get("sheets", []):
         ws = wb.create_sheet(sheet_spec.get("name", "Sheet1"))
-        build_sheet(ws, sheet_spec, warnings)
+        build_sheet(ws, sheet_spec)
     for name, ref in spec.get("defined_names", {}).items():
         wb.defined_names[name] = DefinedName(name, attr_text=ref)
     if spec.get("full_calc_on_load"):
         wb.calculation.fullCalcOnLoad = True
     wb.save(args.output)
-    result = {"ok": True, "output": args.output, "sheets": wb.sheetnames}
-    if warnings:
-        result["warnings"] = warnings
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps({"ok": True, "output": args.output,
+                      "sheets": wb.sheetnames}, ensure_ascii=False))
     return 0
 
 

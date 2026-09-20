@@ -9,7 +9,7 @@ vi.mock('@/lib/media', () => ({
 const media = await import('@/lib/media')
 const downloadGatewayMediaFile = vi.mocked(media.downloadGatewayMediaFile)
 
-const { downloadRemoteFile, shouldOfferRemoteFileDownload } = await import('./file-actions')
+const { downloadRemoteFile, openFileInDefaultApp, shouldOfferRemoteFileDownload } = await import('./file-actions')
 
 describe('shouldOfferRemoteFileDownload', () => {
   it('is only for files on a remote backend', () => {
@@ -54,5 +54,53 @@ describe('downloadRemoteFile', () => {
 
     expect($notifications.get()[0]?.kind).toBe('error')
     expect($notifications.get()[0]?.title).toBe('Download failed')
+  })
+})
+
+describe('openFileInDefaultApp', () => {
+  const openExternal = vi.fn()
+
+  beforeEach(() => {
+    clearNotifications()
+    openExternal.mockReset()
+    openExternal.mockResolvedValue(undefined)
+    vi.stubGlobal('hermesDesktop', { openExternal })
+  })
+
+  afterEach(() => {
+    clearNotifications()
+    vi.unstubAllGlobals()
+  })
+
+  it('hands a POSIX path to the bridge as a file:// URL', async () => {
+    await openFileInDefaultApp('/home/me/report.xlsx')
+
+    expect(openExternal).toHaveBeenCalledWith('file:///home/me/report.xlsx')
+  })
+
+  it('encodes spaces and Windows path separators per segment', async () => {
+    await openFileInDefaultApp('C:\\Users\\me\\My Report.xlsx')
+
+    // pathToFileUrl encodes each segment (same helper the artifacts panel
+    // uses); the main process decodes it back via the file:// branch of
+    // openExternalUrl.
+    expect(openExternal).toHaveBeenCalledWith('file:///C%3A/Users/me/My%20Report.xlsx')
+  })
+
+  it('stays quiet when the desktop bridge is unavailable', async () => {
+    vi.unstubAllGlobals()
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+
+    await openFileInDefaultApp('/home/me/report.xlsx')
+
+    expect($notifications.get()).toEqual([])
+  })
+
+  it('toasts when the bridge call fails', async () => {
+    openExternal.mockRejectedValue(new Error('openExternal failed'))
+
+    await openFileInDefaultApp('/home/me/report.xlsx')
+
+    expect($notifications.get()[0]?.kind).toBe('error')
   })
 })

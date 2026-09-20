@@ -8,6 +8,7 @@ import {
   revealDesktopPath,
   trashDesktopPath
 } from '@/lib/desktop-fs'
+import { pathToFileUrl } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
@@ -59,6 +60,25 @@ export function cancelInlineRename(): void {
 export async function revealFile(path: string): Promise<void> {
   try {
     await revealDesktopPath(path)
+  } catch (error) {
+    notifyError(error, translateNow('errors.genericFailure'))
+  }
+}
+
+/** Hand a file to the OS file association (double-click equivalent). The main
+ *  process routes `file://` through `shell.openPath` and falls back to
+ *  revealing the file when the OS reports no handler — so this degrades to
+ *  Reveal instead of failing silently. Local files only; on a remote backend
+ *  the path lives on another machine (offer Download there instead). */
+export async function openFileInDefaultApp(path: string): Promise<void> {
+  const openExternal = window.hermesDesktop?.openExternal
+
+  if (!openExternal) {
+    return
+  }
+
+  try {
+    await openExternal(pathToFileUrl(path))
   } catch (error) {
     notifyError(error, translateNow('errors.genericFailure'))
   }

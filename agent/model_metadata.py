@@ -1692,13 +1692,15 @@ def _normalize_model_version(model: str) -> str:
     return model.replace(".", "-")
 
 
-def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> Optional[int]:
+def _query_anthropic_context_length(model: str, base_url: str, api_key: object) -> Optional[int]:
     """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped."""
-    if not api_key or api_key.startswith("sk-ant-oat"):
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key)
+    if not token or token.startswith("sk-ant-oat"):
         return None
     try:
         base = base_url.rstrip("/").removesuffix("/v1")
-        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+        headers = {"x-api-key": token, "anthropic-version": "2023-06-01"}
         _ensure_requests()
         resp = requests.get(f"{base}/v1/models?limit=1000", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(base_url))
         if resp.status_code != 200:

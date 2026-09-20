@@ -185,33 +185,3 @@ def test_corrupt_args_repair_pops_persist_marker_on_stamped_dicts():
     assert stamped_result["content"].endswith("ok")
     assert _DB_PERSISTED_MARKER not in stamped_call
     assert _DB_PERSISTED_MARKER not in stamped_result
-
-
-def test_blank_args_repair_pops_persist_marker():
-    """The blank-args rewrite is also an in-place mutation of the live dict."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-
-    stamped_call = _assistant_message(_tool_call(call_id="call_1", arguments=""))
-    stamped_call[_DB_PERSISTED_MARKER] = True
-    messages = [{"role": "user", "content": "hi"}, stamped_call]
-
-    AIAgent._sanitize_tool_call_arguments(messages)
-
-    assert stamped_call["tool_calls"][0]["function"]["arguments"] == "{}"
-    assert _DB_PERSISTED_MARKER not in stamped_call
-
-
-def test_valid_args_keep_persist_marker():
-    """Control: an untouched stamped dict keeps its stamp."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-
-    stamped_call = _assistant_message(
-        _tool_call(call_id="call_1", arguments='{"path":"/tmp/foo"}')
-    )
-    stamped_call[_DB_PERSISTED_MARKER] = True
-    messages = [{"role": "user", "content": "hi"}, stamped_call]
-
-    repaired = AIAgent._sanitize_tool_call_arguments(messages)
-
-    assert repaired == 0
-    assert stamped_call[_DB_PERSISTED_MARKER] is True

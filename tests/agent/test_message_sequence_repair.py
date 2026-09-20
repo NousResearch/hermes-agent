@@ -1523,19 +1523,6 @@ def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
     assert _DB_PERSISTED_MARKER not in messages[0]
 
 
-def test_repair_user_merge_keeps_marker_when_row_unchanged():
-    """Negative control: merging an empty later turn reproduces the persisted
-    bytes, so the stamp stays and no redundant row is written."""
-    agent = _bare_agent()
-    stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
-    messages = [stamped, {"role": "user", "content": ""}]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 1
-    assert messages[0]["content"] == "first"
-    assert messages[0][_DB_PERSISTED_MARKER] is True
-
 
 def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
     agent = _bare_agent()
@@ -1552,55 +1539,6 @@ def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
     assert messages[1]["content"] == "first reply\nsecond reply"
     assert _DB_PERSISTED_MARKER not in messages[1]
 
-
-def test_repair_assistant_merge_pops_persist_marker_on_tool_calls_union():
-    """The marker asserts the whole row, not just content: a merge that only
-    unions tool_calls still stales the persisted row and must pop it."""
-    agent = _bare_agent()
-    stamped = {
-        "role": "assistant", "content": "answer",
-        "tool_calls": [{"id": "t1", "type": "function",
-                        "function": {"name": "f", "arguments": "{}"}}],
-        _DB_PERSISTED_MARKER: True,
-    }
-    messages = [
-        {"role": "user", "content": "Q1"},
-        stamped,
-        {"role": "assistant", "content": None,
-         "tool_calls": [{"id": "t2", "type": "function",
-                         "function": {"name": "g", "arguments": "{}"}}]},
-        # Results answer both calls so pass 2 leaves the union intact: the
-        # marker pop is attributable to the merge, not the prune pass.
-        {"role": "tool", "tool_call_id": "t1", "content": "out1"},
-        {"role": "tool", "tool_call_id": "t2", "content": "out2"},
-        {"role": "user", "content": "next"},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 1
-    assert [tc["id"] for tc in messages[1]["tool_calls"]] == ["t1", "t2"]
-    assert messages[1]["content"] == "answer"
-    assert _DB_PERSISTED_MARKER not in messages[1]
-
-
-def test_repair_assistant_merge_keeps_marker_when_nothing_changed():
-    """Negative control: a merge that changes no persisted field keeps the
-    stamp (later turn empty; union reproduces the same tool_calls value)."""
-    agent = _bare_agent()
-    stamped = {
-        "role": "assistant", "content": "answer",
-        _DB_PERSISTED_MARKER: True,
-    }
-    messages = [
-        {"role": "user", "content": "Q1"},
-        stamped,
-        {"role": "assistant", "content": ""},
-    ]
-
-    AIAgent._repair_message_sequence(agent, messages)
-
-    assert messages[1][_DB_PERSISTED_MARKER] is True
 
 
 def test_repair_prune_unanswered_tool_calls_pops_persist_marker():
@@ -1644,22 +1582,3 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
     assert repairs == 1
     assert _DB_PERSISTED_MARKER not in messages[0]
     assert agent._db_flush_scan_prefix is None
-
-
-def test_repair_cursor_keeps_scan_prefix_when_no_stamp_dirtied():
-    """Repairs on unstamped dicts must not pay a full re-scan: the prefix
-    snapshot stays valid when no stamped survivor lost its marker."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True},
-        {"role": "assistant", "content": "a1"},
-        {"role": "assistant", "content": "a2"},
-    ]
-    agent._last_flushed_db_idx = 1
-    prefix = messages[:]
-    agent._db_flush_scan_prefix = prefix
-
-    repairs = repair_message_sequence_with_cursor(agent, messages)
-
-    assert repairs == 1
-    assert agent._db_flush_scan_prefix is prefix

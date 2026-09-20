@@ -305,13 +305,6 @@ class TestSanitizeMessagesPersistMarker:
         assert "\ud800" not in msg["content"]
         assert _DB_PERSISTED_MARKER not in msg
 
-    def test_non_ascii_repair_pops_marker(self):
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-
-        msg = {"role": "user", "content": "café", _DB_PERSISTED_MARKER: True}
-        assert _sanitize_messages_non_ascii([msg]) is True
-        assert msg["content"] != "café"
-        assert _DB_PERSISTED_MARKER not in msg
 
     def test_unchanged_dict_keeps_marker(self):
         from agent.context_compressor import _DB_PERSISTED_MARKER

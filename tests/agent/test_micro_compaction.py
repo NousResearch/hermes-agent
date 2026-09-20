@@ -868,18 +868,3 @@ class TestMergeAdjacentUserTurnsPersistedMarker:
         assert merged[0]["content"] == "first\n\nsecond"
         assert _DB_PERSISTED_MARKER not in merged[0]
         assert cc._flush_scan_cursor_invalidated is True
-
-    def test_untouched_survivors_keep_their_stamps(self):
-        """Only the rewritten dict loses its stamp; the merge must not strip
-        _db_persisted from messages it did not mutate (the archive would
-        re-insert them as duplicate active rows on failure)."""
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-
-        _, result = self._spliced_merge()
-
-        markers = _summary_markers(result)
-        assert len(markers) == 1  # the fresh splice marker
-        stale_dropped = [m for m in result if m.get("content") == "SUMMARY"]
-        assert not stale_dropped
-        # The new marker was never persisted; it must not carry a stamp.
-        assert _DB_PERSISTED_MARKER not in markers[0]

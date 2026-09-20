@@ -84,10 +84,18 @@ def parse_launchd_exit_timeout(print_output: object) -> float | None:
 
 
 def launchd_service_label(environ: Mapping[str, str] | None = None) -> str | None:
-    """Return this process's launchd job label, or ``None`` when not launchd-owned."""
+    """Return this process's ``ai.hermes.*`` launchd job label, or ``None``.
+
+    Only labels of the gateway's own jobs count (same predicate as
+    :mod:`gateway.control_socket`). App-coalition labels
+    (``application.<bundle>…``, exported into IDE integrated terminals) also
+    populate ``XPC_SERVICE_NAME``, and ``launchctl print`` reports
+    ``exit timeout = 1`` for them — treating those as a budget would cap the
+    drain to 0 for a gateway Ctrl+C'd in such a terminal.
+    """
     env = os.environ if environ is None else environ
     label = str(env.get("XPC_SERVICE_NAME", "") or "").strip()
-    if not label or label == "0":
+    if not label.startswith("ai.hermes"):
         return None
     return label
 

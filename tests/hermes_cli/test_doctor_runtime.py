@@ -112,6 +112,7 @@ def test_runtime_phase_failure_isolated_and_persistence_disabled(monkeypatch):
         ValueError("prompt details")
     )
     monkeypatch.setattr(doctor_runtime, "_build_agent", lambda runtime, model: failed_prompt_agent)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     failed_prompt = doctor_runtime.run_runtime_diagnostic().to_dict()
     assert failed_prompt["failed_phase"] == "prompt_construction"
     assert failed_prompt_agent.request_calls == 0

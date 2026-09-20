@@ -485,6 +485,11 @@ class SessionMessagesMixin:
             message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
+            # Keep the caller's live row aligned with the durable identity. Rows created without an explicit
+            # timestamp (notably mid-turn steers) may be carried through several compaction generations; if
+            # the generated timestamp exists only in SQLite, every copy receives a new identity and renders
+            # as another logical message.
+            msg["timestamp"] = message_timestamp
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
             inserted += 1

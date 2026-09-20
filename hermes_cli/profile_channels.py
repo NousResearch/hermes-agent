@@ -373,10 +373,13 @@ def _remove_entry(entry: Path) -> None:
         shutil.rmtree(entry, ignore_errors=True)
 
 
-def strip_channel_settings(profile_dir: Path, *, include_state: bool) -> Dict[str, List[str]]:
+def strip_channel_settings(profile_dir: Path, *, include_state: bool, source_dir: Optional[Path] = None) -> Dict[str, List[str]]:
     """Strip channel credentials/identity from a freshly cloned profile. ``include_state`` also
     drops the runtime state ``--clone-all`` copied. Returns ``{platform|"config"|"state": [what]}``."""
-    index = ChannelKeyIndex()
+    import shutil
+    from hermes_cli.plugins_loader import _plugin_home_scope
+    with _plugin_home_scope(source_dir or profile_dir):
+        index = ChannelKeyIndex()
     preserve = set()
     if not _platform_enabled_in_config(profile_dir / "config.yaml", "homeassistant"):
         # HASS_TOKEN/HASS_URL are also the Home Assistant tool credentials. Keep them when the

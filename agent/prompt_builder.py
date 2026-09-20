@@ -1614,6 +1614,52 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
                              read_path=str(cwd_path / ".cursorrules"))
 
 
+def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
+    """Enumerate project-context files as ``(kind, label, path, content)``."""
+    discovered: list[tuple[str, str, Path, str]] = []
+    hermes_path = _find_hermes_md(cwd_path)
+    if hermes_path is not None:
+        label = str(hermes_path.relative_to(cwd_path)) if hermes_path.is_relative_to(cwd_path) else hermes_path.name
+        discovered.append(("hermes_md", label, hermes_path, _read_context_file(hermes_path)))
+
+    cwd_resolved = cwd_path.resolve()
+    seen: set[str] = set()
+    for directory in _agents_md_directory_chain(cwd_resolved):
+        for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
+            path = directory / name
+            content = _read_context_file(path)
+            if content:
+                if content not in seen:
+                    seen.add(content)
+                    label = name if directory == cwd_resolved else os.path.relpath(path, cwd_resolved)
+                    discovered.append(("agents_md", label, path, content))
+                break
+
+    for name in ("CLAUDE.md", "claude.md"):
+        path = cwd_path / name
+        content = _read_context_file(path)
+        if content:
+            discovered.append(("claude_md", name, path, content))
+            break
+
+    rules = [(cwd_path / ".cursorrules", ".cursorrules")]
+    rules_dir = cwd_path / ".cursor" / "rules"
+    if rules_dir.is_dir():
+        rules.extend((path, f".cursor/rules/{path.name}") for path in sorted(rules_dir.glob("*.mdc")))
+    discovered.extend(
+        ("cursorrules", label, path, content)
+        for path, label in rules
+        if (content := _read_context_file(path))
+    )
+    return discovered
+
+
+def _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
+    from agent.runtime_cwd import _is_install_tree
+
+    return cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path)
+
+
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
@@ -1631,8 +1677,7 @@ def build_context_files_prompt(
     # user deliberately points a session at it — and CLI-style surfaces pass
     # allow_install_tree_fallback=True because their launch dir IS the user's shell cwd (developing Hermes
     # in-tree). See #64590.
-    from agent.runtime_cwd import _is_install_tree
-    if cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path):
+    if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(
             "skipping project-context discovery: working-directory resolution fell back to the Hermes "
             "install tree (%s) — set terminal.cwd to your project directory", cwd_path,

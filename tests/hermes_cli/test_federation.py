@@ -311,7 +311,7 @@ def test_seed_refresh_repairs_incomplete_profile_and_clears_artifacts(tmp_path: 
     profile_dir = tmp_path / "profiles" / "writer"
     profile_dir.mkdir(parents=True)
     (profile_dir / ".federation_seed_incomplete").write_text("incomplete\n")
-    (profile_dir.parent / ".writer.federation_seed.lock").write_text("")
+    (profile_dir.parent / ".writer.federation_seed.lock").write_text(json.dumps({"pid": -1}))
 
     result = seed_federation(
         manifest,
@@ -472,3 +472,19 @@ def test_federation_audit_is_reachable_through_real_cli(tmp_path):
     report = json.loads(result.stdout)
     assert report["summary"]["roles"] == len(report["roles"])
     assert {row["role_id"] for row in report["roles"]} == {role.id for role in load_manifest(MANIFEST).roles}
+
+
+def test_refresh_refuses_live_seed_owner_without_changing_profile(tmp_path):
+    import os
+    profile = tmp_path / 'profiles/writer'
+    profile.mkdir(parents=True)
+    (profile / 'config.yaml').write_text('model: original\n')
+    reservation = profile.parent / '.writer.federation_seed.lock'
+    owner = json.dumps({'pid': os.getpid(), 'created_at': 0})
+    reservation.write_text(owner)
+    result = seed_federation(load_manifest(MANIFEST), role_ids=['writer'], existing_profiles={'writer'},
+                             apply=True, refresh_existing=True, profile_dir_for=lambda _: profile)
+    assert result['failed'] and not result['refreshed_existing']
+    assert (profile / 'config.yaml').read_text() == 'model: original\n'
+    assert reservation.read_text() == owner
+    assert not (profile / 'federation_role.json').exists()

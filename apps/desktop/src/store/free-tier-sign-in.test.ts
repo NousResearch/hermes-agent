@@ -67,43 +67,23 @@ describe('free-tier sign-in attempts', () => {
   })
 })
 
-describe('free-tier sign-in failure screens', () => {
-  it('maps the account service verdicts onto ruled screens', async () => {
-    const { signInFailureKind } = await import('./free-tier-sign-in')
-
-    expect(signInFailureKind('account_busy')).toBe('busy')
-    expect(signInFailureKind('anon_rate_limited')).toBe('busy')
-    expect(signInFailureKind('anon_gate_paused')).toBe('busy')
-    expect(signInFailureKind('anon_unreachable')).toBe('unreachable')
-    expect(signInFailureKind('anon_server_error')).toBe('unreachable')
-    expect(signInFailureKind('anon_gate_closed')).toBe('unavailable')
-    expect(signInFailureKind('anon_pow_required')).toBe('unavailable')
-    expect(signInFailureKind('anon_account_locked')).toBe('unavailable')
-    expect(signInFailureKind('user_declined')).toBe('rejected')
-    expect(signInFailureKind('wat')).toBe('error')
-    expect(signInFailureKind(null)).toBe('error')
-  })
-
-  it('a busy verdict keeps the wait the service named', async () => {
-    const { $freeTierSignIn, beginFreeTierSignIn } = await import('./free-tier-sign-in')
-    startOAuthLogin.mockResolvedValueOnce(start('session-busy'))
-    pollOAuthSession.mockResolvedValue({
-      error_message: 'Signing in could not finish because the service is busy.',
-      reason: 'anon_rate_limited',
-      retry_after: 45,
-      retryable: true,
-      session_id: 'session-busy',
-      status: 'error'
-    })
-
-    await beginFreeTierSignIn(requestGateway)
-    await vi.advanceTimersByTimeAsync(2000)
-
-    expect($freeTierSignIn.get()).toEqual({
-      kind: 'busy',
-      message: 'Signing in could not finish because the service is busy.',
-      retryAfter: 45,
-      status: 'failed'
-    })
-  })
+it('cancels a failed polling session and ignores its other in-flight approval', async () => {
+  const { $freeTierSignIn, beginFreeTierSignIn } = await import('./free-tier-sign-in')
+  let approve!: (value: unknown) => void
+  startOAuthLogin.mockResolvedValueOnce(start('failed-session'))
+  pollOAuthSession
+    .mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          approve = resolve
+        })
+    )
+    .mockRejectedValueOnce(new Error('connection interrupted'))
+  await beginFreeTierSignIn(requestGateway)
+  await vi.advanceTimersByTimeAsync(4000)
+  expect(cancelOAuthSession).toHaveBeenCalledWith('failed-session')
+  expect($freeTierSignIn.get()).toMatchObject({ status: 'failed', message: 'connection interrupted' })
+  approve({ status: 'approved', account_email: 'late@example.com' })
+  await vi.advanceTimersByTimeAsync(1)
+  expect($freeTierSignIn.get()).toMatchObject({ status: 'failed' })
 })

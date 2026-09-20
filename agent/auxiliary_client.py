@@ -3137,6 +3137,12 @@ def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
     return any(kw in text for kw in needles)
 
 
+def _is_overloaded_error(exc: Exception) -> bool:
+    from agent.error_classifier import _OVERLOADED_PATTERNS
+
+    return _contains_any(str(exc).lower(), _OVERLOADED_PATTERNS)
+
+
 # Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies), plus daily/weekly quota
 # exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing —
 # also serialized by SDK wrappers and NIM as RESOURCE_EXHAUSTED / ResourceExhausted / resource-exhausted).
@@ -3529,7 +3535,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return _rotate(401)
     if _is_payment_error(exc):
         return _rotate(402)
-    if _is_rate_limit_error(exc):
+    if _is_rate_limit_error(exc) and not _is_overloaded_error(exc):
         return _rotate(429)
     return False
 
@@ -5038,6 +5044,15 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        profile_client = profile.create_client(api_key=api_key, base_url=base_url) if profile else None
+    except Exception as exc:
+        logger.debug("resolve_provider_client: provider %s client hook failed: %s", provider, exc)
+        profile_client = None
+    if profile_client is not None:
+        return _route_client(req, profile_client, final_model)
     if provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
         if is_native_gemini_base_url(base_url):

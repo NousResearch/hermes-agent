@@ -89,6 +89,18 @@ def is_guest_state(state: Any) -> bool:
     return isinstance(state, dict) and state.get("auth_method") == ANON_AUTH_METHOD
 
 
+def is_anonymous_request(provider: Any, api_key: Any) -> bool:
+    """Classify UX from the credential actually sent, not saved profile state."""
+    from hermes_cli.auth_constants import _decode_jwt_claims
+
+    return provider == "nous" and _decode_jwt_claims(api_key).get("account_tier") == ANON_ACCOUNT_TIER
+
+
+def is_anonymous_agent(agent: Any) -> bool:
+    """Classify a live request using its current, potentially rotated credential."""
+    return is_anonymous_request(getattr(agent, "provider", ""), getattr(agent, "api_key", None))
+
+
 def current_nous_state() -> Optional[Dict[str, Any]]:
     """The profile's ``providers.nous`` state without locking or network (status/picker reads)."""
     from hermes_cli.auth import _load_auth_store, _load_provider_state

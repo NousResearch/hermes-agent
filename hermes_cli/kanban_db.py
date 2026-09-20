@@ -34,6 +34,13 @@ _log = logging.getLogger(__name__)
 
 # --- Shared micro-helpers (row access, JSON, env, git) ---
 
+def _lossy_text(value: Any) -> Any:
+    """Decode invalid UTF-8 text with replacement so a corrupt cell is survivable."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def _row_get(row: Any, col: str, default: Any = None) -> Any:
     """``row[col]`` tolerant of the column being absent from the SELECT / schema."""
     if row is None or col not in row.keys():
@@ -203,7 +210,7 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
 
 
-def _assert_not_delegated_child_mutation() -> None:
+def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> None:
     """Reject Kanban mutations from ``delegate_task`` child contexts.
 
     The tool/CLI fast-fail guards are UX, not a trust boundary (a child can shell
@@ -377,6 +384,9 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # Worker exit "provider rate-limited": released WITHOUT counting a failure (the
 # breaker must never trip on a throttle). 75 == BSD EX_TEMPFAIL.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
+
+# Terminal provider configuration errors park the task instead of retrying it.
+KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
 
 # _signal_handler_q (cli.py) intentionally calls os._exit() rather than
 # letting SIGINT/SIGTERM/SIGHUP kill the process via the default disposition
@@ -2606,7 +2616,9 @@ def _extend_run_claim(conn: sqlite3.Connection, task_id: str, expires: int) -> O
     return run_id
 
 
-def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
+def release_stale_claims(
+    conn: sqlite3.Connection, *, signal_fn=None, failure_limit: Optional[int] = None,
+) -> int:
     """Reclaim ``running`` tasks whose claim expired; returns the count reclaimed.
 
     A host-local worker that is still alive gets its claim *extended* instead
@@ -2684,6 +2696,14 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
                 },
             )
             reclaimed += 1
+        # A claim released without a worker verdict is a failed attempt too;
+        # otherwise claim -> reclaim loops never reach the configured breaker.
+        from hermes_cli.kanban_db_dispatch import _record_task_failure
+        _record_task_failure(
+            conn, row["id"], f"stale_lock={row['claim_lock']}", outcome="reclaimed",
+            failure_limit=failure_limit, release_claim=False, end_run=False,
+            event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
+        )
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
             _fire_kanban_lifecycle_hook(

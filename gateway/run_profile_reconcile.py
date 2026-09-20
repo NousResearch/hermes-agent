@@ -164,6 +164,9 @@ class GatewayProfileReconcileMixin:
         for platform, adapter in adapters.items():
             await self._bounded_adapter_teardown(adapter, platform, profile=profile_name)
 
+        from gateway.run import _write_runtime_status_quiet
+        _write_runtime_status_quiet(drop_profile_platforms=profile_name)
+
     def _live_resource_claims(self, active: str) -> Dict[tuple, str]:
         """Startup's ``claimed`` map rebuilt from what is live now: primary claims plus every connected
         secondary's credential/listener, so a hot-added profile reusing a token is parked, never a
@@ -210,6 +213,10 @@ class GatewayProfileReconcileMixin:
         with _log_suppressed(logging.DEBUG, "MCP scope cleanup failed for deleted profile", exc_info=True):
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
             await asyncio.to_thread(shutdown_mcp_servers, scope=hermes_home_key(home))
+        # Plugin teardown touches importlib locks and module caches — run it on a
+        # worker thread so it can't stall the gateway event loop.
+        from hermes_cli.plugins_lifecycle import evict_profile_plugins
+        await asyncio.to_thread(evict_profile_plugins, home)
         # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
         _write_runtime_status_quiet(drop_profile_platforms=name)
         for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile"):

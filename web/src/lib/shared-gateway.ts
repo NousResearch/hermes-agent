@@ -69,7 +69,7 @@ export function gatewayActionFailedMessage(
   const head = trimmed
     ? `${GATEWAY_VERB_COPY[verb]}: ${trimmed}${ended ? "" : "."}`
     : `${GATEWAY_VERB_COPY[verb]}.`;
-  const unreachable = error instanceof ApiError && error.status === 0;
+  const unreachable = error instanceof Error && error.message.startsWith("0:");
   return unreachable ? head : `${head} Open Logs for details.`;
 }
 

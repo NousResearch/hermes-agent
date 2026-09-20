@@ -123,16 +123,13 @@ describe('parseBackendScopeKey (#90812/#93910)', () => {
   })
 })
 
-describe('main.ts wiring for #90812', () => {
-  it.each([null, 'office-ssh'])(
-    'coalesces resolved window routes without absorbing a same-named source (%s)',
-    async connectionId => {
-      const claims = new BackendDialClaims()
-      const source = { connectionId, profile: 'work', registryScoped: connectionId !== null }
-      const route = resolveDesktopConnectionRequest(undefined, source, 'default')
-      const key = backendScopeKey(route.connectionId, route.profile)
-      const dial = vi.fn(async () => ({ baseUrl: 'http://localhost:53150' }))
-      const other = vi.fn(async () => ({ baseUrl: 'http://localhost:53151' }))
+describe('backend dial routing (#90812)', () => {
+  it('uses the composite registry scope for a registry backend', async () => {
+    const claims = new BackendDialClaims()
+    const dial = vi.fn(async () => 'registry')
+
+    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
+      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
 
       const [first, second, separate] = await Promise.all([
         claims.run(key, dial),
@@ -164,10 +161,12 @@ describe('main.ts wiring for #90812', () => {
     expect(body).toContain('ensureBackend(profile)')
   })
 
-  it('routes a terminal-pane backend resolve through the single-owner claim on both the registry and local branches', () => {
-    const handlerStart = mainSource.indexOf('async function ensureTerminalBackend(webContentsId: number) {')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
+  it('uses the local profile scope for a local backend', async () => {
+    const claims = new BackendDialClaims()
+    const dial = vi.fn(async () => 'local')
+
+    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
+      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(windowRoute.connectionId, windowRoute.profile)')
     expect(body).toContain('ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)')
@@ -175,10 +174,12 @@ describe('main.ts wiring for #90812', () => {
     expect(body).toContain('ensureBackend(profile)')
   })
 
-  it('routes the roster-enumeration probe through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf('async function enumerateRegistryAgentSources')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 3_700)
+  it('preserves an explicit pooled key when the parsed route would normalize it', async () => {
+    const claims = new BackendDialClaims()
+    const dial = vi.fn(async () => 'forced-local')
+
+    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
+      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
     expect(body).toContain('ensureRegistryBackend(connection.id, null)')

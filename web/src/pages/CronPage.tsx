@@ -529,6 +529,7 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
+  const [jobsLoadError, setJobsLoadError] = useState<string | null>(null);
   const schedulerStaleAgeS = cronSchedulerStaleAgeS(jobs);
   const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -632,13 +633,17 @@ export default function CronPage() {
         if (
           jobsRequestGenerationRef.current === generation &&
           selectedProfileRef.current === profile
-        ) setJobs(nextJobs);
+        ) {
+          setJobs(nextJobs);
+          setJobsLoadError(null);
+        }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (
           jobsRequestGenerationRef.current === generation &&
           selectedProfileRef.current === profile
         ) {
+          setJobsLoadError(error instanceof Error ? error.message : String(error));
           showToast(t.common.loading, "error");
         }
       })
@@ -875,16 +880,17 @@ export default function CronPage() {
       <Toast toast={toast} />
 
       {jobsLoadError && (
-        <LoadErrorNotice
-          what={t.cron.loadWhat ?? en.cron.loadWhat!}
-          detail={jobsLoadError}
-          onRetry={() => loadJobs(selectedProfile)}
-        />
+        <div role="alert" className="rounded-md border border-destructive/40 p-3 text-sm">
+          <p>Could not load cron jobs: {jobsLoadError}</p>
+          <Button variant="outline" size="sm" onClick={() => loadJobs(selectedProfile)}>
+            Retry
+          </Button>
+        </div>
       )}
 
       {schedulerStaleAgeS !== null && (
         <p className="text-sm text-warning font-medium" data-testid="cron-scheduler-stale">
-          {(t.cron.schedulerLastTicked ?? en.cron.schedulerLastTicked!).replace(
+          {(t.cron.schedulerLastTicked ?? "Scheduler last ticked {when}").replace(
             "{when}",
             cronAgoLabel(schedulerStaleAgeS),
           )}
@@ -1191,7 +1197,7 @@ export default function CronPage() {
                         className="text-warning font-medium"
                         data-testid="cron-next-run-overdue"
                       >
-                        {t.cron.overdueSince ?? en.cron.overdueSince!}: {formatTime(job.next_run_at)}
+                        {t.cron.overdueSince ?? "Overdue since"}: {formatTime(job.next_run_at)}
                       </span>
                     )}
                   </div>

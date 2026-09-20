@@ -92,9 +92,16 @@ function clearTimers() {
 
 const set = (state: FreeTierSignInState) => $freeTierSignIn.set(state)
 
-const fail = (kind: FreeTierSignInFailure, message: null | string = null, retryAfter = 0) => {
+const fail = (kind: FreeTierSignInFailure, message: null | string = null) => {
+  const state = $freeTierSignIn.get()
+  attempt += 1
   clearTimers()
-  set({ kind, message: message?.trim() || null, retryAfter: Math.max(0, Math.round(retryAfter) || 0), status: 'failed' })
+
+  if (state.status === 'code') {
+    cancelOAuthSession(state.sessionId).catch(() => undefined)
+  }
+
+  set({ kind, message: message?.trim() || null, status: 'failed' })
 }
 
 /** Every entry point calls this — Settings › Billing, the statusbar chip, the

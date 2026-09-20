@@ -566,6 +566,7 @@ CREATE TABLE IF NOT EXISTS conversation_worktree_bindings (
     branch TEXT NOT NULL,
     base_commit TEXT NOT NULL,
     repo_common_dir TEXT NOT NULL,
+    source_worktree TEXT,
     state TEXT NOT NULL CHECK (state IN ('creating', 'ready', 'creation_failed', 'retained', 'removed')),
     failure_phase TEXT,
     failure_message TEXT,

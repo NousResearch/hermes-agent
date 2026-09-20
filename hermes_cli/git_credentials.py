@@ -86,7 +86,7 @@ def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
     env.pop("GIT_ASKPASS", None)
     env.pop("SSH_ASKPASS", None)
     parsed = urllib.parse.urlsplit(origin)
-    request = f"protocol=https\nhost={parsed.netloc}\n\n"
+    request = f"protocol={parsed.scheme}\nhost={parsed.netloc}\npath={parsed.path.lstrip('/')}\n\n"
     try:
         result = subprocess.run(
             [git, "-c", "core.askPass=", "credential", "fill"], input=request, capture_output=True,
@@ -112,7 +112,7 @@ def resolve_git_basic_auth(url: str) -> Optional[tuple[str, str]]:
         token = _github_token()
         if token:
             return "x-access-token", token
-    return _credential_fill(origin)
+    return _credential_fill(origin + urllib.parse.urlsplit(url).path)
 
 
 def with_git_auth(env: Mapping[str, str], url: str) -> dict[str, str]:

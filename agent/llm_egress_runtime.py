@@ -207,7 +207,7 @@ def egress_enforcement_enabled() -> bool:
 
         config = load_config_readonly()
         if managed_scope.is_key_managed("runtime.llm_egress_enforcement"):
-            posture = str((config.get("runtime") or {}).get("llm_egress_enforcement", "enabled") or "enabled")
+            posture = str((config.get("runtime") or {}).get("llm_egress_enforcement", "enabled"))
             return posture.strip().lower() not in {"0", "false", "off", "disabled", "disable", "monitor"}
     except Exception:
         pass
@@ -215,7 +215,7 @@ def egress_enforcement_enabled() -> bool:
         from hermes_cli.config import load_config_readonly
 
         runtime = load_config_readonly().get("runtime") or {}
-        posture = str(runtime.get("llm_egress_enforcement", "enabled") or "enabled")
+        posture = str(runtime.get("llm_egress_enforcement", "enabled"))
         return posture.strip().lower() not in {"0", "false", "off", "disabled", "disable", "monitor"}
     except Exception:
         # A malformed or unavailable config must not silently weaken the boundary.

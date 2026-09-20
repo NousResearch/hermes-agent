@@ -705,12 +705,25 @@ def _trusted_local_terminal_session() -> bool:
 
 
 def _make_run_env(env: dict) -> dict:
-    """Build a run environment with a sane PATH and provider-var stripping. The process env is
-    the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
-    (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
-    and the served profile's declared passthrough names are what the child sees."""
-    return _scrubbed_env([(dict(strip_launch_profile_env(os.environ.copy()) | env), True)], frozenset(),
-                         lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
+    """Build a run environment with a sane PATH and provider-var stripping."""
+    source = dict(os.environ | env)
+    result = _scrubbed_env(
+        [(source, True)], frozenset(),
+        lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)),
+    )
+    # _scrubbed_env protects background/untrusted children by neutralizing the
+    # host Git config and credentials. Only a human-attended CLI terminal gets
+    # the explicit operator-authenticated exception; gateway, cron, single-query,
+    # and delegated sessions must remain fenced even when TASK is absent.
+    if _trusted_local_terminal_session():
+        for key in _LOCAL_TERMINAL_GIT_AUTH_ENV:
+            if source.get(key) is not None:
+                result[key] = source[key]
+            elif key in {"GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"}:
+                # Let gh/git use their normal HOME-scoped defaults in the trusted
+                # terminal. The scrubber's /dev/null values must not leak into it.
+                result.pop(key, None)
+    return result
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---

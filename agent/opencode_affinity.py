@@ -19,7 +19,7 @@ one job share a scope. Auxiliary calls (compression, titles, vision, MoA) have n
 resolve the ambient value, so they stay on the conversation's backend too (#70820).
 
 Every request — main turn on any transport, auxiliary calls — goes through
-:func:`merge_session_affinity_headers` so the headers cannot drift per code path.
+:func:`merge_opencode_session_headers` so the headers cannot drift per code path.
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ def custom_provider_session_affinity_headers(
     return {header: key} if key else {}
 
 
-def merge_session_affinity_headers(
+def merge_opencode_session_headers(
     kwargs: dict[str, Any],
     provider: Optional[str],
     base_url: Optional[str],

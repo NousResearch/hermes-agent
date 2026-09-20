@@ -498,6 +498,7 @@ class ConversationWorktreeManager:
                             branch=branch,
                             base_commit=base_commit,
                             repo_common_dir=str(source_common_dir),
+                            source_worktree=str(source),
                         )
                     except ConversationWorktreeConflict as exc:
                         record = self._db.get_conversation_worktree(root_session_id)
@@ -546,6 +547,20 @@ class ConversationWorktreeManager:
             )
             raise
 
+    def _durable_source(self, record: ConversationWorktreeRecord) -> Path:
+        # Legacy rows can only recover from an explicitly configured checkout.
+        source = (
+            Path(record.source_worktree).resolve()
+            if record.source_worktree
+            else self._source_repository_identity()[0]
+        )
+        actual = Path(self._git_stdout(
+            source, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "identity"
+        )).resolve()
+        if actual != Path(record.repo_common_dir).resolve():
+            raise ConversationWorktreeError("durable source repository identity changed", phase="identity")
+        return source
+
     def resolve_existing_session(
         self, root_session_id: str
     ) -> ConversationWorktreeBinding | None:
@@ -554,7 +569,7 @@ class ConversationWorktreeManager:
         if record is None:
             return None
         source_common_dir = Path(record.repo_common_dir).resolve()
-        source = source_common_dir.parent
+        source = self._durable_source(record)
         path = Path(record.worktree_path).resolve()
         branch = record.branch
         if not source.is_dir() or not source_common_dir.is_dir():
@@ -647,7 +662,7 @@ class ConversationWorktreeManager:
 
         try:
             source_common_dir = Path(record.repo_common_dir).resolve()
-            source = source_common_dir.parent
+            source = self._durable_source(record)
             if not source.is_dir() or not source_common_dir.is_dir():
                 raise ConversationWorktreeError(
                     "durable conversation repository identity is unavailable", phase="identity"
@@ -756,13 +771,11 @@ class ConversationWorktreeManager:
 
         try:
             source_common_dir = Path(record.repo_common_dir).resolve()
-            source = source_common_dir.parent
-            expected_path, expected_branch = Path(record.worktree_path).resolve(), record.branch
+            source = self._durable_source(record)
+            expected_path = Path(record.worktree_path).resolve()
             if (
                 record.state not in {"ready", "retained"}
-                or Path(record.worktree_path).resolve() != expected_path.resolve()
-                or record.branch != expected_branch
-                or Path(record.repo_common_dir).resolve() != source_common_dir.resolve()
+                or not self._exact_owner_claims_present(record)
                 or not expected_path.is_dir()
             ):
                 return CleanupVerdict(False, ("mismatched identity",))
@@ -1402,8 +1415,10 @@ class ConversationWorktreeManager:
                     "ready conversation worktree no longer descends from its base commit",
                     phase="recovery",
                 )
-        self._ensure_common_owner_claim(record)
-        self._ensure_owner_marker(record)
+        if not self._exact_owner_claims_present(record):
+            raise ConversationWorktreeError(
+                "ready conversation worktree ownership is unavailable", phase="recovery"
+            )
         self._event(
             "conversation_worktree.reuse", root_session_id=record.root_session_id
         )

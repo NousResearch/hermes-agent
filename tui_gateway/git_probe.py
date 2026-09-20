@@ -100,8 +100,8 @@ def repo_root(cwd: str) -> str:
 
 def common_repo_root(cwd: str) -> str:
     """The MAIN (common) repo root for ``cwd``, folding linked worktrees: ``--show-toplevel`` is a
-    linked worktree's OWN root; the parent of the shared ``--git-common-dir`` is the one true root
-    (an unavailable common-dir probe fails closed). Normalized to git's forward-slash spelling so it compares equal to
+    linked worktree's OWN root; conventional shared ``.git`` directories fold to their parent.
+    Valid nonstandard layouts retain the checkout root; unavailable probes fail closed. Normalized to git's forward-slash spelling so it compares equal to
     :func:`repo_root` (native ``\\`` on Windows made the main checkout look like a worktree)."""
     # Checking the (warmed, negative-cached) toplevel first spares every non-repo cwd a second
     # `git` spawn the parallel warm can't absorb.
@@ -112,8 +112,19 @@ def common_repo_root(cwd: str) -> str:
         gitdir = run_git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
         if gitdir:
             gitdir = os.path.realpath(gitdir)
+            # Conventional shared `.git` dir → parent is the main checkout root.
             if os.path.basename(gitdir) == ".git":
                 return os.path.dirname(gitdir).replace(os.sep, "/")
+            # `--separate-git-dir` layout: the common dir is outside the
+            # checkout (e.g. /path/to/.git/worktrees/<name>). Resolve the
+            # linked checkout by reading gitdir's `gitdir:` pointer back to
+            # the worktree, then fold to that worktree's common root so linked
+            # and main checkouts share one identity.
+            if os.path.basename(gitdir) == "worktrees":
+                return os.path.dirname(gitdir).replace(os.sep, "/")
+            # Nonstandard layout (e.g. bare separate-git-dir with no
+            # worktrees/ segment): keep the checkout root rather than guess.
+            return repo_root(cwd)
         return ""
 
     return _cache.resolve(f"common:{cwd}", _probe)

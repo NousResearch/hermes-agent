@@ -126,3 +126,32 @@ def test_adding_a_preset_still_works(tmp_path, monkeypatch):
     presets = _on_disk(home)["moa"]["presets"]
     assert set(presets) == {"keep_a", "doomed", "keep_b", "fresh"}
     assert presets["fresh"]["reference_models"][0]["model"] == "gpt-5.9"
+
+
+def test_deletion_preserves_privacy_filter_and_retained_preset_metadata(tmp_path, monkeypatch):
+    """A MoA edit must not reset an undeclared privacy policy or metadata."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    moa = _three_presets()
+    moa.update(
+        privacy_filter="full",
+        save_traces=True,
+        trace_dir="/custom/traces",
+        presets={**moa["presets"], "keep_a": {**moa["presets"]["keep_a"], "operator_note": "retain me"}},
+    )
+    _seed(home, monkeypatch, moa)
+
+    set_moa_models(
+        MoaConfigPayload(
+            default_preset="keep_a",
+            active_preset="",
+            presets={"keep_a": _preset("gpt-5.5"), "keep_b": _preset("gpt-5.7")},
+        )
+    )
+
+    on_disk = _on_disk(home)["moa"]
+    assert "doomed" not in on_disk["presets"]
+    assert on_disk["privacy_filter"] == "full"
+    assert on_disk["save_traces"] is True
+    assert on_disk["trace_dir"] == "/custom/traces"
+    assert on_disk["presets"]["keep_a"]["operator_note"] == "retain me"

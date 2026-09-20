@@ -940,7 +940,7 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
-    assert "restarting" in adapter.sent[0] and "Send any message" in adapter.sent[0]
+    assert "restarting" in adapter.sent[0] and "this chat" in adapter.sent[0]
 
 
 @pytest.mark.asyncio
@@ -967,6 +967,8 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 2
+    assert "this topic" in adapter.sent_calls[0][1]
+    assert "this chat" in adapter.sent_calls[1][1]
     assert adapter.sent_calls[0][2] == {"thread_id": "topic-7"}
     assert adapter.sent_calls[1][2] is None
 
@@ -1319,5 +1321,4 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._send_restart_notification.assert_awaited_once()
     runner._claim_pending_obligations.assert_awaited_once()
     runner._redeliver_claimed_obligations.assert_awaited_once()
-
 

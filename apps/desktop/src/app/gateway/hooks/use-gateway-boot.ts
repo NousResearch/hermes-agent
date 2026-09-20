@@ -130,7 +130,6 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // window instead of tearing down every secondary socket on each signal (#94769).
 const WAKE_RECONNECT_HOLDOFF_MS = 15_000
 
-
 // Bounded self-heal for a failed REMOTE boot (#82679): main classifies every
 // fault it can see (via getBootProgress().retryable); the renderer adds the one
 // it cannot — a valid remote WebSocket dial that fails before becoming usable.

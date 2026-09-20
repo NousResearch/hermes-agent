@@ -1442,13 +1442,21 @@ class TestOpenRouterUpstreamRateLimit:
 
 
 class TestCommandCodeUpstreamUnavailable:
-    """CommandCode's upstream outage 429 is not a credential rate limit."""
+    """An explicit upstream outage is not a credential rate limit."""
 
-    @pytest.mark.parametrize("provider", ["commandcode", "commandcode-anthropic"])
-    def test_upstream_unavailable_429_keeps_credential_healthy(self, provider):
+    @pytest.mark.parametrize(
+        ("provider", "status_code"),
+        [
+            ("commandcode", 429),
+            ("commandcode-anthropic", 429),
+            ("commandcode", None),
+            ("other-gateway", 429),
+        ],
+    )
+    def test_upstream_unavailable_keeps_credential_healthy(self, provider, status_code):
         e = MockAPIError(
             "Upstream model provider is temporarily unavailable. Please try again in a moment.",
-            status_code=429,
+            status_code=status_code,
         )
 
         result = classify_api_error(e, provider=provider, model="deepseek/deepseek-v4-flash")

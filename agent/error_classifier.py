@@ -141,13 +141,15 @@ _RATE_LIMIT_PATTERNS = (
 )
 
 # Server busy, credential fine: back off on the same key, never rotate. Z.AI/
-# Zhipu reuse HTTP 429 for this, so the 429 path checks these first. Kept narrow
-# so a plain "you have been rate-limited" doesn't land here. (#14038, #15297)
+# Zhipu reuse HTTP 429 for this, while CommandCode reports an unavailable upstream
+# model with the exact sentence below. The 429 path checks these first, and the
+# narrow wording keeps plain rate limits out. (#14038, #15297, #117111)
 _OVERLOADED_PATTERNS = (
     "overloaded", "temporarily overloaded", "service is temporarily overloaded",
     "service may be temporarily overloaded", "server is overloaded", "server overloaded",
     "server overload", "server_overload",
     "service overloaded", "service is overloaded", "upstream overloaded", "currently overloaded",
+    "upstream model provider is temporarily unavailable",
     "at capacity", "over capacity",
 )
 
@@ -619,15 +621,6 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome
-    # CommandCode reports an unavailable upstream model backend as 429 even though the
-    # CommandCode credential remains healthy. Treat only its explicit availability signal
-    # as overload; genuine CommandCode rate-limit 429s keep the normal rotation path.
-    if (
-        c.provider_slug in {"commandcode", "commandcode-anthropic"}
-        and status == 429
-        and "upstream model provider is temporarily unavailable" in msg
-    ):
-        return _V_OVERLOADED
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):

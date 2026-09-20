@@ -9,6 +9,7 @@ from hermes_cli import process_identity
 from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves, warn_pending_manual_serves
 from hermes_constants import get_hermes_home
 
 
@@ -189,3 +190,32 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
     fleet._warn_pending_fleet_restart_on_startup()
     assert "900" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["serve", "dashboard"])
+@pytest.mark.parametrize("alive", [True, None, False])
+def test_unreadable_create_time_discharges_only_a_proven_dead_pid(monkeypatch, kind, alive):
+    runtime = asdict(RuntimeRecord(kind=kind, profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: alive)
+    pending = retain_receipt_manual_serves({"plan": {"runtimes": [runtime]}})
+    if alive is False:
+        assert pending == []
+    else:
+        assert pending == [runtime]
+
+
+def test_unreadable_create_time_warning_names_identity_not_storage(monkeypatch, capsys):
+    runtime = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
+    warn_pending_manual_serves(pending_manual=[runtime])
+    out = capsys.readouterr().out
+    assert "could not read the process creation time" in out
+    assert "storage permissions" not in out
+    assert "relaunch" in out
+
+
+def test_unreadable_create_time_still_refuses_require_alive(monkeypatch):
+    runtime = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
+    assert defer_manual_serve(runtime, require_alive=True) is False
+    assert defer_manual_serve(runtime) is True

@@ -1,8 +1,8 @@
-import { useEffect, useId, useMemo, useState, type CSSProperties } from 'react'
+import './core.css'
+
+import { type CSSProperties, useEffect, useId, useMemo, useState } from 'react'
 
 import type { JarvisTaskPhase, JarvisVoiceState } from './types'
-
-import './core.css'
 
 export interface JarvisCoreProps {
   voice: JarvisVoiceState

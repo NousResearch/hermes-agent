@@ -246,3 +246,13 @@ async def test_inconclusive_probes_never_accumulate_toward_respawn(
             adapter._probe_failures += 1
 
     assert adapter._probe_failures == 0
+
+
+def test_probe_upstream_reads_a_guid_shaped_id() -> None:
+    """The wire probe in ``probeUpstream`` must use the GUID helper: a non-GUID synthetic id is
+    rejected locally by the SDK ("Expected message resource GUID") before any round-trip, so
+    the classifier can never observe the not-found rejection that proves liveness (#117390)."""
+    source = (_MODULE.parent / "index.mjs").read_text(encoding="utf-8")
+    probe_fn = source.split("async function probeUpstream()", 1)[1].split("\nasync function", 1)[0]
+    assert "createProbeMessageId()" in probe_fn
+    assert "hermes-liveness-probe-" not in source

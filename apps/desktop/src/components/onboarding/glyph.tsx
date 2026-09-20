@@ -127,7 +127,7 @@ export function DecodedLabel({ leaving, text }: { leaving?: boolean; text: strin
       <GlyphText text={decoded} />
       <span
         aria-hidden="true"
-        className="dither ml-1.5 -mr-[0.875rem] inline-block size-2 shrink-0 -translate-y-px rounded-[1px] text-primary ob-decode-cursor-blink"
+        className="dither ml-1.5 -mr-[0.875rem] inline-block size-2 shrink-0 -translate-y-px rounded-[1px] text-primary decode-cursor-blink"
       />
     </span>
   )

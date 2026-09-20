@@ -1,9 +1,10 @@
 /** Coalesce a stream of values (pointermove positions, resize deltas) to one
  *  `apply` per animation frame, so a drag can't drive several layouts per frame.
  *  `push` records the latest value and schedules a frame; `finish` commits the
- *  last value and cancels any pending frame (call it on pointerup/cancel).
+ *  last value and cancels any pending frame (call it on pointerup/cancel);
+ *  `cancel` drops the pending value without applying it (unmount teardown).
  *  `null` is the empty sentinel, so `T` must never legitimately be `null`. */
-export function rafCoalesce<T>(apply: (value: T) => void): { finish: () => void; push: (value: T) => void } {
+export function rafCoalesce<T>(apply: (value: T) => void): { cancel: () => void; finish: () => void; push: (value: T) => void } {
   let frame: null | number = null
   let pending: null | T = null
 
@@ -16,6 +17,14 @@ export function rafCoalesce<T>(apply: (value: T) => void): { finish: () => void;
   }
 
   return {
+    cancel() {
+      if (frame !== null) {
+        cancelAnimationFrame(frame)
+        frame = null
+      }
+
+      pending = null
+    },
     finish() {
       if (frame !== null) {
         cancelAnimationFrame(frame)

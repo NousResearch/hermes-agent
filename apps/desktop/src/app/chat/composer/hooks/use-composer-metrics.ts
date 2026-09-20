@@ -1,5 +1,5 @@
 import { useAuiState } from '@assistant-ui/react'
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   chatSurfaceRoot,
@@ -9,6 +9,7 @@ import {
   setSurfaceVar
 } from '@/app/chat/surface-vars'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { rafCoalesce } from '@/lib/raf-coalesce'
 
 import {
   COMPOSER_COMPACT_PILL_PX,
@@ -114,16 +115,8 @@ export function useComposerMetrics({
   // would re-register the observation.
   const poppedOutRef = useRef(poppedOut)
   poppedOutRef.current = poppedOut
-  // #99889: ResizeObserver loop guard — setSurfaceVar mutates a CSS var that
-  // can change layout (thread clearance), which re-triggers the observer that
-  // just wrote it. Without a frame gate the observer fires again inside the
-  // same frame with undelivered notifications (see desktop.log) and the trace
-  // shows ForcedStyleAndLayout UpdateTime 17k events. Coalesce all
-  // measurements in one frame to a single rAF so at most one style invalidation
-  // is scheduled per frame.
-  const rafIdRef = useRef<number | null>(null)
 
-  const doSyncComposerMetrics = useCallback(() => {
+  const measureComposerMetrics = useCallback(() => {
     const composer = composerRef.current
     // The dock is the full docked footprint — strips, status stack, composer —
     // so it, not the composer alone, is what the thread has to clear.
@@ -188,29 +181,12 @@ export function useComposerMetrics({
     }
   }, [composerDockRef, composerRef, composerSurfaceRef, editorRef])
 
-  const syncComposerMetrics = useCallback(() => {
-    if (rafIdRef.current !== null) {
-      return
-    }
-
-    rafIdRef.current = window.requestAnimationFrame(() => {
-      rafIdRef.current = null
-      doSyncComposerMetrics()
-    })
-  }, [doSyncComposerMetrics])
+  // setSurfaceVar changes layout, which re-fires the observer that wrote it; coalesce to one
+  // measurement per frame so at most one style invalidation is scheduled per frame (#99889).
+  const coalescedMeasure = useMemo(() => rafCoalesce<true>(() => measureComposerMetrics()), [measureComposerMetrics])
+  const syncComposerMetrics = useCallback(() => coalescedMeasure.push(true), [coalescedMeasure])
 
   useResizeObserver(syncComposerMetrics, composerDockRef, composerRef, composerSurfaceRef, editorRef)
-
-  // Cancel any pending rAF on unmount so a late frame doesn't write after detach
-  // eslint-disable-next-line no-restricted-syntax -- rAF handle, not an atom mirror (see eslint rule comment)
-  useEffect(() => {
-    return () => {
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current)
-        rafIdRef.current = null
-      }
-    }
-  }, [])
 
   // Toggling pop-out changes whether the composer reserves thread clearance.
   // The ResizeObserver may not fire (the box can keep the same box size), so
@@ -228,6 +204,7 @@ export function useComposerMetrics({
     const root = chatSurfaceRoot(composerRef.current)
 
     return () => {
+      coalescedMeasure.cancel()
       clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
       clearSurfaceVar(root, COMPOSER_SURFACE_HEIGHT_VAR)
       // The bucket refs mirror what is published, so clearing the vars must
@@ -241,7 +218,7 @@ export function useComposerMetrics({
       lastBucketedHeightRef.current = 0
       lastBucketedSurfaceHeightRef.current = 0
     }
-  }, [composerRef])
+  }, [coalescedMeasure, composerRef])
 
   // Every decision comes from the composer's OWN measured width, never the
   // viewport's. There used to be a `(max-width: 30rem)` media query in here as

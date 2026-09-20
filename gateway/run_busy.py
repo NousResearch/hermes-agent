@@ -786,6 +786,73 @@ class GatewayBusySessionMixin:
                 event.source.platform.value if event.source.platform else "unknown", session_key,
             )
             return True  # handled (silently dropped); do not fall through
+        # Platform deduplication is process-local and can be bypassed by reconnects or parallel
+        # adapter instances. Do not admit the event that already owns this active turn as a queued
+        # follow-up. Check both the live TurnContext, which a recursive queued turn rebinds to its own
+        # inbound id, and the opening event, which remains relevant after a busy redirect.
+        _active_state = self._peek_session_state(session_key)
+        _active_turn = getattr(_active_state, "turn", None)
+        _active_message_ids = {
+            str(message_id)
+            for message_id in (
+                getattr(getattr(_active_turn, "event", None), "message_id", None),
+                getattr(getattr(_active_turn, "ctx", None), "inbound_message_id", None),
+            )
+            if message_id
+        }
+        if event.message_id and str(event.message_id) in _active_message_ids:
+            logger.warning(
+                "Dropping replay of active inbound message %s for session %s",
+                event.message_id, session_key,
+            )
+            return True
+        _adapter = self._delivery_adapter_for(event.source)
+        _pending_slot = getattr(_adapter, "_pending_messages", None)
+        _pending_head = (
+            _pending_slot.get(session_key) if isinstance(_pending_slot, dict) else None
+        )
+        _conversation = getattr(_active_state, "conversation", None)
+        _pending_events = [
+            _pending_head,
+            *(getattr(_conversation, "queued_events", None) or ()),
+        ]
+        if event.message_id and any(
+            pending is not None
+            and getattr(pending, "message_id", None)
+            and str(pending.message_id) == str(event.message_id)
+            for pending in _pending_events
+        ):
+            logger.warning(
+                "Dropping replay of pending inbound message %s for session %s",
+                event.message_id, session_key,
+            )
+            return True
+        _session_store = getattr(self, "session_store", None)
+        _peek_session_id = getattr(_session_store, "peek_session_id", None)
+        _has_platform_message_id = getattr(_session_store, "has_platform_message_id", None)
+        if event.message_id and callable(_peek_session_id) and callable(_has_platform_message_id):
+            try:
+                _session_id = await asyncio.to_thread(_peek_session_id, session_key)
+                _persisted = (
+                    isinstance(_session_id, str)
+                    and bool(_session_id)
+                    and await asyncio.to_thread(
+                        _has_platform_message_id, _session_id, str(event.message_id)
+                    )
+                    is True
+                )
+            except Exception:
+                logger.debug(
+                    "Persisted inbound replay lookup failed for session %s",
+                    session_key, exc_info=True,
+                )
+                _persisted = False
+            if _persisted:
+                logger.warning(
+                    "Dropping replay of persisted inbound message %s for session %s",
+                    event.message_id, session_key,
+                )
+                return True
         # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
         if not self._admit_bot_message_for_source(event.source):
             return True
@@ -797,7 +864,7 @@ class GatewayBusySessionMixin:
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
             return True
-        adapter = self._delivery_adapter_for(event.source)
+        adapter = _adapter
         if not adapter:
             return False  # let default path handle it
         # Internal synthetic events (delegation / background completions) must never interrupt or

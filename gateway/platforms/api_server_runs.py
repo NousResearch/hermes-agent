@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import suppress
@@ -63,6 +64,9 @@ _RUN_ARTIFACT_MIME_TYPES = {
     ".webp": "image/webp",
 }
 _RUN_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024
+_RUN_ARTIFACT_CONTENT_TYPES = frozenset(_RUN_ARTIFACT_MIME_TYPES.values())
+#: Server-minted artifact id shape, mirrored byte for byte by the Glass client.
+_RUN_ARTIFACT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 # Per-argument cap for ``tool.started`` args: a whole command survives, a pasted file does not flood the stream.
@@ -750,13 +754,23 @@ def _run_artifact_scope(owner: str) -> SimpleNamespace:
 
 
 def _publish_run_artifacts(self, run: _RunLaunch, output: str) -> tuple[str, list[dict[str, Any]]]:
-    """Register safe image directives and return display text plus path-free receipts."""
-    if not isinstance(output, str) or "MEDIA:" not in output:
-        return output if isinstance(output, str) else "", []
+    """Register safe image directives and return display text plus path-free receipts.
+
+    A ``MEDIA:`` directive names a gateway-local file. ``/v1/runs`` is a remote API, so the
+    path is useless to the caller and is a disclosure of the host filesystem either way: the
+    returned text is stripped of directives *whether or not* publication succeeded (#117405).
+    """
+    if not isinstance(output, str):
+        return "", []
+    if "MEDIA:" not in output:
+        return output, []
     media, cleaned = self.extract_media(output)
+    # ``cleaned`` drops the tags extract_media claimed; the display stripper also removes tags it
+    # declined (missing file, unreadable path) so no variant of the directive survives.
+    safe_output = self.strip_media_directives_for_display(cleaned)
     owner = self._run_owners.get(run.run_id)
     if not owner:
-        return output, []
+        return safe_output, []
     artifacts: list[dict[str, Any]] = []
     for raw_path, _is_voice in media:
         safe_path = validate_media_delivery_path(raw_path, session_key=run.session_id or "")
@@ -773,12 +787,15 @@ def _publish_run_artifacts(self, run: _RunLaunch, output: str) -> tuple[str, lis
                 content_type=content_type,
                 scope=_run_artifact_scope(owner),
             )
-        except (ArtifactError, OSError):
-            logger.warning("[api_server] could not publish run artifact %s", path.name, exc_info=True)
+        except (ArtifactError, OSError) as exc:
+            # Basename and exception class only: an OSError's own text carries the absolute
+            # source path, and run logs are shipped to operators who are not the run's owner.
+            logger.warning(
+                "[api_server] could not publish run artifact %s (%s)", path.name, type(exc).__name__)
             continue
         download_path = f"/v1/runs/{run.run_id}/artifacts/{receipt.artifact_id}"
         artifacts.append(receipt.to_dict(download_path=download_path))
-    return (cleaned if artifacts else output), artifacts
+    return safe_output, artifacts
 
 
 def _served_runtime(agent) -> Dict[str, str]:
@@ -1091,41 +1108,58 @@ async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.
     return err or web.json_response(status)
 
 
+def _run_artifact_ids(status: Any) -> set:
+    """Artifact ids this run published. Defensive: a status record is durable state that may
+    predate the field, or have been written by an older or newer gateway, so anything that is not
+    a list of dicts with a well-formed id contributes nothing."""
+    entries = status.get("artifacts") if isinstance(status, dict) else None
+    if not isinstance(entries, list):
+        return set()
+    return {
+        item["artifact_id"] for item in entries
+        if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
+        and _RUN_ARTIFACT_ID_RE.fullmatch(item["artifact_id"])
+    }
+
+
+def _artifact_not_found(_openai_error) -> "web.Response":
+    """One shape for every miss — unknown id, wrong run, wrong scope, expired, swept — so the
+    response never distinguishes "exists but not yours" from "never existed"."""
+    return _json_error(_openai_error, "Artifact not found", code="artifact_not_found", status=404)
+
+
 async def _handle_run_artifact(self, request: "web.Request", *, _api_server) -> "web.Response":
     """GET a run-owned artifact without disclosing its source filesystem path."""
-    run_id, status, _, _, err = _load_owned_run(
+    _, status, _, _, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="status", active_fallback=True)
     if err is not None:
         return err
     artifact_id = request.match_info["artifact_id"]
-    known = {
-        item.get("artifact_id")
-        for item in status.get("artifacts", [])
-        if isinstance(item, dict)
-    }
-    if artifact_id not in known:
-        return _json_error(
-            _api_server._openai_error,
-            "Artifact not found",
-            code="artifact_not_found",
-            status=404,
-        )
+    # Format-check before the store sees it, and admit only ids *this* run published: a caller
+    # who owns run A must not be able to read run B's artifact even though the scope key matches.
+    if not _RUN_ARTIFACT_ID_RE.fullmatch(artifact_id or "") or artifact_id not in _run_artifact_ids(status):
+        return _artifact_not_found(_api_server._openai_error)
     try:
         data, receipt = self._run_artifact_store.load(
             artifact_id,
             scope=_run_artifact_scope(self._run_idempotency_scope(request)),
         )
     except ArtifactError:
-        return _json_error(
-            _api_server._openai_error,
-            "Artifact not found",
-            code="artifact_not_found",
-            status=404,
-        )
+        # Expired, swept by a gateway restart, or scope-mismatched: all indistinguishable.
+        return _artifact_not_found(_api_server._openai_error)
+    if receipt.content_type not in _RUN_ARTIFACT_CONTENT_TYPES:
+        # The store's allowlist is the gate; this is the belt to its braces, so a store
+        # configured with a wider allowlist can never turn this route into a file server.
+        return _artifact_not_found(_api_server._openai_error)
     return web.Response(
         body=data,
         content_type=receipt.content_type,
-        headers={"Cache-Control": "private, max-age=300"},
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+            # Never ``inline``: the filename is model-chosen and the bytes are model-produced.
+            "Content-Disposition": "attachment",
+        },
     )
 
 
@@ -1319,3 +1353,9 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
         if (status.get("status") in {"completed", "failed", "cancelled"}
                 and now - float(status.get("updated_at", 0) or 0) > self._RUN_STATUS_TTL):
             _forget_run(self, run_id, self._run_statuses, self._run_idempotency_ids)
+    # Run artifacts share the status TTL, but nothing reads an artifact nobody downloads, so
+    # without this sweep their bytes would sit on disk until the next gateway start.
+    store = getattr(self, "_run_artifact_store", None)
+    if store is not None:
+        with suppress(Exception):
+            store.prune_expired(now)

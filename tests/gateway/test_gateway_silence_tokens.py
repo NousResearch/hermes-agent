@@ -119,8 +119,9 @@ async def test_direct_message_gets_a_visible_fallback_for_a_silence_marker(monke
 
 
 @pytest.mark.asyncio
-async def test_group_chat_silence_marker_suppresses_delivery(monkeypatch, tmp_path):
-    runner = _runner(monkeypatch, tmp_path)
+@pytest.mark.parametrize("chat_type", ["group", "channel", "thread", "forum"])
+async def test_shared_chat_silence_marker_suppresses_delivery(monkeypatch, tmp_path, chat_type):
+    runner = _runner(monkeypatch, tmp_path, chat_type=chat_type)
     runner._run_agent = AsyncMock(return_value={
         "final_response": "NO_REPLY",
         "messages": [
@@ -135,7 +136,8 @@ async def test_group_chat_silence_marker_suppresses_delivery(monkeypatch, tmp_pa
     })
 
     response = await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        _event(chat_type=chat_type), _source(chat_type),
+        f"agent:main:telegram:{chat_type}:-1001:12345", 1,
     )
 
     assert response == ""

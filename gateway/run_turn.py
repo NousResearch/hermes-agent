@@ -85,16 +85,20 @@ _UNEXPECTED_SILENCE_REPLY = (
     "⚠️ The model returned only a silence marker for a message that needed a reply. "
     "Try again or rephrase."
 )
+_SHARED_CHAT_TYPES = frozenset({"group", "channel", "thread", "forum"})
 
 
 def _allows_intentional_silence(display_kind: Any, source: Any) -> bool:
-    """Allow machinery and group-chat turns to end without an outbound message.
+    """Allow machinery and shared-chat turns to end without an outbound message.
 
     Direct messages keep the visible fallback so a model cannot silently drop a request that was
-    addressed only to it. In a group chat, silence is a normal response to side conversation and
-    is part of the documented ``NO_REPLY`` contract.
+    addressed only to it. Shared chats honor the documented ``NO_REPLY`` delivery contract; the
+    model decides whether a particular turn warrants silence before returning that exact token.
     """
-    return is_machinery_display_kind(display_kind) or getattr(source, "chat_type", None) == "group"
+    return (
+        is_machinery_display_kind(display_kind)
+        or getattr(source, "chat_type", None) in _SHARED_CHAT_TYPES
+    )
 
 
 def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:

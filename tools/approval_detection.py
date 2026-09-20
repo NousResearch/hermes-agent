@@ -81,7 +81,15 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 # `rm` plus flag group, shared by the rm hardline rules (plain concatenation, not f-string:
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
-_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+# A flag token may contain a COMMAND SUBSTITUTION the shell concatenates into the word
+# (`rm -rf` + empty backtick substitution + " /" runs `rm -rf /`), so substitutions are kept —
+# but only as a COMPLETE span. `_CMDPOS` accepts a backtick as a start position (legacy `cmd`
+# substitution), so with a bare `-[^\s]*` the CLOSING backtick of Markdown inline code in prose
+# was swallowed into the flag word: "see `<rm -rf>` / `<find -delete>`" became the token "-rf`"
+# followed by " / ", forging the `rm -rf /` shape and hardline-blocking pure data. Requiring the
+# backticks inside a flag word to pair up keeps the obfuscated wipe caught while unpaired prose
+# backticks end the token instead of extending it.
+_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-(?:[^`\s]|`[^`]*`)*\s+)*'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 

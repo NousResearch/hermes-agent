@@ -802,3 +802,59 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+# -------------------------------------------------------------------------
+# Markdown inline code in prose: the closing backtick must not extend the rm
+# flag word
+# -------------------------------------------------------------------------
+# `_CMDPOS` accepts a backtick as a start position (legacy `cmd` substitution), so while the
+# rm flag group was a bare `-[^\s]*` the CLOSING backtick of Markdown inline code was swallowed
+# into the flag word: "see `rm -rf` / `find -delete` in the runbook" produced the token "-rf`"
+# followed by " / ", forging the `rm -rf /` shape and hardline-blocking a command that runs
+# nothing. Every inline-code spelling below is pure data.
+#
+# The narrowing must not weaken the floor: a flag WORD may legally carry a command substitution
+# the shell concatenates into the word, so `rm -rf` + an empty substitution + ` /` runs
+# `rm -rf /` while the source text never spells the path out. Those spellings stay hardline.
+
+_INLINE_CODE_PROSE_ALLOW = [
+    "echo 'cleanup: `rm -rf` / `find -delete` blocked'",
+    'echo "see `rm -rf` / `rm -r` in the runbook"',
+    "git commit -m 'docs: `rm -rf` / `rm -r` are blocked by the floor'",
+    "hermes kanban create 'x' --body 'never run `rm -rf` / here'",
+    "python3 - <<'PY'\nprint('`rm -rf` / `find -delete`')\nPY",
+    "echo 'fixed: `rm -r -f` / `rm -rf` bypass'",
+]
+
+
+@pytest.mark.parametrize("command", _INLINE_CODE_PROSE_ALLOW)
+def test_markdown_inline_code_prose_is_not_hardline(command):
+    """The closing backtick of prose inline code must not forge a root-wipe shape."""
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, (
+        f"inline-code prose false-positived the hardline floor: {command!r} "
+        f"(got: {desc})"
+    )
+
+
+# Flag words carrying a shell substitution the shell folds back into the word: the wipe is real
+# even though the source text contains backticks where the path should be. A substitution may
+# itself span lines, so the narrowing must not stop at a newline inside it.
+_FLAG_WORD_SUBSTITUTION_BLOCK = [
+    "rm -rf`` /",
+    "rm -rf`true` /",
+    "rm -rf$(true) /",
+    'rm -rf"``" /',
+    "rm -rf`true``true` /",
+    "sudo rm -fr`` /",
+    "rm -rf`\ntrue` /",
+]
+
+
+@pytest.mark.parametrize("command", _FLAG_WORD_SUBSTITUTION_BLOCK)
+def test_flag_word_substitution_shapes_stay_hardline(command):
+    """An obfuscated spelling of a root/system wipe stays on the unconditional floor."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"obfuscated root wipe leaked past the hardline floor: {command!r}"
+    assert desc

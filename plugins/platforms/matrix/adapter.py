@@ -2306,22 +2306,12 @@ class MatrixAdapter(BasePlatformAdapter):
                     inviter,
                 )
                 continue
-            if is_direct and not inviter:
-                logger.warning(
-                    "Matrix: joining direct invite to %s without recording it "
-                    "in m.direct because the invite state has no inviter",
-                    room_id,
-                )
             logger.info(
                 "Matrix: reconciling pending invite for %s (is_direct=%s)",
                 room_id,
                 is_direct,
             )
-            self._schedule_invite_join(
-                str(room_id),
-                is_direct=is_direct and bool(inviter),
-                inviter=inviter,
-            )
+            self._schedule_invite_join(str(room_id), is_direct=is_direct, inviter=inviter)
 
     def _extract_invite_dm_signal(self, invited_room: Any) -> tuple[bool, str]:
         """Read the is_direct flag and inviter from a room's invite_state.

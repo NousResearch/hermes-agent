@@ -449,6 +449,54 @@ class SessionSearchMixin:
         except sqlite3.OperationalError:
             return False  # table absent / FTS disabled mid-init — not this failure class
 
+    def _fts_projection_incomplete(self, conn) -> bool:
+        """True when a v23 external-content projection is short of its source.
+
+        Complements :meth:`_fts_external_index_empty_with_messages`. Empty
+        detection is EXISTS on the base index only, so a non-empty but
+        historically truncated trigram index (or a base index missing most
+        of ``messages``) is stamped complete and ``optimize-storage``
+        reports nothing to do. Operator paths — optimize availability,
+        settle, bookkeeping repair, recover verification — use this COUNT
+        parity check instead. Do not call from ``_init_schema``.
+
+        Trigram is optional (tokenizer). A missing trigram table is not
+        incomplete; a present trigram table must match
+        ``messages_fts_trigram_src``.
+        """
+        try:
+            n_msg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        except sqlite3.OperationalError:
+            return False
+        if int(n_msg) == 0:
+            return False
+        try:
+            n_base = conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_docsize"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            return False
+        if int(n_base) != int(n_msg):
+            return True
+        tri_present = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'messages_fts_trigram' LIMIT 1"
+        ).fetchone()
+        if tri_present is None:
+            return False
+        try:
+            n_tri = conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_docsize"
+            ).fetchone()[0]
+            n_src = conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_src"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            # Table exists but the docsize shadow or content view does not —
+            # the projection cannot be complete.
+            return True
+        return int(n_tri) != int(n_src)
+
     def _reseed_missing_progress(self, conn) -> None:
         """high_water without progress: fts_rebuild_step reads missing progress as "done by
         another process" and optimize would no-op then stamp. Reset to known-empty, re-seed.
@@ -504,8 +552,10 @@ class SessionSearchMixin:
                 return
             if self._db_has_legacy_inline_fts(conn):
                 return  # demote owns marker creation
-            if self._fts_external_index_empty_with_messages(conn):
+            if (self._fts_external_index_empty_with_messages(conn)
+                    or self._fts_projection_incomplete(conn)):
                 _delete_meta(conn, "fts_storage_version")
+                self._reset_fts_index_to_empty(conn)
                 self._seed_fts_rebuild_markers(conn, force=True)
         self._execute_write(_do)
 
@@ -527,6 +577,7 @@ class SessionSearchMixin:
                 ))
                 or self._has_fts_trash(conn)
                 or self._fts_external_index_empty_with_messages(conn)
+                or self._fts_projection_incomplete(conn)
             )
 
     def _demote_legacy_fts_to_trash(self) -> int:
@@ -616,7 +667,8 @@ class SessionSearchMixin:
             return "backfill_incomplete"
         if self._has_fts_trash(conn):
             return "teardown_incomplete"
-        if self._fts_external_index_empty_with_messages(conn):
+        if (self._fts_external_index_empty_with_messages(conn)
+                    or self._fts_projection_incomplete(conn)):
             return "backfill_incomplete"
         self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=conn)
         _delete_meta(conn, "fts_optimize_available")
@@ -682,7 +734,8 @@ class SessionSearchMixin:
         with self._read_ctx() as conn:
             still_pending = _meta_row(conn, "fts_rebuild_high_water") is not None
             still_trash = self._has_fts_trash(conn)
-            empty_index = self._fts_external_index_empty_with_messages(conn)
+            empty_index = (self._fts_external_index_empty_with_messages(conn)
+                           or self._fts_projection_incomplete(conn))
         if still_pending or still_trash or empty_index:
             reason = "backfill_incomplete" if still_pending or empty_index else "teardown_incomplete"
             logger.warning("FTS storage optimization did not settle (%s): pending=%s trash=%s empty_index=%s",

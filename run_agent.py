@@ -670,15 +670,12 @@ class AIAgent(
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
         if normalized_provider in ("nous", "custom") or is_actual_route(provider):
             return False
-        # The Copilot ACP facade deliberately exposes the OpenAI-compatible
-        # chat.completions shape regardless of model family. It has no
-        # ``responses`` attribute, so GPT-5 fallback routing must not upgrade
-        # it to codex_responses.
-        if normalized_provider in {
-            "copilot-acp",
-            "github-copilot-acp",
-            "copilot-acp-agent",
-        }:
+        # ACP facades expose the OpenAI-compatible chat.completions shape regardless of model
+        # family and have no ``responses`` attribute, so neither primary routing nor GPT-5
+        # fallback activation may upgrade them. Keyed on the profile's auth_type: every
+        # external-process provider, not one vendor's names.
+        from hermes_cli.runtime_provider_backends import _is_external_process_provider
+        if _is_external_process_provider(normalized_provider):
             return False
         if normalized_provider == "copilot":
             try:

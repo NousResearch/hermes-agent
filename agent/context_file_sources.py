@@ -49,11 +49,10 @@ def _empty_status(path: Path) -> str:
         return "unreadable"
 
 
-def _loaded_status(content: str, rendered_len: int, max_chars: int) -> str:
-    """Same scan the builder runs (``_scan_context_content``): a hit replaces a project file with a BLOCKED
-    marker, including SOUL.md."""
+def _loaded_status(content: str, rendered_len: int, max_chars: int, *, user_authored: bool = False) -> str:
+    """Same scan the builder runs: user-authored SOUL.md is flagged but loaded; third-party files block."""
     if _pb._scan_for_threats(content.lstrip("\ufeff"), scope="context"):
-        return "blocked"
+        return "flagged" if user_authored else "blocked"
     return "truncated" if rendered_len > max_chars else "loaded"
 
 
@@ -90,7 +89,8 @@ def list_context_file_sources(
         soul_path = home / "SOUL.md"
         if _pb._exists_or_denied(soul_path):
             content = _pb._read_context_file(soul_path)
-            status = (_loaded_status(content, len(content), max_chars) if content
+            status = (_loaded_status(content, len(content), max_chars,
+                                     user_authored=_pb._soul_is_user_authored(soul_path)) if content
                       else _empty_status(soul_path))
             sources.append(_entry("SOUL.md", soul_path, content, status))
     return sources

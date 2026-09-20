@@ -1636,14 +1636,14 @@ class TestReasoningReplaySchema:
     replaying captured thinking as a bare ``text`` key dies client-side with ParamValidationError (#115865)."""
 
     def test_call_converse_replays_thinking_botocore_accepts(self):
-        import botocore.session
-        from botocore.validate import validate_parameters
+        botocore_session = pytest.importorskip("botocore.session")
+        botocore_validate = pytest.importorskip("botocore.validate")
         from agent.bedrock_adapter import call_converse
-        shape = botocore.session.get_session().get_service_model("bedrock-runtime").operation_model("Converse").input_shape
+        shape = botocore_session.get_session().get_service_model("bedrock-runtime").operation_model("Converse").input_shape
         client = MagicMock()
 
         def converse(**kwargs):
-            validate_parameters(kwargs, shape)  # the real client's client-side validation
+            botocore_validate.validate_parameters(kwargs, shape)  # the real client's client-side validation
             return _ok_converse_response()
         client.converse.side_effect = converse
         with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):

@@ -97,6 +97,20 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
 
+def _soul_is_user_authored(soul_path: Path) -> bool:
+    """Whether SOUL.md belongs to the user rather than a third-party profile distribution."""
+    try:
+        from hermes_cli.profile_distribution import read_manifest
+
+        manifest = read_manifest(soul_path.parent)
+        return manifest is None or bool(
+            manifest.distribution_owned and "SOUL.md" not in manifest.distribution_owned
+        )
+    except Exception as exc:
+        logger.debug("Could not establish SOUL.md ownership at %s: %s", soul_path, exc)
+        return False
+
+
 def _find_git_root(start: Path) -> Optional[Path]:
     """Nearest ancestor (or *start* itself) containing ``.git``, else None."""
     current = start.resolve()
@@ -1536,18 +1550,9 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
             content = strip_legacy_protocol(content).strip()
         if not content:
             return None
-        # A distribution-owned persona is third-party content and remains blocked. A plain profile's
-        # SOUL.md (or a file omitted by an explicit distribution allowlist) is authored by its user.
-        user_authored_soul = False
-        try:
-            from hermes_cli.profile_distribution import read_manifest
-
-            manifest = read_manifest(soul_path.parent)
-            user_authored_soul = manifest is None or bool(
-                manifest.distribution_owned and "SOUL.md" not in manifest.distribution_owned
-            )
-        except Exception as exc:
-            logger.debug("Could not establish SOUL.md ownership at %s: %s", soul_path, exc)
+        # A distribution-owned persona is third-party content and remains blocked; a plain profile's
+        # SOUL.md is user-authored and remains loaded with a warning on scanner hits.
+        user_authored_soul = _soul_is_user_authored(soul_path)
         return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=user_authored_soul),
                                  "SOUL.md", context_length=context_length,
                                  read_path=str(soul_path))

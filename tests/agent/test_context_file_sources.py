@@ -90,12 +90,22 @@ def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypat
     assert entry["status"] == "blocked" and entry["loaded"] is False
     assert "[BLOCKED: AGENTS.md" in build_context_files_prompt(cwd=str(project), home_override=home)
 
-    # SOUL.md receives the same injection blocking as project context; the manifest must match the prompt.
+    # User-authored SOUL.md is warned about but remains loaded; the manifest must reflect that trust boundary.
     (home / "SOUL.md").write_text("evil identity text")
     entries = _by_label(list_context_file_sources(cwd=str(project), home_override=home))
-    assert entries["SOUL.md"]["status"] == "blocked" and entries["SOUL.md"]["loaded"] is False
-    assert entries["AGENTS.md"]["status"] == "blocked"
+    assert entries["SOUL.md"]["status"] == "flagged" and entries["SOUL.md"]["loaded"] is True
+    assert entries["AGENTS.md"]["status"] == "blocked" and entries["AGENTS.md"]["loaded"] is False
     prompt = build_context_files_prompt(cwd=str(project), home_override=home)
-    assert "evil identity text" not in prompt and "[BLOCKED: SOUL.md" in prompt and "[BLOCKED: AGENTS.md" in prompt
-    assert any("SOUL.md" in line and "blocked by the prompt-injection scan" in line
+    assert "evil identity text" in prompt and "[BLOCKED: SOUL.md" not in prompt
+    assert "[BLOCKED: AGENTS.md" in prompt
+    assert any("SOUL.md" in line and "loaded — matched prompt-injection" in line
                for line in render_context_file_lines(list(entries.values())))
+
+    # A distribution-owned persona is untrusted and must be blocked in both the prompt and manifest.
+    from hermes_cli.profile_distribution import DistributionManifest, write_manifest
+
+    write_manifest(home, DistributionManifest(name="third-party-persona"))
+    entries = _by_label(list_context_file_sources(cwd=str(project), home_override=home))
+    assert entries["SOUL.md"]["status"] == "blocked" and entries["SOUL.md"]["loaded"] is False
+    prompt = build_context_files_prompt(cwd=str(project), home_override=home)
+    assert "evil identity text" not in prompt and "[BLOCKED: SOUL.md" in prompt

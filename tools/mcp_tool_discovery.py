@@ -208,7 +208,7 @@ def _note_connect_failure(name: str, exc: BaseException) -> str:
         key = _server_key(name)
         _core._server_connecting.discard(key)
         _core._server_connect_errors[key] = message
-        _record_connect_failure(name, key=key)
+        _record_connect_failure(name)
     return message
 
 

@@ -10,7 +10,8 @@ The gate in ``cron.scheduler.tick`` (before lock acquisition) yields — raises
 
 1. this process is provably stale (boot fingerprint ≠ disk revision),
 2. it does NOT own the gateway runtime lock, and
-3. some other process currently holds that lock.
+3. some other process currently holds that lock, and
+4. that holder's live, fresh status reports the on-disk revision.
 
 Any probe failure or missing fingerprint means "proceed" (fail-open). Yielded
 ticks must surface as failed ticks (``record_ticker_error`` + heartbeat

@@ -20,11 +20,11 @@ def _read_stripped(path: Path) -> str:
 
 
 def _sha_or_none(value: str) -> Optional[str]:
-    return value if len(value) == 40 else None
+    return value if len(value) in {40, 64} else None
 
 
 def _resolve_git_head_sha(project_root: Path) -> Optional[str]:
-    """HEAD sha by reading .git directly (worktrees/submodules, loose refs, packed-refs).
+    """HEAD SHA-1/SHA-256 by reading .git directly (worktrees, loose refs, packed refs).
 
     Deliberately NOT ``git rev-parse``: this runs in library paths (runtime-status writes, update
     receipts) where spawning is slow and hostile to tests that mock ``subprocess.run`` tightly.

@@ -491,6 +491,13 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         ("authorization header missing", "blocker_auth"),
         ("authz denied", "blocker_auth"),
         ("unauthorized: bad credentials", "blocker_auth"),
+        ("still authenticating with the provider", "blocker_auth"),
+        ("provider authenticates every call", "blocker_auth"),
+        ("still authorizing the request", "blocker_auth"),
+        ("provider authorizes every call", "blocker_auth"),
+        ("authorise the app first", "blocker_auth"),
+        ("authorised client rejected", "blocker_auth"),
+        ("authorisation header missing", "blocker_auth"),
     ],
 )
 def test_respawn_guard_blocker_auth_curated_not_open_stem(

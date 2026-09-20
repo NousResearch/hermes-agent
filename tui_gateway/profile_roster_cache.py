@@ -69,7 +69,9 @@ def store_signature(profile_path: "str | Path") -> Optional[tuple]:
     """
     base = Path(profile_path)
     parts = [p for p in (_file_parts(base / name) for name in _STORE_FILES) if p is not None]
-    return tuple(parts) or None
+    # Our own read-only open creates an EMPTY -wal sidecar on a store that never had one; it
+    # carries no frames, so it must not read as "the store moved" on the very next poll.
+    return tuple(p for p in parts if not (p[0].endswith("-wal") and p[2] == 0)) or None
 
 
 def profile_yaml_signature(profile_dir: "str | Path") -> Optional[tuple]:

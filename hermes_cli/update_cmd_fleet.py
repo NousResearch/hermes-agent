@@ -620,7 +620,10 @@ def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     fleet = _live_fleet_current_rows()
     if fleet is not None:
         from hermes_cli.update_receipt import settle_latest_receipt_fleet
-        if settle_latest_receipt_fleet(fleet) and not _pending_fleet_restart_needed():
+        settled = settle_latest_receipt_fleet(
+            fleet, discharges=lambda receipt: not _pending_fleet_restart_needed(receipt=receipt)
+        )
+        if settled:
             print(f"  ✓ Update receipt settled: {len(fleet)} gateway(s) serve the checkout code.")
             return
     print("  ⚠ Fleet restart ran, but gateways are still off the checkout code. Recover with: hermes gateway restart")

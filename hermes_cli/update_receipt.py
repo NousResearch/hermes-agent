@@ -246,7 +246,7 @@ def _prune_old_receipts(directory: Path) -> None:
                 stale.unlink()
 
 
-def settle_latest_receipt_fleet(fleet: list[dict[str, Any]]) -> bool:
+def settle_latest_receipt_fleet(fleet: list[dict[str, Any]], *, discharges) -> bool:
     """Record on ``latest.json`` that the fleet it still reports as owed now serves the checkout.
 
     A failed receipt whose plan rows cannot be matched to a live gateway (unknown identity,
@@ -254,7 +254,9 @@ def settle_latest_receipt_fleet(fleet: list[dict[str, Any]]) -> bool:
     modules, long after the operator's ``hermes gateway restart`` fixed the fleet (#117051). The
     caller has just verified every live row is current at the checkout SHA; persisting that
     matrix as the receipt's post-restart ``fleet`` (and un-flagging ``gateway_restart``) is what
-    lets the stale-runtime readers see the recovery. Only the ``latest.json`` pointer is
+    lets the stale-runtime readers see the recovery. ``discharges(settled_receipt)`` decides on
+    the in-memory copy; ``latest.json`` is rewritten only when it answers True, so a catch-up
+    that still exits 1 leaves the receipt byte-identical. Only the ``latest.json`` pointer is
     rewritten; the archived per-run file keeps the original outcome. Never raises.
     """
     try:
@@ -269,6 +271,8 @@ def settle_latest_receipt_fleet(fleet: list[dict[str, Any]]) -> bool:
         gateway_restart.update({"incomplete": False, "phase_error": ""})
         gateway_restart["settled_from_live_fleet_at"] = _utc_now_iso()
         receipt["gateway_restart"] = gateway_restart
+        if not discharges(receipt):
+            return False
         path.write_text(json.dumps(receipt, indent=2, default=str), encoding="utf-8")
         return True
     except Exception as exc:

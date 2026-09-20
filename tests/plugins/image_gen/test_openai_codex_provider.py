@@ -50,9 +50,8 @@ def _heic_bytes() -> bytes:
     import pillow_heif
     from PIL import Image
 
-    pillow_heif.register_heif_opener()
     out = BytesIO()
-    Image.new("RGB", (8, 8), (120, 60, 200)).save(out, format="HEIF")
+    pillow_heif.from_pillow(Image.new("RGB", (8, 8), (120, 60, 200))).save(out)
     return out.getvalue()
 
 

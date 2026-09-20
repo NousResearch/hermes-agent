@@ -385,9 +385,17 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   })
 }
 
-export function searchSessions(query: string): Promise<SessionSearchResponse> {
+export function searchSessions(query: string, profile?: ProfileScope): Promise<SessionSearchResponse> {
+  const scoped = sessionScoped(profile)
+  const params = new URLSearchParams({ q: query })
+
+  if (scoped.profile) {
+    params.set('profile', scoped.profile)
+  }
+
   return hermesApi<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    ...scoped,
+    path: `/api/sessions/search?${params.toString()}`
   })
 }
 

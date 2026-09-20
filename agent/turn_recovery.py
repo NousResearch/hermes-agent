@@ -328,15 +328,34 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     )
 
 
+def _is_xai_bad_credentials_403(provider: str, status_code: Any, api_error: Any) -> bool:
+    """xAI reports an expired or invalid OAuth access token as HTTP 403 with
+    body code ``unauthenticated:bad-credentials`` rather than 401, so the
+    401-only refresh trigger never fires and a long-lived worker keeps its
+    dead in-memory token (#82052). Scoped to xai-oauth: other providers'
+    403s remain non-retryable authorization failures.
+    """
+    if provider != "xai-oauth" or status_code != 403:
+        return False
+    text = str(api_error).lower()
+    return (
+        "bad-credentials" in text
+        or "oauth2 access token could not be validated" in text
+    )
+
+
 def _refresh_credentials_after_401(
     agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int]
 ) -> bool:
     """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, copilot,
-    anthropic), printing user-facing diagnostics when the nous/anthropic refresh fails.
+    anthropic) and on the xai-oauth 403 ``unauthenticated:bad-credentials`` spelling of an
+    expired token, printing user-facing diagnostics when the nous/anthropic refresh fails.
     Returns True when a refresh succeeded and the call should be retried."""
     from agent.conversation_loop import _is_copilot_provider
 
-    if status_code != 401:
+    if status_code != 401 and not _is_xai_bad_credentials_403(
+        agent.provider, status_code, api_error
+    ):
         return False
     if (
         agent.api_mode == "codex_responses"
@@ -346,7 +365,7 @@ def _refresh_credentials_after_401(
         _retry.codex_auth_retry_attempted = True
         if agent._try_refresh_codex_client_credentials(force=True):
             _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-            agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
+            agent._buffer_vprint(f"🔐 {_label} auth refreshed after {status_code}. Retrying request...")
             return True
     if agent.api_mode == "chat_completions" and agent.provider == "vertex" and not _retry.vertex_auth_retry_attempted:
         _retry.vertex_auth_retry_attempted = True
@@ -738,6 +757,7 @@ def _stamp_limit_reset(result: Dict[str, Any], agent: Any, api_error: Exception)
 
 def _print_nonretryable_auth_guidance(
     agent: Any, classified: Any, *, status_code: Optional[int], provider: Any, base_url: Any, model: Any,
+    api_error: Any = None,
 ) -> None:
     """Actionable guidance for a terminal auth / billing error."""
     from agent.conversation_loop import _print_billing_or_entitlement_guidance, _print_nous_entitlement_guidance
@@ -749,7 +769,10 @@ def _print_nonretryable_auth_guidance(
         return
     if provider == "nous" and _print_nous_entitlement_guidance(agent, "Nous model access"):
         return
-    if provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
+    if provider in {"openai-codex", "xai-oauth", "nous"} and (
+        status_code == 401
+        or _is_xai_bad_credentials_403(provider, status_code, api_error)
+    ):
         if provider == "openai-codex":
             from agent.turn_failure_copy import oauth_relogin_command
 
@@ -762,7 +785,7 @@ def _print_nonretryable_auth_guidance(
         elif provider == "xai-oauth":
             _vlines(
                 agent,
-                "   💡 xAI OAuth token was rejected (HTTP 401). To fix:",
+                f"   💡 xAI OAuth token was rejected (HTTP {status_code}). To fix:",
                 "      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.",
             )
         else:  # nous
@@ -913,7 +936,8 @@ def nonretryable_client_error_result(
         _vlines(agent, f"   💡 {_welcome_hint}")
     elif classified.is_auth or classified.reason == FailoverReason.billing:
         _print_nonretryable_auth_guidance(
-            agent, classified, status_code=status_code, provider=provider, base_url=base_url, model=model
+            agent, classified, status_code=status_code, provider=provider, base_url=base_url, model=model,
+            api_error=api_error,
         )
     elif classified.reason == FailoverReason.model_not_found:
         _vlines(agent, f"   💡 Model '{model}' isn't available on {_plabel}. Pick another with /model.")

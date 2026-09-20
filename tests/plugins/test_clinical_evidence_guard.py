@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,8 +29,13 @@ def _load_plugin():
 
 
 @pytest.fixture
-def plugin():
+def plugin(monkeypatch):
     module = _load_plugin()
+    # `_is_clinical` fires a background `jev classify` shadow call (see _jev_shadow_classify) on every
+    # invocation. It's a no-op for the guard's real behavior, but every existing test in this file calls
+    # `_is_clinical`/`_is_clinical_regex` directly and must not spawn a thread that shells out to `jev`
+    # during the run; tests that want to exercise the shadow path patch it back in explicitly.
+    monkeypatch.setattr(module, "_jev_shadow_classify", lambda *a, **k: None)
     yield module
     module._reset_for_tests()
 
@@ -514,3 +520,91 @@ def test_pre_delivery_does_not_duplicate_existing_disclosure(plugin):
     assert decision["action"] in {"allow", "replace"}
     delivered = decision.get("response_text", candidate)
     assert delivered.count(plugin._EVIDENCE_DISCLOSURE) == 1
+
+
+class _ImmediateThread:
+    """Stand-in for threading.Thread that runs `target` synchronously on .start(), so shadow-mode
+    tests can assert on the log file without racing a real background thread."""
+
+    def __init__(self, target=None, daemon=None, name=None):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+def test_is_clinical_never_changes_behavior_regardless_of_jev_shadow_result(monkeypatch, tmp_path):
+    """Shadow mode: whatever `jev classify` says, `_is_clinical`'s return value is untouched. Loads its
+    own module instance (bypassing the `plugin` fixture's no-op patch) so the real shadow call runs."""
+    plugin = _load_plugin()
+    monkeypatch.setattr(plugin, "_JEV_SHADOW_LOG", tmp_path / "shadow.jsonl")
+    monkeypatch.setattr(plugin.threading, "Thread", _ImmediateThread)
+
+    clinical_message = "¿Qué antibiótico usar tras una rinoplastia con signos de infección?"
+    nonclinical_message = "Actualiza el README con el nuevo comando de build."
+
+    for message, disagreeing_label in ((clinical_message, "no_clinico"), (nonclinical_message, "clinico")):
+        regex_verdict = plugin._is_clinical_regex(message)
+        fake_proc = SimpleNamespace(
+            returncode=0, stdout=json.dumps({"label": disagreeing_label, "confidence": 0.9}), stderr="",
+        )
+        monkeypatch.setattr(plugin.subprocess, "run", lambda *a, **k: fake_proc)
+        assert plugin._is_clinical(message) == regex_verdict
+
+
+def test_jev_shadow_classify_logs_verdicts_without_message_content(monkeypatch, tmp_path):
+    plugin = _load_plugin()
+    log_path = tmp_path / "shadow.jsonl"
+    monkeypatch.setattr(plugin, "_JEV_SHADOW_LOG", log_path)
+    monkeypatch.setattr(plugin.threading, "Thread", _ImmediateThread)
+    fake_proc = SimpleNamespace(
+        returncode=0, stdout=json.dumps({"label": "clinico", "confidence": 0.85, "action": "auto"}), stderr="",
+    )
+    monkeypatch.setattr(plugin.subprocess, "run", lambda *a, **k: fake_proc)
+
+    secret_message = "el paciente tiene una infección postoperatoria tras la mamoplastia"
+    plugin._jev_shadow_classify(secret_message, regex_verdict=True)
+
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["regex_verdict"] is True
+    assert record["jev_verdict"] is True
+    assert record["agree"] is True
+    assert record["message_chars"] == len(secret_message)
+    assert secret_message not in log_path.read_text(encoding="utf-8")
+
+
+def test_jev_shadow_classify_swallows_subprocess_failure(monkeypatch, tmp_path):
+    plugin = _load_plugin()
+    log_path = tmp_path / "shadow.jsonl"
+    monkeypatch.setattr(plugin, "_JEV_SHADOW_LOG", log_path)
+    monkeypatch.setattr(plugin.threading, "Thread", _ImmediateThread)
+
+    def _boom(*a, **k):
+        raise FileNotFoundError("jev")
+
+    monkeypatch.setattr(plugin.subprocess, "run", _boom)
+
+    plugin._jev_shadow_classify("cualquier mensaje", regex_verdict=False)
+
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert record["jev_call_failed"] is True
+    assert record["regex_verdict"] is False
+
+
+def test_jev_shadow_classify_records_disagreement(monkeypatch, tmp_path):
+    plugin = _load_plugin()
+    log_path = tmp_path / "shadow.jsonl"
+    monkeypatch.setattr(plugin, "_JEV_SHADOW_LOG", log_path)
+    monkeypatch.setattr(plugin.threading, "Thread", _ImmediateThread)
+    fake_proc = SimpleNamespace(
+        returncode=0, stdout=json.dumps({"label": "no_clinico", "confidence": 0.7, "action": "auto"}), stderr="",
+    )
+    monkeypatch.setattr(plugin.subprocess, "run", lambda *a, **k: fake_proc)
+
+    plugin._jev_shadow_classify("mensaje cualquiera", regex_verdict=True)
+
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert record["jev_verdict"] is False
+    assert record["agree"] is False

@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import threading
 import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -24,6 +26,16 @@ from typing import Any
 _MAX_EVIDENCE_CHARS = 500_000
 _MAX_STATES = 256
 _STATE_TTL_SECONDS = 15 * 60
+
+# Shadow-mode comparison log: `jev classify` (TypeSafe CLI) scores the same message in parallel with the
+# regex cascade below, purely for later diffing. Same pattern as cron/scripts/classify_items.py's
+# _jev_shadow_classify. See _jev_shadow_classify below for the no-content-persisted guarantee.
+_JEV_SHADOW_LOG = Path(__file__).resolve().parents[2] / "cron" / "logs" / "jev-shadow-classify-clinical.jsonl"
+_JEV_CLINICAL_LABELS = (
+    "clinico:medical or clinical content that would need evidence certification,"
+    "no_clinico:not medical or clinical content"
+)
+_JEV_SHADOW_TIMEOUT_SECONDS = 8.0
 
 _CLINICAL_RE = re.compile(
     r"(?:"
@@ -337,7 +349,65 @@ def _prune_states(now: float) -> None:
         _STATES.pop(key, None)
 
 
+def _append_jev_shadow_log(record: dict) -> None:
+    """Append one JSON line to the shadow log. Never raises: a log-write failure must not affect the
+    caller, which is itself already inside a best-effort shadow path."""
+    try:
+        _JEV_SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_JEV_SHADOW_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _jev_shadow_classify(message: str, regex_verdict: bool) -> None:
+    """Best-effort: classify the same message with `jev classify` (TypeSafe CLI) in parallel with the
+    regex cascade in `_is_clinical`, and log both verdicts side by side for later comparison.
+
+    Shadow mode ONLY: this NEVER influences `_is_clinical`'s return value or the guard's real
+    behavior, which stays 100% dependent on the regex cascade. Runs on a background thread so it adds
+    no latency to the guard's hot path. Per this module's no-persistence contract (see module
+    docstring), the logged record never contains the message/prompt/clinical content itself — only
+    the two verdicts, jev's confidence, and a character count. Any failure (no `jev` on PATH, no
+    credentials, timeout, malformed output) is logged and swallowed, never raised.
+    """
+    def _run() -> None:
+        record: dict = {
+            "timestamp": time.time(), "regex_verdict": regex_verdict, "message_chars": len(message or ""),
+        }
+        try:
+            proc = subprocess.run(
+                [
+                    "jev", "classify", "--labels", _JEV_CLINICAL_LABELS, "--json",
+                    "--timeout", str(int(_JEV_SHADOW_TIMEOUT_SECONDS * 1000)),
+                ],
+                input=message, capture_output=True, text=True, timeout=_JEV_SHADOW_TIMEOUT_SECONDS + 2,
+            )
+            if proc.returncode != 0:
+                record["jev_call_failed"] = True
+                record["error"] = (proc.stderr or "").strip()[:200]
+            else:
+                data = json.loads(proc.stdout)
+                jev_verdict = data.get("label") == "clinico"
+                record["jev_verdict"] = jev_verdict
+                record["jev_confidence"] = data.get("confidence")
+                record["jev_action"] = data.get("action")
+                record["agree"] = jev_verdict == regex_verdict
+        except Exception as e:
+            record["jev_call_failed"] = True
+            record["error"] = str(e)[:200]
+        _append_jev_shadow_log(record)
+
+    threading.Thread(target=_run, daemon=True, name="jev-shadow-classify-clinical").start()
+
+
 def _is_clinical(message: str) -> bool:
+    verdict = _is_clinical_regex(message)
+    _jev_shadow_classify(message, verdict)
+    return verdict
+
+
+def _is_clinical_regex(message: str) -> bool:
     candidate = _NONCLINICAL_LABEL_RE.sub(" ", message or "")
     if _META_SKILL_LIBRARY_TASK_RE.search(candidate):
         return False

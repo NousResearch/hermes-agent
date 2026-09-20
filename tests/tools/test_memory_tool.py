@@ -889,6 +889,45 @@ class TestBackgroundReviewDeleteGate:
         assert result["success"] is True
         assert "a fact worth keeping" in store._entries_for("memory")
 
+    def test_add_to_user_profile_staged_not_applied(self, store, tmp_path, monkeypatch):
+        # #116788: a background pass proposed persisting a fact the user had explicitly asked
+        # not to keep. USER.md adds must not apply unattended, unlike routine MEMORY.md adds.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="add", target="user", content="sensitive fact the user withheld consent for",
+                store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert result["staged"] is True
+        assert result["proposal_staged"] is True
+        assert result["pending_id"]
+        # Fail-closed: nothing was written to the user profile.
+        assert "sensitive fact the user withheld consent for" not in store._entries_for("user")
+        from tools.write_approval import MEMORY, get_pending
+        record = get_pending(MEMORY, result["pending_id"])
+        assert record["payload"]["action"] == "add"
+        assert record["payload"]["target"] == "user"
+        assert record["origin"] == "background_review"
+
+    def test_batch_add_to_user_profile_staged(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                target="user", operations=[{"action": "add", "content": "withheld fact"}], store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True
+        assert "withheld fact" not in store._entries_for("user")
+
+    def test_foreground_add_to_user_profile_unaffected(self, store):
+        result = json.loads(memory_tool(action="add", target="user", content="ordinary user fact", store=store))
+        assert result["success"] is True
+        assert "ordinary user fact" in store._entries_for("user")
+
     def test_foreground_remove_unaffected(self, store):
         store.add("memory", "entry a supervised turn may remove")
         result = json.loads(memory_tool(action="remove", old_text="supervised turn", store=store))

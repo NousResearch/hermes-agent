@@ -6,7 +6,6 @@ import logging
 from contextlib import suppress
 import hashlib
 import json
-import contextlib
 import os
 import shutil
 import subprocess
@@ -551,7 +550,7 @@ def _npm_stamp_matches(hermes_root: Path, current: str, scope: str = "") -> bool
 def _clear_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
     """Drop the stamp before an install attempt: it is written on success only, so a stale one must not
     outlive a failed reinstall (or the next update would skip the repair)."""
-    with contextlib.suppress(OSError):
+    with suppress(OSError):
         _npm_lock_cache_file(hermes_root, scope).unlink()
 
 
@@ -685,6 +684,7 @@ def _update_node_dependencies() -> list[str]:
     # capturing makes a long download look hung.
     # The chatty npm-deprecation noise during `hermes update` comes from the *desktop* build, not this step;
     # that one is captured to update.log. See #18840.
+    _clear_npm_lockfile_hash(shared_hermes_root)
     result = _m()._run_npm_install_deterministic(
         npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
     if result.returncode == 0:

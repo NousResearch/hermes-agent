@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from tools.mcp_tool_common import _core, _parse_boolish, _sanitize_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -386,14 +386,20 @@ def _log_summary(prefix: str, names, **lazy) -> None:
 
 def _log_failing_servers(names) -> None:
     """One WARNING per failing server with its name and reason (#114746): the aggregate count
-    alone leaves the identity diagnosable only by elimination from the registered lines."""
+    alone leaves the identity diagnosable only by elimination from the registered lines.
+    Reasons are credential-scrubbed before they reach the log (defence in depth for any
+    future writer that records a raw exception string), and the WARNINGs are emitted
+    outside ``_core._lock`` so no log I/O happens under it."""
+    failures: List[Tuple[str, str]] = []
     with _core._lock:
         for name in names:
             reason = _core._server_connect_errors.get(_server_key(name))
-            if reason:
-                logger.warning("MCP server '%s' failed to register: %s", name, reason)
-            else:
-                logger.warning("MCP server '%s' failed to register: no connection error recorded", name)
+            failures.append(
+                (name, _sanitize_error(str(reason)) if reason
+                 else "no connection error recorded")
+            )
+    for name, reason in failures:
+        logger.warning("MCP server '%s' failed to register: %s", name, reason)
 
 
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:

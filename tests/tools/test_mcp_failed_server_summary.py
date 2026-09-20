@@ -90,3 +90,20 @@ def test_all_connected_summary_stays_warning_free(caplog):
         "MCP: registered 2 tool(s) from 1 server(s)"
     ]
     assert _warnings(caplog) == []
+
+
+def test_recorded_reason_is_credential_scrubbed_before_logging(caplog):
+    """Defence in depth for any future writer that records a raw exception string: whatever
+    sits in the connect-error map is scrubbed on its way to the log."""
+    from tools import mcp_tool
+
+    with mcp_tool._lock:
+        mcp_tool._server_connect_errors[_server_key("bad")] = (
+            "auth failed: Bearer sk-supersecret123"
+        )
+    with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+        _log_summary("MCP: registered", ["bad"])
+
+    assert _warnings(caplog) == [
+        "MCP server 'bad' failed to register: auth failed: [REDACTED]"
+    ]

@@ -653,9 +653,15 @@ def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
 
 
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
-    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree (Windows
-    only — its lock makes the pack die with ``Access is denied``; POSIX can unlink a running
-    binary). Never raises; returns the PIDs asked to stop."""
+    """Terminate a running desktop app whose exe OR working directory lives INSIDE this build's
+    ``release`` tree (Windows only — its lock makes the pack die with ``Access is denied``; POSIX
+    can unlink a running binary). Never raises; returns the PIDs asked to stop.
+
+    The working-directory half matters because on Windows a process holding cwd inside a
+    directory blocks renaming that directory (WinError 32) even when its exe is elsewhere —
+    e.g. SogouCloud.exe inherited the packaged app's cwd and silently kept four rebuilds from
+    promoting (#WinError 32 on ``win-unpacked -> win-unpacked.previous`` with zero Hermes.exe
+    processes alive)."""
     if sys.platform != "win32":
         return []
     try:
@@ -669,7 +675,7 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     me = os.getpid()
     victims = []
     try:
-        proc_iter = psutil.process_iter(["pid", "exe"])
+        proc_iter = psutil.process_iter(["pid", "exe", "cwd"])
     except Exception:
         return []
     for proc in proc_iter:
@@ -679,11 +685,17 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
             exe = info.get("exe")
             if not exe or pid is None or pid == me:
                 continue
-            exe_path = Path(exe).resolve()
+            if release_dir in Path(exe).resolve().parents:
+                victims.append(proc)
+                continue
+            # cwd lock: exe elsewhere, but the process's working directory sits inside the
+            # tree it must not rename. cwd can be revoked mid-scan on a dying process — a
+            # miss here is harmless (the rename retry reports it loudly).
+            cwd = info.get("cwd")
+            if cwd and release_dir in Path(cwd).resolve().parents:
+                victims.append(proc)
         except Exception:
             continue
-        if release_dir in exe_path.parents:
-            victims.append(proc)
 
     stopped: list[int] = []
     for proc in victims:

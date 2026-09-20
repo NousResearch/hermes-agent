@@ -196,13 +196,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     onRequest: callback => {
       const channel = 'hermes:screenshot:request'
       const listener = (_event, requestId) => callback(requestId)
+
       if (ipcRenderer.listenerCount(channel) === 0) {
         ipcRenderer.send('hermes:screenshot:subscribe', true)
       }
+
       ipcRenderer.on(channel, listener)
 
       return () => {
         ipcRenderer.removeListener(channel, listener)
+
         if (ipcRenderer.listenerCount(channel) === 0) {
           ipcRenderer.send('hermes:screenshot:subscribe', false)
         }

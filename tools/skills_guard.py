@@ -156,8 +156,13 @@ THREAT_PATTERNS = [
      "js_read_secrets_file", "critical", "exfiltration", "JavaScript reads a known credential file"),
     # Python twin of js_read_secrets_file: `open(...)` on a literal credential path, or the
     # `Path(...).read_text(...)` chain — the two shapes that read a known secrets file's
-    # content in Python without going through the shell `cat` pattern above.
+    # content in Python without going through the shell `cat` pattern above. `open()`, unlike
+    # readFile/read_text, is also how a plugin WRITES its own .env/credentials/.npmrc during
+    # setup, so (mirroring the shell `cat`'s `(?!>)`) exclude a write/append/exclusive mode —
+    # a literal 2nd-arg string containing w/a/x, or a `mode=` kwarg with the same — from the
+    # `open(...)` branch; `Path(...).read_text()` has no mode argument, so needs no exclusion.
     (r'\bopen\s*\(\s*["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']'
+     r'(?!\s*,\s*["\'][^"\']*[wax][^"\']*["\'])(?![^\n]*\bmode\s*=\s*["\'][^"\']*[wax])'
      r'|\bPath\s*\(\s*["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']\s*\)\.read_text\s*\(',
      "py_read_secrets_file", "critical", "exfiltration", "Python reads a known credential file"),
     # ── Exfiltration: programmatic env access ──

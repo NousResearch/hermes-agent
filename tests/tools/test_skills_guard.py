@@ -589,6 +589,23 @@ class TestFalsePositiveReductions:
         benign.write_text('def _load():\n    return open("config.yaml").read()\n', encoding="utf-8")
         assert not any(fi.pattern_id == "py_read_secrets_file" for fi in scan_file(benign, "read_config.py"))
 
+    def test_python_open_write_of_credential_file_is_not_a_secrets_read(self, tmp_path):
+        # #116950 follow-up: a setup script that WRITES its own .env/credentials/.npmrc
+        # (the same action the `cat >` heredoc exemption above protects for shell) must not
+        # trip py_read_secrets_file — only a READ of a known credential file is exfiltration.
+        for name, content in {
+            "write_mode.py": 'def _setup():\n    with open(".env", "w") as fh:\n        fh.write("KEY=1")\n',
+            "append_mode.py": 'open(".npmrc", "a").write("registry=x")\n',
+            "write_binary.py": 'open("credentials.json", "wb")\n',
+            "exclusive_mode.py": 'open(".env", "x")\n',
+            "mode_kwarg_write.py": 'open(".env", mode="w")\n',
+        }.items():
+            f = tmp_path / name
+            f.write_text(content, encoding="utf-8")
+            assert not any(
+                fi.pattern_id == "py_read_secrets_file" for fi in scan_file(f, name)
+            ), name
+
     def test_allowed_tools_frontmatter_is_low_severity_only(self, tmp_path):
         # Required SKILL.md frontmatter per the agent-skill spec.
         skill_dir = tmp_path / "ok-skill"

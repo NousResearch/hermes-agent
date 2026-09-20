@@ -308,6 +308,18 @@ def _process_start_time(pid: int) -> Optional[float]:
         return None
 
 
+_OWN_START_TIME: dict[int, Optional[float]] = {}
+
+
+def _own_start_time() -> Optional[float]:
+    """This process's create_time, read from psutil once per pid (survives fork)."""
+    pid = os.getpid()
+    if pid not in _OWN_START_TIME:
+        _OWN_START_TIME.clear()
+        _OWN_START_TIME[pid] = _process_start_time(pid)
+    return _OWN_START_TIME[pid]
+
+
 def _optional_float(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
@@ -328,18 +340,21 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
     if pid_int <= 0:
         return unknown_dead
     if pid_int == os.getpid():
-        return True
-    try:
-        from gateway.status import _pid_exists
-        exists = bool(_pid_exists(pid_int))
-    except Exception:
-        return unknown_dead
+        # Our own pid trivially exists; only the start-time identity check remains
+        # (a lease claiming our pid with a start we never had is a recycled pid).
+        exists = True
+    else:
+        try:
+            from gateway.status import _pid_exists
+            exists = bool(_pid_exists(pid_int))
+        except Exception:
+            return unknown_dead
     if not exists:
         return False
     expected_start = _optional_float(process_start_time)
     if expected_start is None:
         return True
-    current_start = _process_start_time(pid_int)
+    current_start = _own_start_time() if pid_int == os.getpid() else _process_start_time(pid_int)
     if current_start is None:
         return True if lenient else None
     return abs(current_start - expected_start) < 0.001

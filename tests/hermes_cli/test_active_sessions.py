@@ -738,4 +738,6 @@ def test_pid_liveness_self_pid_skips_exists_probe(monkeypatch):
 
     monkeypatch.setattr("gateway.status._pid_exists", _count_exists)
     assert active_sessions._pid_liveness(os.getpid()) is True
+    # Identity is still (pid, start time): our pid with a start we never had is a recycled pid.
+    assert active_sessions._pid_liveness(os.getpid(), 1.0) is False
     assert exists_calls == []

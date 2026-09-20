@@ -112,11 +112,20 @@ systemctl --user daemon-reload
 systemctl --user enable --now hermes-dashboard.service
 ```
 
+For the unit to start after reboot without an active login session, enable user
+lingering once:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
 The template binds to `127.0.0.1` and assumes the `hermes` launcher is at
 `~/.local/bin/hermes`; adjust `ExecStart` for another installation layout.
-It orders the dashboard after `hermes-gateway.service`, but does not start a
-gateway service that is not installed. Run `systemctl --user enable
-hermes-gateway.service` separately when needed.
+It orders the dashboard after `hermes-gateway.service`. If that unit is
+installed, the `Wants=` relationship starts it when the dashboard starts; if it
+is not installed, the dashboard still starts normally. Run `systemctl --user
+enable hermes-gateway.service` separately when you want the gateway enabled at
+login.
 
 For access from another machine, use a VPN or SSH tunnel where possible. If
 you change the bind address to `0.0.0.0`, configure a dashboard authentication

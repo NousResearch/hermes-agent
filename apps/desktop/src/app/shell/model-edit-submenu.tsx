@@ -13,6 +13,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { reasoningEffortClamp, resolveModelReasoningEffort } from '@/lib/reasoning-effort'
+
 import { ReasoningBudgetInput } from './reasoning-budget-input'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
@@ -63,14 +64,14 @@ export function resolveFastControl(
 
 interface ModelEditSubmenuProps {
   disabled?: boolean
-  reasoningControl?: 'adjustable' | 'default' | 'unsupported' | 'unknown'
+  reasoningControl?: 'adjustable' | 'default' | 'unsupported' | 'unknown' | null
   /** Whether this model can turn thinking off. False on reasoning-mandatory
    *  routes, whose upstream rejects a disable — the toggle stays visible but
    *  disabled so the fixed state is explicit. */
   canDisableReasoning?: boolean
-  reasoningEfforts?: string[]
-  reasoningBudget?: { min: number; max: number; dynamic?: boolean }
-  modelDefaultEffort?: string
+  reasoningEfforts?: string[] | null
+  reasoningBudget?: { min: number; max: number; dynamic?: boolean } | null
+  modelDefaultEffort?: string | null
   /** The profile's configured default effort — what an unset row inherits.
    *  Passed in (not read from a store) so this submenu stays pure. */
   defaultEffort: string
@@ -142,12 +143,12 @@ export function ModelOptionsContent({
   const resolved = resolveModelReasoningEffort(effort, defaultEffort, capabilities)
   const effortValue = resolved === 'auto' || (resolved === 'none' && !reasoningBudget) ? '' : resolved
   const clamp = reasoningEffortClamp(effortValue, effortWire)
-  const thinkingOn = reasoningControl === 'unsupported' ? false : resolved !== 'none'
+  const thinkingOn = reasoning && reasoningControl !== 'unsupported' && resolved !== 'none'
   const levels = reasoning ? (reasoningEfforts ?? REASONING_EFFORTS).filter(isReasoningEffort) : []
   const declaredReasoning = reasoningControl != null || reasoningEfforts != null || reasoningBudget != null
 
   const canToggleThinking =
-    reasoning && canDisableReasoning !== false && (reasoningEfforts === undefined || reasoningEfforts.includes('none'))
+    reasoning && canDisableReasoning !== false && (reasoningEfforts == null || reasoningEfforts.includes('none'))
 
   const showThinkingToggle = reasoningControl === 'unknown' ? false : canToggleThinking || Boolean(reasoningControl)
 
@@ -163,7 +164,7 @@ export function ModelOptionsContent({
       ? effortValue ||
         resolveModelReasoningEffort('', defaultEffort === 'none' ? '' : defaultEffort, {
           ...capabilities,
-          reasoning_efforts: reasoningEfforts?.filter(value => value !== 'none')
+          reasoning_efforts: undefined
         })
       : (modelDefaultEffort ?? 'auto')
 

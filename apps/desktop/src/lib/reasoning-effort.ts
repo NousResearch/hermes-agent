@@ -1,4 +1,9 @@
-import { DEFAULT_REASONING_EFFORT, isReasoningEffort, type ModelCapabilities, type ReasoningEffort } from '@hermes/shared'
+import {
+  DEFAULT_REASONING_EFFORT,
+  isReasoningEffort,
+  type ModelCapabilities,
+  type ReasoningEffort
+} from '@hermes/shared'
 
 import { normalize } from '@/lib/text'
 
@@ -15,38 +20,6 @@ const SHORT_LABELS: Record<string, string> = {
   xhigh: 'XHigh',
   max: 'Max',
   ultra: 'Ultra'
-}
-
-/** Resolve a row's displayed value without inventing a level outside its provider contract.
- * Empty legacy values still inherit Hermes' default; an explicit descriptor instead resolves
- * empty to `auto`, which means the provider-selected route default. */
-export function resolveModelReasoningEffort(
-  effort: string,
-  inherited: string = '',
-  capabilities?: Partial<
-    Pick<ModelCapabilities, 'reasoning' | 'reasoning_control' | 'reasoning_efforts' | 'default_reasoning_effort'>
-  >
-): string {
-  if (capabilities?.reasoning === false || capabilities?.reasoning_control === 'unsupported') {
-    return ''
-  }
-
-  const value = normalize(effort || inherited)
-  const allowed = capabilities?.reasoning_efforts
-
-  if (value === 'auto') {
-    return value
-  }
-
-  if (allowed == null) {
-    return value === 'none' ? value : resolveReasoningEffort(value)
-  }
-
-  if (!value) {
-    return 'auto'
-  }
-
-  return allowed.includes(value) ? value : ''
 }
 
 /**
@@ -88,8 +61,9 @@ export function reasoningEffortLabel(effort: string, wire?: string): string {
       : ''
 }
 
-/** Unknown saved values stay unselected instead of acquiring a false label.
- *  Empty inherits; auto explicitly leaves the level to the provider. */
+/** Resolve a row without inventing a level outside its provider contract.
+ * Empty legacy values inherit; an explicit descriptor resolves empty to
+ * `auto`, which leaves the level to the provider. */
 export function resolveModelReasoningEffort(
   effort: string,
   inherited: string = '',
@@ -103,10 +77,16 @@ export function resolveModelReasoningEffort(
 
   const value = normalize(effort || inherited)
   const allowed = capabilities?.reasoning_efforts
+
   if (value.startsWith('budget:')) {
     const budget = capabilities?.reasoning_budget
-    if (value === 'budget:-1' && budget?.dynamic) return value
+
+    if (value === 'budget:-1' && budget?.dynamic) {
+      return value
+    }
+
     const tokens = Number(value.slice(7))
+
     return budget &&
       /^budget:\d+$/.test(value) &&
       Number.isSafeInteger(tokens) &&

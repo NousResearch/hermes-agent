@@ -46,9 +46,6 @@ export function ReasoningMenuPanel(props: ModelMenuHostProps) {
   return (
     <ModelOptionsContent
       canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
-      reasoningControl={caps?.reasoning_control ?? undefined}
-      reasoningEfforts={caps?.reasoning_efforts ?? undefined}
-      reasoningBudget={caps?.reasoning_budget ?? undefined}
       defaultEffort={defaultEffort}
       effort={controller.current.effort}
       effortWire={controller.current.effortWire}
@@ -65,8 +62,9 @@ export function ReasoningMenuPanel(props: ModelMenuHostProps) {
       onSetOptions={patch => controller.setOptions(patch, row)}
       provider={provider}
       reasoning={caps?.reasoning ?? true}
-      reasoningControl={caps?.reasoning_control}
-      reasoningEfforts={caps?.reasoning_efforts}
+      reasoningBudget={caps?.reasoning_budget ?? undefined}
+      reasoningControl={caps?.reasoning_control ?? undefined}
+      reasoningEfforts={caps?.reasoning_efforts ?? undefined}
     />
   )
 }

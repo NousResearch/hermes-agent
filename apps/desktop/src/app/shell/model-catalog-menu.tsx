@@ -307,6 +307,7 @@ export function ModelCatalogMenu({
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
     const caps = provider.capabilities?.[family.id]
     const preset = familyPreset(family, provider)
+
     const declared =
       caps?.family_id != null ||
       caps?.reasoning_control != null ||
@@ -540,10 +541,12 @@ export function ModelCatalogMenu({
                     // label AND submenu read from these so they never disagree.
                     const preset = familyPreset(family, group.provider)
                     const rawEffort = isCurrent ? current.effort : (preset.effort ?? '')
+
                     const effEffort =
                       caps?.reasoning_efforts == null && caps?.reasoning_budget == null
                         ? rawEffort
                         : resolveModelReasoningEffort(rawEffort, defaultEffort, caps)
+
                     const effFast = isCurrent ? current.fast : (preset.fast ?? false)
 
                     const fastControl: FastControl = resolveFastControl(
@@ -617,9 +620,6 @@ export function ModelCatalogMenu({
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu
                           canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
-                          reasoningControl={caps?.reasoning_control ?? undefined}
-                          reasoningEfforts={caps?.reasoning_efforts ?? undefined}
-                          reasoningBudget={caps?.reasoning_budget ?? undefined}
                           defaultEffort={defaultEffort}
                           effort={effEffort}
                           effortWire={isCurrent ? current.effortWire : undefined}
@@ -638,8 +638,9 @@ export function ModelCatalogMenu({
                           }
                           provider={group.provider.slug}
                           reasoning={caps?.reasoning ?? true}
-                          reasoningControl={caps?.reasoning_control}
-                          reasoningEfforts={caps?.reasoning_efforts}
+                          reasoningBudget={caps?.reasoning_budget ?? undefined}
+                          reasoningControl={caps?.reasoning_control ?? undefined}
+                          reasoningEfforts={caps?.reasoning_efforts ?? undefined}
                         />
                       </DropdownMenuSub>
                     )

@@ -54,9 +54,9 @@ function renderSubmenu(opts: {
             onSetOptions={opts.onSetOptions}
             provider="p1"
             reasoning={opts.reasoning}
+            reasoningBudget={opts.reasoningBudget}
             reasoningControl={opts.reasoningControl}
             reasoningEfforts={opts.reasoningEfforts}
-            reasoningBudget={opts.reasoningBudget}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -93,7 +93,8 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     expect(onSelectModel).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Dynamic' }))
     expect(onSetOptions).toHaveBeenLastCalledWith({ effort: 'budget:-1' })
-    expect(screen.queryByRole('switch')).toBeNull() // default is not falsely displayed as On
+    expect(screen.queryByRole('switch', { name: 'Thinking' })).toBeNull() // default is not falsely displayed as On
+    expect(screen.getByRole('switch', { name: 'Fast' }).hasAttribute('disabled')).toBe(true)
   })
   it.each([
     ['default', true, [], true],
@@ -110,7 +111,7 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
       fastControl: { kind: 'none' },
       onSetOptions
     })
-    const toggle = screen.getByRole('switch')
+    const toggle = screen.getByRole('switch', { name: 'Thinking' })
     expect(toggle.hasAttribute('disabled')).toBe(true)
     expect(toggle.getAttribute('aria-checked')).toBe(String(checked))
     fireEvent.click(toggle)
@@ -126,7 +127,8 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
       fastControl: { kind: 'none' },
       onSetOptions: vi.fn()
     })
-    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Thinking' })).toBeNull()
+    expect(screen.getByRole('switch', { name: 'Fast' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByText('Thinking controls unverified')).toBeTruthy()
   })
 
@@ -142,7 +144,8 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     })
     expect(screen.getAllByRole('menuitemradio').map(row => row.textContent)).toEqual(['Low', 'High'])
     expect(screen.getAllByRole('menuitemradio').every(row => row.getAttribute('aria-checked') === 'false')).toBe(true)
-    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Thinking' })).toBeNull()
+    expect(screen.getByRole('switch', { name: 'Fast' }).hasAttribute('disabled')).toBe(true)
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }))
     expect(onSetOptions).toHaveBeenCalledWith({ effort: 'high' })
   })
@@ -151,7 +154,8 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     renderSubmenu({ reasoning: true, reasoningEfforts: [], fastControl: { kind: 'none' }, onSetOptions: vi.fn() })
     expect(screen.queryAllByRole('menuitemradio')).toEqual([])
     expect(screen.queryByText('Provider default')).toBeNull()
-    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Thinking' })).toBeNull()
+    expect(screen.getByRole('switch', { name: 'Fast' }).hasAttribute('disabled')).toBe(true)
   })
   it('param fast: reports the toggle', () => {
     const onSetOptions = vi.fn()
@@ -286,7 +290,8 @@ it.each([['low', 'high'], ['low', 'medium', 'high'], []])(
       onSetOptions,
       reasoning: true
     })
-    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Thinking' })).toBeNull()
+    expect(screen.getByRole('switch', { name: 'Fast' }).hasAttribute('disabled')).toBe(true)
     const items = screen.queryAllByRole('menuitemradio')
     expect(items).toHaveLength(levels.length)
     expect(items.every(item => item.getAttribute('aria-checked') === 'false')).toBe(true)

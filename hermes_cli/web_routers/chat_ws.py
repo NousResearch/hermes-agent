@@ -21,7 +21,7 @@ from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
 from hermes_cli.web_server_chat import (
     _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
-    _ws_request_is_allowed,
+    _ws_reject, _ws_request_is_allowed,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -112,41 +112,52 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
     peer = ws.client.host if ws.client else "?"
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("%s refused: embedded chat disabled peer=%s", kind, peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
+        await _ws_reject(ws, 4404, reason="embedded chat disabled")
         return None
 
     auth_reason, cred = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning("%s auth rejected reason=%s mode=%s cred=%s peer=%s", kind, auth_reason, mode, cred, peer)
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
+        await _ws_reject(ws, 4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return None
 
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("%s refused: %s peer=%s", kind, host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
+        await _ws_reject(ws, 4403, reason=_ws_close_reason(host_origin_reason))
         return None
 
     client_reason = _ws_client_reason(ws)
     if client_reason is not None:
         _log.warning("%s refused: %s", kind, client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        await _ws_reject(ws, 4408, reason=_ws_close_reason(client_reason))
         return None
     return peer, mode, cred
 
 
-async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
-    """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
-    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
+async def _close_unless_sidecar_allowed(ws: WebSocket, *, deliver_close_code: bool = False) -> bool:
+    """Gates for the /api/ws, /api/pub and /api/events sidecars:
+    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth.
+
+    ``/api/ws`` keeps close-before-accept (desktop boot; see ``gateway_ws``).
+    ``/api/pub`` and ``/api/events`` pass ``deliver_close_code=True`` so the
+    client sees the 44xx close frame instead of uvicorn's bare HTTP 403.
+    """
+    async def _reject(code: int) -> None:
+        if deliver_close_code:
+            await _ws_reject(ws, code)
+        else:
+            await ws.close(code=code)
+
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
+        await _reject(4403)
         return False
     if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
+        await _reject(4401)
         return False
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _reject(4403)
         return False
     return True
 
@@ -592,6 +603,13 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @router.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
+    # Deliberately still close-before-accept (HTTP 403 to the client, no
+    # close code): JsonRpcGatewayClient.connect() resolves on `open`, and the
+    # desktop boot path treats a resolved connect() as a usable gateway
+    # (use-gateway-boot.ts). Rejecting after accept here would let boot
+    # complete on a socket that is already closed. Switch this endpoint to
+    # _ws_reject() together with the client change that settles connect() on
+    # the first frame (gateway.ready) instead of `open`.
     if not await _close_unless_sidecar_allowed(ws):
         return
     from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
@@ -619,11 +637,11 @@ async def gateway_ws(ws: WebSocket) -> None:
 
 
 async def _accept_channel_ws(ws: WebSocket) -> Optional[str]:
-    if not await _close_unless_sidecar_allowed(ws):
+    if not await _close_unless_sidecar_allowed(ws, deliver_close_code=True):
         return None
     channel = _channel_or_close_code(ws)
     if not channel:
-        await ws.close(code=4400)
+        await _ws_reject(ws, 4400)
         return None
     await ws.accept()
     return channel

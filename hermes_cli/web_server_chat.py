@@ -300,6 +300,28 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     return _ws_auth_reason(ws)[0] is None
 
 
+async def _ws_reject(ws: "WebSocket", code: int, reason: str = "") -> None:
+    """Application-level rejection that the client can actually observe.
+
+    A ``ws.close()`` issued *before* ``ws.accept()`` never reaches the peer as
+    a close frame: uvicorn answers the upgrade with a bare HTTP 403 instead
+    (websockets_impl / wsproto_impl / websockets_sansio_impl all do this), so
+    a browser sees ``close code=1006 reason=""`` and the app-level codes the
+    dashboard keys on (4401 auth, 4403 host/origin, 4404 chat disabled, ...)
+    are lost. Complete the handshake first, then close with the code — the
+    only frames on the wire are the handshake and the close.
+
+    Every caller must ``return`` right after this; nothing is registered,
+    subscribed, or read on a rejected socket. Peer-gone errors are expected
+    here and swallowed; anything else propagates.
+    """
+    try:
+        await ws.accept()
+        await ws.close(code=code, reason=reason)
+    except (WebSocketDisconnect, OSError):
+        return
+
+
 def _resolve_chat_argv(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
     active_session_file: Optional[str] = None,

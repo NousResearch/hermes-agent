@@ -1730,7 +1730,16 @@ class _EventTail:
 @router.websocket("/events")
 async def stream_events(ws: WebSocket):
     if not _ws_upgrade_authorized(ws):
-        await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        # Accept, then close: a close issued before accept() is answered by
+        # uvicorn with a bare HTTP 403 and no close frame, so the browser sees
+        # 1006 and the dashboard's "1008 → auth failed, reload" branch never
+        # runs (it just backs off and retries forever). Same rule as
+        # hermes_cli.web_server_chat._ws_reject.
+        try:
+            await ws.accept()
+            await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        except (WebSocketDisconnect, OSError):
+            pass
         return
     await ws.accept()
     # Board is pinned at the handshake; the UI opens a new WS on board change

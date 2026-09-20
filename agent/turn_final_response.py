@@ -146,6 +146,7 @@ def finish_text_response(
         intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
         tool_results_this_turn, trailing_continue_intent,
     )
+    from agent.intent_ack import has_live_ack_work
 
     _ack_mode = intent_ack_continuation_mode(agent)
     # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an
@@ -182,12 +183,15 @@ def finish_text_response(
         _continuation_kind = "degenerate"
     elif (
         _ack_mode != "off"
+        and finish_reason == "stop"
+        and not agent._interrupt_requested
         and agent.valid_tool_names
         and codex_ack_continuations < 2
         and agent._looks_like_codex_intermediate_ack(
             user_message=user_message, assistant_content=final_response, messages=messages,
             require_workspace=(_ack_mode == "codex_only"),
         )
+        and not has_live_ack_work(agent)
     ):
         _continuation_kind = "ack"
     else:
@@ -206,6 +210,16 @@ def finish_text_response(
                 codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
+        if _continuation_kind == "ack":
+            # Retry the unstarted request, not an invented user authorization.
+            # No new transcript rows: cached history/system bytes and alternation
+            # stay intact, and the next response remains free to refuse or ask.
+            logger.info("Intent acknowledgment before execution — retrying (%d/2)", codex_ack_continuations)
+            agent._emit_interim_assistant_message(
+                agent._build_assistant_message(assistant_message, "incomplete")
+            )
+            final_response = None
+            return _verdict("continue")
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
         if _promoted:
             # Same sidecar as the final row: the wire copy must carry the promoted text, not only

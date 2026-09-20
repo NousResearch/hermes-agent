@@ -8,6 +8,7 @@ and neither replaces a name the user typed."""
 import json
 import logging
 import re
+import subprocess
 import threading
 from contextlib import suppress
 from typing import Any, Callable, Optional
@@ -83,6 +84,13 @@ _TITLE_PROMPT_TEMPLATE = (
 
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
 _LANGUAGE_RULE_PINNED = "- Write the title in {language}."
+
+# jev extract (TypeSafe CLI, calibrated-probability judgments) as the primary title source, ahead of the
+# full LLM call below. It picks the best-matching candidate phrase out of the message rather than composing
+# new text, so the regex casts a wide net (any short clause) and the description steers the pick.
+_JEV_TITLE_FIELD_REGEX = r"[^\n.!?]{3,80}"
+_JEV_TITLE_DESCRIPTION = "a short 3 to 7 word title naming what the user wants done, in sentence case"
+_JEV_TITLE_TIMEOUT_SECONDS = 8.0
 
 # Constrains the response to a single title field ("model answered instead of titling" failure class).
 _TITLE_RESPONSE_FORMAT = {
@@ -262,6 +270,34 @@ def _is_prompt_example_echo(title: str) -> bool:
     return normalized in _EXAMPLE_ECHO_REJECT
 
 
+def _jev_extract_title(user_snippet: str) -> Optional[str]:
+    """Best-effort title via `jev extract` (TypeSafe CLI), tried before the full LLM call in
+    `generate_title`. Only a confident ("ok") extraction is used; anything else — binary missing,
+    timeout, non-zero exit, malformed JSON, low-confidence match ("review"/"none"/"missing"), or any
+    other exception — returns None so the caller falls through to the existing `call_llm` pipeline
+    unchanged. Never raises."""
+    if not user_snippet.strip():
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                "jev", "extract", "--want", f"title=/{_JEV_TITLE_FIELD_REGEX}/:{_JEV_TITLE_DESCRIPTION}",
+                "--json", "--timeout", str(int(_JEV_TITLE_TIMEOUT_SECONDS * 1000)),
+            ],
+            input=user_snippet, capture_output=True, text=True, timeout=_JEV_TITLE_TIMEOUT_SECONDS + 2,
+        )
+        if proc.returncode != 0:
+            return None
+        field = (json.loads(proc.stdout).get("fields") or {}).get("title") or {}
+        if field.get("action") != "ok":
+            return None
+        value = field.get("normalized") or field.get("value")
+        return value.strip() if isinstance(value, str) and value.strip() else None
+    except Exception:
+        logger.debug("jev extract title failed; falling back to call_llm", exc_info=True)
+        return None
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -288,6 +324,9 @@ def generate_title(
     user_snippet = _summarize_user_message(user_message)[:MAX_TITLE_INPUT_CHARS]
     if not user_snippet.strip():
         return None
+    jev_title = _clean_title(_jev_extract_title(user_snippet) or "")
+    if jev_title is not None and len(jev_title.split()) <= _MAX_TITLE_WORDS:
+        return jev_title
     language = _title_language()
     # str.replace, not str.format: the prompt embeds literal JSON braces.
     prompt = _TITLE_PROMPT_TEMPLATE.replace(

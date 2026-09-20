@@ -1,5 +1,8 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+import json
+import subprocess
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +12,8 @@ from agent.title_generator import (
     auto_title_session,
     maybe_auto_title,
     _title_language,
+    _jev_extract_title,
+    _MAX_TITLE_WORDS,
 )
 from hermes_state import SessionDB
 
@@ -16,8 +21,13 @@ from hermes_state import SessionDB
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
 
-
-
+    @pytest.fixture(autouse=True)
+    def _jev_disabled_by_default(self):
+        """`generate_title` tries `jev extract` before `call_llm` (see `_jev_extract_title`). Every
+        existing test in this class exercises the `call_llm` path, so jev is mocked off by default;
+        tests that want the jev path override this patch explicitly."""
+        with patch("agent.title_generator._jev_extract_title", return_value=None):
+            yield
 
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
@@ -210,7 +220,74 @@ class TestGenerateTitle:
         assert captured[0][0] == "title generation"
         assert captured[0][1] is exc
 
+    def test_jev_extract_used_when_confident(self):
+        """A confident jev extraction wins outright; call_llm is never reached."""
+        with patch("agent.title_generator._jev_extract_title", return_value="Fix login button on mobile"), \
+             patch("agent.title_generator.call_llm") as mock_llm:
+            assert generate_title("question") == "Fix login button on mobile"
+        mock_llm.assert_not_called()
 
+    def test_jev_extract_falls_back_to_call_llm_when_none(self):
+        """None from jev (missing binary, timeout, low confidence, ...) falls through unchanged."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"title": "Investigate the title resolver bug"}'
+
+        with patch("agent.title_generator._jev_extract_title", return_value=None), \
+             patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") == "Investigate the title resolver bug"
+
+    def test_jev_extract_answer_shaped_output_falls_back(self):
+        """A jev title longer than the answer-shaped-output guard allows is discarded, not truncated."""
+        long_title = " ".join(["word"] * (_MAX_TITLE_WORDS + 1))
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '{"title": "Investigate the title resolver bug"}'
+
+        with patch("agent.title_generator._jev_extract_title", return_value=long_title), \
+             patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") == "Investigate the title resolver bug"
+
+
+class TestJevExtractTitle:
+    """Unit tests for _jev_extract_title() — the `jev extract` subprocess wrapper itself."""
+
+    def test_empty_snippet_short_circuits(self):
+        with patch("agent.title_generator.subprocess.run") as mock_run:
+            assert _jev_extract_title("   ") is None
+        mock_run.assert_not_called()
+
+    def test_confident_match_returns_normalized_value(self):
+        proc = MagicMock(returncode=0, stdout=json.dumps({
+            "fields": {"title": {"value": "fix login button", "normalized": "Fix login button", "action": "ok"}},
+        }))
+        with patch("agent.title_generator.subprocess.run", return_value=proc):
+            assert _jev_extract_title("please fix the login button") == "Fix login button"
+
+    def test_low_confidence_action_returns_none(self):
+        proc = MagicMock(returncode=0, stdout=json.dumps({
+            "fields": {"title": {"value": "fix login button", "action": "review"}},
+        }))
+        with patch("agent.title_generator.subprocess.run", return_value=proc):
+            assert _jev_extract_title("please fix the login button") is None
+
+    def test_nonzero_exit_returns_none(self):
+        proc = MagicMock(returncode=1, stdout="")
+        with patch("agent.title_generator.subprocess.run", return_value=proc):
+            assert _jev_extract_title("please fix the login button") is None
+
+    def test_missing_binary_returns_none(self):
+        with patch("agent.title_generator.subprocess.run", side_effect=FileNotFoundError("jev")):
+            assert _jev_extract_title("please fix the login button") is None
+
+    def test_timeout_returns_none(self):
+        with patch("agent.title_generator.subprocess.run", side_effect=subprocess.TimeoutExpired("jev", 10)):
+            assert _jev_extract_title("please fix the login button") is None
+
+    def test_malformed_json_returns_none(self):
+        proc = MagicMock(returncode=0, stdout="not json")
+        with patch("agent.title_generator.subprocess.run", return_value=proc):
+            assert _jev_extract_title("please fix the login button") is None
 
 
 

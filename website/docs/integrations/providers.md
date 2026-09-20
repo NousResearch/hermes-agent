@@ -56,7 +56,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Ollama Cloud** | `hermes model` → "Ollama Cloud" (provider: `ollama-cloud`; cloud-hosted Ollama API) |
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
-| **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
+| **StepFun** | `STEPFUN_API_KEY` (international) or `STEPFUN_CN_API_KEY` (China) in `~/.hermes/.env` (providers: `stepfun`, `stepfun-cn`, `stepfun-plan`, `stepfun-plan-cn`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
@@ -641,22 +641,48 @@ Notes:
 
 ### StepFun
 
-Step-series models via [StepFun](https://platform.stepfun.com) — OpenAI-compatible API, API key authentication.
+Step-series models via StepFun — OpenAI-compatible API, API key authentication.
+
+StepFun runs two endpoint families across two regions, and **StepFun accounts are regional**: a key
+issued on [platform.stepfun.ai](https://platform.stepfun.ai) returns `401 Incorrect API key provided`
+on `api.stepfun.com`, and vice versa. Each combination is therefore its own provider id with its own
+key, the way `minimax` and `minimax-cn` work:
+
+| Provider | Endpoint | API key | Base URL override |
+|---|---|---|---|
+| `stepfun` | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` | `STEPFUN_BASE_URL` |
+| `stepfun-cn` | `https://api.stepfun.com/v1` | `STEPFUN_CN_API_KEY` | `STEPFUN_CN_BASE_URL` |
+| `stepfun-plan` | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_API_KEY` | `STEPFUN_STEP_PLAN_BASE_URL` |
+| `stepfun-plan-cn` | `https://api.stepfun.com/step_plan/v1` | `STEPFUN_CN_API_KEY` | `STEPFUN_CN_STEP_PLAN_BASE_URL` |
+
+Within one region the same key serves both endpoint families. Aliases: `step`, `stepfun-coding-plan`
+and `stepfun-step-plan` resolve to `stepfun-plan`; `stepfun-ai` to `stepfun`; `stepfun-china` to
+`stepfun-cn`.
+
+The default model everywhere is `step-5-preview`, StepFun's flagship for coding and agentic work:
+1,024,000-token context, image and video input, tool calling, and reasoning effort
+(`low`/`medium`/`high`). `step-router-v1` is served only by the China endpoints.
 
 ```bash
-# StepFun
-hermes chat --provider stepfun --model step-3.5-flash
+# StepFun standard chat, international
+hermes chat --provider stepfun --model step-5-preview
 # Requires: STEPFUN_API_KEY in ~/.hermes/.env
+
+# StepFun Step Plan, China
+hermes chat --provider stepfun-plan-cn --model step-5-preview
+# Requires: STEPFUN_CN_API_KEY in ~/.hermes/.env
 ```
 
 Or set it permanently in `config.yaml`:
 ```yaml
 model:
-  provider: "stepfun"
-  default: "step-3.5-flash"
+  provider: "stepfun"        # or stepfun-cn / stepfun-plan / stepfun-plan-cn
+  default: "step-5-preview"
 ```
 
-The base URL can be overridden with `STEPFUN_BASE_URL` (default: `https://api.stepfun.com/v1`).
+**Upgrading.** A pre-split `stepfun` config is migrated automatically (config version 46) to
+whichever of the four ids matches the endpoint it was actually using, and a China config's key is
+moved from `STEPFUN_API_KEY` to `STEPFUN_CN_API_KEY` so it keeps authenticating.
 
 ### Hugging Face Inference Providers
 
@@ -1696,7 +1722,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `stepfun-cn`, `stepfun-plan`, `stepfun-plan-cn`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](../user-guide/features/fallback-providers.md).

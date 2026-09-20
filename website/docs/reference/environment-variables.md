@@ -104,8 +104,12 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `NEBIUS_BASE_URL` | Override Nebius Token Factory base URL (default: `https://api.tokenfactory.nebius.com/v1`) |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key — Nemotron and open models ([build.nvidia.com](https://build.nvidia.com)) |
 | `NVIDIA_BASE_URL` | Override NVIDIA base URL (default: `https://integrate.api.nvidia.com/v1`; set to `http://localhost:8000/v1` for a local NIM endpoint) |
-| `STEPFUN_API_KEY` | StepFun API key — Step-series models ([platform.stepfun.com](https://platform.stepfun.com)) |
-| `STEPFUN_BASE_URL` | Override StepFun base URL (default: `https://api.stepfun.com/v1`) |
+| `STEPFUN_API_KEY` | StepFun API key, international — `stepfun` and `stepfun-plan` ([platform.stepfun.ai](https://platform.stepfun.ai)) |
+| `STEPFUN_CN_API_KEY` | StepFun API key, China — `stepfun-cn` and `stepfun-plan-cn` ([platform.stepfun.com](https://platform.stepfun.com)). Regional accounts: an international key 401s on `api.stepfun.com` |
+| `STEPFUN_BASE_URL` | Override the `stepfun` base URL (default: `https://api.stepfun.ai/v1`) |
+| `STEPFUN_CN_BASE_URL` | Override the `stepfun-cn` base URL (default: `https://api.stepfun.com/v1`) |
+| `STEPFUN_STEP_PLAN_BASE_URL` | Override the `stepfun-plan` base URL (default: `https://api.stepfun.ai/step_plan/v1`) |
+| `STEPFUN_CN_STEP_PLAN_BASE_URL` | Override the `stepfun-plan-cn` base URL (default: `https://api.stepfun.com/step_plan/v1`) |
 | `OLLAMA_API_KEY` | Ollama Cloud API key — managed Ollama catalog without local GPU ([ollama.com/settings/keys](https://ollama.com/settings/keys)) |
 | `OLLAMA_BASE_URL` | Override Ollama Cloud base URL (default: `https://ollama.com/v1`) |
 | `XAI_API_KEY` | xAI (Grok) API key for chat + TTS + web search ([console.x.ai](https://console.x.ai/)) |

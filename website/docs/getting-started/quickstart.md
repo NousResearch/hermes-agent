@@ -133,7 +133,7 @@ Good defaults:
 | **NovitaAI** | Multi-model API gateway | Set `NOVITA_API_KEY` |
 | **Ramp Router** | Responses-native LLM gateway routing across OpenAI/Anthropic/xAI/... | Set `RAMP_ROUTER_API_KEY` |
 | **Nebius Token Factory** | Open models on Nebius AI cloud | Set `NEBIUS_API_KEY` |
-| **StepFun** | Step Plan models | Set `STEPFUN_API_KEY` |
+| **StepFun** | Step models (standard chat + Step Plan) | Set `STEPFUN_API_KEY`, or `STEPFUN_CN_API_KEY` for the China endpoints |
 | **Xiaomi MiMo** | Xiaomi-hosted models | Set `XIAOMI_API_KEY` |
 | **Tencent TokenHub** | Tencent-hosted models | Set `TOKENHUB_API_KEY` |
 | **Tencent TokenPlan** | Tencent Hy models via Anthropic-style endpoint | Set `TOKENPLAN_API_KEY` |

@@ -67,7 +67,8 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | NVIDIA NIM | `nvidia` | `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
 | GMI Cloud | `gmi` | `GMI_API_KEY` (optional: `GMI_BASE_URL`) |
 | Upstage Solar | `upstage` (alias `solar`) | `UPSTAGE_API_KEY` (optional: `UPSTAGE_BASE_URL`) |
-| StepFun | `stepfun` | `STEPFUN_API_KEY` (optional: `STEPFUN_BASE_URL`) |
+| StepFun | `stepfun`, `stepfun-plan` | `STEPFUN_API_KEY` (optional: `STEPFUN_BASE_URL`, `STEPFUN_STEP_PLAN_BASE_URL`) |
+| StepFun (China) | `stepfun-cn`, `stepfun-plan-cn` | `STEPFUN_CN_API_KEY` (optional: `STEPFUN_CN_BASE_URL`, `STEPFUN_CN_STEP_PLAN_BASE_URL`) |
 | Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
 | Google AI Studio | `gemini` | `GOOGLE_API_KEY` (alias: `GEMINI_API_KEY`) |
 | xAI (Grok) | `xai` (alias `grok`) | `XAI_API_KEY` (optional: `XAI_BASE_URL`) |
@@ -87,7 +88,8 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |
 | Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
-| StepFun | `stepfun` | `STEPFUN_API_KEY` |
+| StepFun | `stepfun`, `stepfun-plan` | `STEPFUN_API_KEY` |
+| StepFun (China) | `stepfun-cn`, `stepfun-plan-cn` | `STEPFUN_CN_API_KEY` |
 | Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |
 | Tencent TokenPlan | `tencent-tokenplan` | `TOKENPLAN_API_KEY` |
 | Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |

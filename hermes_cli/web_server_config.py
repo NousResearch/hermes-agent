@@ -692,10 +692,87 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
     return base_url, _validated_main_model_selection(cfg, provider, model, base_url, api_key)
 
 
+def _read_profile_telegram_creds(profile_dir) -> tuple:
+    """Read TELEGRAM_BOT_TOKEN/TELEGRAM_HOME_CHANNEL from a profile's own ``.env``.
+
+    Per-profile secret, not process-global ``os.environ``: this runs from the dashboard
+    process, which is always scoped to the "default" profile's env, so a notice for profile
+    X must read X's own file rather than go through ``get_secret()``. Parsed by
+    ``load_env_file`` (THE .env tokenizer) so ``export`` prefixes, ``#`` comments and quoting
+    agree with every other reader instead of being re-derived here.
+    """
+    from agent.secret_scope import load_env_file
+    from pathlib import Path
+    env_path = Path(profile_dir) / ".env" if profile_dir else Path.home() / ".hermes" / ".env"
+    values = load_env_file(env_path)
+    token = str(values.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = str(values.get("TELEGRAM_HOME_CHANNEL") or "").strip()
+    return token, chat_id
+
+
+# Strong references to in-flight notices: a bare ``loop.create_task`` result can be
+# garbage-collected mid-flight, silently dropping the send. Same idiom the platform
+# adapters use for their background tasks.
+_pending_model_change_notices: set = set()
+
+
+def _notify_model_change_via_telegram(prev_provider: str, prev_model: str, new_provider: str, new_model: str) -> None:
+    """Best-effort Telegram notice on a dashboard-driven main model switch.
+
+    Fires only when provider or model actually changed: the dashboard re-saves the current
+    selection on unrelated edits, so notifying on every call would train users to ignore it.
+    Reads the target profile's own ``.env`` (``get_hermes_home()`` already honors the
+    ``_profile_scope`` contextvar this runs inside), so each profile notifies through its own
+    bot and chat. Uses the out-of-process standalone sender (the one cron's
+    ``deliver=telegram`` relies on), since the dashboard is a separate process from the
+    gateway. Never raises: the switch has already succeeded by the time this runs, so a
+    messaging failure must not turn it into an error.
+
+    Text is English like the rest of the gateway's notifications; ``locales/`` covers the CLI
+    approval prompt and slash-command replies, not background notices.
+    """
+    if prev_provider == new_provider and prev_model == new_model:
+        return
+    try:
+        import asyncio
+        from hermes_constants import get_hermes_home
+        profile_dir = get_hermes_home()
+        token, chat_id = _read_profile_telegram_creds(profile_dir)
+        if not chat_id or not token:
+            logging.getLogger(__name__).debug(
+                "Model-change notification skipped for %s: no Telegram creds", profile_dir)
+            return
+
+        message = (
+            "🔀 Model changed from the dashboard\n"
+            f"Before: {prev_provider}/{prev_model}\n"
+            f"Now: {new_provider}/{new_model}"
+        )
+
+        async def _send():
+            from tools.send_message_tool import _send_telegram
+            await _send_telegram(token, chat_id, message)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(_send())
+        else:
+            task = loop.create_task(_send())
+            _pending_model_change_notices.add(task)
+            task.add_done_callback(_pending_model_change_notices.discard)
+    except Exception:
+        logging.getLogger(__name__).debug("Model-change Telegram notification failed", exc_info=True)
+
+
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
     from hermes_cli.free_tier_bootstrap import reconcile_record
+    _prev_raw = cfg.get("model")
+    prev_cfg: dict = _prev_raw if isinstance(_prev_raw, dict) else {}
+    prev_provider = str(prev_cfg.get("provider", "") or "").strip().lower()
+    prev_model = str(prev_cfg.get("default") or prev_cfg.get("model") or "").strip()
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     provider_entry = _provider_entry(cfg, provider)
@@ -710,6 +787,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
         _register_custom_endpoint(base_url, api_key, model)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()
+    _notify_model_change_via_telegram(prev_provider, prev_model, new_provider, model.strip())
 
     return {
         "ok": True,

@@ -5,6 +5,7 @@ invoked for a dangerous command, that non-zero exit codes surface, and the
 load-bearing invariant: a bang command leaves conversation_history
 byte-identical because it never becomes a turn.
 """
+import builtins
 import copy
 import json
 import os
@@ -120,6 +121,23 @@ class TestBangExecution:
         )
         assert code == 0
         assert "ok" in lines
+
+    def test_unavailable_environment_sanitizer_prevents_launch(self):
+        lines = []
+        real_import = builtins.__import__
+
+        def block_sanitizer(name, *args, **kwargs):
+            if name == "tools.environments.local":
+                raise ImportError("environment sanitizer unavailable")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", block_sanitizer), \
+             patch("hermes_cli.bang_shell.subprocess.Popen") as popen:
+            code = run_bang_command("echo must-not-run", writer=lines.append)
+
+        assert code == 127
+        popen.assert_not_called()
+        assert any("failed to run command" in line for line in lines)
 
 
 # ── CLI handler: approval gate, usage hint, exit codes ─────────────────────

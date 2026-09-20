@@ -77,6 +77,13 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         target_home = self.profile_homes().get(profile)
         if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
+        if operation in {'submit', 'execute', 'attachment'}:
+            from gateway.hosted_room_route_schema import require_room_work_open
+            with self.authority.db._read_ctx() as conn:
+                try:
+                    require_room_work_open(conn, room_id, error=RuntimeStoreError)
+                except RuntimeStoreError as exc:
+                    raise RuntimeStoreError('permission_denied') from exc
         result = {'owner': owner, 'target_home': str(target_home)}
         output = _output_owner_module()
         if output is not None and operation in output.OUTPUT_OPERATIONS:

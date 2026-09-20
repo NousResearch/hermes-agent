@@ -85,7 +85,7 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
 
     # Exec must be the absolute path of the resolved binary. The launcher
     # runs with a minimal PATH, so a bare `hermes` would not resolve.
-    assert values["Exec"] == f"{hermes_bin} desktop"
+    assert values["Exec"] == f"{hermes_bin} desktop %u"
     assert Path(values["Exec"].split(" ")[0]).is_absolute()
 
     # Icon must be an absolute path to the real icon in the checkout.
@@ -172,7 +172,7 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    assert exec_line.endswith("-m hermes_cli.main desktop")
+    assert exec_line.endswith("-m hermes_cli.main desktop %u")
     assert Path(exec_line.split(" ")[0]).is_absolute()
 
 
@@ -204,7 +204,7 @@ def test_exec_prefixes_interpreter_for_env_shebang_python_script(
     interpreter = os.path.abspath(sys.executable)
     assert exec_line.split(" ")[0].strip('"') == interpreter
     assert str(hermes_bin) in exec_line
-    assert exec_line.endswith("desktop")
+    assert exec_line.endswith("desktop %u")
 
 
 def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypatch):
@@ -224,7 +224,7 @@ def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypat
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     # A bash wrapper execs the venv python itself — no interpreter prefix.
-    assert exec_line == f"{hermes_bin} desktop"
+    assert exec_line == f"{hermes_bin} desktop %u"
 
 
 def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch):
@@ -246,7 +246,7 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
 
     # Console-script with the venv's own interpreter in the shebang: correct
     # as-is, prefixing would only add noise.
-    assert exec_line == f"{hermes_bin} desktop"
+    assert exec_line == f"{hermes_bin} desktop %u"
 
 
 # The persisted entry must be launch-context independent: whatever process
@@ -294,7 +294,7 @@ def test_exec_converges_from_repo_script_argv0_to_installed_wrapper(
 
     # Converged on the durable wrapper — NOT the repo script, and NOT an
     # interpreter-prefixed form pinning sys.executable.
-    assert exec_line == f"{wrapper} desktop"
+    assert exec_line == f"{wrapper} desktop %u"
 
 
 def test_exec_never_persists_a_bare_interpreter_command(
@@ -331,7 +331,7 @@ def test_exec_never_persists_a_bare_interpreter_command(
         Path(first_token).name.startswith("python")
         and "desktop" in exec_line.split(" ", 1)[1]
     ), f"persisted an unrunnable bare-interpreter Exec: {exec_line}"
-    assert exec_line == f"{wrapper} desktop"
+    assert exec_line == f"{wrapper} desktop %u"
 
 
 def test_exec_keeps_resolver_fallback_when_no_wrapper_on_path(
@@ -369,7 +369,7 @@ def test_exec_keeps_resolver_fallback_when_no_wrapper_on_path(
 
     # The runnable module fallback — NOT the bare repo script (its env
     # shebang would escape the venv under a DE) and NOT `<python> desktop`.
-    assert exec_line.endswith("-m hermes_cli.main desktop")
+    assert exec_line.endswith("-m hermes_cli.main desktop %u")
     assert Path(exec_line.split(" ")[0].strip('"')).is_absolute()
     assert str(repo_script) not in exec_line
 
@@ -419,7 +419,7 @@ def test_exec_uses_known_wrapper_when_path_lookup_misses(
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     # The probe found the wrapper despite the PATH miss.
-    assert exec_line == f"{known_wrapper} desktop"
+    assert exec_line == f"{known_wrapper} desktop %u"
 
 
 def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, monkeypatch):
@@ -466,7 +466,7 @@ def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, mo
     assert entry is not None
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    assert exec_line == f"{known_wrapper} desktop"
+    assert exec_line == f"{known_wrapper} desktop %u"
     assert str(venv_script) not in exec_line
 
     # …and the same context a second time re-renders byte-identical content:
@@ -515,7 +515,7 @@ def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
     assert entry is not None
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    assert exec_line == f"{known_wrapper} desktop"
+    assert exec_line == f"{known_wrapper} desktop %u"
 
     # …and the SAME context a second time re-renders byte-identical content:
     # the no-op guard in install_desktop_entry then skips the rewrite.
@@ -572,7 +572,7 @@ def test_exec_rejects_known_wrapper_from_another_checkout(
 
     # The foreign wrapper was rejected; the runnable module fallback won.
     assert str(foreign_wrapper) not in exec_line
-    assert exec_line.endswith("-m hermes_cli.main desktop")
+    assert exec_line.endswith("-m hermes_cli.main desktop %u")
 
 
 @pytest.mark.parametrize(
@@ -763,7 +763,7 @@ def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    assert exec_line == f'"{spaced}" desktop'
+    assert exec_line == f'"{spaced}" desktop %u'
 
 
 @pytest.mark.skipif(
@@ -863,7 +863,7 @@ def test_exec_falls_back_to_running_interpreter_when_probe_fails(
 
     # Runnable module form under the RUNNING interpreter - never the
     # unprobeable ELF fake, never a bare "<python> desktop".
-    assert exec_line.endswith("-m hermes_cli.main desktop")
+    assert exec_line.endswith("-m hermes_cli.main desktop %u")
     first = exec_line.split(" ")[0].strip('"')
     assert first == os.path.abspath(sys.executable)
     assert str(interpreter) not in exec_line
@@ -1054,7 +1054,7 @@ def test_probe_skips_wrapper_with_escaping_python_shebang(
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     assert str(broken_wrapper) not in exec_line
-    assert exec_line.endswith("-m hermes_cli.main desktop")
+    assert exec_line.endswith("-m hermes_cli.main desktop %u")
 
 
 def test_probe_accepts_shell_launcher_wrapper(tmp_path, xdg_home, monkeypatch):
@@ -1086,7 +1086,7 @@ def test_probe_accepts_shell_launcher_wrapper(tmp_path, xdg_home, monkeypatch):
 
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-    assert exec_line == f"{good_wrapper} desktop"
+    assert exec_line == f"{good_wrapper} desktop %u"
 
 
 def test_install_icon_handles_truncated_png_header(tmp_path, xdg_home, monkeypatch):
@@ -1221,3 +1221,163 @@ def test_deferred_install_skips_heal_after_exit_without_reveal():
     deferred.finish()
     assert calls == []
     assert not deferred._thread.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# hermes:// scheme association (xdg-mime, mocked at the subprocess boundary)
+# ---------------------------------------------------------------------------
+
+
+def test_render_declares_scheme_handler_and_uri_field_code():
+    """The entry claims the scheme and forwards an opened link as one argument.
+
+    `%u` must stay a bare field code: on a plain app-grid click it expands to
+    nothing, so `hermes desktop` still launches.
+    """
+    text = lde.render_desktop_entry("/usr/bin/hermes desktop", "hermes")
+
+    values = _parse(text)
+    assert values["MimeType"] == "x-scheme-handler/hermes;"
+    assert values["Exec"] == "/usr/bin/hermes desktop %u"
+    assert '"%u"' not in text  # field codes must not be quoted
+
+
+class _XdgMime:
+    """In-memory ``xdg-mime``, mocked at the external subprocess boundary."""
+
+    def __init__(self, *, default=None, set_ok=True, confirmed=None):
+        self.default = default
+        self.set_ok = set_ok
+        self.confirmed = confirmed
+        self.calls: list[list[str]] = []
+
+    @property
+    def set_calls(self):
+        return [c for c in self.calls if c[1:2] == ["default"]]
+
+    def which(self, name):
+        return "/usr/bin/xdg-mime" if name == "xdg-mime" else None
+
+    def capture(self, cmd, *, timeout=20):
+        self.calls.append(list(cmd))
+        return f"{self.default}\n" if self.default else ""
+
+    def quiet(self, cmd, *, timeout=60, on_error=False, **kwargs):
+        self.calls.append(list(cmd))
+        if not self.set_ok:
+            return False
+        self.default = self.confirmed if self.confirmed is not None else cmd[2]
+        return True
+
+
+def _fake_xdg_mime(monkeypatch, **kwargs) -> _XdgMime:
+    model = _XdgMime(**kwargs)
+    monkeypatch.setattr(lde.shutil, "which", model.which)
+    monkeypatch.setattr(lde, "_run_capture", model.capture)
+    monkeypatch.setattr(lde, "_run_quiet", model.quiet)
+    return model
+
+
+def test_install_associates_scheme_handler_with_exact_entry(tmp_path, xdg_home, monkeypatch):
+    """Missing association → one `xdg-mime default`, confirmed by the readback."""
+    root = _make_project(tmp_path)
+    _stub_install(tmp_path, monkeypatch)
+    model = _fake_xdg_mime(monkeypatch, default=None)
+
+    entry = lde.install_desktop_entry(root)
+
+    assert model.set_calls == [
+        ["/usr/bin/xdg-mime", "default", "hermes.desktop", "x-scheme-handler/hermes"]
+    ]
+    assert model.default == "hermes.desktop"  # the readback really confirmed it
+    assert entry == xdg_home / "applications" / "hermes.desktop"
+
+
+def test_install_keeps_a_matching_association_untouched(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    _stub_install(tmp_path, monkeypatch)
+    model = _fake_xdg_mime(monkeypatch, default="hermes.desktop")
+
+    lde.install_desktop_entry(root)
+
+    assert model.calls == [
+        ["/usr/bin/xdg-mime", "query", "default", "x-scheme-handler/hermes"]
+    ]
+    assert model.set_calls == []
+
+
+def test_install_heals_missing_or_stale_association_without_rewriting_entry(
+    tmp_path, xdg_home, monkeypatch
+):
+    """Unchanged bytes must still re-point a stale handler — and not rewrite."""
+    root = _make_project(tmp_path)
+    _stub_install(tmp_path, monkeypatch)
+    refreshes: list[Path] = []
+    monkeypatch.setattr(
+        lde, "refresh_desktop_databases", lambda d: refreshes.append(d) or []
+    )
+    model = _fake_xdg_mime(monkeypatch, default=None)
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    first = entry.read_text(encoding="utf-8")
+    assert len(refreshes) == 1
+    assert model.default == "hermes.desktop"
+
+    model.default = "other-handler.desktop"  # association went stale
+    model.calls.clear()
+    entry2 = lde.install_desktop_entry(root)
+    assert entry2 is not None
+
+    assert entry2.read_text(encoding="utf-8") == first  # byte-identical
+    assert len(refreshes) == 1  # no menu-cache churn
+    assert model.set_calls == [
+        ["/usr/bin/xdg-mime", "default", "hermes.desktop", "x-scheme-handler/hermes"]
+    ]
+    assert model.default == "hermes.desktop"
+
+
+def test_install_warns_when_xdg_mime_is_missing(tmp_path, xdg_home, monkeypatch, capsys):
+    """A missing xdg-mime is an actionable warning, never a failed install."""
+    root = _make_project(tmp_path)
+    _stub_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(lde.shutil, "which", lambda name: None)
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry is not None and entry.is_file()
+    assert "xdg-mime is not installed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"set_ok": False}, {"confirmed": "other-handler.desktop"}]
+)
+def test_install_warns_when_xdg_mime_does_not_confirm(
+    kwargs, tmp_path, xdg_home, monkeypatch, capsys
+):
+    """A bare exit status is not success: no readback → no claim of success."""
+    root = _make_project(tmp_path)
+    _stub_install(tmp_path, monkeypatch)
+    _fake_xdg_mime(monkeypatch, default=None, **kwargs)
+
+    lde.install_desktop_entry(root)
+
+    assert "did not confirm" in capsys.readouterr().out
+
+
+def test_optout_leaves_existing_entry_and_association_alone(tmp_path, xdg_home, monkeypatch):
+    """desktop.manage_launcher_entry=false is never bypassed by association repair."""
+    root = _make_project(tmp_path)
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+    monkeypatch.setattr(lde, "_launcher_entry_management_enabled", lambda: False)
+    entry = xdg_home / "applications" / "hermes.desktop"
+    entry.parent.mkdir(parents=True)
+    custom = "[Desktop Entry]\nName=Hand-Edited\nExec=/opt/custom desktop %u\n"
+    entry.write_text(custom, encoding="utf-8")
+    model = _fake_xdg_mime(monkeypatch, default=None)
+
+    result = lde.install_desktop_entry(root)
+
+    assert result == entry
+    assert entry.read_text(encoding="utf-8") == custom
+    assert model.calls == []

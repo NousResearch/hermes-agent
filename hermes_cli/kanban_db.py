@@ -3343,7 +3343,6 @@ def request_review(
                     "(worker ownership) or force=True (explicit operator "
                     "override) instead of clearing the live run's claim",
                 )
-            implementer = trow["assignee"]
             if reviewer is None:
                 reviewer = _prior_reviewer(conn, task_id)
                 if reviewer is False:
@@ -3353,6 +3352,23 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
             reviewer = _canonical_assignee(reviewer)
+            # The actor is the run that did the work. ``assignee`` is the actor
+            # only while a worker holds the card; on a never-claimed card it is
+            # whoever the operator assigned -- possibly the reviewer itself,
+            # which is what ``kanban create --assignee <reviewer>`` followed by
+            # ``request-review`` produces. Recording the reviewer as its own
+            # implementer is worse than recording nothing: request_changes()
+            # routes on this field, and it already refuses a handoff that
+            # carries no implementer provenance.
+            implementer = None
+            if trow["current_run_id"] is not None:
+                arow = conn.execute(
+                    "SELECT profile FROM task_runs WHERE id = ?",
+                    (trow["current_run_id"],),
+                ).fetchone()
+                implementer = arow["profile"] if arow else None
+            if implementer is None and trow["assignee"] != reviewer:
+                implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (

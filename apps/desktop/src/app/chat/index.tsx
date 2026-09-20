@@ -42,6 +42,7 @@ import {
   $resumeExhaustedSessionId,
   $sessions,
   getSessionOwnerHint,
+  idsShareLineage,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
@@ -629,10 +630,18 @@ const ChatViewContent = memo(function ChatViewContent({
   })
 
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
+  const activeRuntimeOwnsRoute = Boolean(
+    activeSessionId &&
+    transcriptStoredSessionId &&
+    routedSessionId &&
+    idsShareLineage(transcriptStoredSessionId, routedSessionId, sessions)
+  )
   // Hide the composer in the exhausted error state too: there's no live runtime
   // to send to until a retry rebinds one. Watch windows are pure spectators of a
-  // subagent run driven elsewhere — no composer, transcript is read-only.
-  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
+  // subagent run driven elsewhere — no composer, transcript is read-only. A
+  // same-session transcript refresh may briefly empty the message view, but its
+  // live runtime remains a valid submit target, so keep that composer mounted.
+  const showChatBar = (!loadingSession || activeRuntimeOwnsRoute) && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResult>({

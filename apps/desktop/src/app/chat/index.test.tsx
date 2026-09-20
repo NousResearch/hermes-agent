@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -19,6 +20,7 @@ import {
   $selectedStoredSessionId,
   $sessions
 } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 const threadRenderCount = vi.hoisted(() => ({ current: 0 }))
 
@@ -26,10 +28,10 @@ vi.mock('@/components/assistant-ui/thread', async () => {
   const React = await import('react')
 
   return {
-    Thread: () => {
+    Thread: ({ loading }: { loading?: string }) => {
       threadRenderCount.current += 1
 
-      return React.createElement('div', { 'data-testid': 'thread' })
+      return React.createElement('div', { 'data-loading': loading, 'data-testid': 'thread' })
     }
   }
 })
@@ -49,7 +51,14 @@ vi.mock('@/lib/model-options', () => ({
 }))
 vi.mock('./chat-drop-overlay', () => ({ ChatDropOverlay: () => null }))
 vi.mock('./chat-swap-overlay', () => ({ ChatSwapOverlay: () => null, ChatSyncBadge: () => null }))
-vi.mock('./composer', () => ({ ChatBar: () => null, ChatBarFallback: () => null }))
+vi.mock('./composer', async () => {
+  const React = await import('react')
+
+  return {
+    ChatBar: () => React.createElement('div', { 'data-testid': 'chat-bar' }),
+    ChatBarFallback: () => null
+  }
+})
 vi.mock('./hooks/use-file-drop-zone', () => ({
   useFileDropZone: () => ({ dragKind: null, dropHandlers: {} })
 }))
@@ -72,6 +81,45 @@ function assistantMessage(id: string, text: string): ChatMessage {
   }
 }
 
+const chatViewProps = {
+  gateway: null,
+  maxVoiceRecordingSeconds: 120,
+  onAddContextRef: vi.fn(),
+  onAddUrl: vi.fn(),
+  onAttachDroppedItems: vi.fn(),
+  onAttachImageBlob: vi.fn(),
+  onBranchInNewChat: vi.fn(),
+  onCancel: vi.fn(),
+  onDeleteSelectedSession: vi.fn(),
+  onEdit: vi.fn(),
+  onPasteClipboardImage: vi.fn(),
+  onPickFiles: vi.fn(),
+  onPickFolders: vi.fn(),
+  onPickImages: vi.fn(),
+  onReload: vi.fn(),
+  onRemoveAttachment: vi.fn(),
+  onRetryResume: vi.fn(),
+  onSteer: vi.fn(),
+  onSubmit: vi.fn(),
+  onThreadMessagesChange: vi.fn(),
+  onToggleSelectedPin: vi.fn(),
+  onTranscribeAudio: vi.fn()
+}
+
+function renderChat(route: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } }
+  })
+
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[route]}>
+        <ChatView {...chatViewProps} />
+      </MemoryRouter>
+    </QueryClientProvider>
+  )
+}
+
 describe('ChatView render isolation', () => {
   beforeEach(() => {
     threadRenderCount.current = 0
@@ -86,6 +134,7 @@ describe('ChatView render isolation', () => {
     $gatewayState.set('closed')
     $messages.set([assistantMessage('assistant-1', 'Stable historical answer')])
     $selectedStoredSessionId.set('stored-1')
+    $sessionStates.set({ 'runtime-1': createClientSessionState('stored-1') })
     $sessions.set([{ id: 'stored-1', message_count: 1, title: 'Stable chat' } as never])
   })
 
@@ -103,35 +152,11 @@ describe('ChatView render isolation', () => {
     $gatewayState.set('idle')
     $messages.set([])
     $selectedStoredSessionId.set(null)
+    $sessionStates.set({})
     $sessions.set([])
   })
 
   it('does not re-render chat history when an unrelated parent idle tick updates', () => {
-    const props = {
-      gateway: null,
-      maxVoiceRecordingSeconds: 120,
-      onAddContextRef: vi.fn(),
-      onAddUrl: vi.fn(),
-      onAttachDroppedItems: vi.fn(),
-      onAttachImageBlob: vi.fn(),
-      onBranchInNewChat: vi.fn(),
-      onCancel: vi.fn(),
-      onDeleteSelectedSession: vi.fn(),
-      onEdit: vi.fn(),
-      onPasteClipboardImage: vi.fn(),
-      onPickFiles: vi.fn(),
-      onPickFolders: vi.fn(),
-      onPickImages: vi.fn(),
-      onReload: vi.fn(),
-      onRemoveAttachment: vi.fn(),
-      onRetryResume: vi.fn(),
-      onSteer: vi.fn(),
-      onSubmit: vi.fn(),
-      onThreadMessagesChange: vi.fn(),
-      onToggleSelectedPin: vi.fn(),
-      onTranscribeAudio: vi.fn()
-    }
-
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } }
     })
@@ -145,7 +170,7 @@ describe('ChatView render isolation', () => {
             <button onClick={() => setTick(value => value + 1)} type="button">
               parent tick {tick}
             </button>
-            <ChatView {...props} />
+            <ChatView {...chatViewProps} />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -161,5 +186,28 @@ describe('ChatView render isolation', () => {
     // memo(ChatView) with stable props must absorb the parent's idle tick —
     // the transcript (Thread) must not re-render. This is PR #38470's contract.
     expect(threadRenderCount.current).toBe(1)
+  })
+
+  it('keeps the composer mounted while the active session transcript refreshes', () => {
+    $messages.set([])
+
+    renderChat('/stored-1')
+
+    expect(screen.getByTestId('thread').dataset.loading).toBe('session')
+    expect(screen.getByTestId('chat-bar')).toBeTruthy()
+  })
+
+  it('does not expose the previous session composer while a different route loads', () => {
+    $messages.set([])
+    $selectedStoredSessionId.set('stored-2')
+    $sessions.set([
+      { id: 'stored-1', message_count: 1, title: 'Previous chat' },
+      { id: 'stored-2', message_count: 1, title: 'Next chat' }
+    ] as never)
+
+    renderChat('/stored-2')
+
+    expect(screen.getByTestId('thread').dataset.loading).toBe('session')
+    expect(screen.queryByTestId('chat-bar')).toBeNull()
   })
 })

@@ -267,10 +267,10 @@ def example_auth(action: str, args) -> bool:
 
 
 def example_refresh(entry):
-    """Called by the credential pool with the pooled row; return the rotated fields or raise."""
-    tokens = post_refresh(entry.refresh_token)
+    """Called by the credential pool with the pooled row; return the rotated values, None, or raise."""
+    tokens = post_refresh(entry.refresh_token)          # the raw token-endpoint response is fine as-is
     return {"access_token": tokens["access_token"], "refresh_token": tokens["refresh_token"],
-            "expires_at_ms": tokens["expires_at_ms"]}
+            "expires_at_ms": tokens["expires_at_ms"], "expires_in": tokens["expires_in"]}
 
 
 register_provider(ProviderProfile(
@@ -281,7 +281,9 @@ register_provider(ProviderProfile(
 | Contract | |
 |---|---|
 | `auth_handler(action, args)` | `args` is the parsed `hermes auth` namespace. Truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action**. An exception becomes `SystemExit("<provider> auth handler failed for `&lt;action&gt;`: …")`. |
-| `refresh_credential(entry)` | Receives the `PooledCredential`; returns a mapping of rotated fields (`access_token`, `refresh_token`, `expires_at_ms`, …) applied to the row, or raises (the pool benches the row). Its presence is what makes the provider *refreshable* — `hermes auth refresh <name>` and the 401 recovery paths (main loop and auxiliary client) call it; no core name list is involved. |
+| `refresh_credential(entry)` | Receives the `PooledCredential`; returns a mapping of rotated values or `None`. Keys that are `PooledCredential` fields (`access_token`, `refresh_token`, `expires_at_ms`, …) replace the row's fields; every other key (`expires_in`, `token_type`, `scope` — the raw token-endpoint shape) lands in `entry.extra` and round-trips through `auth.json`. `None` = no rotation happened, the row is marked ok. Its presence is what makes the provider *refreshable* — `hermes auth refresh <name>` and the 401 recovery paths (main loop and auxiliary client) call it; no core name list is involved. |
+| Refresh failures | Raise `hermes_cli.auth_constants.AuthError(..., relogin_required=True)` (or with `code` `invalid_grant` / `invalid_token` / `refresh_token_reused`) when the grant is dead: the row goes **DEAD**, leaves rotation and Hermes logs a WARNING naming `hermes auth add <name>`. Any other exception (network, 429, 5xx) is transient — the row is benched for one cooldown and retried. |
+| Concurrency | The hook runs under the shared `auth.json` lock. Before calling it the pool re-reads the row; if another Hermes process (gateway + CLI, two profiles) already rotated the pair, that pair is adopted and your hook is **not** called — safe for single-use refresh tokens. After the hook returns, the rotated row is written through to `auth.json`. |
 | No hooks | `api_key` profiles behave exactly as before. Any other `auth_type` without `auth_handler` fails loud on `hermes auth add`. |
 
 `hermes auth add|status|logout|refresh <provider>` consults the handler **first** — before the built-in

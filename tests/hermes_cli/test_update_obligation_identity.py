@@ -108,5 +108,31 @@ def test_supervised_serve_row_never_vetoes_gateway_discharge(monkeypatch, superv
     }))
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: [{"profile": "default", "state": "current", "code_sha": "new"}])
-    assert not update_cmd_fleet._update_owes_fleet_restart()
     assert not update_cmd_fleet._pending_fleet_restart_needed()
+    assert not update_cmd_fleet._update_owes_fleet_restart()
+
+
+def test_failed_receipt_with_completed_gateway_restart_does_not_warn(monkeypatch):
+    """A later failed step must not revive a warning after gateways restarted."""
+    disk_sha = "n" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(json.dumps({
+        "outcome": "failed",
+        "exit_code": 1,
+        "stop_reason": "later step failed",
+        "post_update": {"sha": disk_sha},
+        "gateway_restart": {
+            "restarted_services": ["ai.hermes.gateway"],
+            "incomplete": False,
+            "phase_error": "",
+            "failed_units": [],
+        },
+        "fleet": [],
+        "plan": {"runtimes": [{"kind": "gateway", "profile": "default", "code_sha": "o" * 40}]},
+    }), encoding="utf-8")
+
+    assert update_cmd_fleet._pending_fleet_restart_needed() is False
+    assert update_cmd_fleet._update_owes_fleet_restart() is False

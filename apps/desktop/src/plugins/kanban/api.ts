@@ -61,7 +61,7 @@ const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
 
 /** One live `task_events` frame → precise cache invalidation: the board, plus
- *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
+ *  each touched task's detail. The polls (60s board / 30s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
 function onEventsFrame(slug: string, data: unknown): void {
   const events = (data as { events?: CompletionEvent[] })?.events

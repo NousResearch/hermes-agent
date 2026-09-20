@@ -234,6 +234,20 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             stopped = _stop_desktop_processes_locking_build(desktop_dir)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
+            # On POSIX the stop above is a no-op (a running binary can be unlinked), but this swap
+            # RENAMES the live tree away and then deletes it: a Desktop launched from release/ keeps
+            # executing unlinked files and dies on the next lazily loaded chunk or helper window
+            # (#116504). Refuse instead — the live app the user is looking at stays intact.
+            still_running = _desktop_processes_running_from(live_root)
+            if still_running:
+                pids = [p.pid for p in still_running if getattr(p, "pid", None)]
+                logger.warning(
+                    "desktop app still running from %s (pids %s); refusing the swap", live_root, pids
+                )
+                print(f"  ⚠ Hermes Desktop is running from {live_root} (pid {', '.join(map(str, pids))}).")
+                print("    Replacing it now would leave that window running deleted files.")
+                print("    Quit Hermes Desktop and rebuild to install the new build.")
+                return None
             _rename_riding_out_file_lock(live_root, previous)
         try:
             _rename_riding_out_file_lock(staged_root, live_root)
@@ -652,18 +666,15 @@ def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
     return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
 
 
-def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
-    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree (Windows
-    only — its lock makes the pack die with ``Access is denied``; POSIX can unlink a running
-    binary). Never raises; returns the PIDs asked to stop."""
-    if sys.platform != "win32":
-        return []
+def _desktop_processes_running_from(tree: Path) -> list:
+    """psutil ``Process`` objects whose exe lives INSIDE *tree*, this process excluded; ``[]`` when
+    psutil is unavailable or *tree* does not exist. Never raises."""
     try:
         import psutil
-        release_dir = (desktop_dir / "release").resolve()
+        root = tree.resolve()
     except Exception:
         return []
-    if not release_dir.is_dir():
+    if not root.is_dir():
         return []
 
     me = os.getpid()
@@ -682,8 +693,19 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
             exe_path = Path(exe).resolve()
         except Exception:
             continue
-        if release_dir in exe_path.parents:
+        if root in exe_path.parents:
             victims.append(proc)
+    return victims
+
+
+def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
+    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree (Windows
+    only — its lock makes the pack die with ``Access is denied``). POSIX is deliberately left alone
+    here (no silent kill); ``_swap_staged_desktop_app`` refuses the promotion instead when an app is
+    still running from the tree it is about to replace. Never raises; returns the PIDs asked to stop."""
+    if sys.platform != "win32":
+        return []
+    victims = _desktop_processes_running_from(desktop_dir / "release")
 
     stopped: list[int] = []
     for proc in victims:

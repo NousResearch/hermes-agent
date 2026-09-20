@@ -1567,6 +1567,80 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
     assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
 
 
+def test_desktop_processes_running_from_matches_only_processes_inside_tree(tmp_path, monkeypatch):
+    """The probe is path-prefix based: an exe inside the tree counts, siblings and pidless ones don't."""
+    tree = tmp_path / "release" / "win-unpacked"
+    tree.mkdir(parents=True)
+    inside = tree / "Hermes.exe"
+    inside.write_text("", encoding="utf-8")
+    elsewhere = tmp_path / "release" / "win-arm64-unpacked" / "Hermes.exe"
+    elsewhere.parent.mkdir(parents=True)
+    elsewhere.write_text("", encoding="utf-8")
+
+    class _Proc:
+        def __init__(self, pid, exe):
+            self.pid = pid
+            self.info = {"pid": pid, "exe": exe}
+
+    class _StubPsutil:
+        @staticmethod
+        def process_iter(_attrs):
+            return [
+                _Proc(111, str(inside)),          # running from the tree
+                _Proc(222, str(elsewhere)),       # sibling tree, untouched by the swap
+                _Proc(333, None),                 # exe unreadable (access denied)
+                _Proc(os.getpid(), str(inside)),  # this very process
+            ]
+
+    monkeypatch.setitem(sys.modules, "psutil", _StubPsutil())
+    assert [p.pid for p in main_desktop._desktop_processes_running_from(tree)] == [111]
+    assert main_desktop._desktop_processes_running_from(tmp_path / "gone") == []
+
+
+def test_swap_staged_desktop_app_refuses_while_live_app_running(tmp_path, monkeypatch, capsys):
+    """#116504: a Desktop running from release/<unpacked> keeps the live app. On POSIX the swap would
+    rename that bundle away and delete it, leaving the running instance on unlinked files."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d: [])
+
+    class _Running:
+        pid = 4242
+
+    monkeypatch.setattr(main_desktop, "_desktop_processes_running_from", lambda tree: [_Running()])
+
+    assert main_desktop._swap_staged_desktop_app(desktop_dir, staging) is None
+    assert live_exe.read_text(encoding="utf-8") == "old"
+    assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
+    out = capsys.readouterr().out
+    assert "4242" in out and "Quit Hermes Desktop" in out
+
+
+def test_swap_staged_desktop_app_promotes_when_nothing_is_running(tmp_path, monkeypatch):
+    """Guard rails off (nothing running from the tree) → the swap still promotes the staged build."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d: [])
+    monkeypatch.setattr(main_desktop, "_desktop_processes_running_from", lambda tree: [])
+
+    assert main_desktop._swap_staged_desktop_app(desktop_dir, staging) == live_exe
+    assert live_exe.read_text(encoding="utf-8") == "new"
+
+
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):
     """Every pack attempt fails → the pre-existing app is exactly as it was,
     no staging dir remains, exit is non-zero."""

@@ -1254,6 +1254,23 @@ class TestLaunchdPlistRespawnGovernance:
         assert "<key>ExitTimeOut</key>" in plist
         assert "<key>KeepAlive</key>" in plist
 
+    def test_plist_exit_timeout_uses_full_gui_domain_clamp(self, tmp_path, monkeypatch):
+        """launchd's gui domain clamps ExitTimeOut at 60s; ask for all of it.
+
+        Anything above 60 is silently clamped, anything below throws away
+        drain headroom the gateway could have used before SIGKILL.
+        """
+        import re
+
+        from gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S
+        from hermes_cli.gateway import generate_launchd_plist
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        plist = generate_launchd_plist()
+        m = re.search(r"<key>ExitTimeOut</key>\s*<integer>(\d+)</integer>", plist)
+        assert m, plist
+        assert int(m.group(1)) == LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S == 60
+
 
 class TestPermissionErrorOnLockFile:
     """Stale root-owned lock files from launchd Background sessions must not

@@ -22,7 +22,8 @@ from typing import Any, Callable, Dict, Optional
 
 from gateway.config import Platform
 from gateway.restart import (
-    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    effective_stop_drain_timeout, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
@@ -1739,9 +1740,15 @@ class GatewayShutdownMixin:
         _deferred_at_start = ctx.deferred_count()
         # Cron floor clamped to the watchdog leash; getattr-guard for bare shutdown-path doubles.
         _cron_drain_cfg = getattr(self, "_cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT)
+        # Under launchd the real leash is launchd's own exit timeout, not our watchdog
+        # (drain + grace): a signal-driven stop that lets cron work push past it is SIGKILLed
+        # before cleanup runs.
+        _cron_leash = resolve_shutdown_watchdog_delay(timeout)
+        _launchd_budget = getattr(self, "_launchd_exit_timeout_s", None)
+        if getattr(self, "_stop_requested_by_signal", False) and _launchd_budget:
+            _cron_leash = min(_cron_leash, float(_launchd_budget))
         _cron_timeout = resolve_cron_drain_budget(
-            timeout, _cron_drain_cfg, watchdog_delay=resolve_shutdown_watchdog_delay(timeout),
-            elapsed=ctx.elapsed(),
+            timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=ctx.elapsed(),
         )
         if _cron_at_start and _cron_timeout > timeout:
             logger.info(
@@ -2033,7 +2040,9 @@ class GatewayShutdownMixin:
             "active_api_runs": self._active_api_run_count(),
             "active_deferred_agent_workers": ctx.deferred_count(),
             "restart_drain_timeout": self._restart_drain_timeout,
-            "watchdog_delay_s": resolve_shutdown_watchdog_delay(self._restart_drain_timeout),
+            "effective_drain_timeout": effective_stop_drain_timeout(self),
+            "launchd_exit_timeout_s": getattr(self, "_launchd_exit_timeout_s", None),
+            "watchdog_delay_s": resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(self)),
             "phase_elapsed_s": ctx.elapsed() if ctx.started_at is not None else None,
         }
 
@@ -2053,12 +2062,19 @@ class GatewayShutdownMixin:
         )
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             arm_shutdown_watchdog(
-                resolve_shutdown_watchdog_delay(self._restart_drain_timeout), done_event=_watchdog_done,
+                resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(self)), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
         try:
             await GatewayRunner._stop_begin_teardown(self, ctx)
-            timeout = self._restart_drain_timeout
+            timeout = effective_stop_drain_timeout(self)
+            if timeout < self._restart_drain_timeout:
+                logger.warning(
+                    "Shutdown drain capped to %.0fs (configured %.0fs) to fit the live launchd exit "
+                    "timeout of %.0fs — launchd SIGKILLs past it",
+                    timeout, self._restart_drain_timeout,
+                    getattr(self, "_launchd_exit_timeout_s", None) or 0.0,
+                )
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)

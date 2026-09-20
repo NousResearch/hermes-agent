@@ -2173,7 +2173,10 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
-    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT)
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
+    effective_stop_drain_timeout,
+    read_launchd_exit_timeout_s,
+    resolve_launchd_capped_drain)
 
 
 logger = logging.getLogger(__name__)
@@ -3487,11 +3490,59 @@ class GatewayRunner(
         self._busy_input_modes_by_profile: Dict[str, str] = {}
         self._busy_text_modes_by_profile: Dict[str, str] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
+        # Live launchd ``ExitTimeOut`` for this job (None when not launchd-owned). Read once at
+        # boot — launchd fixes it at load — and applied only to signal-driven stops, which are the
+        # only stops launchd times. See _load_launchd_exit_timeout().
+        self._stop_requested_by_signal = False
+        self._launchd_exit_timeout_s = self._load_launchd_exit_timeout(self._restart_drain_timeout)
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+
+    @staticmethod
+    def _load_launchd_exit_timeout(drain_timeout: float) -> Optional[float]:
+        """Read the live launchd ``ExitTimeOut`` this job runs under, if any.
+
+        launchd is the one supervisor the gateway cannot size from config: the per-user (gui)
+        domain clamps ``ExitTimeOut`` (measured 60s on macOS 26), and any signal-driven stop that
+        drains past it is SIGKILLed mid-teardown — the unclean-exit half of the state.db
+        corruption class. Returns ``None`` (fail-open, drain unchanged) when not launchd-owned or
+        when ``launchctl print`` is unavailable. Logs a WARNING when the configured drain exceeds
+        the live budget so the misconfiguration is visible at boot, not at the next SIGKILL.
+        """
+        try:
+            exit_timeout = read_launchd_exit_timeout_s()
+        except Exception as e:  # pragma: no cover - defensive, launchctl quirks
+            logger.debug("launchd exit timeout probe failed: %s", e)
+            return None
+        if exit_timeout is None:
+            return None
+        effective = resolve_launchd_capped_drain(drain_timeout, exit_timeout)
+        if effective < drain_timeout:
+            logger.warning(
+                "restart_drain_timeout=%.0fs exceeds the live launchd exit timeout (%.0fs) for %s; "
+                "signal-driven stops will drain at most %.0fs so teardown finishes before launchd "
+                "SIGKILLs (launchd clamps ExitTimeOut in the per-user domain).",
+                drain_timeout, exit_timeout, os.environ.get("XPC_SERVICE_NAME", "this job"), effective,
+            )
+        else:
+            logger.info(
+                "launchd exit timeout for %s is %.0fs (drain %.0fs fits)",
+                os.environ.get("XPC_SERVICE_NAME", "this job"), exit_timeout, drain_timeout,
+            )
+        return exit_timeout
+
+    def _effective_stop_drain_timeout(self) -> float:
+        """Drain budget for the stop in progress.
+
+        Signal-driven stops under launchd are timed by launchd's live ``ExitTimeOut``; everything
+        else (in-band SIGUSR1 restart after the turn, ``--replace`` takeover, tests) keeps the
+        configured drain. getattr-guarded: shutdown-path tests drive the stop from bare doubles
+        that skip ``__init__``.
+        """
+        return effective_stop_drain_timeout(self)
 
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
@@ -5100,6 +5151,15 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
 
             _best_effort(_log_context, "format_context_for_log failed: %s")
             _best_effort(_diagnostic, "spawn_async_diagnostic failed: %s")
+        if not planned_takeover:
+            # Supervisor/operator SIGNAL stop (bootout, kickstart -k, systemd, s6, bare kill) — the
+            # only kind launchd times with ExitTimeOut. In-band SIGUSR1 restarts never pass through
+            # here, and a sibling-driven --replace takeover is not launchd-timed either, so both
+            # keep the configured drain. _stop_impl uses this to cap the drain to the live budget.
+            try:
+                runner._stop_requested_by_signal = True
+            except Exception:
+                pass
         asyncio.create_task(runner.stop())
     return shutdown_signal_handler
 

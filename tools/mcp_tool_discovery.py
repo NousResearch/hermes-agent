@@ -22,6 +22,10 @@ from tools.mcp_tool_scope import _key_name, _key_scope, _key_visible_in_scope, _
 
 logger = logging.getLogger("tools.mcp_tool")
 
+# Max concurrent MCP server connections per discovery pass (one unbounded
+# `asyncio.gather` spawned every server's subprocess tree simultaneously).
+_DISCOVERY_CONNECT_CONCURRENCY = 3
+
 
 def _record_connect_failure(server_name: str) -> None:
     """Stamp a geometric, capped retry cooldown after a failed connect (under ``_lock``)."""
@@ -372,9 +376,21 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
 
 
 async def _discover_all(new_servers: Dict[str, dict]) -> None:
-    """Connect every candidate concurrently; record per-server outcome."""
+    """Connect every candidate concurrently; record per-server outcome.
+
+    Concurrency is bounded: every stdio server spawns child processes, so an
+    unbounded gather turns a config with many servers into a simultaneous
+    N-process spawn burst (RAM/CPU spike, EMFILE risk) on every backend boot.
+    """
+    # ponytail: flat cap for all transports; a per-transport cap only if stdio+HTTP mixes ever matter
+    semaphore = asyncio.Semaphore(_DISCOVERY_CONNECT_CONCURRENCY)
+
+    async def _connect_bounded(name: str, cfg: dict):
+        async with semaphore:
+            return await _discover_and_register_server(name, cfg)
+
     results = await asyncio.gather(
-        *(_discover_and_register_server(name, cfg) for name, cfg in new_servers.items()),
+        *(_connect_bounded(name, cfg) for name, cfg in new_servers.items()),
         return_exceptions=True)
     for name, result in zip(new_servers, results):
         if isinstance(result, BaseException):

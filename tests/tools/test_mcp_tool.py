@@ -2770,6 +2770,74 @@ class TestDiscoveryFailedCount:
         _servers.pop("fail1", None)
 
 
+class TestDiscoveryConnectConcurrency:
+    """MCP discovery bounds how many servers connect at once (#117373)."""
+
+    def test_concurrent_connects_never_exceed_cap(self):
+        """With more servers than the cap, in-flight connects stay capped."""
+        import asyncio as _asyncio
+
+        from tools import mcp_tool_discovery as _discovery
+        from tools.mcp_tool import _servers
+        from tools.mcp_tool_loop import _ensure_mcp_loop
+
+        server_names = {f"srv{i}": {"command": "npx", "args": [f"s{i}"]} for i in range(8)}
+        in_flight = 0
+        max_in_flight = 0
+
+        async def tracked_register(name, cfg):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            # Yield real control so gathers genuinely overlap.
+            await _asyncio.sleep(0.05)
+            in_flight -= 1
+            return []
+
+        with patch("tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
+            _ensure_mcp_loop()
+            _discovery._run_discovery_pass(server_names)
+
+        try:
+            assert max_in_flight > 1, "connects should still run concurrently"
+            assert max_in_flight <= _discovery._DISCOVERY_CONNECT_CONCURRENCY, (
+                f"in-flight connects peaked at {max_in_flight}, "
+                f"cap is {_discovery._DISCOVERY_CONNECT_CONCURRENCY}"
+            )
+        finally:
+            for name in server_names:
+                _servers.pop(name, None)
+
+    def test_cap_lower_than_server_count_still_connects_all(self):
+        """A capped pass still connects every server, not just the first N."""
+        from tools import mcp_tool_discovery as _discovery
+        from tools.mcp_tool import _servers
+        from tools.mcp_tool_loop import _ensure_mcp_loop
+
+        server_names = {f"srv{i}": {"command": "npx", "args": [f"s{i}"]} for i in range(5)}
+        connected = []
+
+        async def recording_register(name, cfg):
+            connected.append(name)
+            return []
+
+        with patch("tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=recording_register), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
+            _ensure_mcp_loop()
+            _discovery._run_discovery_pass(server_names)
+
+        try:
+            assert sorted(connected) == sorted(server_names)
+        finally:
+            for name in server_names:
+                _servers.pop(name, None)
+
+
 class TestMCPSelectiveToolLoading:
     """Tests for per-server MCP filtering and utility tool policies."""
 

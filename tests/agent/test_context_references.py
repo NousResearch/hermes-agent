@@ -103,6 +103,105 @@ def test_folder_listing_falls_back_when_rg_is_blocked(sample_repo: Path):
     assert not result.warnings
 
 
+def test_folder_listing_outside_cwd_inside_widened_allowed_root(tmp_path: Path):
+    """allowed_root may be widened beyond cwd; @folder: targets there must
+    still produce a listing rather than a ValueError-as-warning."""
+    from agent.context_references import preprocess_context_references
+
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    shared = tmp_path / "shared"
+    (shared / "sub").mkdir(parents=True)
+    (shared / "a.txt").write_text("x\n", encoding="utf-8")
+    (shared / "sub" / "b.txt").write_text("y\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        "Review @folder:../shared",
+        cwd=cwd,
+        allowed_root=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "shared/" in result.message
+    assert "a.txt" in result.message
+    assert "b.txt" in result.message
+
+
+def test_folder_listing_outside_cwd_rg_blocked_fallback(tmp_path: Path):
+    """Same widened-root target with rg unavailable: the os.walk fallback
+    never assumed cwd either."""
+    from agent.context_references import preprocess_context_references
+
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    shared = tmp_path / "shared"
+    (shared / "sub").mkdir(parents=True)
+    (shared / "a.txt").write_text("x\n", encoding="utf-8")
+    (shared / "sub" / "b.txt").write_text("y\n", encoding="utf-8")
+
+    real_run = subprocess.run
+
+    def blocked_rg(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, list) and cmd and cmd[0] == "rg":
+            raise PermissionError("rg blocked by policy")
+        return real_run(*args, **kwargs)
+
+    with patch("agent.context_references.subprocess.run", side_effect=blocked_rg):
+        result = preprocess_context_references(
+            "Review @folder:../shared",
+            cwd=cwd,
+            allowed_root=tmp_path,
+            context_length=100_000,
+        )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "shared/" in result.message
+    assert "b.txt" in result.message
+
+
+def test_file_reference_outside_cwd_inside_widened_allowed_root(tmp_path: Path):
+    """Control: @file: never assumed cwd, so it already worked under a
+    widened allowed_root; pin that parity with @folder:."""
+    from agent.context_references import preprocess_context_references
+
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "a.txt").write_text("SHARED-CONTENT\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        "Read @file:../shared/a.txt",
+        cwd=cwd,
+        allowed_root=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "SHARED-CONTENT" in result.message
+
+
+def test_folder_listing_inside_cwd_unchanged(sample_repo: Path):
+    """Control: in-cwd listings keep their cwd-relative display shape."""
+    from agent.context_references import preprocess_context_references
+
+    result = preprocess_context_references(
+        "Review @folder:src/",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "src/" in result.message
+    assert "main.py" in result.message
+
+
 
 
 

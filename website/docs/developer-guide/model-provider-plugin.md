@@ -280,7 +280,7 @@ register_provider(ProviderProfile(
 
 | Contract | |
 |---|---|
-| `auth_handler(action, args)` | `args` is the parsed `hermes auth` namespace. Truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action**. An exception becomes `SystemExit("<provider> auth handler failed for `<action>`: …")`. |
+| `auth_handler(action, args)` | `args` is the parsed `hermes auth` namespace. Truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action**. An exception becomes `SystemExit("<provider> auth handler failed for `&lt;action&gt;`: …")`. |
 | `refresh_credential(entry)` | Receives the `PooledCredential`; returns a mapping of rotated fields (`access_token`, `refresh_token`, `expires_at_ms`, …) applied to the row, or raises (the pool benches the row). Its presence is what makes the provider *refreshable* — `hermes auth refresh <name>` and the 401 recovery paths (main loop and auxiliary client) call it; no core name list is involved. |
 | No hooks | `api_key` profiles behave exactly as before. Any other `auth_type` without `auth_handler` fails loud on `hermes auth add`. |
 

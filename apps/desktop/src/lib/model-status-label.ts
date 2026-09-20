@@ -31,6 +31,21 @@ export function currentPickerSelection(
   }
 }
 
+/** Canonical short provider labels used by the model selector. Keep OAuth
+ * provider ids distinct from their direct-API counterparts while avoiding
+ * internal route names in user-facing copy. */
+const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  'openai-codex': 'ChatGPT or Codex Subscription',
+  'xai-oauth': 'xAI Grok',
+  xai: 'xAI'
+}
+
+export function providerDisplayName(provider: string): string {
+  const normalized = provider.trim().toLowerCase()
+
+  return PROVIDER_DISPLAY_NAMES[normalized] ?? provider.trim()
+}
+
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()

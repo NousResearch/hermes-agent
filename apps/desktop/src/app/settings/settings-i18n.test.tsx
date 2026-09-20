@@ -78,4 +78,22 @@ describe('Settings i18n', () => {
 
     expect(TRANSLATIONS.ja.settings.config.showOptions).toBe(en.config.showOptions)
   })
+
+  it('never renders a field description paragraph as the compact field label', () => {
+    // config-field.tsx renders fieldLabels as ListRow's compact title and fieldDescriptions as
+    // the helper text below — a locale that swaps the two (ar/ja/ru/zh/zh-hant all did for
+    // modelContextLength) turns the settings row's title into a multi-sentence paragraph while
+    // leaving the real description stale. A label must stay shorter than its own description.
+    const locales = Object.keys(TRANSLATIONS) as Locale[]
+
+    for (const locale of locales) {
+      const { fieldLabels, fieldDescriptions } = TRANSLATIONS[locale].settings
+      const label = fieldLabels.modelContextLength
+      const description = fieldDescriptions.modelContextLength
+
+      expect(label.length, `${locale} modelContextLength label vs description length`).toBeLessThan(
+        description.length
+      )
+    }
+  })
 })

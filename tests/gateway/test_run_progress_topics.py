@@ -492,6 +492,31 @@ def _make_runner(adapter):
     return runner
 
 
+def test_tool_progress_mode_reads_profile_scope_not_process_environ(monkeypatch, tmp_path):
+    """HERMES_TOOL_PROGRESS_MODE must resolve through the active profile's secret scope, not
+    process-wide ``os.environ``. Under gateway multiplexing ``os.environ`` carries whichever
+    profile's ``.env`` loaded last, so a raw ``os.getenv`` here would leak that profile's setting
+    into every other profile's turns (#116898)."""
+    from agent import secret_scope
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    # Simulates a leaked env var from whichever profile's process env loaded last.
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    # This profile's OWN scoped value, which must win over the leaked process env.
+    token = secret_scope.set_secret_scope({"HERMES_TOOL_PROGRESS_MODE": "all"})
+    try:
+        adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+        runner = _make_runner(adapter)
+        source = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", thread_id=None)
+        disp = runner._run_agent_display_settings(source)
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+    assert disp.progress_mode == "all"
+
+
 @pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""

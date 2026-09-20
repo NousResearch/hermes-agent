@@ -9,8 +9,9 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 
 import { rememberAttachment } from './image-previews'
-import { $backworkspacePage, backworkspaceOwnerKey, type BackworkspaceRoute, editBackworkspacePage } from './page'
-import { appendLink, attachmentName, base64FromBytes, imageMarkdown, storableImages } from './paste-image'
+import { writeToPage } from './live-editor'
+import { backworkspaceOwnerKey, type BackworkspaceRoute } from './page'
+import { attachmentName, base64FromBytes, imageMarkdown, linkOnOwnLine, storableImages } from './paste-image'
 
 interface AttachResult {
   href: string
@@ -36,33 +37,22 @@ export function usePasteImage(): { extension: Extension; notice: null | string }
 
   route.current = { connectionId, profile }
 
-  // The link belongs to the page, not to the editor: turning the window back
-  // destroys the view while a picture is still being stored, and the paste has
-  // to land either way — the same split the agent's reply makes (use-ask-agent).
-  const write = useCallback((view: EditorView, link: string, owner: BackworkspaceRoute) => {
-    if (!view.dom.isConnected) {
-      const page = $backworkspacePage.get()
-
-      // Only into the page it was pasted on. The window may have been turned
-      // back and another profile opened by now, and that profile's page has
-      // nothing to do with a picture stored in this one's folder.
-      if (page?.status === 'ready' && page.key === backworkspaceOwnerKey(owner)) {
-        editBackworkspacePage(appendLink(page.content, link))
-      }
-
-      return
-    }
-
-    // The caret is read now, not when the paste started: storing the picture
-    // took a moment and the user may have kept typing. Inserted, never
-    // replacing — a selection made since the paste is not the paste's to eat.
-    const at = view.state.selection.main.head
-
-    view.dispatch({ changes: { from: at, insert: link }, selection: { anchor: at + link.length } })
+  // The link belongs to the page, not to the editor it was pasted into: the
+  // window may be turned while a picture is still being stored, and the paste
+  // has to land either way — the same as the agent's reply (use-ask-agent).
+  const write = useCallback((link: string, owner: BackworkspaceRoute) => {
+    writeToPage(backworkspaceOwnerKey(owner), (doc, caret) =>
+      caret === null
+        ? { from: doc.length, insert: linkOnOwnLine(doc, link) }
+        : // The caret as it is now, not when the paste started: storing the
+          // picture took a moment and the user may have kept typing. Inserted,
+          // never replacing — a selection made since is not the paste's to eat.
+          { caret: caret + link.length, from: caret, insert: link }
+    )
   }, [])
 
   const store = useCallback(
-    async (image: Blob, view: EditorView, owner: BackworkspaceRoute) => {
+    async (image: Blob, owner: BackworkspaceRoute) => {
       let attached: AttachResult
 
       try {
@@ -85,7 +75,7 @@ export function usePasteImage(): { extension: Extension; notice: null | string }
       // and dressing a fault of ours up as "that image could not be added"
       // would hide it behind a message about the picture.
       rememberAttachment(attached.href, attached.path)
-      write(view, imageMarkdown(attached.href), owner)
+      write(imageMarkdown(attached.href), owner)
     },
     [write]
   )
@@ -93,7 +83,7 @@ export function usePasteImage(): { extension: Extension; notice: null | string }
   const extension = useMemo(
     () =>
       EditorView.domEventHandlers({
-        paste(event, view) {
+        paste(event) {
           const images = storableImages(event.clipboardData)
 
           if (!images.length) {
@@ -107,7 +97,7 @@ export function usePasteImage(): { extension: Extension; notice: null | string }
           setFailed(false)
 
           for (const image of images) {
-            attachQueue = attachQueue.then(() => store(image, view, owner))
+            attachQueue = attachQueue.then(() => store(image, owner))
           }
 
           // A rich copy carries its own text beside the picture, and that text

@@ -11,6 +11,7 @@ import { rememberServerRequest } from '@/store/server-requests'
 
 import { $backworkspaceWaiting } from './ask'
 import { BackworkspacePage } from './back-page'
+import { $backworkspacePage } from './page'
 import { $backworkspaceOpen, toggleBackworkspace } from './store'
 
 const request = vi.fn<(...args: unknown[]) => Promise<unknown>>()
@@ -159,6 +160,61 @@ describe('BackworkspacePage', () => {
     await vi.waitFor(() => expect(askAgent).toHaveBeenCalledTimes(2))
     expect(askAgent.mock.calls[1][0]).toMatchObject({ handle: '@continuing' })
     expect(askAgent.mock.calls[1][1]).toBe('and what about this?')
+  })
+
+  describe('a question still out when the window is turned away and back', () => {
+    // The reader asks, goes back to the front to get on with something, and
+    // comes back before the agent has answered: a new editor is showing the
+    // page by then, and the one the question left from is gone.
+    async function askThenTurnAwayAndBack(profile: string) {
+      let answer: (text: string) => void = () => {}
+
+      request.mockImplementation(async (_connection, _profile, method) =>
+        method === 'backworkspace.open'
+          ? { page: { content: `@${profile} what is this?`, id: '20260920_101010_abcdef', path: '/p.md' } }
+          : { id: '20260920_101010_abcdef', path: '/p.md' }
+      )
+      askAgent.mockImplementation(() => new Promise<string>(resolve => (answer = resolve)))
+      $activeGatewayProfile.set(profile)
+
+      renderPage()
+
+      const editor = async () =>
+        EditorView.findFromDOM(
+          (await screen.findByLabelText('Back workspace', { selector: '.cm-content' })) as HTMLElement
+        )!
+
+      const mod = /Mac/i.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }
+
+      fireEvent.keyDown((await editor()).contentDOM, { key: 'Enter', ...mod })
+      await vi.waitFor(() => expect(askAgent).toHaveBeenCalledTimes(1))
+
+      act(() => $backworkspaceOpen.set(false))
+      act(() => $backworkspaceOpen.set(true))
+
+      return { answer: (text: string) => act(async () => answer(text)), mod, view: await editor() }
+    }
+
+    it('writes the reply into the page the reader is looking at, where the next keystroke keeps it', async () => {
+      const { answer, view } = await askThenTurnAwayAndBack('returning')
+
+      await answer('a short answer')
+      expect(view.state.doc.toString()).toContain('a short answer')
+
+      act(() => view.dispatch({ changes: { from: view.state.doc.length, insert: '!' } }))
+      expect($backworkspacePage.get()?.content).toContain('a short answer')
+    })
+
+    it('still says who is answering, and still lets only that one question be out', async () => {
+      const { answer, mod, view } = await askThenTurnAwayAndBack('waiting')
+
+      expect(screen.getByRole('status').textContent).toContain('@waiting')
+
+      fireEvent.keyDown(view.contentDOM, { key: 'Enter', ...mod })
+      expect(askAgent).toHaveBeenCalledTimes(1)
+
+      await answer('done')
+    })
   })
 
   it('stores a pasted image beside the page and links it where the caret is', async () => {

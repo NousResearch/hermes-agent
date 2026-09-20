@@ -46,8 +46,9 @@ export function imageMarkdown(href: string): string {
   return `![](${href})`
 }
 
-/** The page with `link` on a line of its own at the end — where a picture goes
- *  when the window was turned back before it finished storing. */
-export function appendLink(content: string, link: string): string {
-  return content && !content.endsWith('\n') ? `${content}\n${link}` : content + link
+/** What puts `link` on a line of its own at the end of `content` — where a
+ *  picture goes when the window was turned to the front before it finished
+ *  storing. */
+export function linkOnOwnLine(content: string, link: string): string {
+  return content && !content.endsWith('\n') ? `\n${link}` : link
 }

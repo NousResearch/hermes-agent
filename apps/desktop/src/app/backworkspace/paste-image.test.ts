@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { appendLink, attachmentName, base64FromBytes, imageMarkdown, storableImages } from './paste-image'
+import { attachmentName, base64FromBytes, imageMarkdown, linkOnOwnLine, storableImages } from './paste-image'
 
 /** Minimal DataTransfer stand-in, shaped like the one the composer's extractor reads. */
 function clipboard(files: File[]): DataTransfer {
@@ -53,10 +53,10 @@ describe('imageMarkdown', () => {
   })
 })
 
-describe('appendLink', () => {
+describe('linkOnOwnLine', () => {
   it('puts a picture that outlived the editor on a line of its own', () => {
-    expect(appendLink('a note', '![](assets/a.png)')).toBe('a note\n![](assets/a.png)')
-    expect(appendLink('a note\n', '![](assets/a.png)')).toBe('a note\n![](assets/a.png)')
-    expect(appendLink('', '![](assets/a.png)')).toBe('![](assets/a.png)')
+    expect('a note' + linkOnOwnLine('a note', '![](assets/a.png)')).toBe('a note\n![](assets/a.png)')
+    expect('a note\n' + linkOnOwnLine('a note\n', '![](assets/a.png)')).toBe('a note\n![](assets/a.png)')
+    expect(linkOnOwnLine('', '![](assets/a.png)')).toBe('![](assets/a.png)')
   })
 })

@@ -9,6 +9,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 
 import { BackworkspaceEditor } from './editor'
 import { imagePreviews, imageTheme } from './image-previews'
+import { liveEditor } from './live-editor'
 import {
   $backworkspacePage,
   type BackworkspacePageState,
@@ -115,6 +116,7 @@ function BackworkspaceSheet() {
           ariaLabel={t.backworkspace.label}
           autoFocus
           extensions={[
+            liveEditor(page.key),
             mention.extension,
             approval.extension,
             ask.extension,

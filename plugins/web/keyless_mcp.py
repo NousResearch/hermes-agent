@@ -13,6 +13,7 @@ import re
 import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from plugins.web._common import document as _page, page_error as _page_error, search_fail, search_ok, web_hit as _row
 
@@ -52,6 +53,52 @@ def _is_vendor_blocked(message: str) -> bool:
     return bool(re.search(r"\b403\b", message or ""))
 
 
+_VENDOR_ENDPOINT_HOSTS = {
+    "exa": "mcp.exa.ai",
+    "parallel": "search.parallel.ai",
+    "firecrawl": "api.firecrawl.dev",
+    "keenable": "api.keenable.ai",
+}
+_ERROR_URL_RE = re.compile(
+    r"\bfor url(?::\s*|\s+['\"])(?P<url>https?://[^'\"\s]+)", re.IGNORECASE
+)
+
+
+def _error_url(message: str) -> Optional[str]:
+    """Extract the request URL emitted by HTTP client exceptions, when present."""
+    match = _ERROR_URL_RE.search(message or "")
+    return match.group("url").rstrip(".,;:)]}") if match else None
+
+
+def _is_retryable_vendor_failure(
+    vendor: str,
+    message: str,
+    *,
+    target_url: Optional[str] = None,
+    provider_origin: bool = False,
+) -> bool:
+    """Return whether a rate-limit/403 failure came from *vendor*, not a target page.
+
+    Per-URL extraction entries name the requested target separately from the
+    provider endpoint.  A status code alone therefore cannot advance the ring:
+    it must be associated with the vendor endpoint when a URL is available.
+    """
+    rate_limited = _is_rate_limitish(message)
+    if not (rate_limited or _is_vendor_blocked(message)):
+        return False
+    request_url = _error_url(message)
+    if request_url:
+        return urlparse(request_url).hostname == _VENDOR_ENDPOINT_HOSTS[vendor]
+    if rate_limited:
+        # Existing adapters surface some provider quota responses without the
+        # endpoint URL; retain their long-standing failover behavior.
+        return True
+    # Search failures without an HTTP request URL already originate from the
+    # selected provider.  Extract failures need their structured transport
+    # marker to make the same claim; target-page entries remain fail-open.
+    return target_url is None or provider_origin
+
+
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
     label, env_key, site = _VENDOR_HINTS[vendor]
     alt = " or another web backend via `hermes tools`" if other_backends else ""
@@ -75,7 +122,9 @@ def _per_url(urls: List[str], fetch: Callable[[str], Dict[str, Any]], vendor: st
         try:
             return fetch(url)
         except catch as exc:  # noqa: BLE001 — per-URL error entry
-            return _page_error(url, _fail_msg(vendor, "extract", exc, other_backends=hint))
+            result = _page_error(url, _fail_msg(vendor, "extract", exc, other_backends=hint))
+            result["_keyless_vendor_error"] = vendor
+            return result
 
     return [_one(u) for u in urls]
 
@@ -372,7 +421,7 @@ def _walk_ring(name: str, kind: str, call, retryable) -> tuple:
     failures = []
     for i, vendor in enumerate(order):
         result = call(vendor)
-        if not retryable(result):
+        if not retryable(vendor, result):
             return order, vendor, result, False, failures
         failures.append(result)
         if i + 1 < len(order):
@@ -385,9 +434,9 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any
     responses stop the walk. ``data.served_by`` is set when the serving vendor differs
     from *name*."""
 
-    def _retryable(result: Dict[str, Any]) -> bool:
+    def _retryable(vendor: str, result: Dict[str, Any]) -> bool:
         error = result.get("error", "")
-        return not result.get("success") and (_is_rate_limitish(error) or _is_vendor_blocked(error))
+        return not result.get("success") and _is_retryable_vendor_failure(vendor, error)
 
     order, vendor, result, exhausted, failures = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _retryable)
     if not order:
@@ -404,13 +453,21 @@ def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
     """Fails over only when EVERY URL is rate-limited or HTTP 403 blocked; partial
     failures and malformed responses are returned as-is."""
 
-    def _all_retryable(results: List[Dict[str, Any]]) -> bool:
+    def _all_retryable(vendor: str, results: List[Dict[str, Any]]) -> bool:
         return bool(results) and all(
-            r.get("error", "") and (_is_rate_limitish(r["error"]) or _is_vendor_blocked(r["error"]))
+            r.get("error", "")
+            and _is_retryable_vendor_failure(
+                vendor,
+                r["error"],
+                target_url=r.get("url"),
+                provider_origin=r.get("_keyless_vendor_error") == vendor,
+            )
             for r in results
         )
 
     order, _vendor, results, _exhausted, _failures = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_retryable)
     if not order:
         return [_page_error(u, _ALL_PAID_MSG) for u in urls]
+    for result in results:
+        result.pop("_keyless_vendor_error", None)
     return results

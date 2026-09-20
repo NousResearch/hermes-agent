@@ -508,7 +508,10 @@ class TestKeylessFailover:
     def _blocked(self, vendor):
         return {
             "success": False,
-            "error": f"Keyless {vendor} search failed: Client error '403 Forbidden' for url",
+            "error": (
+                f"Keyless {vendor} search failed: Client error '403 Forbidden' "
+                "for url 'https://api.firecrawl.dev/v2/search'"
+            ),
         }
 
     def _pin(self, monkeypatch, name):
@@ -546,6 +549,21 @@ class TestKeylessFailover:
         assert out["success"] is True
         assert out["data"]["served_by"] == "keenable"
 
+    def test_search_does_not_fail_over_for_403_in_target_url_path(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        target_error = {
+            "success": False,
+            "error": "Client error '403 Forbidden' for url 'https://target.example/issues/403'",
+        }
+        called = []
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "firecrawl", lambda q, l: target_error)
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "keenable",
+            lambda q, l: called.append(1) or self._ok("keenable"),
+        )
+        assert keyless_mcp.search_with_failover("firecrawl", "q") == target_error
+        assert not called
+
     def test_search_all_throttled_reports_ring(self, monkeypatch):
         self._pin(monkeypatch, "exa")
         for vendor in keyless_mcp._KEYLESS_RING:
@@ -569,6 +587,22 @@ class TestKeylessFailover:
             keyless_mcp._KEYLESS_SEARCHERS, "firecrawl",
             lambda q, l: self._ok("firecrawl"),
         )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "firecrawl"
+
+    def test_search_uses_each_attempted_vendor_to_classify_endpoint_errors(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "exa", lambda q, l: self._throttled("Exa"))
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            "parallel",
+            lambda q, l: {
+                "success": False,
+                "error": "Client error '403 Forbidden' for url 'https://search.parallel.ai/mcp'",
+            },
+        )
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "firecrawl", lambda q, l: self._ok("firecrawl"))
         out = keyless_mcp.search_with_failover("exa", "q")
         assert out["success"] is True
         assert out["data"]["served_by"] == "firecrawl"
@@ -629,7 +663,12 @@ class TestKeylessFailover:
     def test_extract_fails_over_when_pinned_vendor_is_http_403_blocked(self, monkeypatch):
         self._pin(monkeypatch, "firecrawl")
         blocked = [
-            {"url": url, "title": "", "content": "", "error": "Client error '403 Forbidden' for url"}
+            {
+                "url": url,
+                "title": "",
+                "content": "",
+                "error": "Client error '403 Forbidden' for url 'https://api.firecrawl.dev/v2/scrape'",
+            }
             for url in ("https://a", "https://b")
         ]
         good = [
@@ -639,3 +678,67 @@ class TestKeylessFailover:
         monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "firecrawl", lambda urls: blocked)
         monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "keenable", lambda urls: good)
         assert keyless_mcp.extract_with_failover("firecrawl", ["https://a", "https://b"]) == good
+
+    def test_extract_target_403_stays_on_primary(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+
+        def target_failure(url):
+            raise keyless_mcp.KeylessMCPError(
+                f"Client error '403 Forbidden' for url '{url}'"
+            )
+
+        target_errors = keyless_mcp._per_url(
+            ["https://target.example/a", "https://target.example/b"],
+            target_failure,
+            "firecrawl",
+            catch=keyless_mcp.KeylessMCPError,
+        )
+        called = []
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "firecrawl", lambda urls: target_errors)
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_EXTRACTORS, "keenable",
+            lambda urls: called.append(1) or [],
+        )
+        assert keyless_mcp.extract_with_failover("firecrawl", [r["url"] for r in target_errors]) == target_errors
+        assert not called
+
+    def test_extract_unquoted_target_403_stays_on_primary(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+
+        def target_failure(url):
+            raise keyless_mcp.KeylessMCPError(
+                f"403 Client Error: Forbidden for url: {url}"
+            )
+
+        target_errors = keyless_mcp._per_url(
+            ["https://target.example/a"],
+            target_failure,
+            "firecrawl",
+            catch=keyless_mcp.KeylessMCPError,
+        )
+        called = []
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "firecrawl", lambda urls: target_errors)
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_EXTRACTORS,
+            "keenable",
+            lambda urls: called.append(1) or [],
+        )
+        assert keyless_mcp.extract_with_failover("firecrawl", [r["url"] for r in target_errors]) == target_errors
+        assert not called
+
+    def test_extract_url_less_vendor_403_fails_over(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+
+        def vendor_failure(_url):
+            raise keyless_mcp.KeylessMCPError("HTTP 403")
+
+        blocked = keyless_mcp._per_url(
+            ["https://target.example/a", "https://target.example/b"],
+            vendor_failure,
+            "exa",
+            catch=keyless_mcp.KeylessMCPError,
+        )
+        good = [{"url": "https://target.example/a", "title": "A", "content": "x"}]
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "exa", lambda urls: blocked)
+        monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "parallel", lambda urls: good)
+        assert keyless_mcp.extract_with_failover("exa", [r["url"] for r in blocked]) == good

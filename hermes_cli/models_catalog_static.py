@@ -167,7 +167,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "openai-codex": _codex_curated_models(),
     "xai-oauth": list(_XAI_MODELS),
-    "meta-oauth": ["muse-spark-1.3", "muse-spark-1.2"],
+    "meta-oauth": ["muse-spark-1.3", "muse-spark-1.3-contributor"],
     "copilot-acp": ["copilot-acp"],
     "copilot": _OPENAI_CHAT_MODELS + [
         "claude-sonnet-4.6", "claude-sonnet-5", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5",

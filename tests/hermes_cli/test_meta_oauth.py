@@ -310,6 +310,8 @@ def test_meta_catalog_lists_subscription():
     assert any(p.slug == "meta-oauth" for p in CANONICAL_PROVIDERS)
     models = provider_model_ids("meta-oauth")
     assert "muse-spark-1.3" in models
+    assert "muse-spark-1.3-contributor" in models
+    assert "muse-spark-1.2" not in models
 
 
 def _seed_meta_auth_store(hermes_home, tokens=None, last_refresh="2026-09-20T00:00:00Z"):

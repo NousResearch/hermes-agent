@@ -8,18 +8,26 @@ only on SendResult.success | mark_failed() 'failed' on a definitive rejection. C
 rejected once, restart is a retry boundary, also marked; delivered = prune. Attempts are capped
 and stale rows expire, both -> 'abandoned' (kept briefly, then pruned). Everything is
 best-effort: ledger failures must never block a send; callers wrap every call in try/except.
+
+A row covers the turn's WHOLE owed payload, not just its text: ``content`` plus ``media_manifest``
+(a JSON replay list of the attachment sends the turn still owes). ``mark_delivered`` must only
+follow a landed text AND every landed attachment — a partial attachment delivery is a FAILURE that
+puts the row back in the redelivery queue (full resend with the marker), never a delivered row with
+a "media dropped" log line. Rows written before the column existed read back as text-only, and rows
+with no attachments hash/record exactly as they did then (see ``compute_obligation_id``).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from gateway.dead_targets import classify_dead_error
 from hermes_cli.sqlite_util import add_column_if_missing
@@ -197,11 +205,15 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             owner_pid INTEGER,
             owner_started_at INTEGER,
             last_error TEXT,
-            adapter_profile TEXT
+            adapter_profile TEXT,
+            media_manifest TEXT
         )"""
     )
-    if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}
+    if "adapter_profile" not in columns:
         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
+    if "media_manifest" not in columns:
+        add_column_if_missing(conn, "delivery_obligations", "media_manifest", "media_manifest TEXT")
 
 
 def _transaction():
@@ -256,25 +268,79 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         return True
 
 
-def compute_obligation_id(session_key: str, message_ref: str, content: str) -> str:
-    """Stable id: same turn + same content re-records idempotently, while distinct threads/topics on one
-    chat never collide (session_key carries platform/chat/thread; ``message_ref`` = inbound message id)."""
-    return hashlib.sha256(f"{session_key}|{message_ref}|{content}".encode("utf-8", "replace")).hexdigest()[:24]
+def _canonical_manifest(media_manifest: Optional[Sequence[Dict[str, Any]]]) -> Optional[str]:
+    """Canonical JSON of a media manifest, or ``None`` when there is nothing to replay.
+
+    One string serves both roles — the identity material for ``compute_obligation_id`` and the value
+    stored in the row — so re-recording the identical turn is idempotent and a stored manifest can
+    never be read back ambiguously.
+    """
+    if not media_manifest:
+        return None
+    try:
+        return json.dumps(media_manifest, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        # Unreachable from the gateway's own builder (str/bool/list only); dropping the whole
+        # manifest here would be the silent-media-loss bug, so say so loudly.
+        logger.error("media manifest is not serialisable; recording the row without it", exc_info=True)
+        return None
+
+
+def _parse_media_manifest(raw: Any) -> Optional[List[Dict[str, Any]]]:
+    """Decode a stored manifest for redelivery. ``[]`` = the row owes no attachments.
+
+    ``None`` = the stored value cannot be replayed (unreadable JSON, or not a list of ``{"op": ...}``
+    dicts). Callers MUST treat that as undeliverable and fail the row: sending the text and marking
+    the row delivered while the attachments are dropped is exactly the silent loss this column
+    exists to close. Which ``op`` values are actually sendable is the adapter's business
+    (``BasePlatformAdapter.redeliver_attachments`` fails closed on an unknown one).
+    """
+    if raw is None or raw == "":
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    if not all(isinstance(entry, dict) and isinstance(entry.get("op"), str) for entry in parsed):
+        return None
+    return parsed
+
+
+def compute_obligation_id(session_key: str, message_ref: str, content: str,
+                          media_manifest: Optional[Sequence[Dict[str, Any]]] = None) -> str:
+    """Stable id: same turn + same content + same attachments re-records idempotently, while distinct
+    threads/topics on one chat never collide (session_key carries platform/chat/thread; ``message_ref`` =
+    inbound message id).
+
+    The manifest is part of the identity because the row is what gets redelivered: two turns with
+    identical text but different attachments are different obligations, and hashing text alone made the
+    second ``INSERT OR REPLACE`` over the first's row, taking its media with it. A row with no
+    attachments hashes exactly as it always did, so ids written by older builds still line up.
+    """
+    material = f"{session_key}|{message_ref}|{content}"
+    manifest = _canonical_manifest(media_manifest)
+    if manifest:
+        material = f"{material}|{manifest}"
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:24]
 
 
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
-    """Record a final response as owed to the platform (state='pending')."""
+                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
+                      media_manifest: Optional[Sequence[Dict[str, Any]]] = None) -> None:
+    """Record a final response as owed to the platform (state='pending'), text and attachments alike."""
     now, (pid, started) = time.time(), _owner_stamp()
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
-                owner_pid, owner_started_at, adapter_profile)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+                owner_pid, owner_started_at, adapter_profile, media_manifest)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default",
+             _canonical_manifest(media_manifest)))
     _prune()
 
 
@@ -322,18 +388,24 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
 
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
-                 last_error: Optional[str] = None) -> Dict[str, Any]:
+                 last_error: Optional[str] = None,
+                 media_manifest: Optional[str] = None) -> Dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
     the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
     ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
     restart marker default. ``last_error`` is the row's pre-claim error, carried so a runtime claim that is
-    released unsent goes back to ``failed`` with the same error and keeps its retry eligibility."""
+    released unsent goes back to ``failed`` with the same error and keeps its retry eligibility.
+
+    ``media_manifest`` is the row's attachment replay list, or ``None`` when the stored value cannot be
+    replayed — the caller must fail such a row rather than redeliver its text alone.
+    """
     marker = FLOOD_MARKER if flood else (RECONNECTED_MARKER if runtime else None)
     return {"obligation_id": oid, "session_key": session_key, "platform": platform, "chat_id": chat_id,
             "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
             **({"marker": marker} if needs_marker and marker else {}), "profile": profile,
             **({"runtime_recovery": True} if runtime else {}),
-            **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1}
+            **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1,
+            "media_manifest": _parse_media_manifest(media_manifest)}
 
 
 def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
@@ -361,12 +433,14 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
-                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at
+                      owner_pid, owner_started_at, adapter_profile, last_error, updated_at,
+                      media_manifest
                FROM delivery_obligations
                WHERE state IN ('pending', 'attempting', 'failed')"""
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
-             owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+             owner_pid, owner_started_at, adapter_profile, last_error, updated_at,
+             media_manifest) in rows:
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
@@ -392,7 +466,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                         "obligation_id": oid, "session_key": session_key, "platform": platform,
                         "chat_id": chat_id, "thread_id": thread_id, "content": content,
                         "profile": adapter_profile or "default", "attempts": attempts,
-                        "adopted": True, "not_before": flood_not_before(updated_at, last_error)})
+                        "adopted": True, "not_before": flood_not_before(updated_at, last_error),
+                        "media_manifest": _parse_media_manifest(media_manifest)})
                 continue
             # A claimed flood row is resent as a fresh attempt: clear the stale refusal so an interrupted
             # resend is seen as 'attempting' with no error by the next boot and gets the marker.
@@ -410,7 +485,7 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
                                             adapter_profile or "default", needs_marker=state != "pending",
-                                            flood=flood_row))
+                                            flood=flood_row, media_manifest=media_manifest))
     return claimed
 
 
@@ -435,11 +510,13 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, attempts, created_at, owner_pid,
-                      owner_started_at, last_error, adapter_profile, updated_at
+                      owner_started_at, last_error, adapter_profile, updated_at,
+                      media_manifest
                FROM delivery_obligations
                WHERE state='failed' AND platform=?""", (platform,)).fetchall()
         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
-             owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
+             owner_pid, owner_started_at, last_error, adapter_profile, updated_at,
+             media_manifest) in rows:
             # Exact process-start matching prevents PID reuse from stealing work.
             if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
                 continue
@@ -469,7 +546,8 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                 # claim released unsent keeps its flood retry eligibility.
                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
-                                            flood=is_flood_error(last_error), last_error=last_error))
+                                            flood=is_flood_error(last_error), last_error=last_error,
+                                            media_manifest=media_manifest))
     return claimed
 
 

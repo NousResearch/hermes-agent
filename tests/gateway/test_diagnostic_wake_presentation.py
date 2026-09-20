@@ -38,7 +38,7 @@ async def test_diagnostic_wake_executes_without_final_or_error_echo(tmp_path, mo
     adapter._fire_post_delivery_callback = AsyncMock()
     adapter._flush_text_debounce_now = AsyncMock()
     adapter._finish_session_task = lambda *a: None
-    adapter.send_final_ledgered = AsyncMock(return_value=(SendResult(success=True), adapter))
+    adapter.send_final_ledgered = AsyncMock(return_value=(SendResult(success=True), adapter, None))
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat")
     event = MessageEvent(text="internal diagnostic", source=source, internal=True,
                          metadata={"notification_category": "diagnostic"})
@@ -46,6 +46,9 @@ async def test_diagnostic_wake_executes_without_final_or_error_echo(tmp_path, mo
     await adapter._process_message_background(event, "session")
     assert adapter._message_handler.await_count == 1
     assert adapter.send_final_ledgered.await_count == (0 if suppressed else 1)
+    if not suppressed:  # the diagnostic reply itself must have gone out, not the error lane
+        assert adapter._run_processing_hook.await_args.args[-1].value == "success"
+        assert adapter.sent == []
     adapter._message_handler = AsyncMock(side_effect=RuntimeError("provider detail"))
     await adapter._process_message_background(event, "session")
     assert bool(adapter.sent) is not suppressed

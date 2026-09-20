@@ -1562,6 +1562,33 @@ class _ExtractedResponse:
     pre_extract: str
 
 
+# Attachment ops a delivery-ledger media manifest may name. Anything else is refused, never guessed at:
+# the row stays undelivered instead of being marked delivered minus its media.
+_REPLAYABLE_MEDIA_OPS = frozenset(
+    {"send_multiple_images", "send_voice", "send_video", "send_document"})
+
+
+def _is_image_attachment(path: str, *, force_document: bool) -> bool:
+    """True when a path goes out as an image (``[[as_document]]`` forces the document route)."""
+    return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document
+
+
+def _media_attachment_op(path: str, *, is_voice: bool, media_tag: bool,
+                         platform: Any) -> Tuple[str, Dict[str, Any]]:
+    """The adapter send a media path routes to, as ``(op_name, kwargs)``.
+
+    Single source for the live delivery (``_deliver_media_attachments``) AND the ledger's replay
+    manifest, so recovery re-issues exactly the call the turn made. MEDIA-tag files may route to
+    ``send_voice``; bare local files never do.
+    """
+    ext = Path(path).suffix.lower()
+    if media_tag and should_send_media_as_audio(platform, ext, is_voice=is_voice):
+        return "send_voice", {"audio_path": path, "is_voice": is_voice}
+    if ext in _VIDEO_EXTS:
+        return "send_video", {"video_path": path}
+    return "send_document", {"file_path": path}
+
+
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
     re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
@@ -4048,26 +4075,45 @@ class BasePlatformAdapter(ABC):
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
     async def _play_tts_file(
-        self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
-        metadata: Dict[str, Any], record_delivery: Callable) -> bool:
+        self, event: MessageEvent, session_key: str, text_content: str, tts_path: str, first: bool,
+        metadata: Dict[str, Any], record_delivery: Callable, is_ephemeral_response: bool) -> bool:
         """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
-        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
+        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped.
+
+        That caption IS the turn's text delivery, and the text send it replaces is the only other
+        path that ledgers it, so the caption takes the same obligation: recorded before
+        ``play_tts``, resolved from its result. A crash mid-await then leaves a recoverable row
+        (the text is redelivered as its own message) instead of a turn with no ledger trace at all.
+        The audio itself is not in the manifest: TTS files are per-turn artifacts, deleted after
+        this send, so the durable obligation honestly covers the text only.
+        """
         caption = None
         if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
             caption = text_content
+        delivery_adapter = self._final_delivery_adapter(event.source)
+        obligation_id = None
+        if caption:
+            obligation_id = await self._record_delivery_obligation(
+                event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
+        if obligation_id is not None:
+            await self._finalize_delivery_obligation(obligation_id, tts_result, event, delivery_adapter)
         return bool(caption and getattr(tts_result, "success", False))
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
-        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
+        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool,
+        media_manifest: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
-        next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
-        or None."""
-        if is_ephemeral_response or str(event.text or "").lstrip().startswith(
-            ("/", self.typed_command_prefix or "!")):
+        next boot; best-effort, skips slash-command and ephemeral replies. The row covers the turn's
+        WHOLE payload — the text AND ``media_manifest`` (the attachment sends it still owes) — so a
+        media-only turn owns a row too; nothing is recorded when there is neither. Returns the
+        obligation id or None."""
+        if (is_ephemeral_response or not (text_content or media_manifest)
+                or str(event.text or "").lstrip().startswith(
+                    ("/", self.typed_command_prefix or "!"))):
             return None
         try:
             from gateway.delivery_ledger import (
@@ -4081,18 +4127,36 @@ class BasePlatformAdapter(ABC):
             if _ledger_id is None:
                 _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
-                session_key, str(_ledger_id or ""), text_content)
+                session_key, str(_ledger_id or ""), text_content, media_manifest)
             await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
                 content=text_content,
-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
+                adapter_profile=getattr(delivery_adapter, "_owner_profile", None),
+                media_manifest=media_manifest)
             await asyncio.to_thread(mark_attempting, obligation_id)
             return obligation_id
         except Exception:
             logger.debug("delivery ledger record failed", exc_info=True)
             return None
+
+    @staticmethod
+    def _final_delivery_result(text_result: Optional[SendResult], media_ok: bool) -> SendResult:
+        """Fold the attachment half of a turn into the text half, for the ledger obligation.
+
+        Any attachment failure makes the turn FAILED — including a partial success — so recovery
+        resends the whole response with a marker instead of marking the row delivered minus its
+        media. A text failure keeps its own result: its error string drives the flood / reconnect
+        retry classification (``_finalize_delivery_obligation``).
+        """
+        if text_result is None:
+            return SendResult(success=False, error="no delivery attempted")
+        if not getattr(text_result, "success", False):
+            return text_result
+        if media_ok:
+            return text_result
+        return SendResult(success=False, error="attachment_delivery_failed")
 
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
@@ -4132,13 +4196,12 @@ class BasePlatformAdapter(ABC):
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
         tags only, never bare local files), video → send_video, else send_document. Every failure is
-        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
+        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS. Routing comes
+        from ``_media_attachment_op``, the same helper the ledger manifest is built from."""
         from urllib.parse import quote as _quote
 
-        def _as_image(path: str) -> bool:
-            return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
-        _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
-        _image_paths += [p for p in local_files if _as_image(p)]
+        _image_paths = self._attachment_image_paths(
+            media_files, local_files, force_document_attachments=force_document_attachments)
         if _image_paths:
             await self._send_image_batch(
                 event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
@@ -4149,23 +4212,22 @@ class BasePlatformAdapter(ABC):
             """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
             do."""
             ext = Path(path).suffix.lower()
-            if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
-            elif ext in _VIDEO_EXTS:
-                if media_tag:
-                    logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
-                result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
-            else:
-                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+            op, op_kwargs = _media_attachment_op(
+                path, is_voice=is_voice, media_tag=media_tag, platform=self.platform)
+            if op == "send_video" and media_tag:
+                logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
+            result = await getattr(self, op)(chat_id=chat_id, metadata=metadata, **op_kwargs)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
                 await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
             return result
-        queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
+        queue = [(p, v, True) for p, v in media_files if v or not _is_image_attachment(
+            p, force_document=force_document_attachments)]
         if queue:
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
-        queue += [(p, False, False) for p in local_files if not _as_image(p)]
+        queue += [(p, False, False) for p in local_files if not _is_image_attachment(
+            p, force_document=force_document_attachments)]
         for path, is_voice, media_tag in queue:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -4177,6 +4239,75 @@ class BasePlatformAdapter(ABC):
                     logger.warning("[%s] Error sending media: %s", self.name, err)
                 else:
                     logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
+
+    @staticmethod
+    def _attachment_image_paths(media_files: list, local_files: list, *,
+                                force_document_attachments: bool) -> List[str]:
+        """Paths delivered as images (batched), in send order: MEDIA-tag files that are not voice
+        notes, then bare local files. Shared with ``_attachment_manifest``."""
+        return [p for p, is_voice in media_files
+                if not is_voice and _is_image_attachment(p, force_document=force_document_attachments)] \
+            + [p for p in local_files
+               if _is_image_attachment(p, force_document=force_document_attachments)]
+
+    def _attachment_manifest(self, extracted: "_ExtractedResponse") -> List[Dict[str, Any]]:
+        """The attachment sends this turn owes the platform, as a replay list for the delivery ledger:
+        one ``{"op": ..., **kwargs}`` entry per call ``_deliver_attachments`` is about to make, in the
+        same order, built by the same routing (``_media_attachment_op`` / ``_attachment_image_paths``).
+
+        It is computed BEFORE the sends — that is the point: a crash in that window must leave the
+        media recoverable instead of redelivering the text alone. Extracted image URLs are covered
+        too; for those the URL is the only representation we hold, so a redelivery re-sends the URL.
+        """
+        from urllib.parse import quote as _quote
+
+        manifest: List[Dict[str, Any]] = []
+        if extracted.images:
+            manifest.append({"op": "send_multiple_images",
+                             "images": [[url, alt] for url, alt in extracted.images]})
+        image_paths = self._attachment_image_paths(
+            extracted.media_files, extracted.local_files,
+            force_document_attachments=extracted.force_document_attachments)
+        if image_paths:
+            manifest.append({"op": "send_multiple_images",
+                             "images": [[f"file://{_quote(p)}", ""] for p in image_paths]})
+        queue = [(p, v, True) for p, v in extracted.media_files if v or not _is_image_attachment(
+            p, force_document=extracted.force_document_attachments)]
+        queue += [(p, False, False) for p in extracted.local_files if not _is_image_attachment(
+            p, force_document=extracted.force_document_attachments)]
+        for path, is_voice, media_tag in queue:
+            op, op_kwargs = _media_attachment_op(
+                path, is_voice=is_voice, media_tag=media_tag, platform=self.platform)
+            manifest.append({"op": op, **op_kwargs})
+        return manifest
+
+    async def redeliver_attachments(self, chat_id: str, manifest: List[Dict[str, Any]],
+                                    metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Re-issue a turn's attachment sends from its ledger media manifest (crash recovery).
+
+        Returns True only when EVERY entry landed. A partial failure is a failure: the caller keeps
+        the obligation undelivered so the whole response is resent with a marker, instead of the row
+        being marked delivered minus its media. An entry naming an op this build cannot send fails
+        closed the same way — the row stays recoverable (and visible) rather than lying about it.
+        """
+        delivered_everything = True
+        for entry in manifest:
+            op = entry.get("op")
+            op_kwargs = {key: value for key, value in entry.items() if key != "op"}
+            if op not in _REPLAYABLE_MEDIA_OPS:
+                logger.error("[%s] Cannot redeliver attachment op %r from the delivery ledger; "
+                             "leaving the obligation undelivered", self.name, op)
+                return False
+            try:
+                result = await getattr(self, op)(chat_id=chat_id, metadata=metadata, **op_kwargs)
+            except Exception as err:
+                logger.warning("[%s] Redelivery of %s raised: %s", self.name, op, err)
+                result = None
+            if result is None or not getattr(result, "success", False):
+                delivered_everything = False
+                logger.warning("[%s] Redelivered attachment %s failed: %s", self.name, op,
+                               getattr(result, "error", None) or "no result")
+        return delivered_everything
 
     async def _send_image_batch(
         self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
@@ -4196,35 +4327,55 @@ class BasePlatformAdapter(ABC):
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
-    ) -> "tuple[SendResult, BasePlatformAdapter]":
+        media_manifest: Optional[List[Dict[str, Any]]] = None, finalize: bool = True,
+    ) -> "tuple[SendResult, BasePlatformAdapter, Optional[str]]":
         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
         (a reconnect may have replaced this adapter): record the obligation before the send,
         send with retry, finalize from the result — so a refused final (flood control, a dead
         transport) leaves a ledger row the boot sweep / runtime redelivery can act on. ``event``
         supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
-        Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
-        (an ephemeral delete must go to the same transport)."""
+
+        Empty ``text_content`` with a ``media_manifest`` is a media-only turn: there is nothing to
+        send above the attachments, and the row owes those (a neutral successful result keeps the
+        text half out of the outcome).
+
+        ``finalize=False`` hands the obligation id back WITHOUT resolving it: the caller still owes
+        the turn's attachments, so only it can say whether the response landed. Returns the result
+        with the adapter that sent it: that adapter owns ``result.message_id`` (an ephemeral delete
+        must go to the same transport)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
-        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
-        if obligation_id is not None:
+            event, session_key, text_content, delivery_adapter, is_ephemeral_response, media_manifest)
+        if text_content:
+            logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                        len(text_content), event.source.chat_id)
+            result = await delivery_adapter._send_with_retry(
+                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        else:
+            result = SendResult(success=True)
+        if finalize and obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
-        return result, delivery_adapter
+        return result, delivery_adapter, obligation_id
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
-        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
-        result, delivery_adapter = await self.send_final_ledgered(
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable,
+        media_manifest: Optional[List[Dict[str, Any]]] = None, finalize: bool = True,
+    ) -> "tuple[SendResult, BasePlatformAdapter, Optional[str]]":
+        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete.
+
+        ``finalize=False`` leaves the turn's obligation open for the caller (``media_manifest`` is
+        already recorded on it); the returned obligation id is then the handle it must resolve once
+        the attachments have gone out."""
+        result, delivery_adapter, obligation_id = await self.send_final_ledgered(
             event, session_key, text_content, metadata,
-            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
-        record_delivery(result)
+            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response,
+            media_manifest=media_manifest, finalize=finalize)
+        if text_content:  # a media-only turn attempts no text send, so it has no text outcome
+            record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
+        return result, delivery_adapter, obligation_id
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
@@ -4251,24 +4402,36 @@ class BasePlatformAdapter(ABC):
 
     async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
                                    metadata: Dict[str, Any], *, anything_sent: bool,
-                                   record_delivery: Callable) -> None:
+                                   record_delivery: Callable) -> bool:
         """Send extracted image URLs, MEDIA files and bare local files (human-paced),
-        then fail loudly if a non-empty response produced nothing deliverable. Attachment
-        results feed ``record_delivery`` so the turn outcome reflects them."""
+        then fail loudly if a non-empty response produced nothing deliverable.
+
+        Returns True only when EVERY attachment attempt succeeded (vacuously so when the turn owes
+        none). The caller folds that into the turn's ledger obligation, so a partial failure is a
+        failed obligation — never a delivered row with a dropped attachment. Attachment results also
+        feed ``record_delivery`` so the turn outcome reflects them.
+        """
         human_delay = self._get_human_delay()
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
+        results: List[SendResult] = []
+
+        def _record_attachment(result) -> None:
+            results.append(result)
+            record_delivery(result)
+
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            await self._send_image_batch(event, images, metadata, human_delay, record_delivery)
+            await self._send_image_batch(event, images, metadata, human_delay, _record_attachment)
         await self._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
-            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
+            human_delay=human_delay, metadata=metadata, record_delivery=_record_attachment)
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
                          "for %s (empty after extract, recovery yielded nothing).", self.name,
                          len(extracted.pre_extract), event.source.chat_id)
+        return all(bool(getattr(result, "success", False)) for result in results)
 
     def _start_typing_refresh(self, event: MessageEvent, interrupt_event: asyncio.Event,
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
@@ -4415,22 +4578,35 @@ class BasePlatformAdapter(ABC):
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
-                            _record_delivery)
+                            event, session_key, text_content, _tts_path, _tts_index == 0,
+                            _final_thread_metadata, _record_delivery, is_ephemeral_response)
                     finally:
                         with contextlib.suppress(OSError):
                             os.remove(_tts_path)
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
-                if text_content and not _tts_caption_delivered:
-                    await self._send_final_text(
-                        event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
-                await self._deliver_attachments(
+                # ONE ledger obligation covers the whole turn: the text plus the attachments. It is
+                # recorded before the first send (a crash in this window must leave both recoverable)
+                # and resolved only after the attachments have gone out — _send_final_text normally
+                # resolves for itself, here it hands the row back. A caption already carried the text
+                # (TTS), so the row then owes only the attachments.
+                _media_manifest = self._attachment_manifest(extracted)
+                _final_oid = None
+                _text_result = _final_adapter = None
+                if text_content or _media_manifest:
+                    _text_result, _final_adapter, _final_oid = await self._send_final_text(
+                        event, session_key, "" if _tts_caption_delivered else text_content,
+                        _final_thread_metadata, is_ephemeral_response, _ephemeral_ttl, _record_delivery,
+                        media_manifest=_media_manifest, finalize=False)
+                _media_ok = await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+                if _final_oid is not None:
+                    await self._finalize_delivery_obligation(
+                        _final_oid, self._final_delivery_result(_text_result, _media_ok),
+                        event, _final_adapter)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

@@ -426,7 +426,7 @@ class GatewayNotificationsMixin:
         inbound id the ledger falls back to the event's own (empty) message id. Adapters without
         the base contract and sends without a session key keep the plain send."""
         if session_key and isinstance(adapter, BasePlatformAdapter):
-            result, _ = await adapter.send_final_ledgered(
+            result, _, _ = await adapter.send_final_ledgered(
                 MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
                 session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
         else:

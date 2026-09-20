@@ -411,7 +411,12 @@ class GatewayStartupMixin:
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the
         bounded boot-send task, so a flood-limited send can be abandoned by the restore gate without
-        reopening the turn-replay window. Returns the redelivered count."""
+        reopening the turn-replay window. Returns the redelivered count.
+
+        A row covers the whole turn: the text AND its ``media_manifest``. A row is only marked
+        delivered once BOTH halves landed; a partial attachment failure fails the row and leaves it
+        for a full resend (text with marker + every attachment) instead of being reported delivered
+        with its media silently missing."""
         # No early return on an empty claim: the boot sweep may have ADOPTED flood-refused rows that are
         # not due yet, and those still need their timer armed below.
         try:
@@ -428,32 +433,64 @@ class GatewayStartupMixin:
             adapter = await self._obligation_adapter(row)
             if adapter is None:
                 continue
+            manifest = row.get("media_manifest")
+            if manifest is None:
+                # Stored manifest unreadable: the attachments this row owes cannot be reconstructed,
+                # so its text alone must NOT go out and the row must not be called delivered.
+                with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
+                    await asyncio.to_thread(mark_failed, row["obligation_id"], "media_manifest_unreadable")
+                logger.error("obligation %s: stored media manifest is unreadable; not redelivering "
+                             "(its attachments cannot be reconstructed)", row["obligation_id"])
+                continue
             content = row["content"]
-            if row.get("needs_marker"):
+            if row.get("needs_marker") and content:
+                # Nothing to mark on a media-only row: the marker lives in the text half.
                 content = row.get("marker", RECOVERED_MARKER) + content
             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
+            result = None
             try:
-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+                if content:
+                    result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
             except Exception as send_err:
                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
                 result = None
+            delivered = not content or (result is not None and getattr(result, "success", False))
+            if delivered and manifest:
+                delivered = await self._redeliver_claimed_attachments(adapter, row, manifest, metadata)
             with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
-                if result is not None and getattr(result, "success", False):
+                if delivered:
                     await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(
-                        "Redelivered recovered final response to %s:%s (obligation %s, attempt %d)",
-                        row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
-                    )
+                        "Redelivered recovered final response to %s:%s (obligation %s, attempt %d, "
+                        "%d attachment op(s))", row["platform"], row["chat_id"], row["obligation_id"],
+                        row["attempts"], len(manifest))
                 else:
                     await asyncio.to_thread(
-                        mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
+                        mark_failed, row["obligation_id"],
+                        str(getattr(result, "error", "") or "attachment redelivery failed")
                     )
         # Whatever is still waiting on a flood penalty or a retry backoff (adopted at boot, skipped as not
         # yet due, refused again just now) gets a timer, so no rejected reply waits for the next restart.
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
             await self._arm_flood_timers_for_waiting_rows()
         return redelivered
+
+    async def _redeliver_claimed_attachments(self, adapter, row: dict, manifest: list,
+                                             metadata: Optional[dict]) -> bool:
+        """Re-issue a claimed row's attachment sends (truthy only when every one landed). An adapter
+        that cannot replay media fails the row: the obligation stays owed and visible rather than
+        being marked delivered with its attachments dropped."""
+        redeliver = getattr(adapter, "redeliver_attachments", None)
+        if not callable(redeliver):
+            logger.error("obligation %s: adapter %s cannot redeliver %d attachment op(s)",
+                         row["obligation_id"], getattr(adapter, "name", adapter), len(manifest))
+            return False
+        try:
+            return bool(await redeliver(row["chat_id"], manifest, metadata))
+        except Exception as err:
+            logger.warning("obligation %s: attachment redelivery raised: %s", row["obligation_id"], err)
+            return False
 
     async def _obligation_adapter(self, row: dict):
         """Resolve the adapter for a claimed ledger row, or None when it cannot be delivered now."""

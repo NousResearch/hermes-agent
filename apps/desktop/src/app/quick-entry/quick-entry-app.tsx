@@ -8,7 +8,8 @@ import {
   QUICK_TARGET_CURRENT,
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
-  quickComposerReducer
+  quickComposerReducer,
+  type QuickEntrySubmitPayload
 } from '@/store/quick-entry'
 
 import type { ThoughtSnapshot } from '../../../electron/thought-capture'
@@ -17,7 +18,7 @@ import type { ThoughtSnapshot } from '../../../electron/thought-capture'
 export function QuickEntryApp() {
   const { t } = useI18n()
   const copy = t.quickCapture
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const [state, setState] = useState(initialQuickComposerState)
   const stateRef = useRef(state)
   const [inbox, setInbox] = useState<ThoughtSnapshot | null>(null)
@@ -25,7 +26,11 @@ export function QuickEntryApp() {
   const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
-  const [notice, setNotice] = useState<'saved' | 'loadFailed' | 'saveFailed' | null>(null)
+
+  const [notice, setNotice] = useState<
+    'saved' | 'loadFailed' | 'saveFailed' | 'handoffUnconfirmed' | 'handoffRejected' | null
+  >(null)
+
   const generation = useRef(0)
   const draftVersion = useRef(0)
   const pendingDrafts = useRef(new Map<string, ThoughtSnapshot['draft']>())
@@ -33,14 +38,57 @@ export function QuickEntryApp() {
 
   function dispatch(event: QuickComposerEvent) {
     const { state: next, send } = quickComposerReducer(stateRef.current, event)
+
+    if (send) {
+      void handoff(send)
+
+      return
+    }
+
     stateRef.current = next
     setState(next)
 
-    if (send) {
-      window.hermesDesktop.quickEntry.submit({ ...send, thoughtOwnerToken: inboxRef.current?.token })
-      // Keep the persisted draft recoverable: the existing chat bridge has no delivery acknowledgment.
-    } else if (!next.visible) {
+    if (!next.visible) {
       window.hermesDesktop.quickEntry.dismiss()
+    }
+  }
+
+  async function handoff(send: QuickEntrySubmitPayload) {
+    const current = inboxRef.current
+
+    if (busyRef.current || current?.draft.handoffAttempted) {
+      return
+    }
+
+    busyRef.current = true
+    setBusy(true)
+    const request = generation.current
+
+    try {
+      if (current) {
+        const draft = { ...current.draft, text: stateRef.current.draft, handoffAttempted: true }
+        // Persist uncertainty before dispatch so a restart cannot silently retry a chat prompt.
+        await window.hermesDesktop.quickEntry.saveThoughtDraft({ token: current.token, draft })
+
+        if (request !== generation.current) {return}
+        pendingDrafts.current.delete(ownerKey(current))
+        adopt({ ...current, draft })
+      }
+
+      setNotice('handoffUnconfirmed')
+
+      const forwarded = await window.hermesDesktop.quickEntry.submit({
+        ...send,
+        thoughtOwnerToken: current?.token
+      })
+
+      if (request === generation.current && !forwarded) {setNotice('handoffRejected')}
+    } catch {
+      if (request === generation.current)
+        {setNotice(inboxRef.current?.draft.handoffAttempted ? 'handoffUnconfirmed' : 'saveFailed')}
+    } finally {
+      busyRef.current = false
+      setBusy(false)
     }
   }
 
@@ -63,7 +111,7 @@ export function QuickEntryApp() {
 
       const pending = pendingDrafts.current.get(ownerKey(value))
       adopt(pending ? { ...value, draft: pending } : value)
-      setNotice(pending ? 'saveFailed' : null)
+      setNotice(pending ? 'saveFailed' : value.draft.handoffAttempted ? 'handoffUnconfirmed' : null)
     } catch {
       if (request === generation.current) {
         setNotice('loadFailed')
@@ -85,8 +133,9 @@ export function QuickEntryApp() {
       return
     }
 
-    const draft = { ...current.draft, text }
+    const draft = { id: current.draft.id, text }
     inboxRef.current = { ...current, draft }
+    setInbox(inboxRef.current)
     const key = ownerKey(current)
     pendingDrafts.current.set(key, draft)
     void window.hermesDesktop.quickEntry
@@ -135,6 +184,8 @@ export function QuickEntryApp() {
     } finally {
       busyRef.current = false
       setBusy(false)
+
+      if (request === generation.current && stateRef.current.visible) {inputRef.current?.focus()}
     }
   }
 
@@ -205,27 +256,37 @@ export function QuickEntryApp() {
           }
         }}
       >
-        <input
-          aria-label="Quick Entry"
+        <textarea
+          aria-label={copy.placeholder}
           autoCapitalize="off"
           autoComplete="off"
           autoCorrect="off"
-          className="w-full bg-transparent text-sm text-(--ui-text-primary) outline-none"
-          disabled={busy || (!inbox && !notice)}
+          className="w-full resize-none bg-transparent text-sm text-(--ui-text-primary) outline-none"
+          disabled={!inbox && !notice}
           onChange={event => edit(event.target.value)}
           onKeyDown={event => {
+            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's' && !event.nativeEvent.isComposing) {
+              event.preventDefault()
+              void save()
+
+              return
+            }
+
             if (isSubmitEnter(event) && !event.shiftKey && !busyRef.current) {
               event.preventDefault()
               dispatch({ type: 'submit' })
             }
           }}
           placeholder={copy.placeholder}
+          readOnly={busy}
           ref={inputRef}
+          rows={2}
           spellCheck={false}
           value={state.draft}
         />
         <div className="flex items-center gap-2">
           <Button
+            aria-keyshortcuts="Meta+S Control+S"
             disabled={busy || !inbox || !state.draft.trim()}
             onClick={() => void save()}
             size="xs"
@@ -273,6 +334,19 @@ export function QuickEntryApp() {
             {copy[notice]}
           </p>
         )}
+        {inbox?.draft.handoffAttempted && (
+          <Button
+            disabled={busy}
+            onClick={() => {
+              edit(stateRef.current.draft)
+              inputRef.current?.focus()
+            }}
+            size="xs"
+            variant="text"
+          >
+            {copy.allowResend}
+          </Button>
+        )}
         {!state.connected && <p className="text-xs text-(--ui-text-tertiary)">{copy.offline}</p>}
         {expanded && (
           <div className="min-h-0 overflow-y-auto border-t border-(--ui-stroke-tertiary)">
@@ -281,9 +355,9 @@ export function QuickEntryApp() {
               <article className="flex flex-col gap-1 border-b border-(--ui-stroke-tertiary) py-2" key={thought.id}>
                 <p className="whitespace-pre-wrap break-words text-sm text-(--ui-text-primary)">{thought.text}</p>
                 <Button
-                  disabled={busy || !!state.draft}
+                  disabled={busy}
                   onClick={() => {
-                    edit(thought.text)
+                    edit(stateRef.current.draft ? `${stateRef.current.draft}\n${thought.text}` : thought.text)
                     setExpanded(false)
                     window.hermesDesktop.quickEntry.expandThoughts(false)
                     inputRef.current?.focus()
@@ -291,7 +365,7 @@ export function QuickEntryApp() {
                   size="xs"
                   variant="text"
                 >
-                  {copy.open}
+                  {state.draft ? copy.append : copy.open}
                 </Button>
               </article>
             ))}

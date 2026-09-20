@@ -199,7 +199,7 @@ declare global {
         // Quick window → main: send this payload (main forwards it to the
         // primary renderer, which routes it to the target session and submits
         // through the normal prompt path) and hide.
-        submit: (payload: QuickEntrySubmitPayload) => void
+        submit: (payload: QuickEntrySubmitPayload) => Promise<boolean>
         // Quick window → main: hide without sending (Escape / blur).
         dismiss: () => void
         // Primary renderer → main → quick window: gateway connection state +

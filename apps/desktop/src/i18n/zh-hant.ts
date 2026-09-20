@@ -4,6 +4,11 @@ import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
   quickCapture: {
+    append: '附加至草稿',
+    allowResend: '允許再次傳送',
+    handoffUnconfirmed: '已請求傳送至聊天，但尚未確認送達。再次傳送前請檢查聊天。',
+    handoffRejected: '傳送至聊天的請求遭拒。輸入內容仍保留在此處。',
+
     save: '儲存想法',
     saved: '已儲存到本機',
     saving: '正在儲存…',

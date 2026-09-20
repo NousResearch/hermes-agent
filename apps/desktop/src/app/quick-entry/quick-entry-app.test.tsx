@@ -27,7 +27,7 @@ function setup() {
       draft: { id: 'two', text: '' },
       thoughts: [{ ...draft, createdAt: '2026-01-01' }]
     })),
-    submit: vi.fn(),
+    submit: vi.fn(async () => true),
     dismiss: vi.fn(),
     expandThoughts: vi.fn(),
     onShown: vi.fn(fn => {
@@ -83,13 +83,24 @@ describe('Quick Entry local thoughts', () => {
     expect(api.submit).not.toHaveBeenCalled()
     act(connect)
     fireEvent.keyDown(input, { key: 'Enter' })
-    expect(api.submit).toHaveBeenCalledWith({
-      target: 'current',
-      text: 'Keep this thought',
-      thoughtOwnerToken: 'owner-a'
-    })
+    await waitFor(() =>
+      expect(api.submit).toHaveBeenCalledWith({
+        target: 'current',
+        text: 'Keep this thought',
+        thoughtOwnerToken: 'owner-a'
+      })
+    )
     act(show)
     await waitFor(() => expect(input.value).toBe('  Keep this thought  '))
+    await screen.findByText(/delivery is unconfirmed/)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(api.submit).toHaveBeenCalledTimes(1)
+    cleanup()
+    render(<QuickEntryApp />)
+    await screen.findByText(/delivery is unconfirmed/)
+    act(connect)
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    expect(api.submit).toHaveBeenCalledTimes(1)
   })
 
   it('retains text after a failed save and rejects a stale save result after an owner switch', async () => {
@@ -154,4 +165,42 @@ it('does not restore a failed draft into a recreated profile with the same name'
   state.token = 'new-incarnation'
   act(() => changeOwner(state.owner))
   await waitFor(() => expect(input.value).toBe(''))
+})
+
+it('saves with the keyboard, restores focus, and appends without replacing an existing draft', async () => {
+  const { api } = setup()
+  render(<QuickEntryApp />)
+  const input = screen.getByRole<HTMLTextAreaElement>('textbox')
+  await waitFor(() => expect(input.disabled).toBe(false))
+  input.focus()
+  fireEvent.change(input, { target: { value: 'saved fragment' } })
+  fireEvent.keyDown(input, { key: 's', metaKey: true })
+  await screen.findByText('Saved locally')
+  expect(document.activeElement).toBe(input)
+  fireEvent.change(input, { target: { value: 'unfinished draft' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Saved thoughts' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Append to draft' }))
+  expect(input.value).toBe('unfinished draft\nsaved fragment')
+  expect(document.activeElement).toBe(input)
+  expect(api.submit).not.toHaveBeenCalled()
+})
+
+it('keeps rejected handoffs visible and does not send when their recovery write fails', async () => {
+  const { api, connect } = setup()
+  api.submit.mockResolvedValue(false)
+  render(<QuickEntryApp />)
+  const input = screen.getByRole<HTMLTextAreaElement>('textbox')
+  await waitFor(() => expect(input.disabled).toBe(false))
+  act(connect)
+  fireEvent.change(input, { target: { value: 'retain this' } })
+  fireEvent.keyDown(input, { key: 'Enter' })
+  await screen.findByText('Chat handoff was rejected. Your text is still here.')
+  expect(input.value).toBe('retain this')
+  expect(api.submit).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('button', { name: 'Allow another send' }))
+  api.saveThoughtDraft.mockRejectedValueOnce(new Error('disk full'))
+  fireEvent.keyDown(input, { key: 'Enter' })
+  await screen.findByText('Could not save. Your text is still here; retry saving.')
+  expect(input.value).toBe('retain this')
+  expect(api.submit).toHaveBeenCalledTimes(1)
 })

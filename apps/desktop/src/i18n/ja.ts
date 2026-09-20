@@ -4,6 +4,11 @@ import { defineLocale } from './define-locale'
 
 export const ja = defineLocale({
   quickCapture: {
+    append: '下書きに追加',
+    allowResend: '再送を許可',
+    handoffUnconfirmed: 'チャットへの送信を依頼しましたが、配信は未確認です。再送する前にチャットを確認してください。',
+    handoffRejected: 'チャットへの送信が拒否されました。入力した内容は保持されています。',
+
     save: '考えを保存',
     saved: 'この端末に保存しました',
     saving: '保存中…',

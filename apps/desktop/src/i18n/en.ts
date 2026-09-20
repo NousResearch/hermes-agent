@@ -4,6 +4,11 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   quickCapture: {
+    append: 'Append to draft',
+    allowResend: 'Allow another send',
+    handoffUnconfirmed: 'Chat handoff requested; delivery is unconfirmed. Check chat before sending again.',
+    handoffRejected: 'Chat handoff was rejected. Your text is still here.',
+
     save: 'Save thought',
     saved: 'Saved locally',
     saving: 'Saving…',

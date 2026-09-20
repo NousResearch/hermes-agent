@@ -45,7 +45,7 @@ describe('local thought capture through IPC', () => {
     try {
       const app = bridge(directory)
       const first = app.call('read')
-      const draft = { id: 'thought-1', text: '  A thought — 日本語\nkeep spacing  ' }
+      const draft = { id: 'thought-1', text: '  A thought — 日本語\nkeep spacing  ', handoffAttempted: true }
       app.call('draft', { token: first.token, draft })
       expect(bridge(directory).call('read').draft).toEqual(draft)
       const saved = app.call('save', { token: first.token, draft })
@@ -125,6 +125,7 @@ it('isolates a reused profile name, restores definite refusal, and retains uncer
     expect(invalidate).toHaveBeenCalledWith(owner)
     store.save(owner, { id: 'overlap', text: 'retain on refusal' })
     let refusePending!: (value: { ok: boolean }) => void
+
     const firstDelete = deleteWithThoughtRetirement(
       store,
       owner,
@@ -134,6 +135,7 @@ it('isolates a reused profile name, restores definite refusal, and retains uncer
           refusePending = resolve
         })
     )
+
     const overlappingDelete = vi.fn(async () => ({ ok: true }))
     await expect(deleteWithThoughtRetirement(store, owner, invalidate, overlappingDelete)).rejects.toThrow(
       'already in progress'
@@ -148,6 +150,33 @@ it('isolates a reused profile name, restores definite refusal, and retains uncer
     })
     await expect(deleteWithThoughtRetirement(store, owner, invalidate, remove)).rejects.toThrow('disk failure')
     expect(remove).not.toHaveBeenCalled()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+it('refuses a retired owner until a new route activation, including a delete with no prior capture', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'thought-route-'))
+
+  try {
+    const app = bridge(directory)
+    const owner = { connectionId: 'remote-a', profile: 'work' }
+    await deleteWithThoughtRetirement(
+      app.store,
+      owner,
+      () => {},
+      async () => ({ ok: true })
+    )
+    expect(() => app.call('read')).toThrow('deleted')
+    app.store.activateProfile(owner)
+    expect(app.call('read').thoughts).toEqual([])
+    await deleteWithThoughtRetirement(
+      app.store,
+      owner,
+      () => {},
+      async () => ({ ok: false })
+    )
+    expect(app.call('read').thoughts).toEqual([])
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

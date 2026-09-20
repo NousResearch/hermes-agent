@@ -2,6 +2,11 @@ import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
   quickCapture: {
+    append: 'إضافة إلى المسودة',
+    allowResend: 'السماح بإرسال آخر',
+    handoffUnconfirmed: 'طُلب الإرسال إلى المحادثة، ولم يُؤكَّد التسليم. تحقّق من المحادثة قبل الإرسال مجددًا.',
+    handoffRejected: 'رُفض الإرسال إلى المحادثة. لا يزال النص هنا.',
+
     save: 'حفظ الفكرة',
     saved: 'تم الحفظ على الجهاز',
     saving: 'جارٍ الحفظ…',

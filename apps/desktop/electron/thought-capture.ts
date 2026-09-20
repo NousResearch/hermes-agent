@@ -26,6 +26,7 @@ export interface SavedThought {
 export interface ThoughtDraft {
   id: string
   text: string
+  handoffAttempted?: boolean
 }
 
 export interface ThoughtSnapshot {
@@ -52,12 +53,29 @@ function validDraft(value: unknown): value is ThoughtDraft {
     typeof draft.id === 'string' &&
     /^[a-zA-Z0-9-]{1,80}$/.test(draft.id) &&
     typeof draft.text === 'string' &&
+    (draft.handoffAttempted === undefined || typeof draft.handoffAttempted === 'boolean') &&
     Buffer.byteLength(draft.text, 'utf8') <= 65536
   )
 }
 
 /** One writer in Electron; the renderer receives success only after file sync and rename. */
 export class ThoughtCaptureStore {
+  private readonly retiredOwners = new Set<string>()
+
+  activateProfile(owner: ThoughtOwner): void {
+    this.retiredOwners.delete(JSON.stringify(owner))
+  }
+
+  blockProfile(owner: ThoughtOwner): void {
+    this.retiredOwners.add(JSON.stringify(owner))
+  }
+
+  assertActive(owner: ThoughtOwner): void {
+    if (this.retiredOwners.has(JSON.stringify(owner))) {
+      throw new Error('This profile was deleted. Select an existing profile before capturing thoughts.')
+    }
+  }
+
   constructor(private readonly directory: string) {}
 
   private scopeDirectory(owner: ThoughtOwner): string {
@@ -228,6 +246,8 @@ export function registerThoughtCapture(
       throw new Error('Open a connection and profile in Hermes before saving thoughts.')
     }
 
+    store.assertActive(value)
+
     return value
   }
 
@@ -301,10 +321,12 @@ export async function deleteWithThoughtRetirement<T extends { ok?: boolean; succ
   if (pending.has(key)) {
     throw new Error('This profile deletion is already in progress.')
   }
+
   pending.add(key)
 
   try {
     const retired = store.retireProfile(owner)
+    store.blockProfile(owner)
     invalidate(owner)
 
     try {
@@ -312,13 +334,19 @@ export async function deleteWithThoughtRetirement<T extends { ok?: boolean; succ
 
       if (response?.ok === false || response?.success === false || response?.error) {
         retired?.restore()
+        store.activateProfile(owner)
+      } else {
+        store.blockProfile(owner)
       }
 
       return response
     } catch (error) {
+      store.blockProfile(owner)
+
       if (!retired) {
         throw error
       }
+
       throw new Error(
         `${error instanceof Error ? error.message : 'Profile deletion was not confirmed.'} Local thoughts are preserved in ${retired.recoveryPath}.`,
         { cause: error }

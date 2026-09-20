@@ -15009,6 +15009,9 @@ function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknow
     void resetPreviewReach(id)
 
     if (mainWindow && sender.id === mainWindow.webContents.id) {
+      if (next?.connectionId && (previous?.connectionId !== next.connectionId || previous?.profile !== next.profile)) {
+        thoughtStore.activateProfile({ connectionId: next.connectionId, profile: next.profile || 'default' })
+      }
       invalidateThoughtOwner()
     }
   }
@@ -17392,31 +17395,31 @@ ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
 // owns the one prompt-submit path, and forwarding keeps it that way. The
 // payload is `{ target, text }` — target routing (current chat / a picked
 // session / new) is the renderer's job too.
-ipcMain.on('hermes:quick-entry:submit', (event, payload) => {
+ipcMain.handle('hermes:quick-entry:submit', (event, payload) => {
+  if (!quickEntryWindow || event.sender.id !== quickEntryWindow.webContents.id) {
+    return false
+  }
+
   let thoughtOwner
 
   if (payload?.thoughtOwnerToken !== undefined) {
     try {
       thoughtOwner = thoughtCapture.authorize(event.sender.id, payload.thoughtOwnerToken)
     } catch {
-      invalidateThoughtOwner()
-
-      return
+      return false
     }
   }
-
-  hideQuickEntryWindow()
 
   const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
 
   if (!text) {
-    return
+    return false
   }
 
   if (!mainWindow || mainWindow.isDestroyed()) {
     rememberLog('[quick-entry] dropped a submit: no primary window to route it to')
 
-    return
+    return false
   }
 
   // Deliberately does NOT raise/focus the main window — the user asked to fire
@@ -17426,6 +17429,10 @@ ipcMain.on('hermes:quick-entry:submit', (event, payload) => {
     ...(thoughtOwner ? { thoughtOwner } : {}),
     text
   })
+  hideQuickEntryWindow()
+
+  // Forwarded to the primary renderer, not a backend delivery receipt.
+  return true
 })
 
 // Primary renderer → main → quick window: gateway connection state + the

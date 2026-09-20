@@ -60,6 +60,11 @@ interface AuxTaskCopy {
 
 export interface Translations {
   quickCapture: {
+    append: string
+    allowResend: string
+    handoffUnconfirmed: string
+    handoffRejected: string
+
     save: string
     saved: string
     saving: string

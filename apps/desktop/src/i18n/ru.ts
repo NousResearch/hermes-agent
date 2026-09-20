@@ -25,6 +25,11 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 
 export const ru = defineLocale({
   quickCapture: {
+    append: 'Добавить к черновику',
+    allowResend: 'Разрешить повторную отправку',
+    handoffUnconfirmed: 'Запрошена отправка в чат; доставка не подтверждена. Проверьте чат перед повторной отправкой.',
+    handoffRejected: 'Передача в чат отклонена. Ваш текст сохранён в поле ввода.',
+
     save: 'Сохранить мысль',
     saved: 'Сохранено на устройстве',
     saving: 'Сохранение…',

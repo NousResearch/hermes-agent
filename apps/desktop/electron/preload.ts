@@ -226,7 +226,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     },
     getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
     setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
-    submit: payload => ipcRenderer.send('hermes:quick-entry:submit', payload),
+    submit: payload => ipcRenderer.invoke('hermes:quick-entry:submit', payload),
     dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
     // Primary renderer → main → quick window: gateway connection state + the
     // recent-session options the target picker offers. Main caches the latest

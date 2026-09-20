@@ -1518,8 +1518,16 @@ def check_respawn_guard(
                 "pre_kanban_dispatch", task_id=task_id, board=_kb.get_current_board(),
                 assignee=task.assignee, lane=lane, task=task,
             ):
-                if isinstance(decision, dict) and decision.get("action") == "hold":
-                    return str(decision.get("reason") or "plugin hold")
+                if not isinstance(decision, dict):
+                    _kb._log.debug("pre kanban dispatch hook returned a non-dict directive")
+                    continue
+                if decision.get("action") != "hold":
+                    _kb._log.debug("pre kanban dispatch hook returned unknown action: %r", decision.get("action"))
+                    continue
+                reason = decision.get("reason")
+                if isinstance(reason, str) and reason.strip():
+                    return reason.strip()
+                _kb._log.debug("pre kanban dispatch hook hold requires a reason")
         except Exception as exc:
             _kb._log.debug("pre kanban dispatch hook failed: %s", exc)
 

@@ -193,8 +193,17 @@ def _pre_kanban_task_create(**fields: Any) -> Optional[dict[str, Any]]:
     try:
         from hermes_cli.lifecycle import invoke_hook
         for result in invoke_hook("pre_kanban_task_create", **fields):
-            if isinstance(result, dict) and result.get("action") == "suppress":
-                return result
+            if not isinstance(result, dict):
+                _log.debug("pre kanban task create hook returned a non-dict directive")
+                continue
+            if result.get("action") != "suppress":
+                _log.debug("pre kanban task create hook returned unknown action: %r", result.get("action"))
+                continue
+            reason = result.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                _log.debug("pre kanban task create hook suppression requires a reason")
+                continue
+            return result
     except Exception as exc:
         _log.debug("pre kanban task create hook failed: %s", exc)
     return None
@@ -1331,6 +1340,8 @@ def create_task(
         session_id=session_id, idempotency_key=idempotency_key,
     )
     if decision is not None:
+        # An empty string means the pre-create hook suppressed the row; a non-empty
+        # value identifies an existing task supplied by the hook.
         return str(decision.get("existing_task_id") or "")
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create

@@ -128,6 +128,26 @@ def test_pre_dispatch_hold_records_respawn_guard(kanban_home, monkeypatch):
         mgr._hooks = saved
 
 
+@pytest.mark.parametrize(
+    "directive",
+    [None, "not-a-dict", {"action": "unknown", "reason": "bad"}, {"action": "suppress"}],
+)
+def test_pre_create_invalid_directives_are_noops(kanban_home, directive):
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_kanban_task_create", []).append(lambda **kw: directive)
+    try:
+        conn = kbc.connect()
+        try:
+            tid = kb.create_task(conn, title="normal")
+            assert tid
+            assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+        finally:
+            conn.close()
+    finally:
+        mgr._hooks = saved
+
+
 def test_pre_kanban_hooks_are_noops_without_subscriber(kanban_home, monkeypatch):
     conn = kbc.connect()
     try:

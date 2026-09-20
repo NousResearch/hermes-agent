@@ -1324,6 +1324,10 @@ check_network_prerequisites() {
 }
 
 install_system_packages() {
+    # setup_path persists this directory later, but dependency probes must also
+    # see commands that were pre-staged there during a fresh install.
+    local PATH="$(get_command_link_dir):$PATH"
+
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false

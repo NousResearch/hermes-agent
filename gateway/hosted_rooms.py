@@ -1217,10 +1217,11 @@ def probe_peer_room_reservation(
         "peer room ownership is temporarily unavailable")
 
 
-def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False) -> dict[str, Any]:
-    """Return durable replay and authority state for one room."""
+def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False,
+               conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    """Return durable replay state; canonical status borrows its authorized reader."""
     room_id = _room_id(room_id)
-    with _transaction(db_path) as conn:
+    with nullcontext(conn) if conn is not None else _transaction(db_path) as conn:
         row = _room_row(
             conn,
             f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE room_id=? AND (disbanded_at IS NULL

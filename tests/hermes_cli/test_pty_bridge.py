@@ -1,0 +1,318 @@
+"""Unit tests for hermes_cli.pty_bridge — PTY spawning + byte forwarding.
+
+These tests drive the bridge with minimal POSIX processes (echo, env, sleep,
+printf) to verify it behaves like a PTY you can read/write/resize/close.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import errno
+import os
+import select
+import shutil
+import signal
+import sys
+import time
+
+import pytest
+
+pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
+
+from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+
+
+skip_on_windows = pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
+)
+
+
+def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes:
+    """Accumulate PTY output until we see `needle` or time out."""
+    deadline = time.monotonic() + timeout
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        chunk = bridge.read(timeout=0.2)
+        if chunk is None:
+            break
+        buf.extend(chunk)
+        if needle in buf:
+            return bytes(buf)
+    return bytes(buf)
+
+
+@skip_on_windows
+class TestPtyBridgeSpawn:
+    def test_is_available_on_posix(self):
+        assert PtyBridge.is_available() is True
+
+    def test_spawn_returns_bridge_with_pid(self):
+        bridge = PtyBridge.spawn(["true"])
+        try:
+            assert bridge.pid > 0
+        finally:
+            bridge.close()
+
+    def test_spawn_raises_on_missing_argv0(self, tmp_path):
+        with pytest.raises((FileNotFoundError, OSError)):
+            PtyBridge.spawn([str(tmp_path / "definitely-not-a-real-binary")])
+
+    def test_spawn_marks_child_as_dashboard_hosted(self):
+        # Ink reads this to skip its focus-in erase+repaint, which under
+        # xterm.js was a visible reload on every OS app-switch (#94337).
+        from hermes_cli.pty_bridge import PTY_HOST_DASHBOARD, PTY_HOST_ENV
+
+        bridge = PtyBridge.spawn([shutil.which("sh") or "sh", "-c", f'printf "%s" "${PTY_HOST_ENV}"'])
+        try:
+            output = _read_until(bridge, PTY_HOST_DASHBOARD.encode())
+            assert PTY_HOST_DASHBOARD.encode() in output
+        finally:
+            bridge.close()
+
+
+@skip_on_windows
+class TestPtyBridgeIO:
+
+    @pytest.mark.asyncio
+    async def test_write_sends_to_child_stdin(self):
+        # `cat` with no args echoes stdin back to stdout.  We write a line,
+        # read it back, then signal EOF to let cat exit cleanly.
+        bridge = PtyBridge.spawn([shutil.which("cat") or "cat"])
+        try:
+            assert await bridge.write(b"hello-pty\n") is True
+            output = _read_until(bridge, b"hello-pty")
+            assert b"hello-pty" in output
+        finally:
+            bridge.close()
+
+    @pytest.mark.asyncio
+    async def test_write_yields_while_input_is_backpressured(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+        wait_started = asyncio.Event()
+        release_write = asyncio.Event()
+        write_calls = 0
+
+        def fake_write(fd, data):
+            nonlocal write_calls
+            assert fd == 123
+            write_calls += 1
+            if write_calls == 1:
+                raise BlockingIOError(errno.EAGAIN, "buffer full")
+            return len(data)
+
+        async def fake_wait_writable(timeout):
+            assert timeout > 0
+            wait_started.set()
+            await release_write.wait()
+            return True
+
+        monkeypatch.setattr(os, "write", fake_write)
+        monkeypatch.setattr(bridge, "_wait_writable", fake_wait_writable)
+
+        write_task = asyncio.create_task(bridge.write(b"queued input"))
+        await wait_started.wait()
+
+        # The stalled PTY write yielded control instead of pinning asyncio.
+        heartbeat_ran = False
+
+        async def heartbeat():
+            nonlocal heartbeat_ran
+            heartbeat_ran = True
+
+        await heartbeat()
+        assert heartbeat_ran is True
+
+        release_write.set()
+        assert await write_task is True
+        assert write_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_write_reports_sustained_backpressure(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+
+        def fake_write(_fd, _data):
+            raise BlockingIOError(errno.EAGAIN, "buffer full")
+
+        async def never_writable(_timeout):
+            return False
+
+        monkeypatch.setattr(os, "write", fake_write)
+        monkeypatch.setattr(bridge, "_wait_writable", never_writable)
+
+        assert await bridge.write(b"queued input") is False
+
+    def test_read_treats_nonblocking_read_race_as_idle(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+
+        monkeypatch.setattr(select, "select", lambda *_args: ([123], [], []))
+
+        def would_block(_fd, _size):
+            raise BlockingIOError(errno.EAGAIN, "try again")
+
+        monkeypatch.setattr(os, "read", would_block)
+        assert bridge.read(timeout=0.01) == b""
+
+    def test_read_returns_none_after_child_exits(self):
+        bridge = PtyBridge.spawn(["/bin/sh", "-c", "printf done"])
+        try:
+            _read_until(bridge, b"done")
+            # Give the child a beat to exit cleanly, then drain until EOF.
+            deadline = time.monotonic() + 3.0
+            while bridge.is_alive() and time.monotonic() < deadline:
+                bridge.read(timeout=0.1)
+            # Next reads after exit should return None (EOF), not raise.
+            got_none = False
+            for _ in range(10):
+                if bridge.read(timeout=0.1) is None:
+                    got_none = True
+                    break
+            assert got_none, "PtyBridge.read did not return None after child EOF"
+        finally:
+            bridge.close()
+
+
+@skip_on_windows
+class TestPtyBridgeResize:
+    def test_resize_updates_child_winsize(self):
+        # Query the TTY ioctl directly instead of using tput, which requires
+        # TERM and fails in GitHub Actions' non-interactive environment.
+        winsize_script = (
+            "import fcntl, struct, termios, time; "
+            "time.sleep(0.1); "
+            "rows, cols, *_ = struct.unpack('HHHH', "
+            "fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8)); "
+            "print(cols); print(rows)"
+        )
+        bridge = PtyBridge.spawn(
+            [sys.executable, "-c", winsize_script],
+            cols=80,
+            rows=24,
+        )
+        try:
+            bridge.resize(cols=123, rows=45)
+            output = _read_until(bridge, b"45", timeout=5.0)
+            # tput prints just the numbers, one per line
+            assert b"123" in output
+            assert b"45" in output
+        finally:
+            bridge.close()
+
+
+@skip_on_windows
+class TestClampDimension:
+    def test_clamps_above_max(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+
+        assert _clamp_dimension(131072, _MAX_COLS) == _MAX_COLS
+        assert _clamp_dimension(131072, _MAX_ROWS) == _MAX_ROWS
+
+
+    def test_non_numeric_falls_back_to_min(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+
+        assert _clamp_dimension(None, _MAX_COLS) == 1  # type: ignore[arg-type]
+        assert _clamp_dimension(float("nan"), _MAX_COLS) == 1  # type: ignore[arg-type]
+        assert _clamp_dimension(float("inf"), _MAX_COLS) == 1  # type: ignore[arg-type]
+
+    def test_clamped_values_pack_as_unsigned_short(self):
+        # The whole point: clamped output must never raise struct.error.
+        import struct as _struct
+
+        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+
+        cols = _clamp_dimension(131072, _MAX_COLS)
+        rows = _clamp_dimension(1, _MAX_ROWS)
+        # Should not raise.
+        _struct.pack("HHHH", rows, cols, 0, 0)
+
+
+@skip_on_windows
+class TestPtyBridgeClose:
+    def test_close_is_idempotent(self):
+        bridge = PtyBridge.spawn(["/bin/sh", "-c", "sleep 30"])
+        bridge.close()
+        bridge.close()  # must not raise
+        assert not bridge.is_alive()
+
+    def test_close_terminates_long_running_child(self):
+        bridge = PtyBridge.spawn(["/bin/sh", "-c", "sleep 30"])
+        pid = bridge.pid
+        bridge.close()
+        # Give the kernel a moment to reap
+        deadline = time.monotonic() + 3.0
+        reaped = False
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.05)
+            except ProcessLookupError:
+                reaped = True
+                break
+        assert reaped, f"pid {pid} still running after close()"
+
+    def test_close_signals_child_process_group(self, monkeypatch):
+        sent: list[tuple[int, signal.Signals]] = []
+
+        class _FakeProc:
+            pid = 12345
+            fd = -1
+
+            def __init__(self):
+                self.alive = True
+
+            def isalive(self):
+                return self.alive
+
+            def kill(self, sig):
+                raise AssertionError(f"single-process kill used: {sig}")
+
+            def close(self, force=False):
+                self.closed = force
+
+        fake = _FakeProc()
+
+        def fake_killpg(pgid, sig):
+            sent.append((pgid, sig))
+            fake.alive = False
+
+        monkeypatch.setattr(os, "getpgid", lambda pid: 67890)
+        monkeypatch.setattr(os, "killpg", fake_killpg)
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._proc = fake
+        bridge._fd = -1
+        bridge._closed = False
+
+        bridge.close()
+
+        assert sent == [(67890, signal.SIGHUP)]
+        assert bridge._closed is True
+
+
+@skip_on_windows
+class TestPtyBridgeEnv:
+    def test_cwd_is_respected(self, tmp_path):
+        bridge = PtyBridge.spawn(
+            ["/bin/sh", "-c", "pwd"],
+            cwd=str(tmp_path),
+        )
+        try:
+            output = _read_until(bridge, str(tmp_path).encode())
+            assert str(tmp_path).encode() in output
+        finally:
+            bridge.close()
+
+
+class TestPtyBridgeUnavailable:
+    """Platform fallback semantics — PtyUnavailableError is importable and
+    carries a user-readable message."""
+
+    def test_error_carries_user_message(self):
+        err = PtyUnavailableError("platform not supported")
+        assert "platform" in str(err)

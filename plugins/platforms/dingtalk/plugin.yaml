@@ -1,0 +1,39 @@
+name: dingtalk-platform
+label: DingTalk
+kind: platform
+version: 1.0.0
+description: >
+  DingTalk gateway adapter for Hermes Agent.
+  Connects to DingTalk via the dingtalk-stream SDK (Stream Mode) and relays
+  messages between DingTalk chats and the Hermes agent. Supports text, images,
+  audio, video, rich text, files, group @mention gating, free-response chats,
+  and per-user allowlists.
+author: NousResearch
+requires_env:
+  - name: DINGTALK_CLIENT_ID
+    description: "DingTalk app key (Client ID)"
+    prompt: "DingTalk Client ID (app key)"
+    url: "https://open-dev.dingtalk.com"
+    password: false
+  - name: DINGTALK_CLIENT_SECRET
+    description: "DingTalk app secret (Client Secret)"
+    prompt: "DingTalk Client Secret"
+    url: "https://open-dev.dingtalk.com"
+    password: true
+optional_env:
+  - name: DINGTALK_WEBHOOK_URL
+    description: "Static robot webhook URL for cross-platform / cron delivery"
+    prompt: "DingTalk robot webhook URL (optional)"
+    password: false
+  - name: DINGTALK_ALLOWED_USERS
+    description: "Comma-separated staff/sender IDs allowed to talk to the bot (* = any)"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: DINGTALK_HOME_CHANNEL
+    description: "Default conversation ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: DINGTALK_HOME_CHANNEL_NAME
+    description: "Display name for the DingTalk home channel"
+    prompt: "Home channel display name"
+    password: false

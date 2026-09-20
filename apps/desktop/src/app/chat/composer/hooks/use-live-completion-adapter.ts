@@ -1,0 +1,157 @@
+import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+export interface CompletionEntry {
+  text: string
+  display?: unknown
+  meta?: unknown
+  /** From `complete.slash`: registry command vs skill. The popover groups on
+   *  this instead of re-deriving kind from the desktop command table. */
+  kind?: string
+  /** Optional section label (e.g. "Commands", "Skills"). The popover renders a
+   *  header whenever this changes between consecutive items, so the fetcher must
+   *  emit entries already grouped contiguously. */
+  group?: string
+  /** Optional completion-action id. When set, picking the item runs that action
+   *  (e.g. opening an overlay) instead of inserting a chip + waiting for submit. */
+  action?: string
+}
+
+export interface CompletionPayload {
+  items: CompletionEntry[]
+  query: string
+}
+
+const EMPTY_QUERY = '\u0000'
+
+export function useLiveCompletionAdapter(options: {
+  enabled: boolean
+  debounceMs?: number
+  fetcher: (query: string) => Promise<CompletionPayload>
+  /** True when `fetcher` will answer this query from cache. Such a query skips
+   *  both the debounce and the loading state — the debounce exists to avoid a
+   *  request per keystroke, and a spinner over an answer we already hold reads
+   *  as latency the user isn't actually paying. */
+  isCached?: (query: string) => boolean
+  /** Bump to declare the held answer stale. Without it a popover left open on
+   *  an unchanged query would keep serving what it fetched before the source
+   *  changed, because the adapter de-dupes on the query alone. */
+  epoch?: number
+  toItem: (entry: CompletionEntry, index: number) => Unstable_TriggerItem
+}): { adapter: Unstable_TriggerAdapter; loading: boolean } {
+  const { enabled, debounceMs = 60, epoch = 0, fetcher, isCached, toItem } = options
+
+  const [state, setState] = useState<{ query: string; items: Unstable_TriggerItem[] }>({
+    query: EMPTY_QUERY,
+    items: []
+  })
+
+  const [loading, setLoading] = useState(false)
+
+  const tokenRef = useRef(0)
+  const timerRef = useRef<number | null>(null)
+  const pendingQueryRef = useRef<string | null>(null)
+
+  const cancelTimer = useCallback(() => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => () => cancelTimer(), [cancelTimer])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    if (enabled) {
+      return
+    }
+
+    cancelTimer()
+    pendingQueryRef.current = null
+    tokenRef.current += 1
+    setLoading(false)
+    setState({ query: EMPTY_QUERY, items: [] })
+  }, [cancelTimer, enabled])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    // Invalidate by forgetting which query the held items answer, so the next
+    // search() re-fetches. The items themselves stay until the new answer
+    // lands — an open popover must not blink empty on a background refresh.
+    // On mount this is already the state, so the first run is a no-op.
+    pendingQueryRef.current = null
+    setState(current => (current.query === EMPTY_QUERY ? current : { ...current, query: EMPTY_QUERY }))
+  }, [epoch])
+
+  const scheduleFetch = useCallback(
+    (query: string) => {
+      if (!enabled) {
+        return
+      }
+
+      if (pendingQueryRef.current === query) {
+        return
+      }
+
+      pendingQueryRef.current = query
+      cancelTimer()
+      const token = ++tokenRef.current
+      const cached = isCached?.(query) ?? false
+
+      if (!cached) {
+        setLoading(true)
+      }
+
+      const run = () => {
+        timerRef.current = null
+
+        fetcher(query)
+          .then(payload => {
+            if (token !== tokenRef.current) {
+              return
+            }
+
+            setState({
+              query: payload.query,
+              items: payload.items.map((entry, index) => toItem(entry, index))
+            })
+          })
+          .catch(() => {
+            if (token !== tokenRef.current) {
+              return
+            }
+
+            setState({ query, items: [] })
+          })
+          .finally(() => {
+            if (token === tokenRef.current) {
+              setLoading(false)
+            }
+          })
+      }
+
+      // A cached answer resolves in a microtask, so debouncing it would only
+      // add a frame of empty popover on every keystroke.
+      cached ? run() : (timerRef.current = window.setTimeout(run, debounceMs))
+    },
+    [cancelTimer, debounceMs, enabled, fetcher, isCached, toItem]
+  )
+
+  const adapter = useMemo<Unstable_TriggerAdapter>(
+    () => ({
+      categories: () => [],
+      categoryItems: () => [],
+      search: (query: string) => {
+        if (query !== state.query) {
+          scheduleFetch(query)
+        }
+
+        return state.items
+      }
+    }),
+    [scheduleFetch, state]
+  )
+
+  return { adapter, loading }
+}

@@ -1,4 +1,5 @@
-"""Desktop `serve` starts background MCP discovery only after the socket binds.
+"""Desktop `serve` starts background MCP discovery only after the socket binds; a standalone
+`hermes dashboard` arms it at boot and the first /api/ws client (or agent build) fires it (#58733).
 
 The MCP SDK import (~350ms) used to run on a thread started BEFORE
 web_server was imported, holding the GIL against the main thread's own
@@ -99,8 +100,9 @@ def test_standalone_dashboard_boot_arms_discovery_without_starting_it(monkeypatc
     after_bind = main_mod._dashboard_prepare_runtime(types.SimpleNamespace(skip_build=True), False)
 
     assert after_bind is False and calls == []
-    armed = mcp_startup._mcp_discovery_deferred
-    assert isinstance(armed, threading.Timer) and not armed.is_alive()
+    # armed, not started: firing on demand runs it exactly once
+    mcp_startup.start_deferred_mcp_discovery_now()
+    assert calls == ["dashboard-mcp-discovery"]
 
 
 def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):

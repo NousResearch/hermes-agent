@@ -199,7 +199,9 @@ def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float | N
                 _mcp_discovery_deferred = None
             start_background_mcp_discovery(logger=logger, thread_name=thread_name)
 
-        timer = threading.Timer(delay or 0, _fire)
+        # ``None`` builds the Timer only as the holder of ``_fire``; it is never started and
+        # ``start_deferred_mcp_discovery_now`` runs ``timer.function()`` directly.
+        timer = threading.Timer(0 if delay is None else delay, _fire)
         timer.daemon = True
         timer.name = f"{thread_name}-deferred"
         _mcp_discovery_deferred = timer

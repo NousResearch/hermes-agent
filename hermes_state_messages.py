@@ -549,22 +549,97 @@ class SessionMessagesMixin:
         is inserted as fresh active rows exactly as in the destructive path, so the live view is identical
         either way; only the durability of the dropped turns differs.
         """
-        from hermes_state_errors import CompressionSessionClosedError
         def _do(conn):
-            if reject_active_turn_lease:
-                self._check_transcript_write_guards(
-                    conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
-            elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
-                raise CompressionSessionClosedError(session_id)
-            if archive_dropped:
-                # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
-                conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1", (session_id,))
-            else:
-                conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
-            conn.execute(_RESET_COUNTERS_SQL, (session_id,))
-            total_messages, total_tool_calls = self._insert_message_rows(conn, session_id, messages)
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (total_messages, total_tool_calls, session_id))
+            self._replace_messages_in_transaction(
+                conn,
+                session_id,
+                messages,
+                active_only=active_only,
+                archive_dropped=archive_dropped,
+                reject_active_turn_lease=reject_active_turn_lease,
+            )
         self._execute_write(_do)
+
+    def _replace_messages_in_transaction(
+        self,
+        conn,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        active_only: bool,
+        archive_dropped: bool = False,
+        reject_active_turn_lease: bool = False,
+    ) -> None:
+        """Replace a transcript using the caller's open write transaction."""
+        from hermes_state_errors import CompressionSessionClosedError
+        if reject_active_turn_lease:
+            self._check_transcript_write_guards(
+                conn, session_id, None,
+                reject_active_turn_lease=True,
+                reject_active_compression_lock=True,
+            )
+        elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
+            raise CompressionSessionClosedError(session_id)
+        if archive_dropped:
+            # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
+            conn.execute(
+                "UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1",
+                (session_id,),
+            )
+        else:
+            active_clause = " AND active = 1" if active_only else ""
+            conn.execute(
+                f"DELETE FROM messages WHERE session_id = ?{active_clause}",
+                (session_id,),
+            )
+        conn.execute(_RESET_COUNTERS_SQL, (session_id,))
+        total_messages, total_tool_calls = self._insert_message_rows(conn, session_id, messages)
+        conn.execute(
+            f"{_SET_COUNTERS_SQL} WHERE id = ?",
+            (total_messages, total_tool_calls, session_id),
+        )
+
+    def replace_active_messages_if_unchanged(
+        self,
+        session_id: str,
+        expected_messages: List[Dict[str, Any]],
+        messages: List[Dict[str, Any]],
+        *,
+        archive_dropped: bool = False,
+    ) -> bool:
+        """Conditionally rewrite the active tip transcript.
+
+        The current model-fed projection is compared with ``expected_messages``
+        inside the same ``BEGIN IMMEDIATE`` transaction that performs the
+        rewrite. If another process appended or rewrote rows after the caller's
+        read, return ``False`` without deleting anything.
+        """
+
+        def _do(conn):
+            rows = conn.execute(
+                f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
+                "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            current_messages = self._rows_to_conversation(
+                rows,
+                session_id=session_id,
+                include_ancestors=False,
+                repair_alternation=True,
+                include_row_ids=True,
+            )
+            if current_messages != expected_messages:
+                return False
+            self._replace_messages_in_transaction(
+                conn,
+                session_id,
+                messages,
+                active_only=True,
+                archive_dropped=archive_dropped,
+            )
+            return True
+
+        return bool(self._execute_write(_do))
 
     def has_archived_messages(self, session_id: str) -> bool:
         """True if the session has any soft-archived (``active = 0``) rows (tests/diagnostics).

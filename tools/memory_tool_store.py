@@ -55,15 +55,50 @@ def _read_failed_error(path: Path) -> Dict[str, Any]:
         f"memory, so the write is refused. Nothing was changed — retry in a moment.")
 
 
+_QUOTE_CHARS = {"'", '"', "\u2018", "\u2019", "\u201a", "\u201b",
+                "\u201c", "\u201d", "\u201e", "\u201f"}
+
+
+def _normalize_for_match(text: str) -> str:
+    """Normalize for tolerant matching: collapse quote characters (single/double
+    and all curly variants) to one canonical form and collapse whitespace.
+
+    Background-review replaces (and human /memory edits) routinely re-emit entry
+    text with different quote characters (e.g. straight ``'`` instead of the
+    stored ``"``) or re-wrapped lines, so a byte-exact old_text substring test
+    would wrongly report "No entry matched". Collapsing quote style + whitespace
+    makes matching robust without loosening it semantically.
+    """
+    collapsed = "".join("'" if ch in _QUOTE_CHARS else ch for ch in str(text))
+    return " ".join(collapsed.split())
+
+
 def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int], bool]:
     """``(index, ambiguous)`` for entries matching *old_text*. A whole-entry
     EXACT match (``old_text == entry``) takes absolute priority — substring
     matches are only considered when no entry equals *old_text*, so a short
     entry stays addressable even when its full text is contained inside a
     longer sibling entry (remove('test') vs '...tests pass...'). Exact-duplicate
-    matches are safe (first wins); distinct matches → ``(None, True)``."""
+    matches are safe (first wins); distinct matches → ``(None, True)``.
+
+    When no byte-exact match exists (whole-entry or substring), matching falls
+    back to a quote/whitespace-normalized match, so background-review re-emitted
+    text with different quote characters or re-wrapped lines still matches.
+    """
     exact = [i for i, e in enumerate(entries) if e == old_text]
-    matches = exact if exact else [i for i, e in enumerate(entries) if old_text in e]
+    if exact:
+        matches = exact
+    else:
+        substring = [i for i, e in enumerate(entries) if old_text in e]
+        if substring:
+            matches = substring
+        else:
+            needle = _normalize_for_match(old_text)
+            if needle and needle.strip("'"):  # reject quote-only needles (e.g. bare " or ')
+                norm = [_normalize_for_match(e) for e in entries]
+                matches = [i for i, n in enumerate(norm) if needle in n]
+            else:
+                matches = []
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False

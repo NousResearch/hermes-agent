@@ -186,6 +186,12 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 |------|-------------|----------------------|
 | `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). Discovery supports time bounds (`after`/`before` — ISO dates or relative durations like `7d`, `24h`, `2w`) and `exclude_session_ids` for iterative re-finding. | — |
 
+## `knowledge_access` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `knowledge_access` | Structured read-only access to past conversation history, procedure skills, and exact registered documentary knowledge. Required `information_type`: `DOCUMENTARY_KNOWLEDGE`, `HISTORICAL_TRANSCRIPT`, or `PROCEDURE`. Optional structured fields: `query` (max 4096 chars), `session_id` (max 512 chars), `around_message_id` (integer), `window` (1–20), `limit` (1–10), `profile` (max 512 chars), `after` and `before` (max 128 chars each), `skill_identifier` (max 512 chars), and `kb_id` (max 256 chars). Additional properties are rejected. The selected `information_type` determines which structured arguments are accepted; invalid combinations fail closed. | — |
+
 ## `skills` toolset
 
 | Tool | Description | Requires environment |

@@ -10,7 +10,9 @@ type DrainWindowLike = MainWindowLike & {
 export function closeWindowsForDrain(windows: DrainWindowLike[]): number {
   let closed = 0
   for (const window of windows) {
-    if (window.isDestroyed()) continue
+    if (window.isDestroyed()) {
+      continue
+    }
     window.destroy()
     closed += 1
   }

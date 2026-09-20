@@ -726,3 +726,18 @@ class TestShutdownSettleWindow:
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
         ]
 
+
+@pytest.mark.asyncio
+async def test_failed_executor_submission_releases_the_worker_count():
+    """A request that reaches ``run_in_executor`` after ``shutdown_default_executor()`` raises
+    RuntimeError and never runs a worker; the worker-scoped count must not stay elevated for the
+    process lifetime, or the shutdown SessionDB-close gate skips the close forever (#116535)."""
+    baseline = _api_runs.api_worker_live_count()
+
+    class _ShutExecutorLoop:
+        def run_in_executor(self, executor, fn):
+            raise RuntimeError("Executor shutdown has been called")
+
+    with pytest.raises(RuntimeError, match="Executor shutdown"):
+        _api_runs._submit_api_worker(_ShutExecutorLoop(), lambda: None)
+    assert _api_runs.api_worker_live_count() == baseline

@@ -45,12 +45,14 @@ def api_worker_live_count() -> int:
         return _API_WORKER_LIVE
 
 
-def _track_api_worker(fn):
-    """Hold the worker-lifetime count for one ``run_in_executor`` submission.
+def _submit_api_worker(loop, fn):
+    """``loop.run_in_executor(None, fn)`` with the worker-lifetime count held for the submission.
 
     Increment on the submitting (handler) thread so the count is live before the worker can
     exit; decrement in the worker thread's own ``finally`` so handler cancellation cannot drop
-    it early. ``fn`` still runs entirely on the worker.
+    it early. When submission itself fails (default executor already shut down during quiesce
+    -> RuntimeError) the worker never runs, so the count is released here instead — a leaked
+    count would make the shutdown close gate skip the SessionDB close for the process lifetime.
     """
     global _API_WORKER_LIVE
     with _API_WORKER_LOCK:
@@ -64,7 +66,12 @@ def _track_api_worker(fn):
             with _API_WORKER_LOCK:
                 _API_WORKER_LIVE -= 1
 
-    return _counted
+    try:
+        return loop.run_in_executor(None, _counted)
+    except BaseException:
+        with _API_WORKER_LOCK:
+            _API_WORKER_LIVE -= 1
+        raise
 _ROOM_RETENTION_REQUEST_KEY = (
     RequestKey("hermes.room_run_retention_until", float) if RequestKey is not None
     else "hermes.room_run_retention_until")
@@ -905,9 +912,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage, served_runtime = await loop.run_in_executor(
-            None, _track_api_worker(
-                lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server)))
+        result, usage, served_runtime = await _submit_api_worker(
+            loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
         status, fields = terminal_run_status(result)

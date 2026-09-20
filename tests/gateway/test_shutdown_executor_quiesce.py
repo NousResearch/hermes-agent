@@ -303,7 +303,7 @@ async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkey
         # Same shape as the api_server call sites: the worker-scoped count is taken before
         # run_in_executor and released in the worker's own finally, so cancelling this task
         # drops the handler side while the thread keeps holding the worker side.
-        return await loop.run_in_executor(None, api_runs._track_api_worker(_blocked_turn))
+        return await api_runs._submit_api_worker(loop, _blocked_turn)
 
     task = asyncio.ensure_future(_handler())
     assert await loop.run_in_executor(None, worker_started.wait, 5.0), "worker never started"

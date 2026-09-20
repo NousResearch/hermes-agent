@@ -13,7 +13,7 @@ import {
   writeEnvFile,
   writeMockProviderConfig,
 } from './fixtures'
-import { MOCK_REPLY, startMockServer, type MockServer, type MockServerOptions } from './mock-server'
+import { MOCK_REPLY, startMockServer, type MockServer, type MockServerOptions } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')

@@ -56,11 +56,12 @@ class TestSttCategory:
 
 class TestConfigWrites:
     def test_write_provider_config_sets_stt_provider(self):
-        config = {}
+        config = {"stt": {"use_gateway": True}}
         prov = _stt_provider_named("Groq")
         _write_provider_config(prov, config, managed_feature=None)
         assert config["stt"]["provider"] == "groq"
-        assert config["stt"]["use_gateway"] is False
+        # Legacy key is popped so the read-time shim can't override the pick.
+        assert "use_gateway" not in config["stt"]
 
 
     def test_apply_provider_selection_stt(self):
@@ -88,7 +89,7 @@ class TestActiveDetection:
 class TestModelPicker:
 
     def test_catalog_matches_runtime_model_sets(self):
-        from tools.transcription_tools import GROQ_MODELS, OPENAI_MODELS
+        from tools.transcription_common import GROQ_MODELS, OPENAI_MODELS
 
         assert set(STT_MODEL_CATALOG["openai"]) == OPENAI_MODELS
         assert set(STT_MODEL_CATALOG["groq"]) == GROQ_MODELS

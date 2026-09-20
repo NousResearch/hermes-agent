@@ -32,11 +32,39 @@ incident.
 """
 
 import ast
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _bind_lark_sdk_globals_when_installed():
+    """Bind the feishu adapter's lark SDK globals once per test session.
+
+    The adapter defers ``import lark_oapi`` to first use
+    (``_load_lark_oapi`` — called from connect()/probe_bot()/standalone
+    send), so the request-builder globals (``CreateMessageRequestBody``
+    etc.) stay ``None`` at module import time. Feishu tests across many
+    files inject a mock ``_client`` and skip connect() entirely, then call
+    send paths that reference those globals. Bind them eagerly when the
+    SDK is installed; when it isn't, the affected tests already skip via
+    their own ``skipUnless`` guards.
+    """
+    try:
+        import lark_oapi  # noqa: F401
+    except ImportError:
+        yield
+        return
+    try:
+        from plugins.platforms.feishu.adapter import _load_lark_oapi
+
+        _load_lark_oapi()
+    except Exception:
+        pass  # adapter not importable in this environment — tests will skip
+    yield
 
 
 def make_async_session_db(sync_mock=None):
@@ -477,6 +505,10 @@ def pytest_configure(config):
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Evict stale cache entries from previous fingerprints (best-effort).
+    # ``.tmp-gw-adapter-guard-*`` staging files (see
+    # ``_write_guard_cache_atomic``) deliberately do NOT match these globs:
+    # a sibling process evicting mid-publish must never unlink a temp file
+    # between its write and its ``os.replace``.
     try:
         for old in cache_dir.glob("gw-adapter-guard-*"):
             if old.name != f"gw-adapter-guard-{fp}":
@@ -490,6 +522,15 @@ def pytest_configure(config):
     # Use filelock to ensure only one process scans at a time.
     # Concurrent subprocesses all hit pytest_configure simultaneously;
     # without a lock they'd all find no cache and all run the scan.
+    #
+    # NOTE: filelock is NOT in CI's dependency closure (`uv sync --extra all
+    # --extra dev ...` does not pull it), so on CI the _NoLock fallback is
+    # what actually runs. Correctness therefore cannot depend on the lock:
+    # the cache write must be atomic and the read must tolerate a
+    # not-yet-visible cache. Before the atomic-write fix, a reader could
+    # observe a sibling's ``write_text`` mid-truncate, read "" and raise
+    # ``UsageError("")`` — the empty ``ERROR:`` flake that hit
+    # tests/gateway/relay/* files under the 96-way per-file runner.
     try:
         from filelock import FileLock
         lock = FileLock(str(lock_file), timeout=120)
@@ -504,10 +545,10 @@ def pytest_configure(config):
         lock = _NoLock()
 
     with lock:
-        if cache_file.exists():
-            cached = cache_file.read_text(encoding="utf-8")
-            if cached == "clean":
-                return
+        cached = _read_guard_cache(cache_file)
+        if cached == "clean":
+            return
+        if cached is not None:
             raise pytest.UsageError(cached)
 
         # Slow path: this process is the first to acquire the lock.
@@ -520,8 +561,53 @@ def pytest_configure(config):
                 + "\n\n"
                 + _GUARD_HINT
             )
-            cache_file.write_text(msg, encoding="utf-8")
+            _write_guard_cache_atomic(cache_file, msg)
             raise pytest.UsageError(msg)
         else:
-            cache_file.write_text("clean", encoding="utf-8")
+            _write_guard_cache_atomic(cache_file, "clean")
+
+
+def _read_guard_cache(cache_file: Path) -> str | None:
+    """Read the guard cache, treating unreadable/empty content as a miss.
+
+    Returns the cached text, or ``None`` when the cache should be treated as
+    absent (missing file, concurrent delete, or empty content). An empty or
+    vanished file is NEVER a violation — before this guard existed, a reader
+    racing a sibling's non-atomic write raised ``UsageError("")``, failing a
+    perfectly healthy test file with a blank ``ERROR:`` line.
+    """
+    try:
+        cached = cache_file.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    if not cached.strip():
+        return None
+    return cached
+
+
+def _write_guard_cache_atomic(cache_file: Path, content: str) -> None:
+    """Publish the guard cache atomically (write-temp + ``os.replace``).
+
+    ``Path.write_text`` opens with truncation, so concurrent readers can see
+    an empty or partial file. ``os.replace`` makes the new content appear
+    all-at-once under the final name — readers see either the old state
+    (miss → they scan too, harmless) or the complete verdict, never a
+    torn write. This must hold WITHOUT the filelock, which CI doesn't
+    install.
+
+    The staging name starts with ``.tmp-`` so it can never match the stale
+    eviction globs (``gw-adapter-guard-*`` / ``.gw-adapter-guard-*.lock``);
+    otherwise a sibling's eviction pass could unlink the temp between the
+    write and the ``os.replace``.
+    """
+    tmp = cache_file.with_name(f".tmp-{cache_file.name}.{os.getpid()}")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, cache_file)
+    except OSError:
+        # Best-effort cache: losing it costs a rescan, never correctness.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 

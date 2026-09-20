@@ -18,6 +18,11 @@ class _FakeAgent:
 
 
 class _StubCLI:
+    def _stage_and_swap_model(self, result, old_model):
+        # Staging + in-place swap lives in a helper; run the real one on this stub.
+        import cli as _cli_mod
+        return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
+
     model = "old/model"
     provider = "openrouter"
     requested_provider = "openrouter"
@@ -32,6 +37,15 @@ class _StubCLI:
 
     def _confirm_expensive_model_switch(self, result):
         return True
+
+    def _confirm_and_apply_cli_model_switch(
+        self, result, persist_global, one_turn, custom_provs=None
+    ):
+        import cli as cli_mod
+
+        return cli_mod.HermesCLI._confirm_and_apply_cli_model_switch(
+            self, result, persist_global, one_turn, custom_provs
+        )
 
 
 def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):

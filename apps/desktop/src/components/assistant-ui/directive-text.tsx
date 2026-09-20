@@ -6,7 +6,9 @@ import type { FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import type { I18nContextValue } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
+import { ExternalLink, openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
@@ -192,6 +194,15 @@ export const hermesDirectiveFormatter: Unstable_DirectiveFormatter = {
 
       // Simple references like `@diff` / `@staged`.
       if (!insertId) {
+        return rawText
+      }
+
+      // Colon-less completions (`@diff`, `@staged`, agent mentions like
+      // `@researcher`) are plain inline text, not typed references. classify()
+      // gives them `insertId = text`, and the typed-reference branch below
+      // would mint a bogus `@simple:` kind around them — the composer showed
+      // "@simple:`@mr-tester`" for a picked agent mention.
+      if (!rawText.includes(':')) {
         return rawText
       }
 
@@ -442,7 +453,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
  *  it's already a tile/main, otherwise open a stacked tab (never steals main
  *  from under the chat you're reading). Lazy-imports so the composer's rich
  *  editor can pull this module in without booting the profile/REST stack. */
-function openSessionRef(value: string) {
+export function openSessionRef(value: string) {
   const { sessionId } = parseSessionRefValue(value)
 
   if (!sessionId) {
@@ -452,6 +463,40 @@ function openSessionRef(value: string) {
   triggerHaptic('selection')
   // navigate is unused for the `tab` intent (focus-or-tile only).
   void import('@/app/open-session').then(({ openSession }) => openSession(sessionId, () => undefined, 'tab'))
+}
+
+/** What activating a directive of a given kind does. The single source of truth
+ *  for "you can act on this reference," shared by every surface that renders a
+ *  chip: the composer's hover pill (`ComposerDirectiveActions`) and the sent
+ *  message's clickable chip below. A kind with no entry is inert everywhere.
+ *
+ *  Add a kind here and both surfaces light up — that's the whole point of one
+ *  table. `icon`/`label` are for the pill; the transcript chip carries its own
+ *  glyph and only reads `run`. */
+export interface DirectiveAction {
+  /** The web target of a reference kind that IS a link. A kind with an `href`
+   *  renders as a real anchor so it inherits the one link surface's gestures:
+   *  plain click opens the in-app pane, ⌘/Ctrl-click (or middle-click) escapes
+   *  to the system browser, and the context-menu coordinator resolves the link
+   *  verbs. A button has neither. */
+  href?: (value: string) => string
+  icon: string
+  label: (t: I18nContextValue['t']) => string
+  run: (value: string, options?: { native?: boolean }) => void
+}
+
+export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
+  session: {
+    icon: 'link-external',
+    label: t => t.composer.openDirective,
+    run: openSessionRef
+  },
+  url: {
+    href: value => value,
+    icon: 'link-external',
+    label: t => t.composer.openDirective,
+    run: openLink
+  }
 }
 
 /** A `@session:<profile>/<id>` reference in the user transcript (directive
@@ -501,14 +546,23 @@ const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ 
   </span>
 )
 
-/** Inert by default; `onClick` promotes the chip to a real button (session
- *  refs, which open the session they name). */
+/** A directive reference in a sent message. A kind whose action declares an
+ *  `href` (url) renders as a real anchor — every transcript link's gestures
+ *  come from `ExternalLink` and the context-menu coordinator. An action
+ *  without an `href` (a session, or an `onClick` override) stays a button;
+ *  a kind with no action is an inert span. */
 const DirectiveChip: FC<{
   type: string
   label: string
   id: string
   onClick?: () => void
 }> = ({ type, label, id, onClick }) => {
+  // An `onClick` override is a bespoke activation, not the kind's link action —
+  // an override must not turn its carrier into a link.
+  const action = onClick ? undefined : DIRECTIVE_ACTIONS[type]
+  const activate = onClick ?? (action ? () => action.run(id) : undefined)
+  const href = action?.href?.(id)
+
   const body = (
     <>
       <DirectiveIcon type={type} />
@@ -517,14 +571,24 @@ const DirectiveChip: FC<{
   )
 
   const props = {
-    ...refAttrs(type, cn('wrap-anywhere', onClick && 'cursor-pointer')),
+    ...refAttrs(type, cn('wrap-anywhere', activate && 'cursor-pointer')),
     'data-directive-id': id,
     'data-slot': 'aui_directive-chip',
     title: id
   }
 
-  return onClick ? (
-    <button {...props} onClick={onClick} type="button">
+  if (href) {
+    return (
+      // The explicit className must come after the spread so it wins over the
+      // refAttrs className — `ExternalLink` prepends its own `ref` class.
+      <ExternalLink {...props} className="wrap-anywhere cursor-pointer" href={href}>
+        {body}
+      </ExternalLink>
+    )
+  }
+
+  return activate ? (
+    <button {...props} onClick={activate} type="button">
       {body}
     </button>
   ) : (

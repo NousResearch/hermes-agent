@@ -29,6 +29,8 @@ import os
 from setuptools import setup
 from setuptools.command.sdist import sdist
 
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 _IN_NIX_BUILD = os.environ.get("HERMES_NIX_BUILD") == "1"
 
 _BLOCK_MESSAGE = (
@@ -71,4 +73,27 @@ try:
 except ImportError:
     pass
 
-setup(cmdclass=cmdclass)
+# Root single-file modules (``run_agent``, ``hermes_state``, ``toolsets``...)
+# are invisible to ``packages.find``: that finder sees only directories with an
+# ``__init__.py``. The wheel build needs them on ``py_modules``, so derive the
+# list from the source tree at build time. A static list in ``pyproject.toml``
+# drifted each time the tree layout changed (missing modules broke installed
+# wheels with ``ModuleNotFoundError``), so there is no list to maintain here.
+# ``setup()`` kwargs merge with ``pyproject.toml``, and this file is the only
+# legitimate wheel/sdist builder, so the derived value is the single source.
+# Editable installs do not read it: ``build_editable`` never runs
+# ``bdist_wheel``. The filter source (``nix/lib.nix`` ``pythonSrc``) keeps
+# every root ``.py`` file, so the build sandbox sees the same set of files.
+def _root_py_modules():
+    try:
+        names = os.listdir(_ROOT)
+    except OSError:
+        return []
+    return sorted(
+        name[:-3]
+        for name in names
+        if name.endswith(".py") and name != "setup.py"
+    )
+
+
+setup(cmdclass=cmdclass, py_modules=_root_py_modules())

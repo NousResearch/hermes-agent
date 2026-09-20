@@ -3,13 +3,21 @@
 // in an offscreen window and read its title. That window loads arbitrary
 // user-linked pages, so it must never emit sound or trigger real downloads.
 
+import { createWindowOpenHandler } from './window-open-policy'
+
 export function linkTitleWindowOptions(partitionSession) {
   return {
     show: false,
     width: 1280,
     height: 800,
     webPreferences: {
-      backgroundThrottling: false,
+      // Deliberately throttled: this hidden window loads arbitrary user-linked
+      // pages, and an unthrottled heavy page burns full CPU for the window's
+      // whole lifetime. Title resolution rides load events
+      // (page-title-updated / did-finish-load) plus main-process timers, none
+      // of which the renderer clamp touches — hidden-page throttling only
+      // slows the page's own timer-driven JS, and the grace window already
+      // absorbs that.
       contextIsolation: true,
       javascript: true,
       nodeIntegration: false,
@@ -28,6 +36,9 @@ export function createLinkTitleWindow(BrowserWindow, partitionSession) {
 
   try {
     window.webContents.setAudioMuted(true)
+    // Loads arbitrary user-linked pages on render; it only needs the title, so
+    // a popup from that page never has a reason to exist (GHSA-9f4c-93c8-jc8g).
+    window.webContents.setWindowOpenHandler(createWindowOpenHandler())
   } catch {
     // webContents may be unavailable in degraded/headless environments; muting
     // is best-effort and the window is destroyed within a few seconds anyway.

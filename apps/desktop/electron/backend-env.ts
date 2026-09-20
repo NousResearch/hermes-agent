@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 
 // Match the POSIX fallback surface used by the Python terminal environment.
@@ -60,6 +61,34 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
   return ordered.join(delimiter)
 }
 
+/**
+ * Hermes-managed Node.js directories, in preferred lookup order.
+ *
+ * There are two on-disk layouts. `scripts/install.ps1` unpacks portable Node
+ * straight into `%LOCALAPPDATA%\hermes\node` (node.exe at the root, no `bin\`);
+ * `scripts/install.sh` and the node-bootstrap helper use the POSIX
+ * `$HERMES_HOME/node/bin`. Emit BOTH on every platform so mixed and migrated
+ * installs resolve, leading with the layout native to the current platform.
+ *
+ * This is the single source of truth for the ordering rule on the Node side —
+ * `main.ts` imports it rather than keeping its own copy. Mirrors
+ * `iter_hermes_node_dirs()` in hermes_constants.py, which the Electron main
+ * process cannot import.
+ */
+function hermesManagedNodePathEntries(
+  hermesHome,
+  { platform = process.platform, pathModule = pathModuleForPlatform(platform) }: any = {}
+) {
+  if (!hermesHome) {
+    return []
+  }
+
+  const root = pathModule.join(hermesHome, 'node')
+  const bin = pathModule.join(root, 'bin')
+
+  return platform === 'win32' ? [root, bin] : [bin, root]
+}
+
 function buildDesktopBackendPath({
   hermesHome,
   venvRoot,
@@ -68,19 +97,30 @@ function buildDesktopBackendPath({
   pathModule = pathModuleForPlatform(platform)
 }: any = {}) {
   const delimiter = delimiterForPlatform(platform)
-  const hermesNodeBin = hermesHome ? pathModule.join(hermesHome, 'node', 'bin') : null
+  const hermesNodeDirs = hermesManagedNodePathEntries(hermesHome, { platform, pathModule })
   const venvBin = venvRoot ? pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin') : null
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
-  return appendUniquePathEntries([hermesNodeBin, venvBin, currentPath, saneEntries], { delimiter })
+  return appendUniquePathEntries([hermesNodeDirs, venvBin, currentPath, saneEntries], { delimiter })
 }
 
-function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
+function normalizeHermesHomeRoot(
+  hermesHome,
+  { pathModule = pathModuleForPlatform(process.platform), homedir = os.homedir() }: any = {}
+) {
   if (!hermesHome) {
     return hermesHome
   }
 
-  const resolved = pathModule.resolve(String(hermesHome))
+  // fish (and any shell when the value is quoted) hands a literal `~` through; path.resolve()
+  // would pin it under cwd and the Python backend inherits that absolute path via HERMES_HOME.
+  let raw = String(hermesHome)
+
+  if (raw === '~' || raw.startsWith('~/') || (pathModule === path.win32 && raw.startsWith('~\\'))) {
+    raw = pathModule.join(homedir, raw.slice(1))
+  }
+
+  const resolved = pathModule.resolve(raw)
   const parent = pathModule.dirname(resolved)
 
   if (pathModule.basename(parent).toLowerCase() === 'profiles') {
@@ -126,6 +166,7 @@ export {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
+  hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
   POSIX_SANE_PATH_ENTRIES

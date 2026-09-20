@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 
 import tools.skills_sync_client as ssc
+import tools.skills_sync_client_org as org
+import tools.skills_sync_client_wire as wire
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +41,12 @@ class _MockState:
         # when org_role_admin is False, convert org-HEAD CAS to 202 proposals.
         self.org_feature = True
         self.org_role_admin = True
+        self.org_role_present = True
+        # Org objects live in a SEPARATE scope from personal ones, mirroring
+        # production's `org:<org_id>` scope key. Keeping them in a distinct
+        # dict is what makes a personal-route read of org content 404 in tests
+        # exactly as it does against the real plane.
+        self.org_objects = {}
         self.proposals = []  # [{n, to, base}]
 
 
@@ -79,35 +87,59 @@ def _make_handler(state: _MockState):
                     if part.startswith("prefix="):
                         from urllib.parse import unquote
                         prefix = unquote(part[len("prefix="):])
+                # FAITHFUL TO PRODUCTION: the personal refs route is scoped to
+                # the caller's own owner and does NOT serve org refs. Asking it
+                # for an `refs/org/...` prefix yields the caller's personal
+                # refs, not an error — the exact trap that let a broken client
+                # look healthy against an over-permissive mock.
                 refs = [
                     {"name": n, "hash": h}
                     for n, h in state.refs.items()
-                    if n.startswith(prefix)
+                    if n.startswith(prefix) and not n.startswith("refs/org/")
                 ]
                 return self._json(200, {"refs": refs})
 
+            if path == "/v1/sync/org/refs":
+                if not state.org_feature:
+                    return self._json(404, {"error": "unknown"})
+                if not state.org_role_present:
+                    return self._json(403, {"error": "org_workflow_unavailable"})
+                refs = [
+                    {"name": n, "hash": h}
+                    for n, h in state.refs.items()
+                    if n.startswith("refs/org/")
+                ]
+                return self._json(200, {"refs": refs})
+
+            if path.startswith("/v1/sync/org/objects/"):
+                if not state.org_role_present:
+                    return self._json(403, {"error": "org_workflow_unavailable"})
+                obj_hash = path[len("/v1/sync/org/objects/"):]
+                if obj_hash not in state.org_objects:
+                    return self._json(404, {"error": "not_found"})
+                return self._send_object(*state.org_objects[obj_hash])
+
             if path.startswith("/v1/sync/objects/"):
                 obj_hash = path[len("/v1/sync/objects/"):]
+                # Org-scoped objects are NOT readable through the personal
+                # route (production scopes it to the token owner).
                 if obj_hash not in state.objects:
                     return self._json(404, {"error": "not_found"})
-                kind, data = state.objects[obj_hash]
-                if kind == ssc.KIND_BLOB:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/octet-stream")
-                    self.send_header("X-HSP-Object-Type", "blob")
-                    self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    self.wfile.write(data)
-                    return
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("X-HSP-Object-Type", kind)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-                return
+                return self._send_object(*state.objects[obj_hash])
 
             self._json(404, {"error": "unknown"})
+
+        def _send_object(self, kind, data):
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/octet-stream" if kind == ssc.KIND_BLOB else "application/json",
+            )
+            self.send_header("X-HSP-Object-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
 
         def do_POST(self):
             length = int(self.headers.get("Content-Length", 0))
@@ -115,14 +147,14 @@ def _make_handler(state: _MockState):
             path = self.path.split("?", 1)[0]  # e.g. /v1/sync/objects?scope=org
 
             if path == "/v1/sync/objects":
-                return self._handle_put_objects(raw)
+                return self._handle_put_objects(raw, org="scope=org" in self.path)
 
             if path.startswith("/v1/sync/refs/"):
                 return self._handle_cas(raw)
 
             self._json(404, {"error": "unknown"})
 
-        def _handle_put_objects(self, raw):
+        def _handle_put_objects(self, raw, org=False):
             # multipart/form-data: parse parts (field=hash, filename=type,
             # body=raw bytes). The server recomputes each hash and 422s on
             # mismatch (contract §4.2).
@@ -163,10 +195,11 @@ def _make_handler(state: _MockState):
                     return self._json(422, {
                         "error": "hash_mismatch", "claimed": claimed_hash,
                     })
-                if claimed_hash in state.objects:
+                store = state.org_objects if org else state.objects
+                if claimed_hash in store:
                     already.append(claimed_hash)
                 else:
-                    state.objects[claimed_hash] = (kind, body)
+                    store[claimed_hash] = (kind, body)
                     accepted.append(claimed_hash)
             return self._json(200, {"accepted": accepted, "already_present": already})
 
@@ -237,7 +270,7 @@ def _jwt(claims: dict) -> str:
 
 class TestAddressing:
     def test_full_64_hex_address(self):
-        addr = ssc.wire_address(b"")
+        addr = wire.wire_address(b"")
         # sha256 of empty is the well-known e3b0... digest, full 64 hex.
         assert addr == (
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -247,21 +280,21 @@ class TestAddressing:
     def test_address_differs_from_local_truncated_namespace(self):
         # The wire full-64-hex must NOT equal the local truncated 16-hex form.
         data = b"hello world"
-        full = ssc.wire_address(data)
+        full = wire.wire_address(data)
         truncated = "sha256:" + hashlib.sha256(data).hexdigest()[:16]
         assert full != truncated
         assert len(full.split(":")[1]) == 64
         assert len(truncated.split(":")[1]) == 16
 
     def test_canonical_json_sorted_no_whitespace(self):
-        out = ssc.canonical_json_bytes({"b": 1, "a": 2})
+        out = wire.canonical_json_bytes({"b": 1, "a": 2})
         assert out == b'{"a":2,"b":1}'
         assert b" " not in out
         assert not out.endswith(b"\n")
 
     def test_canonical_json_stable(self):
         obj = {"type": "tree", "entries": [{"name": "x", "hash": "sha256:aa"}]}
-        assert ssc.canonical_json_bytes(obj) == ssc.canonical_json_bytes(dict(obj))
+        assert wire.canonical_json_bytes(obj) == wire.canonical_json_bytes(dict(obj))
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +310,10 @@ class TestDevGate:
         )
         # patch the lazily-imported symbol used inside resolve_identity
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         ident = ssc.resolve_identity()
         assert ident["nous_admin"] is True
@@ -286,7 +322,10 @@ class TestDevGate:
     def test_gate_closed_without_claim(self, monkeypatch):
         token = _jwt({"sub": "user1"})  # no tool_gateway_admin
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         ident = ssc.resolve_identity()
         assert ident["nous_admin"] is False
@@ -294,14 +333,20 @@ class TestDevGate:
     def test_gate_closed_when_claim_false(self, monkeypatch):
         token = _jwt({"sub": "u", "tool_gateway_admin": False})
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
-        assert ssc.dev_gate_open() is False
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        assert ssc.resolve_identity()["nous_admin"] is False
 
     def test_maybe_push_inert_when_gate_closed(self, monkeypatch):
         token = _jwt({"sub": "u"})
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token})
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token})
         monkeypatch.setattr(ssc, "resolve_sync_base_url", lambda: "http://x")
         # gate closed -> None (inert), never attempts a push
@@ -309,11 +354,13 @@ class TestDevGate:
 
     def test_maybe_pull_inert_when_not_logged_in(self, monkeypatch):
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
 
         def _raise(**kw):
             raise RuntimeError("not logged in")
 
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _raise)
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials", _raise)
         assert ssc.maybe_pull_skills() is None
 
 
@@ -335,11 +382,11 @@ class TestObjectBuilding:
         assert tree_hash.startswith("sha256:")
         # tree object present and canonical
         kind, data = objects.objects[tree_hash]
-        assert kind == ssc.KIND_TREE
+        assert kind == wire.KIND_TREE
         tree = json.loads(data)
         entries = {e["name"]: e for e in tree["entries"]}
-        assert entries["SKILL.md"]["mode"] == ssc.MODE_FILE
-        assert entries["run.sh"]["mode"] == ssc.MODE_EXEC
+        assert entries["SKILL.md"]["mode"] == wire.MODE_FILE
+        assert entries["run.sh"]["mode"] == wire.MODE_EXEC
         # entries sorted by name (byte order)
         names = [e["name"] for e in tree["entries"]]
         assert names == sorted(names)
@@ -399,22 +446,22 @@ class TestObjectBuilding:
 
 class TestMergeDecision:
     def test_no_change(self):
-        assert ssc._merge_skill("b", "b", "b") == "either"
+        assert ssc.merge_skill("b", "b", "b") == "either"
 
     def test_ours_only_changed(self):
-        assert ssc._merge_skill("b", "o", "b") == "ours"
+        assert ssc.merge_skill("b", "o", "b") == "ours"
 
     def test_theirs_only_changed(self):
-        assert ssc._merge_skill("b", "b", "t") == "theirs"
+        assert ssc.merge_skill("b", "b", "t") == "theirs"
 
     def test_both_converged(self):
-        assert ssc._merge_skill("b", "x", "x") == "either"
+        assert ssc.merge_skill("b", "x", "x") == "either"
 
     def test_true_overlap(self):
-        assert ssc._merge_skill("b", "o", "t") == "overlap"
+        assert ssc.merge_skill("b", "o", "t") == "overlap"
 
     def test_deleted_both(self):
-        assert ssc._merge_skill(None, None, None) == "none"
+        assert ssc.merge_skill(None, None, None) == "none"
 
 
 # ---------------------------------------------------------------------------
@@ -463,14 +510,14 @@ class TestEndToEnd:
         client = ssc.SyncClient(base, "tok")
         caps = client.capabilities()
         assert caps["hsp_version"] == "1"
-        ssc._check_version(caps)  # no raise
+        wire._check_version(caps)  # no raise
 
     def test_version_mismatch_raises(self, mock_server):
         base, state = mock_server
         state.hsp_version = "2"
         client = ssc.SyncClient(base, "tok")
         with pytest.raises(ssc.SyncError):
-            ssc._check_version(client.capabilities())
+            wire._check_version(client.capabilities())
 
     def test_push_uploads_and_cas(self, mock_server, synced_env):
         base, state = mock_server
@@ -483,7 +530,7 @@ class TestEndToEnd:
         assert head == result["head"]
         # commit object is present and well-formed
         kind, data = state.objects[head]
-        assert kind == ssc.KIND_COMMIT
+        assert kind == wire.KIND_COMMIT
         commit = json.loads(data)
         assert commit["author"]["owner"] == "owner1"
         assert commit["parents"] == []  # first commit
@@ -605,7 +652,7 @@ class TestOptInFlag:
 class TestSyncManifest:
     def test_build_parse_roundtrip(self):
         data = ssc.build_sync_manifest_bytes({"beta": True, "alpha": False})
-        parsed = ssc.parse_sync_manifest(data)
+        parsed = wire.parse_sync_manifest(data)
         assert parsed == {"alpha": False, "beta": True}
 
     def test_manifest_wire_shape(self):
@@ -623,18 +670,18 @@ class TestSyncManifest:
 
     def test_parse_rejects_malformed(self):
         # Strict: unknown type, bad version, non-array skills, malformed entry.
-        assert ssc.parse_sync_manifest(b"not json") is None
-        assert ssc.parse_sync_manifest(b'{"type":"nope","version":1,"skills":[]}') is None
-        assert ssc.parse_sync_manifest(b'{"type":"sync-manifest","version":2,"skills":[]}') is None
-        assert ssc.parse_sync_manifest(b'{"type":"sync-manifest","version":1,"skills":{}}') is None
+        assert wire.parse_sync_manifest(b"not json") is None
+        assert wire.parse_sync_manifest(b'{"type":"nope","version":1,"skills":[]}') is None
+        assert wire.parse_sync_manifest(b'{"type":"sync-manifest","version":2,"skills":[]}') is None
+        assert wire.parse_sync_manifest(b'{"type":"sync-manifest","version":1,"skills":{}}') is None
         assert (
-            ssc.parse_sync_manifest(
+            wire.parse_sync_manifest(
                 b'{"type":"sync-manifest","version":1,"skills":[{"name":"x"}]}'
             )
             is None
         )
         # A malformed manifest must NOT be mistaken for "no skills opted in".
-        assert ssc.parse_sync_manifest(b'{"type":"sync-manifest","version":1,"skills":[]}') == {}
+        assert wire.parse_sync_manifest(b'{"type":"sync-manifest","version":1,"skills":[]}') == {}
 
     def test_snapshot_embeds_manifest_root_blob(self, mock_server, synced_env):
         # snapshot_profile must add a root-level `sync-manifest` blob recording
@@ -652,7 +699,7 @@ class TestSyncManifest:
 
         # The manifest is a root-level BLOB, not a skill subtree, so the skill
         # walk must not surface it as a skill.
-        trees = ssc._skill_trees_of_root(client, root_hash)
+        trees = ssc.skill_trees_of_root(client, root_hash)
         assert "sync-manifest" not in trees
         assert set(trees) == {"alpha", "devops/beta"}
 
@@ -847,21 +894,25 @@ class TestOrgIdentityGate:
         # Personal org: NAS stamps NO org_role -> inert, not an error path.
         token = _jwt({"sub": "u", "org_id": "org-1"})
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         with pytest.raises(ssc.SyncInertError):
             ssc.resolve_org_identity()
-        assert ssc.org_sync_available() is False
 
     def test_org_identity_with_role(self, monkeypatch):
         token = _jwt({"sub": "u", "org_id": "org-9", "org_role": "MEMBER"})
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token, "base_url": "https://x"})
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         ident = ssc.resolve_org_identity()
         assert ident["org_id"] == "org-9"
         assert ident["org_role"] == "MEMBER"
-        assert ssc.org_sync_available() is True
 
     def test_org_mirror_excluded_from_personal_sync(self, tmp_path, monkeypatch):
         # A skill under _org/<id>/ must never be personal-sync eligible.
@@ -885,12 +936,14 @@ class TestOrgEndToEnd:
         home, skills, identity = synced_env
         identity = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
         client = ssc.SyncClient(base, identity["api_key"])
-        result = ssc.propose_skill("alpha", client, identity=identity)
+        result = org.propose_skill("alpha", client, identity=identity)
         assert result["ok"] is True
         assert result.get("merged") is True
         head = state.refs["refs/org/org-1/HEAD"]
         assert head == result["head"]
-        commit = json.loads(state.objects[head][1])
+        # Org content lands in the ORG object scope, not the personal one.
+        assert head not in state.objects, "org commit must not be personal-scoped"
+        commit = json.loads(state.org_objects[head][1])
         assert commit["parents"] == []  # first org commit
 
     def test_member_propose_becomes_202_proposal(self, mock_server, synced_env):
@@ -899,7 +952,7 @@ class TestOrgEndToEnd:
         # Seed an org HEAD as admin first.
         admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
         client = ssc.SyncClient(base, identity["api_key"])
-        seeded = ssc.propose_skill("alpha", client, identity=admin_ident)
+        seeded = org.propose_skill("alpha", client, identity=admin_ident)
 
         # Member edits beta and proposes: server converts to 202.
         state.org_role_admin = False
@@ -907,7 +960,7 @@ class TestOrgEndToEnd:
             "---\nname: beta\n---\nbeta v2 member edit\n", encoding="utf-8"
         )
         member_ident = {**identity, "org_id": "org-1", "org_role": "MEMBER"}
-        result = ssc.propose_skill("beta", client, identity=member_ident)
+        result = org.propose_skill("beta", client, identity=member_ident)
         assert result["ok"] is True
         assert result.get("proposal_pending") is True
         assert result["proposal_id"] == 1
@@ -924,15 +977,15 @@ class TestOrgEndToEnd:
         home, skills, identity = synced_env
         admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
         client = ssc.SyncClient(base, identity["api_key"])
-        ssc.propose_skill("alpha", client, identity=admin_ident)
-        ssc.propose_skill("beta", client, identity=admin_ident)
+        org.propose_skill("alpha", client, identity=admin_ident)
+        org.propose_skill("beta", client, identity=admin_ident)
 
         state.org_role_admin = False
         member_ident = {**identity, "org_id": "org-1", "org_role": "MEMBER"}
-        result = ssc.propose_skill("alpha", client, identity=member_ident)
+        result = org.propose_skill("alpha", client, identity=member_ident)
         # Walk the proposed commit's root: both skills present.
-        commit = json.loads(state.objects[result["commit"]][1])
-        root = json.loads(state.objects[commit["tree"]][1])
+        commit = json.loads(state.org_objects[result["commit"]][1])
+        root = json.loads(state.org_objects[commit["tree"]][1])
         names = {e["name"] for e in root["entries"]}
         assert "alpha" in names and "devops" in names
 
@@ -941,9 +994,9 @@ class TestOrgEndToEnd:
         home, skills, identity = synced_env
         admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
         client = ssc.SyncClient(base, identity["api_key"])
-        ssc.propose_skill("alpha", client, identity=admin_ident)
+        org.propose_skill("alpha", client, identity=admin_ident)
 
-        result = ssc.pull_org_skills(client, identity=admin_ident)
+        result = org.pull_org_skills(client, identity=admin_ident)
         assert result["ok"] is True
         assert "alpha" in result["updated"]
         mirrored = skills / "_org" / "org-1" / "alpha" / "SKILL.md"
@@ -955,7 +1008,7 @@ class TestOrgEndToEnd:
         home, skills, identity = synced_env
         ident = {**identity, "org_id": "org-1", "org_role": "MEMBER"}
         client = ssc.SyncClient(base, identity["api_key"])
-        result = ssc.pull_org_skills(client, identity=ident)
+        result = org.pull_org_skills(client, identity=ident)
         assert result["ok"] is True
         assert result["head"] is None
         assert result["updated"] == []
@@ -967,12 +1020,119 @@ class TestOrgEndToEnd:
         ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
         client = ssc.SyncClient(base, identity["api_key"])
         with pytest.raises(ssc.SyncInertError):
-            ssc.propose_skill("alpha", client, identity=ident)
+            org.propose_skill("alpha", client, identity=ident)
 
     def test_maybe_pull_org_inert_without_role(self, monkeypatch):
         # Personal org: no org_role claim -> None, never raises.
         token = _jwt({"sub": "u", "org_id": "org-1"})
         import hermes_cli.auth as auth_mod
+        import hermes_cli.auth_nous as auth_nous
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token})
-        assert ssc.maybe_pull_org_skills() is None
+        monkeypatch.setattr(auth_nous, "resolve_nous_runtime_credentials",
+                            lambda **kw: {"api_key": token})
+        assert org.maybe_pull_org_skills() is None
+
+
+class TestOrgEndpointScoping:
+    """Org reads must use the ORG endpoints, not the personal ones.
+
+    The personal refs route is scoped to the caller's own owner: asked for an
+    ``refs/org/...`` prefix it returns the caller's PERSONAL refs rather than
+    erroring. A client reading org state through it therefore concludes "this
+    org has no content" and every subsequent CAS races a head it never saw —
+    which is exactly how a second propose used to die on a raw SyncConflict.
+    """
+
+    def _admin(self, identity):
+        return {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+
+    def test_org_head_is_not_visible_on_the_personal_route(
+        self, mock_server, synced_env
+    ):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        state.refs["refs/org/org-1/HEAD"] = "sha256:" + "a" * 64
+        client = ssc.SyncClient(base, identity["api_key"])
+
+        personal = client.get_refs("refs/org/org-1/")
+        assert personal == [], (
+            "the personal refs route must not serve org refs — if it does, "
+            "the mock is more permissive than production and will hide bugs"
+        )
+        org = client.get_refs("refs/org/org-1/", org_scope=True)
+        assert [r["name"] for r in org] == ["refs/org/org-1/HEAD"]
+
+    def test_second_propose_splices_onto_the_existing_org_head(
+        self, mock_server, synced_env
+    ):
+        """The regression: propose #1 works, propose #2 used to raise."""
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin = self._admin(identity)
+        client = ssc.SyncClient(base, identity["api_key"])
+
+        # `synced_env` already seeds alpha and beta (beta under devops/).
+        first = org.propose_skill("alpha", client, identity=admin)
+        assert first["ok"] is True
+
+        # Previously: base_head read as None -> CAS from None -> 409 ->
+        # SyncConflict escaped to the caller.
+        second = org.propose_skill("beta", client, identity=admin)
+        assert second["ok"] is True
+
+        # And the splice preserved the first skill rather than replacing it.
+        head = state.refs["refs/org/org-1/HEAD"]
+        commit = json.loads(state.org_objects[head][1])
+        root = json.loads(state.org_objects[commit["tree"]][1])
+        names = {e["name"] for e in root["entries"]}
+        # beta is seeded under the devops/ category, so it appears as that
+        # category tree at the root.
+        assert "alpha" in names and "devops" in names
+        assert commit["parents"], "second commit must descend from the first"
+
+    def test_pull_org_skills_sees_an_existing_org_head(
+        self, mock_server, synced_env
+    ):
+        """pull_org_skills used to report head=None for a populated org."""
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin = self._admin(identity)
+        client = ssc.SyncClient(base, identity["api_key"])
+        org.propose_skill("alpha", client, identity=admin)
+
+        result = org.pull_org_skills(client=client, identity=admin)
+        assert result["ok"] is True
+        assert result["head"] == state.refs["refs/org/org-1/HEAD"], (
+            "pull must resolve the real org HEAD, not None"
+        )
+        assert result["updated"], "the org's skill must materialize"
+
+
+class TestEmptyActualConflict:
+    """A 409 with an empty ``actual`` means the ref does not exist."""
+
+    def test_conflict_actual_empty_becomes_none(self):
+        c = ssc.SyncConflict("")
+        assert c.actual is None
+        assert "does not exist" in str(c)
+
+    def test_push_recovers_from_a_stale_local_head(self, mock_server, synced_env):
+        """Switching sync planes leaves a foreign head in local state.
+
+        The CAS then fails against a ref that does not exist, and the server
+        answers 409 with an empty ``actual``. The client must redo the CAS as
+        a create rather than trying to fetch "" as a commit (which surfaced as
+        the bizarre `object  not found`, with a doubled space).
+        """
+        base, state = mock_server
+        home, skills, identity = synced_env
+        st = ssc.read_sync_state()
+        st["head"] = "sha256:" + "f" * 64  # head from another plane
+        ssc.write_sync_state(st)
+
+        client = ssc.SyncClient(base, identity["api_key"])
+        result = ssc.push_skills(client=client, identity=identity)
+        assert result["ok"] is True
+        assert result.get("recovered_stale_head") is True
+        assert state.refs[ssc.user_head_ref(identity["owner"])] == result["head"]

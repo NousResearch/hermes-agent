@@ -5,10 +5,22 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./ansi": "./src/ansi.ts",
     "./billing": "./src/billing-types.ts",
     "./billing-policy": "./src/billing-policy.ts",
     "./charge-settlement": "./src/charge-settlement.ts",
-    "./skin": "./src/skin.ts"
+    "./color": "./src/color.ts",
+    "./format": "./src/format.ts",
+    "./fuzzy": "./src/fuzzy.ts",
+    "./gateway-events": "./src/gateway-events.ts",
+    "./i18n": "./src/i18n.ts",
+    "./json-rpc-channel": "./src/json-rpc-channel.ts",
+    "./model-search-text": "./src/model-search-text.ts",
+    "./reasoning-effort": "./src/reasoning-effort.ts",
+    "./reconnect-backoff": "./src/reconnect-backoff.ts",
+    "./skin": "./src/skin.ts",
+    "./slash": "./src/slash.ts",
+    "./theme-presets": "./src/theme-presets.ts"
   },
   "types": "./src/index.ts",
   "scripts": {
@@ -19,10 +31,6 @@
     "check": "npm run typecheck && npm run lint"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.4",
-    "eslint": "^9.39.4",
-    "globals": "^17.4.0",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.56.1"
+    "typescript": "6.0.3"
   }
 }

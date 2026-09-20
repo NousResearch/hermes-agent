@@ -260,7 +260,7 @@ class TestClaudeCodeImport:
 
 
     def test_allowlist_lands_in_config_yaml(self, report, hermes_home):
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
         allow = config["command_allowlist"]
         assert "npm run build" in allow
         assert "npm run test*" in allow
@@ -287,7 +287,7 @@ class TestCodexImport:
 
 
     def test_mcp_servers_from_config_toml(self, report, hermes_home):
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
         docs = config["mcp_servers"]["docs"]
         assert docs["command"] == "uvx"
         assert docs["args"] == ["docs-mcp"]
@@ -330,7 +330,7 @@ class TestSecretsNeverImported:
 
     def test_non_secret_header_kept(self, claude_tree, hermes_home):
         run_import("claude-code", claude_tree, hermes_home, execute=True)
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
         assert config["mcp_servers"]["remote"]["headers"] == {"X-Region": "us-east"}
 
 
@@ -349,7 +349,7 @@ class TestMalformedInputs:
         assert any(i["kind"] == "settings" for i in errors)
         # CLAUDE.md still imported despite bad settings.json
         assert "still importable" in (
-            hermes_home / "memories" / "MEMORY.md").read_text()
+            hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
 
 
     def test_empty_tree_all_skipped(self, profile_env, hermes_home):
@@ -372,7 +372,7 @@ class TestMergeSemantics:
             yaml.safe_dump({"mcp_servers": {"github": {"command": "mine"}}}),
             encoding="utf-8")
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
         assert config["mcp_servers"]["github"]["command"] == "mine"
         assert any(
             i["status"] == "conflict" and i["source"] == "github"
@@ -386,7 +386,7 @@ class TestMergeSemantics:
         dest.mkdir(parents=True)
         (dest / "SKILL.md").write_text("mine\n", encoding="utf-8")
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
-        assert (dest / "SKILL.md").read_text() == "mine\n"
+        assert (dest / "SKILL.md").read_text(encoding="utf-8") == "mine\n"
         assert any(
             i["kind"] == "skill" and i["status"] == "conflict"
             for i in report["items"]
@@ -394,9 +394,9 @@ class TestMergeSemantics:
 
     def test_reimport_is_idempotent_for_memory(self, claude_tree, hermes_home):
         run_import("claude-code", claude_tree, hermes_home, execute=True)
-        first = (hermes_home / "memories" / "MEMORY.md").read_text()
+        first = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
-        assert (hermes_home / "memories" / "MEMORY.md").read_text() == first
+        assert (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8") == first
         memory_items = [i for i in report["items"] if i["kind"] == "claude-md"]
         assert memory_items[0]["status"] == "skipped"
 
@@ -464,6 +464,215 @@ class TestExistingMemoryStorePreserved:
         assert backups[0].read_text(encoding="utf-8") == EXISTING_MEMORY
 
 
+# ---------------------------------------------------------------------------
+# config.yaml preservation (sibling of the MEMORY.md case above)
+# ---------------------------------------------------------------------------
+
+EXISTING_CONFIG = """\
+model: hermes-4-405b
+api_key_env: OPENROUTER_API_KEY
+command_allowlist:
+  - ls *
+  - cat *
+approvals:
+  deny:
+    - shutdown *
+mcp_servers:
+  local-notes:
+    command: uvx
+    args:
+      - notes-mcp
+telegram:
+  enabled: true
+  chat_id: 12345
+"""
+
+MALFORMED_CONFIG = """\
+model: hermes-4-405b
+command_allowlist:
+  - ls *
+   - cat *
+approvals: [unclosed
+"""
+
+CONFIG_WRITING_KINDS = ("command-allowlist", "command-denylist", "mcp-servers")
+
+
+class TestExistingConfigPreserved:
+    """An import must not destroy the config.yaml it merges into.
+
+    ``load_yaml_file`` returned ``{}`` for an absent file AND for a present
+    file it could not read or parse.  The three importers below read
+    config.yaml, merge one section into it, and write the whole mapping back —
+    so a YAML syntax error or a permission problem meant every existing
+    setting was replaced by just the merged section, reported as ``imported``.
+    """
+
+    @pytest.fixture()
+    def config_path(self, hermes_home):
+        return hermes_home / "config.yaml"
+
+    @staticmethod
+    def items_for(report, kind):
+        return [i for i in report["items"] if i["kind"] == kind]
+
+    # -- present but unreadable: refuse, change nothing --------------------
+
+    def test_malformed_config_is_left_byte_identical(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text(MALFORMED_CONFIG, encoding="utf-8")
+        before = config_path.read_bytes()
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        assert config_path.read_bytes() == before
+
+    def test_malformed_config_records_an_error_not_an_import(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text(MALFORMED_CONFIG, encoding="utf-8")
+
+        report = run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        for kind in CONFIG_WRITING_KINDS:
+            items = self.items_for(report, kind)
+            assert items, f"no {kind} item recorded"
+            assert [i["status"] for i in items] == ["error"], kind
+            reason = items[0]["reason"]
+            assert str(config_path) in reason
+            assert "not valid YAML" in reason
+            # Points the user at a way out.
+            assert "hermes config edit" in reason
+
+    def test_unreadable_config_is_left_byte_identical(
+            self, claude_tree, hermes_home, config_path):
+        """A permission problem is the other half of the same root cause."""
+        import os
+
+        if os.name != "posix":
+            pytest.skip("chmod-based permission denial is POSIX-only")
+        if getattr(os, "geteuid", lambda: 1)() == 0:
+            pytest.skip("root bypasses file permissions")
+        config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
+        before = config_path.read_bytes()
+        config_path.chmod(0o000)
+        try:
+            report = run_import("claude-code", claude_tree, hermes_home,
+                                execute=True)
+            statuses = {
+                i["status"]
+                for kind in CONFIG_WRITING_KINDS
+                for i in self.items_for(report, kind)
+            }
+            assert statuses == {"error"}
+        finally:
+            config_path.chmod(0o600)
+        assert config_path.read_bytes() == before
+
+    def test_non_mapping_config_is_refused(
+            self, claude_tree, hermes_home, config_path):
+        """Valid YAML that is not a mapping was also collapsed to {}."""
+        config_path.write_text("- just\n- a\n- list\n", encoding="utf-8")
+        before = config_path.read_bytes()
+
+        report = run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        assert config_path.read_bytes() == before
+        reasons = [i["reason"] for i in self.items_for(report, "command-allowlist")]
+        assert any("YAML mapping" in r for r in reasons)
+
+    def test_dry_run_reports_the_refusal_rather_than_a_preview(
+            self, claude_tree, hermes_home, config_path):
+        """--dry-run must not promise an import that would destroy the file."""
+        config_path.write_text(MALFORMED_CONFIG, encoding="utf-8")
+
+        report = run_import("claude-code", claude_tree, hermes_home, execute=False)
+
+        for kind in CONFIG_WRITING_KINDS:
+            statuses = [i["status"] for i in self.items_for(report, kind)]
+            assert statuses == ["error"], kind
+            assert "imported" not in statuses
+
+    # -- the regression that actually pins the data loss -------------------
+
+    def test_import_preserves_every_pre_existing_config_key(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        # Untouched sections survive verbatim.
+        assert merged["model"] == "hermes-4-405b"
+        assert merged["api_key_env"] == "OPENROUTER_API_KEY"
+        assert merged["telegram"] == {"enabled": True, "chat_id": 12345}
+        # Merged-into sections keep their existing members ...
+        assert "ls *" in merged["command_allowlist"]
+        assert "shutdown *" in merged["approvals"]["deny"]
+        assert "local-notes" in merged["mcp_servers"]
+        # ... alongside the imported ones.
+        assert "npm run build" in merged["command_allowlist"]
+        assert "github" in merged["mcp_servers"]
+
+    def test_absent_config_is_still_created(
+            self, claude_tree, hermes_home, config_path):
+        """The guard must not break first-time creation."""
+        assert not config_path.exists()
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        created = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert "npm run build" in created["command_allowlist"]
+
+    def test_empty_config_is_treated_as_absent(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text("", encoding="utf-8")
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        created = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert "npm run build" in created["command_allowlist"]
+
+    # -- the write itself --------------------------------------------------
+
+    def test_config_write_is_atomic_and_leaves_no_temp_files(
+            self, claude_tree, hermes_home, config_path):
+        config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        leftovers = [p.name for p in hermes_home.glob(".tmp*")]
+        assert leftovers == []
+
+    def test_symlinked_config_stays_a_symlink(
+            self, claude_tree, hermes_home, tmp_path, config_path):
+        """A non-atomic ``write_text`` would follow it; ``os.replace`` would
+        clobber it.  ``atomic_replace`` keeps the link and writes the target."""
+        real = tmp_path / "real-config.yaml"
+        real.write_text(EXISTING_CONFIG, encoding="utf-8")
+        config_path.symlink_to(real)
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        assert config_path.is_symlink()
+        assert "npm run build" in real.read_text(encoding="utf-8")
+
+    def test_failed_write_does_not_truncate_the_existing_config(
+            self, hermes_home, config_path, monkeypatch):
+        """An interrupted dump leaves the previous file complete."""
+        from hermes_cli import agent_import
+
+        config_path.write_text(EXISTING_CONFIG, encoding="utf-8")
+        before = config_path.read_bytes()
+
+        def boom(*_args, **_kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(agent_import, "atomic_yaml_write", boom)
+        with pytest.raises(OSError):
+            agent_import.dump_yaml_file(config_path, {"model": "replacement"})
+
+        assert config_path.read_bytes() == before
+
 
 # ---------------------------------------------------------------------------
 # CLI wiring
@@ -518,3 +727,79 @@ class TestCliWiring:
             if (hermes_home / "config.yaml").exists() else ""
         assert "npm run build" not in config_text
         assert "github" not in config_text
+
+
+# ---------------------------------------------------------------------------
+# Sync mode (--sync): keep previously imported sources current
+# ---------------------------------------------------------------------------
+
+class TestSyncManifest:
+    def _run_command(self, agent, source, dry_run=False, sync=False):
+        import types
+        from hermes_cli.agent_import import import_agent_command
+
+        import_agent_command(types.SimpleNamespace(
+            agent=agent, source=str(source) if source else None,
+            dry_run=dry_run, overwrite=False, yes=True, sync=sync))
+
+    def test_import_registers_source_and_unchanged_sync_is_noop(
+            self, claude_tree, hermes_home, capsys):
+        from hermes_cli.agent_import_sync import load_sync_manifest
+
+        self._run_command("claude-code", claude_tree)
+        entry = load_sync_manifest(hermes_home)["agents"]["claude-code"]
+        assert entry["source"] == str(claude_tree.resolve())
+        assert "deploy-helper" in entry["imported_skills"]  # name → digest of the copy we wrote
+        # A token refresh in the credential file is invisible to the digest.
+        (claude_tree / ".credentials.json").write_text(
+            json.dumps({"api_key": "rotated-token"}), encoding="utf-8")
+        before = snapshot_tree(hermes_home)
+        capsys.readouterr()
+        self._run_command(None, None, sync=True)
+        assert "unchanged since last import" in capsys.readouterr().out
+        assert snapshot_tree(hermes_home) == before
+
+    def test_sync_reimports_changed_source_but_never_clobbers_user_skill(
+            self, claude_tree, hermes_home):
+        self._run_command("claude-code", claude_tree)
+        (claude_tree / "CLAUDE.md").write_text(
+            CLAUDE_MD + "\n- Freshly added sync rule\n", encoding="utf-8")
+        (claude_tree / "skills" / "deploy-helper" / "SKILL.md").write_text(
+            "---\nname: deploy-helper\n---\n\nDeploy v2.\n", encoding="utf-8")
+        # A NEW source skill whose destination the user created themselves.
+        user_skill = hermes_home / "skills" / "claude-code-imports" / "hand-rolled"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("user content", encoding="utf-8")
+        (claude_tree / "skills" / "hand-rolled").mkdir()
+        (claude_tree / "skills" / "hand-rolled" / "SKILL.md").write_text(
+            "---\nname: hand-rolled\n---\n\nsource content\n", encoding="utf-8")
+
+        self._run_command(None, None, sync=True)
+
+        imports = hermes_home / "skills" / "claude-code-imports"
+        assert "Freshly added sync rule" in (
+            hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+        assert "Deploy v2." in (imports / "deploy-helper" / "SKILL.md").read_text(encoding="utf-8")
+        assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "user content"
+
+        # An imported skill the user then EDITED locally is no longer Hermes-owned: the next sync
+        # records a conflict for it instead of overwriting the edit (the docs promise this).
+        (imports / "deploy-helper" / "SKILL.md").write_text("my local tweaks", encoding="utf-8")
+        (claude_tree / "skills" / "deploy-helper" / "SKILL.md").write_text(
+            "---\nname: deploy-helper\n---\n\nDeploy v3.\n", encoding="utf-8")
+        self._run_command(None, None, sync=True)
+        assert (imports / "deploy-helper" / "SKILL.md").read_text(encoding="utf-8") == "my local tweaks"
+
+    def test_sync_dry_run_previews_without_writing(self, claude_tree, hermes_home, capsys):
+        from hermes_cli.agent_import_sync import load_sync_manifest
+
+        self._run_command("claude-code", claude_tree)
+        old_digest = load_sync_manifest(hermes_home)["agents"]["claude-code"]["digest"]
+        (claude_tree / "CLAUDE.md").write_text(
+            CLAUDE_MD + "\n- Dry sync entry\n", encoding="utf-8")
+        before = snapshot_tree(hermes_home)
+        capsys.readouterr()
+        self._run_command(None, None, sync=True, dry_run=True)
+        assert "changes detected" in capsys.readouterr().out
+        assert snapshot_tree(hermes_home) == before
+        assert load_sync_manifest(hermes_home)["agents"]["claude-code"]["digest"] == old_digest

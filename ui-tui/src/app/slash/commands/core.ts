@@ -199,7 +199,7 @@ export const coreCommands: SlashCommand[] = [
         ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
       }
 
-      if (NO_CONFIRM_DESTRUCTIVE) {
+      if (NO_CONFIRM_DESTRUCTIVE || !ctx.ui.destructiveSlashConfirm) {
         return commit()
       }
 
@@ -274,6 +274,7 @@ export const coreCommands: SlashCommand[] = [
           ctx.guarded<SessionTitleResponse>(r => {
             const next = (r?.title ?? title).trim()
             const suffix = r?.pending ? ' (queued while session initializes)' : ''
+            patchUiState({ sessionTitle: next })
             ctx.transcript.sys(`session title set: ${next}${suffix}`)
           })
         )
@@ -439,7 +440,7 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'attach clipboard image',
     name: 'paste',
-    run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+    run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.attachClipboardImage())
   },
 
   {

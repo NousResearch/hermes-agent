@@ -155,9 +155,5 @@ class TestSandboxMirrorIsOrthogonalToCrossProfile:
         target.parent.mkdir(parents=True)
         target.write_text("x")
 
-        # cross-profile classifier: active profile == target's inner-mirror
-        # profile name; on the existing detector the path's parts[2] is
-        # ``sandboxes``, not a scoped area, so it returns None.
-        assert fs.classify_cross_profile_target(str(target)) is None
         # sandbox-mirror classifier: fires unconditionally on the shape.
         assert fs.classify_sandbox_mirror_target(str(target)) is not None

@@ -59,7 +59,22 @@ class TestSetRuntime:
 
 
 class TestApply:
+    def test_binary_check_uses_configured_path(self):
+        """/codex-runtime must probe ``model.codex_bin``, not bare ``codex`` from PATH (#61360)."""
+        configured = "/Applications/Codex.app/Contents/Resources/codex"
+        cfg = {
+            "model": {
+                "openai_runtime": "codex_app_server",
+                "codex_bin": configured,
+            }
+        }
+        with patch.object(
+            crs, "check_codex_binary_ok", return_value=(True, "0.130.0")
+        ) as binary_check:
+            result = crs.apply(cfg, None)
 
+        assert result.success
+        binary_check.assert_called_once_with(configured)
 
     def test_reapply_codex_app_server_runs_migration(self):
         """Re-applying codex_app_server when already enabled must still
@@ -168,5 +183,4 @@ class TestApply:
         assert r.new_value == "codex_app_server"
         assert "MCP migration skipped" in r.message
         assert "disk full" in r.message
-
 

@@ -22,7 +22,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 
@@ -51,6 +52,7 @@ def _wire_mock_target(adapter: WebhookAdapter, platform_name: str = "telegram"):
 
     mock_runner = MagicMock()
     mock_runner.adapters = {Platform(platform_name): mock_target}
+    mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
     mock_runner.config.get_home_channel.return_value = None
 
     adapter.gateway_runner = mock_runner

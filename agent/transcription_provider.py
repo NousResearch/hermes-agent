@@ -1,193 +1,60 @@
-"""
-Transcription Provider ABC
-==========================
+"""Transcription Provider ABC — pluggable speech-to-text backends.
 
-Defines the pluggable-backend interface for speech-to-text. Providers
-register instances via
-:meth:`PluginContext.register_transcription_provider`; the active one
-(selected via ``stt.provider`` in ``config.yaml``) services every
-:func:`tools.transcription_tools.transcribe_audio` call **when the
-configured name is neither a built-in (``local``, ``local_command``,
-``groq``, ``openai``, ``mistral``, ``xai``) nor disabled**.
-
-Two coexisting STT extension surfaces — in resolution order:
-
-1. **Built-in providers** (``BUILTIN_STT_PROVIDERS`` in
-   :mod:`tools.transcription_tools`) — native Python implementations
-   for the 6 backends shipped today (faster-whisper, local_command,
-   Groq, OpenAI, Mistral, xAI). **Always win** — plugins cannot
-   shadow them. The single-env-var shell escape hatch
-   ``HERMES_LOCAL_STT_COMMAND`` is preserved via the built-in
-   ``local_command`` path.
-2. **Plugin-registered providers** (this ABC). For new STT backends —
-   OpenRouter, SenseAudio, Gemini-STT, custom proprietary engines —
-   that need a Python implementation without modifying
-   ``tools/transcription_tools.py``.
-
-Built-ins-always-win is enforced at registration time
-(:func:`agent.transcription_registry.register_provider` rejects names
-in ``BUILTIN_STT_PROVIDERS`` with a warning) AND at dispatch time
-(:func:`tools.transcription_tools._dispatch_to_plugin_provider`
-re-checks defensively).
-
-Providers live in ``<repo>/plugins/transcription/<name>/`` (built-in
-plugins, none shipped today) or
-``~/.hermes/plugins/transcription/<name>/`` (user-installed).
-
-Response contract
------------------
-:meth:`TranscriptionProvider.transcribe` returns a dict with keys::
-
-    success      bool
-    transcript   str       transcribed text (empty when success=False)
-    provider     str       provider name (for diagnostics)
-    error        str       only when success=False
+Providers register via :meth:`PluginContext.register_transcription_provider`; the one named
+by ``stt.provider`` services :func:`tools.transcription_tools.transcribe_audio` **when that
+name is not a built-in** (built-ins always win; ``HERMES_LOCAL_STT_COMMAND`` stays on the
+built-in ``local_command`` path). :meth:`TranscriptionProvider.transcribe` envelope:
+``success`` bool, ``transcript`` str (empty on failure), ``provider`` str, ``error`` str
+(only when success=False).
 """
 
 from __future__ import annotations
 
 import abc
-import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# ABC
-# ---------------------------------------------------------------------------
+from agent.provider_base import CatalogProviderBase
 
 
-class TranscriptionProvider(abc.ABC):
+class TranscriptionProvider(CatalogProviderBase):
     """Abstract base class for a speech-to-text backend.
 
-    Subclasses must implement :attr:`name` and :meth:`transcribe`.
-    Everything else has sane defaults — override only what your provider
-    needs.
+    Subclasses must implement :attr:`name` (rejected at registration if it
+    collides with a built-in STT name) and :meth:`transcribe`.
     """
-
-    @property
-    @abc.abstractmethod
-    def name(self) -> str:
-        """Stable short identifier used in ``stt.provider`` config.
-
-        Lowercase, no spaces. Examples: ``openrouter``, ``sensaudio``,
-        ``gemini``, ``deepgram``. Names that collide with a built-in STT
-        provider (``local``, ``local_command``, ``groq``, ``openai``,
-        ``mistral``, ``xai``) are rejected at registration time.
-        """
-
-    @property
-    def display_name(self) -> str:
-        """Human-readable label shown in ``hermes tools``.
-
-        Defaults to ``name.title()``.
-        """
-        return self.name.title()
-
-    def is_available(self) -> bool:
-        """Return True when this provider can service calls.
-
-        Typically checks for a required API key + that the SDK is
-        importable. Default: True (providers with no external
-        dependencies are always available).
-
-        Must NOT raise — used by the picker and ``hermes setup`` for
-        availability displays and should fail gracefully.
-        """
-        return True
-
-    def list_models(self) -> List[Dict[str, Any]]:
-        """Return model catalog entries.
-
-        Each entry::
-
-            {
-                "id": "whisper-large-v3-turbo",  # required
-                "display": "Whisper Large v3 Turbo",   # optional
-                "languages": ["en", "es", "fr"],        # optional
-                "max_audio_seconds": 1500,              # optional
-            }
-
-        Default: empty list (provider has a single fixed model or
-        doesn't expose model selection).
-        """
-        return []
-
-    def default_model(self) -> Optional[str]:
-        """Return the default model id, or None if not applicable."""
-        models = self.list_models()
-        if models:
-            return models[0].get("id")
-        return None
-
-    def get_setup_schema(self) -> Dict[str, Any]:
-        """Return provider metadata for the ``hermes tools`` picker.
-
-        Used by ``tools_config.py`` to inject this provider as a row in
-        the Speech-to-Text provider list. Shape::
-
-            {
-                "name": "OpenRouter STT",              # picker label
-                "badge": "paid",                       # optional short tag
-                "tag": "Whisper via OpenRouter API",   # optional subtitle
-                "env_vars": [                          # keys to prompt for
-                    {"key": "OPENROUTER_API_KEY",
-                     "prompt": "OpenRouter API key",
-                     "url": "https://openrouter.ai/keys"},
-                ],
-            }
-
-        Default: minimal entry derived from ``display_name`` with no
-        env vars. Override to expose API key prompts and custom badges.
-        """
-        return {
-            "name": self.display_name,
-            "badge": "",
-            "tag": "",
-            "env_vars": [],
-        }
 
     @abc.abstractmethod
     def transcribe(
-        self,
-        file_path: str,
-        *,
-        model: Optional[str] = None,
-        language: Optional[str] = None,
-        **extra: Any,
+        self, file_path: str, *, model: Optional[str] = None, language: Optional[str] = None, **extra: Any,
     ) -> Dict[str, Any]:
-        """Transcribe the audio file at ``file_path``.
+        """Transcribe ``file_path`` (existence + size already validated) into the module envelope.
 
-        Returns a dict with the standard envelope::
-
-            {
-                "success": True,
-                "transcript": "the transcribed text",
-                "provider": "<this provider's name>",
-            }
-
-        or on failure::
-
-            {
-                "success": False,
-                "transcript": "",
-                "error": "human-readable error message",
-                "provider": "<this provider's name>",
-            }
-
-        Implementations should NOT raise — convert exceptions to the
-        error envelope so the dispatcher can deliver a consistent shape
-        to the gateway/CLI caller.
-
-        Args:
-            file_path: Absolute path to the audio file. The dispatcher
-                has already validated existence + size before calling.
-            model: Model identifier from :meth:`list_models`, or None
-                to use :meth:`default_model`.
-            language: Optional BCP-47 language hint (e.g. ``"en"``,
-                ``"ja"``) — providers without language hints should
-                ignore this argument.
-            **extra: Forward-compat parameters future schema versions
-                may expose. Implementations should ignore unknown keys.
+        Must NOT raise — convert exceptions to the error envelope. ``model`` None →
+        :meth:`default_model`; ``language`` is an optional BCP-47 hint; ``extra`` may carry
+        ``prompt`` (from ``stt.prompt`` or a ``pre_transcription`` hook) as a vocabulary hint;
+        unknown keys must be ignored.
         """
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import List  # noqa: F401,E402
+import logging  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'logger': ('agent.i18n', 'logger'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

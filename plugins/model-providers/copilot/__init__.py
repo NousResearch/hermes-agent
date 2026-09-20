@@ -1,13 +1,8 @@
 """Copilot / GitHub Models provider profile.
 
-Copilot uses per-model api_mode routing:
-  - GPT-5+ / Codex models → codex_responses
-  - Claude models → anthropic_messages
-  - Everything else → chat_completions (this profile covers that subset)
-
-Key quirks for the chat_completions subset:
-  - Editor attribution headers (via copilot_default_headers())
-  - GitHub Models reasoning extra_body (model-catalog gated)
+Core routes GPT-5+/Codex -> codex_responses and Claude -> anthropic_messages;
+this profile covers the chat_completions remainder: editor attribution headers
+(copilot_default_headers()) and catalog-gated GitHub Models reasoning.
 """
 
 from typing import Any
@@ -20,54 +15,36 @@ class CopilotProfile(ProviderProfile):
     """GitHub Copilot / GitHub Models — editor headers + reasoning."""
 
     def build_api_kwargs_extras(
-        self,
-        *,
-        model: str | None = None,
-        reasoning_config: dict | None = None,
-        supports_reasoning: bool = False,
-        **ctx,
+        self, *, model: str | None = None, reasoning_config: dict | None = None,
+        supports_reasoning: bool = False, **ctx,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        extra_body: dict[str, Any] = {}
-        if supports_reasoning and model:
-            try:
-                from hermes_cli.models import github_model_reasoning_efforts
+        if not (supports_reasoning and model):
+            return {}, {}
+        try:
+            from hermes_cli.models import clamp_reasoning_effort_to_supported, github_model_reasoning_efforts
 
-                supported_efforts = github_model_reasoning_efforts(model)
-                if supported_efforts and reasoning_config:
-                    effort = reasoning_config.get("effort", "medium")
-                    # Honor the requested level when the live Copilot catalog
-                    # lists it as supported: gpt-5.5/gpt-5.4 DO support
-                    # ``xhigh``. Only downgrade levels the catalog does NOT
-                    # list (e.g. ``xhigh``/``max`` on models capped lower, or
-                    # ``minimal`` where unsupported), choosing the nearest
-                    # weaker supported level rather than forwarding verbatim.
-                    #
-                    # (Previously this unconditionally mapped xhigh->high, a
-                    #  stale guard that silently capped models which do support
-                    #  the higher level.)
-                    if effort not in supported_efforts:
-                        if effort == "xhigh" and "high" in supported_efforts:
-                            effort = "high"
-                        elif effort == "minimal" and "low" in supported_efforts:
-                            effort = "low"
-                        elif "medium" in supported_efforts:
-                            effort = "medium"
-                        else:
-                            effort = supported_efforts[0]
-                    if effort in supported_efforts:
-                        extra_body["reasoning"] = {"effort": effort}
-                elif supported_efforts:
-                    extra_body["reasoning"] = {"effort": "medium"}
-            except Exception:
-                pass
-        return extra_body, {}
+            supported = github_model_reasoning_efforts(model)
+            if not supported:
+                return {}, {}
+            if not reasoning_config:
+                return {"reasoning": {"effort": "medium"}}, {}
+            effort = reasoning_config.get("effort", "medium")
+            # Honor a level the live catalog lists; otherwise clamp to the nearest WEAKER
+            # supported level (never drop straight to medium, which inverted the ladder:
+            # ultra < high). Bespoke levels the ladder can't place fall to medium (or [0]).
+            # See #74295.
+            if effort not in supported:
+                effort = clamp_reasoning_effort_to_supported(effort, list(supported))
+                if effort not in supported:
+                    effort = "medium" if "medium" in supported else supported[0]
+            return {"reasoning": {"effort": effort}}, {}
+        except Exception:
+            return {}, {}
 
 
 copilot = CopilotProfile(
-    name="copilot",
-    aliases=("github-copilot", "github-models", "github-model", "github"),
-    env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
-    base_url="https://api.githubcopilot.com",
+    name="copilot", aliases=("github-copilot", "github-models", "github-model", "github"),
+    env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), base_url="https://api.githubcopilot.com",
     auth_type="copilot",
 )
 

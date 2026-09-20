@@ -30,6 +30,18 @@ describe('resolveVersionStatus', () => {
     expect(status.tooltip).toContain('12 commits behind main')
   })
 
+  // FAIL-BEFORE (#84591 class): a shallow install reports behind:null +
+  // updateAvailable. The client target ignored updateAvailable entirely, so
+  // the statusbar showed no update at all — and further back, the fabricated
+  // behind:1 rendered a frozen "(+1)" while the real distance grew to 61.
+  it('shows a count-free update hint when the client count is unknown', () => {
+    const status = client({ behind: 0, updateAvailable: true, version: '0.4.2' })
+
+    expect(status.label).toBe(`v0.4.2 (${copy.update})`)
+    expect(status.label).not.toContain('+1')
+    expect(status.hasUpdate).toBe(true)
+  })
+
   it('names the client as one of two versions in remote mode', () => {
     expect(client({ remote: true, version: '0.4.2' }).label).toBe('client v0.4.2')
   })

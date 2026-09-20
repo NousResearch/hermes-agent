@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any
 
-from tools.registry import registry
+from tools.registry import no_cache_check_fn, registry
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ def _load_selection_config() -> dict:
     return selection if isinstance(selection, dict) else {}
 
 
+@no_cache_check_fn
 def check_model_selection_requirements() -> bool:
     config = _load_selection_config()
     routes = config.get("routes")

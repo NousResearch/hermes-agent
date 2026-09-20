@@ -8,7 +8,7 @@ import pytest
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS
 from agent.tool_dispatch_helpers import _NEVER_PARALLEL_TOOLS
 from toolsets import _HERMES_CORE_TOOLS
-from tools.registry import registry
+from tools.registry import _check_fn_cached, registry
 from tools import model_selection_tool as selection
 from tools.delegate_tool_toolsets import DELEGATE_BLOCKED_TOOLS
 
@@ -84,6 +84,15 @@ def test_tool_is_config_gated_core_inline_barrier():
     assert "select_model" in INLINE_TOOL_EXECUTORS
     assert "select_model" in _NEVER_PARALLEL_TOOLS
     assert "select_model" in DELEGATE_BLOCKED_TOOLS
+
+
+def test_config_gate_rechecks_each_schema_build(monkeypatch, route_config):
+    disabled_config = {**route_config, "enabled": False}
+    monkeypatch.setattr(selection, "_load_selection_config", lambda: disabled_config)
+    assert _check_fn_cached(selection.check_model_selection_requirements) is False
+
+    monkeypatch.setattr(selection, "_load_selection_config", lambda: route_config)
+    assert _check_fn_cached(selection.check_model_selection_requirements) is True
 
 
 def test_success_switches_model_applies_reasoning_and_reports(monkeypatch, route_config):

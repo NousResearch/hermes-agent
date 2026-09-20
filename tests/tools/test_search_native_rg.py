@@ -112,3 +112,30 @@ def test_kill_switch_routes_search_back_to_the_shell(tree, ops_factory, monkeypa
     assert result.total_count == 4
     assert any(c.startswith("test -e") for c in calls)
     assert any("pipefail" in c and "rg" in c for c in calls)
+
+
+def test_native_teardown_survives_killpg_permissionerror(tree, ops_factory, monkeypatch):
+    """#116855: when the child's group empties between the poll() liveness
+    check and the group TERM, macOS raises PermissionError instead of ESRCH.
+    The teardown must swallow it and still return the run's partial result —
+    before the fix the EPERM bubbled out of ``_run_rg_native`` and a
+    bounded (limit-hit) search discarded every match it had collected."""
+    import os
+    import signal
+
+    real_killpg = os.killpg
+    attempted = []
+
+    def fake_killpg(pgid, sig):
+        attempted.append(sig)
+        # Let the real TERM through so the timed-out child actually dies
+        # (proc.wait() below must not block for the child's full lifetime).
+        real_killpg(pgid, sig)
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    ops = ops_factory(tree, [])
+    result = ops._run_rg_native(["sh", "-c", "'sleep 30'"], 5, timeout=1)
+
+    assert attempted and attempted[0] == signal.SIGTERM  # teardown was reached
+    assert result.exit_code == 124  # EPERM swallowed; the run's result survived

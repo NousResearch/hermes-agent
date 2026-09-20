@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
+from tools.environments.local import LocalEnvironment, _kill_process_group_posix
 
 
 @pytest.fixture(autouse=True)
@@ -146,3 +146,38 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
     # escalation path completed despite the snapshot failure.
     assert killpg_calls[0] == (67890, signal.SIGTERM)
     assert (67890, 0) in killpg_calls
+
+
+def test_kill_process_swallows_killpg_permissionerror(monkeypatch):
+    """#116855: on macOS a group that empties between the caller's liveness
+    check and the TERM raises PermissionError (not ESRCH) from ``killpg``.
+    The teardown must skip the escalation instead of raising, exactly like
+    the vanished-group case."""
+    psutil = pytest.importorskip("psutil")
+
+    proc = SimpleNamespace(
+        pid=12345,
+        _hermes_pgid=67890,
+        poll=lambda: 0,
+        wait=lambda timeout=None: 0,
+        kill=lambda: None,
+    )
+    killpg_calls = []
+
+    def fake_getpgid(_pid):
+        return 67890
+
+    def fake_killpg(pgid, sig):
+        killpg_calls.append((pgid, sig))
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: (_ for _ in ()).throw(RuntimeError("no psutil")))
+
+    # Direct call, matching the rg teardown in file_operations_search
+    # (_run_rg_native): that path has no _kill_process OSError wrapper.
+    _kill_process_group_posix(proc)  # must not raise
+
+    # Only the TERM was attempted; the EPERM skip means no probe, no SIGKILL.
+    assert killpg_calls == [(67890, signal.SIGTERM)]

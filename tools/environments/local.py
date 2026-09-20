@@ -782,7 +782,11 @@ def _kill_process_group_posix(proc) -> None:
             _wait_for_group_exit(proc, pgid, 2.0)
             with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                 proc.wait(timeout=0.2)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # macOS raises EPERM, not ESRCH, when the group has emptied (rg dying
+        # between the caller's poll() liveness check and the TERM — #116855):
+        # nothing is left to signal, so skip the escalation like a vanished
+        # group. ``_wait_for_group_exit`` already treats probe EPERM the same way.
         pass
     _sweep_escaped_descendants(descendants, pgid)
 

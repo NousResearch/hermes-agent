@@ -164,7 +164,12 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
 
 
 def run_doctor(args):
-    """Run diagnostic checks."""
+    """Run diagnostic checks. Returns an exit code (0 healthy, 1 unresolved issues).
+
+    The CLI forwards this via ``_forward_command(forward_return=True)`` so
+    ``hermes doctor`` exits non-zero when problems remain. In-process callers
+    (console, web server) capture output and ignore the return value.
+    """
     should_fix = getattr(args, 'fix', False)
     # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
@@ -185,6 +190,8 @@ def run_doctor(args):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
+    remaining = total.issues + total.manual_issues
+    return 1 if remaining else 0
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

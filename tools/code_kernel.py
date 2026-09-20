@@ -18,11 +18,13 @@ Also hosts what ``tools.code_kernel_remote`` shares: owner resolution, registry,
 from __future__ import annotations
 
 import atexit
+import glob
 import json
 import logging
 import os
 import queue
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -651,6 +653,7 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     for target, args in ((_rpc_forever, (kernel, max_tool_calls, sandbox_tools)),
                          (_stdout_reader, (kernel,)), (_stderr_reader, (kernel,))):
         threading.Thread(target=target, args=args, daemon=True).start()
+    _ensure_background_reaper()
 
 
 def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[SessionKernel, bool]:
@@ -684,6 +687,67 @@ def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[S
     for doomed in expired:
         doomed.teardown()
     return kernel, state_reset
+
+
+# The acquire-path sweep above only fires on the NEXT kernel request. A host that stays
+# alive but stops executing anything (a pids-exhausted container whose tool dispatch is
+# fail-closed) never acquires again, so idle kernels and their thread pools survive
+# indefinitely (#117169). One low-frequency daemon thread reapplies the same criteria on
+# its own schedule, independent of tool traffic, and also sweeps staging dirs that
+# outlived a host which died without cleanup (SIGKILL / container restart).
+_STALE_STAGING_DIR_AGE = 7 * 86400
+_REAPER_INTERVAL_FLOOR, _REAPER_INTERVAL_CEIL = 30.0, 300.0
+_REAPER_GUARD = threading.Lock()
+
+
+def _sweep_stale_staging_dirs(now: Optional[float] = None) -> int:
+    """Remove ``hermes_kernel_*`` staging dirs untouched for over a week. A live host
+    rmtrees each dir within one idle timeout of the kernel's last use, so a week-old
+    dir belongs to a host that died before its cleanup could run; younger dirs are left
+    alone because a concurrently running host's live kernel may own one. rmtree never
+    follows symlinks, so a planted link is rejected rather than chased."""
+    now = time.time() if now is None else now
+    removed = 0
+    for path in glob.glob(os.path.join(tempfile.gettempdir(), "hermes_kernel_*")):
+        try:
+            if now - os.path.getmtime(path) > _STALE_STAGING_DIR_AGE:
+                # No ignore_errors: a rejected symlink (or a half-removed dir) must not
+                # count as swept — it stays for the next pass instead.
+                shutil.rmtree(path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _reap_once() -> None:
+    """One background pass: the acquire-path idle criteria, then the stale-dir sweep."""
+    _, idle_timeout = _lifecycle_limits()
+    with _REGISTRY.lock:
+        now = time.monotonic()
+        expired = [_KERNELS.pop(k) for k in list(_KERNELS)
+                   if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+    for doomed in expired:
+        doomed.teardown()
+    _sweep_stale_staging_dirs()
+
+
+def _ensure_background_reaper() -> None:
+    """Start the reaper once per process (on the first kernel spawn)."""
+    if _REAPER_GUARD.acquire(blocking=False):
+        threading.Thread(target=_background_reaper, daemon=True,
+                         name="hermes-kernel-idle-reaper").start()
+
+
+def _background_reaper() -> None:
+    while True:
+        _, idle_timeout = _lifecycle_limits()
+        time.sleep(min(_REAPER_INTERVAL_CEIL,
+                       max(_REAPER_INTERVAL_FLOOR, idle_timeout / 6.0)))
+        try:
+            _reap_once()
+        except Exception:
+            logger.exception("kernel idle reaper pass failed; retrying next interval")
 
 
 def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> Tuple[str, Dict[str, Any]]:

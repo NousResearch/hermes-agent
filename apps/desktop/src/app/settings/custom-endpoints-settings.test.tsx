@@ -150,7 +150,12 @@ describe('CustomEndpointsSettings', () => {
 
   it('Test rewrites the URL field to the base that actually served /models (#65488)', async () => {
     getCustomEndpoints.mockResolvedValue(emptyResponse)
-    validateCustomEndpoint.mockResolvedValue({ ok: true, message: '', models: ['model-a'], resolved_base_url: 'http://h.test/v1' })
+    validateCustomEndpoint.mockResolvedValue({
+      ok: true,
+      message: '',
+      models: ['model-a'],
+      resolved_base_url: 'http://h.test/v1'
+    })
     const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
     render(<CustomEndpointsSettings onConfigSaved={vi.fn()} onMainModelChanged={vi.fn()} />)
 

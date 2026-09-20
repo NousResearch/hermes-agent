@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -31,10 +32,14 @@ HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 # Same-host start-time readings can drift by ~1 s between the claim-time and recovery-time reads
-# (macOS ``kern.boottime`` adjustment, #117505). Both fingerprint scales are ×100 (Linux /proc
-# ticks, psutil centiseconds), so 200 means 2 s on either platform — a recycled PID is essentially
-# never that close to the original's start time, and a live misread is still bounded by the
-# stale-claim sweep above.
+# (macOS ``kern.boottime`` adjustment, #117505) — but only the epoch-derived psutil scale is safe
+# to tolerate. ``gateway/status._get_process_start_time`` reads ``/proc/<pid>/stat`` field 22 on
+# Linux, which counts clock ticks since BOOT, not since the epoch: after a reboot every persisted
+# row holds a value from the previous boot's near-zero range, and early-boot fingerprint space is
+# dense enough that a recycled PID could land inside the window and pass as the live owner. The
+# tolerance therefore applies only where the reading is epoch-derived psutil centiseconds
+# (non-Windows hosts without ``/proc``, per the #117514 review); the boot-relative ``/proc``
+# counter and Windows keep exact equality.
 _OWNER_START_TIME_DRIFT_TOLERANCE = 200
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
@@ -132,6 +137,15 @@ def _process_start_time(pid: int) -> Optional[int]:
         return None
 
 
+def _start_time_tolerance_applies() -> bool:
+    """Whether ``_owner_is_live`` may compare start times with a drift tolerance: only on the
+    epoch-derived psutil scale (non-Windows hosts without ``/proc``). Never on the boot-relative
+    ``/proc`` tick counter, where a cross-reboot recycled PID can collide inside the window."""
+    if sys.platform == "win32":
+        return False
+    return not Path("/proc/self/stat").exists()
+
+
 def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     try:
         from gateway.status import _pid_exists
@@ -144,7 +158,9 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     current = _process_start_time(pid)
     if current is None:
         return True  # cannot compare -> cannot prove death; a misread must not rewrite state
-    return abs(current - started_at) <= _OWNER_START_TIME_DRIFT_TOLERANCE
+    if _start_time_tolerance_applies():
+        return abs(current - started_at) <= _OWNER_START_TIME_DRIFT_TOLERANCE
+    return current == started_at
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:

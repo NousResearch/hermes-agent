@@ -163,3 +163,26 @@ class TestScratchDirPermissionPolicy:
         with patch.object(os, "chown") as mock_chown:
             get_scratch_dir(tmp_path, prune=False)
         mock_chown.assert_called_once_with(tmp_path / "cache" / "scratch", 1000, 911)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_config_and_constants_share_one_policy_implementation(tmp_path, monkeypatch):
+    """hermes_constants is the single home of managed / container / HERMES_UID policy: config
+    re-exports it (no keep-in-sync twins), so _secure_file skips on the same canonical container
+    signal that apply_secure_dir_policy / get_scratch_dir already honor."""
+    import hermes_constants
+    from hermes_cli import config
+
+    assert config.get_managed_system is hermes_constants.get_managed_system
+    assert config._chown_to_hermes_uid is hermes_constants._chown_to_hermes_uid
+    assert not hasattr(config, "_is_container")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    for var in ("HERMES_MANAGED", "HERMES_CONTAINER", "HERMES_SKIP_CHMOD"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("hermes_constants._detect_container", lambda: True)
+    f = tmp_path / "config.yaml"
+    f.write_text("", encoding="utf-8")
+    os.chmod(f, 0o640)
+    config._secure_file(f)
+    assert stat.S_IMODE(os.stat(f).st_mode) == 0o640

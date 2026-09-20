@@ -1004,27 +1004,38 @@ def socket_safe_tmpdir() -> str:
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
 
 
-def _is_managed_home() -> bool:
-    """Managed-install signal for the active home: the ``HERMES_MANAGED`` env var (set by the
-    systemd service) or a ``.managed`` marker file in the home (NixOS activation script).
+# ---- Managed mode (NixOS declarative config) ----
+# Canonical home of "is this install package-manager managed": ``hermes_cli.config`` re-exports
+# these, and :func:`apply_secure_dir_policy` below reads them. Lives here because constants
+# must stay import-safe from the CLI.
+_MANAGED_TRUE_VALUES = ("true", "1", "yes")
+# Only the NixOS module ever wrote a bare "true" or an empty marker.
+_LEGACY_MANAGED_SYSTEM = "nixos"
+# Homebrew is no longer a supported distribution: these markers fall through to git/unknown
+# detection instead of blocking config writes.
+_IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
+# Explicit opt-out (``HERMES_MANAGED=false``): without this a bool-shaped value became a package
+# manager literally named "false" and is_managed() blocked `hermes update` (#12864).
+_MANAGED_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 
-    Same values and precedence as ``hermes_cli.config.is_managed`` (an unreadable or empty
-    marker file still counts as managed; brew/homebrew and explicit false values do not) —
-    keep the two in sync. Lives here because constants must stay import-safe from the CLI.
-    """
+
+def get_managed_system() -> str | None:
+    """Return the package manager owning this install, if any.
+    Signals: HERMES_MANAGED env var (systemd service) or a ``.managed`` marker file in
+    HERMES_HOME (NixOS activation script — interactive shells don't see the service env).
+    An unreadable or empty marker still counts as managed (the legacy NixOS shape)."""
     marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
-    if marker is None:
-        marker_file = get_hermes_home() / ".managed"
-        if marker_file.exists():
-            try:
-                marker = marker_file.read_text(encoding="utf-8", errors="replace").strip().lower()
-            except OSError:
-                marker = ""
-    if marker is None or marker in ("brew", "homebrew", "false", "0", "no", "off"):
-        return False
-    # An empty or unreadable marker ("" — including the OSError fallback above) is the legacy
-    # NixOS shape and still counts as managed, matching hermes_cli.config.get_managed_system.
-    return True
+    managed_marker = get_hermes_home() / ".managed"
+    if marker is None and managed_marker.exists():
+        try:
+            marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
+        except OSError:
+            marker = ""
+    if marker is None or marker in _IGNORED_MANAGED_VALUES or marker in _MANAGED_FALSE_VALUES:
+        return None
+    if marker == "" or marker in _MANAGED_TRUE_VALUES:
+        return _LEGACY_MANAGED_SYSTEM
+    return marker
 
 
 def _container_or_chmod_skipped() -> bool:
@@ -1032,27 +1043,42 @@ def _container_or_chmod_skipped() -> bool:
     overrides on top of the canonical :func:`_detect_container` signals (same breadth as
     :func:`is_container` — Docker/Podman/LXC/Kubernetes, cgroup and root-mountinfo). The cached
     :func:`is_container` itself is deliberately avoided: it ignores these env overrides and is
-    computed only once per process, so tests could not flip it."""
+    computed only once per process, so tests could not flip it. Volume-mounted config is not
+    forced to owner-only in containers: gateway and dashboard may run as different UIDs, or
+    the mount itself needs broader permissions."""
     if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
         return True
     return _detect_container()
 
 
-def _chown_dir_to_hermes_uid(path) -> None:
-    """Chown *path* to ``HERMES_UID:HERMES_GID`` when set; EPERM/ENOENT are non-fatal.
+def _resolve_hermes_uid_gid() -> tuple[int | None, int | None]:
+    """Read HERMES_UID / HERMES_GID (set by Docker deployments); (None, None) if unset/invalid/Windows.
+    The entrypoint chowns HERMES_HOME once, but subdirs created at runtime (``profiles/<name>/``)
+    need the same chown or they land root:root and block later uid-mapped workers.
 
-    Used by :func:`apply_secure_dir_policy` so Docker deployments keep directory ownership
-    consistent. Unlike ``hermes_cli.config._chown_to_hermes_uid`` there is no ``win32``
-    early return here — on Windows the ``AttributeError`` from the missing ``os.chown``
-    below is what makes this a no-op.
+    Docker containers running Hermes commonly set these to map the in-container user to a host user so
+    volume-mounted state files end up with the right ownership. See #34107.
     """
-    def env_int(name: str):
+    if sys.platform == "win32":
+        return None, None
+
+    def _env_int(name: str) -> int | None:
         try:
             return int(os.environ.get(name, "").strip() or None)
         except (TypeError, ValueError):
             return None
 
-    uid, gid = env_int("HERMES_UID"), env_int("HERMES_GID")
+    return _env_int("HERMES_UID"), _env_int("HERMES_GID")
+
+
+def _chown_to_hermes_uid(path) -> None:
+    """Chown ``path`` to ``HERMES_UID:HERMES_GID`` when set; EPERM/ENOENT are non-fatal (the
+    entrypoint's startup chown -R fixes ownership on the next restart).
+
+    Used by :func:`apply_secure_dir_policy` to keep ownership consistent across all directories
+    created by ``ensure_hermes_home`` on Docker deployments. See #34107.
+    """
+    uid, gid = _resolve_hermes_uid_gid()
     if uid is None and gid is None:
         return
     try:
@@ -1074,11 +1100,11 @@ def apply_secure_dir_policy(path) -> None:
     Import-safe twin of ``hermes_cli.config._secure_dir`` (which delegates here), so callers
     outside the CLI package — like :func:`get_scratch_dir` — share one policy implementation.
     """
-    if _is_managed_home():
+    if get_managed_system() is not None:
         return
     explicit_mode = os.environ.get("HERMES_HOME_MODE", "").strip()
     if _container_or_chmod_skipped() and not explicit_mode:
-        _chown_dir_to_hermes_uid(path)
+        _chown_to_hermes_uid(path)
         return
     try:
         mode = int(explicit_mode or "700", 8)
@@ -1088,7 +1114,7 @@ def apply_secure_dir_policy(path) -> None:
         os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
-    _chown_dir_to_hermes_uid(path)
+    _chown_to_hermes_uid(path)
 
 
 def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:

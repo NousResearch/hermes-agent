@@ -17,7 +17,7 @@ import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -1063,10 +1063,19 @@ def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) ->
     from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
     affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id or 'estimate'}")
     try:
-        resp = call_llm(
-            task="kanban_estimator",
-            messages=[{"role": "system", "content": _ESTIMATE_SYSTEM_PROMPT}, {"role": "user", "content": user_msg}],
-            temperature=0.0, max_tokens=300, timeout=60)
+        from agent.secret_scope import current_secret_scope, UnscopedSecretError
+        from hermes_constants import get_hermes_home, get_process_hermes_home
+        from hermes_cli.web_server_profiles import _config_profile_scope
+        # Headless dashboard requests own the dashboard profile, not the task's assignee.
+        # Routed callers already own their home + secrets; do not replace either.
+        scoped = current_secret_scope() is not None
+        if not scoped and get_hermes_home().resolve() != get_process_hermes_home().resolve():
+            raise UnscopedSecretError(developer_detail="Kanban estimate received a home override without its secret scope")
+        with (nullcontext() if scoped else _config_profile_scope(None)):
+            resp = call_llm(
+                task="kanban_estimator",
+                messages=[{"role": "system", "content": _ESTIMATE_SYSTEM_PROMPT}, {"role": "user", "content": user_msg}],
+                temperature=0.0, max_tokens=300, timeout=60)
     except Exception as exc:
         return {"ok": False, "reason": f"LLM error: {type(exc).__name__}"}
     finally:

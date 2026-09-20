@@ -3355,23 +3355,31 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # around one handoff disagree.
     deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     while time.monotonic() < deadline:
+        acknowledgement = _UNPUBLISHED
         if ack_path.exists():
             try:
                 acknowledgement = json.loads(ack_path.read_text(encoding="utf-8"))
+            except ValueError:
+                # Empty/partial file: a worker that predates atomic publication
+                # (or a slow filesystem) is still writing.  Poll again below
+                # instead of degrading a healthy handoff; the deadline bounds it.
+                pass
             except Exception:
                 logger.exception(
                     "Cron external worker %s published an unreadable acknowledgement; "
                     "treating handoff as ownership-uncertain",
                     execution_id,
                 )
+                ack_path.unlink(missing_ok=True)
                 return _wait_for_external_cron_worker(
                     process,
                     execution_id=execution_id,
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
                 )
-            finally:
+            else:
                 ack_path.unlink(missing_ok=True)
+        if acknowledgement is not _UNPUBLISHED:
             if (
                 not isinstance(acknowledgement, dict)
                 or acknowledgement.get("execution_id") != execution_id
@@ -3442,6 +3450,40 @@ def _launch_external_cron_worker(job: dict) -> bool:
     )
 
 
+_UNPUBLISHED = object()
+
+
+def _publish_external_worker_ack(ack_path: Path, acknowledgement: dict) -> None:
+    """Publish the ready acknowledgement so a reader never sees a partial file.
+
+    ``O_EXCL`` on the destination made the file visible while still empty, which
+    the polling gateway could read mid-write.  Exclusivity (one winner per
+    execution_id) now lives on a separate reservation file, and the destination
+    only ever appears via an atomic ``os.replace`` of a fully written temp file.
+    """
+    ack_path.parent.mkdir(parents=True, exist_ok=True)
+    reservation = ack_path.with_name(ack_path.name + ".lock")
+    tmp_path = ack_path.with_name(f"{ack_path.name}.{os.getpid()}.tmp")
+    os.close(os.open(reservation, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    try:
+        # The reservation is dropped once published, so an unread ack is what
+        # keeps a late second worker from replacing the winner's.
+        if ack_path.exists():
+            raise FileExistsError(errno.EEXIST, "acknowledgement already published", str(ack_path))
+        try:
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
+                json.dump(acknowledgement, ack_file)
+                ack_file.flush()
+                os.fsync(ack_file.fileno())
+            os.replace(tmp_path, ack_path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+    finally:
+        reservation.unlink(missing_ok=True)
+
+
 def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     """Adopt and execute one gateway-dispatched cron payload.
 
@@ -3493,12 +3535,9 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                 )
                 return False
             try:
-                ack_path.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(ack_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
-                    json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
-                    ack_file.flush()
-                    os.fsync(ack_file.fileno())
+                _publish_external_worker_ack(
+                    ack_path, {"pid": os.getpid(), "execution_id": execution_id}
+                )
             except Exception:
                 logger.exception(
                     "Cron external worker could not publish ready acknowledgement for %s",

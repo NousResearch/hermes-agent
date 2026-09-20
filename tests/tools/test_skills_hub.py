@@ -388,6 +388,92 @@ class TestFindSkillInRepoTree:
         assert result is None
 
 
+class TestRepoRootSkillLayout:
+    """Regression for #115028: skills.sh repos whose SKILL.md sits at the repo ROOT (no skill
+    directory, e.g. orzcls/win-disk-cleaner) are listed by search but could not be resolved by
+    inspect/install — the discovery root scan skipped non-directory entries by construction and
+    no identifier form expressed "the skill directory IS the repo root"."""
+
+    IDENTIFIER = "skills-sh/orzcls/win-disk-cleaner/win-disk-cleaner"
+    REPO = "orzcls/win-disk-cleaner"
+    SKILL_MD = (
+        "---\nname: win-disk-cleaner\ndescription: Clean a Windows disk safely.\n---\n\n"
+        "# Win Disk Cleaner\n\nSee references/free_tools.md\n"
+    )
+    ROOT_TREE = [
+        {"path": "LICENSE", "type": "blob"},
+        {"path": "README.md", "type": "blob"},
+        {"path": "SKILL.md", "type": "blob"},
+        {"path": "references/free_tools.md", "type": "blob"},
+    ]
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}
+        return SkillsShSource(auth=auth)
+
+    def _github_stub(self, tree):
+        """Minimal GitHub API: repo info, one git tree, and root-level file contents only —
+        every candidate ``<repo>/<base>/<skill>/SKILL.md`` path 404s, as in the real repo."""
+        def _side_effect(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 404
+            if url.rstrip("/").endswith(self.REPO):
+                resp.status_code, resp.json = 200, (lambda: {"default_branch": "main"})
+            elif "/git/trees/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {"sha": "b" * 40, "truncated": False, "tree": tree}
+            elif url.endswith("/contents/SKILL.md"):
+                resp.status_code, resp.content = 200, self.SKILL_MD.encode()
+            elif url.endswith("/contents/references/free_tools.md"):
+                resp.status_code, resp.content = 200, b"# Free tools\n"
+            elif url.endswith("/contents/LICENSE") or url.endswith("/contents/README.md"):
+                # Every blob in the pinned tree must fetch, or the bundle is "incomplete" and
+                # deliberately left unpinned (empty revision) for the next update check to fill.
+                resp.status_code, resp.content = 200, b"root-level file\n"
+            return resp
+        return _side_effect
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_resolves_skill_md_at_repo_root(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE)
+
+        meta = self._source().inspect(self.IDENTIFIER)
+
+        assert meta is not None
+        assert meta.name == "win-disk-cleaner"
+        assert meta.repo == self.REPO
+        assert meta.identifier == self.IDENTIFIER
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_resolves_and_names_bundle_for_repo_root_skill(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE)
+
+        bundle = self._source().fetch(self.IDENTIFIER)
+
+        assert bundle is not None
+        # Repo-root skill has no directory to name itself after; fall back to the repo name.
+        assert bundle.name == "win-disk-cleaner"
+        assert bundle.files["SKILL.md"] == self.SKILL_MD
+        # Support files sit directly under the repo root, so the root is the skill directory.
+        assert bundle.files["references/free_tools.md"] == b"# Free tools\n"
+        assert bundle.identifier == self.IDENTIFIER
+        assert bundle.metadata["source_url"] == f"https://github.com/{self.REPO}/tree/{'b' * 40}"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_root_layout_does_not_resolve_as_a_multi_skill_repo(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """A repo with a root SKILL.md AND another skill dir is not a root-layout single skill."""
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE + [{"path": "skills/other/SKILL.md", "type": "blob"}])
+
+        assert self._source().inspect(self.IDENTIFIER) is None
+
+
 class TestWellKnownSkillSource:
     @pytest.fixture(autouse=True)
     def _allow_public_skill_fetches(self, monkeypatch):
@@ -678,6 +764,66 @@ class TestCheckForSkillUpdates:
         assert results[0]["status"] == expected
         assert "bundle" not in results[0]
         source.fetch.assert_not_called()
+
+    @staticmethod
+    def _github_source_with_tree(tree_sha: str, calls: dict) -> GitHubSource:
+        """Real ``GitHubSource`` whose API is stubbed: one tree at ``tree_sha`` holding SKILL.md
+        plus two support blobs; every file GET is counted in ``calls``."""
+        src = GitHubSource(auth=MagicMock())
+        entries = [{"path": f"demo-skill/{p}", "type": "blob", "sha": f"sha-{p}", "size": 3}
+                   for p in ("SKILL.md", "scripts/run.sh", "references/notes.md")]
+        api = {"/repos/owner/repo": {"default_branch": "main"},
+               "/repos/owner/repo/git/trees/main": {"sha": tree_sha, "tree": entries}}
+        src._github_json = lambda url, **kw: api[url.split("api.github.com", 1)[1]]
+        def _file(repo, path, **kw):
+            calls["files"] = calls.get("files", 0) + 1
+            return "---\nname: demo-skill\n---\nSee scripts/run.sh and references/notes.md\n"
+        src._fetch_file_content = _file
+        src._fetch_file_bytes = lambda repo, path, **kw: _file(repo, path, **kw).encode()
+        return src
+
+    @pytest.mark.parametrize("recorded, expected_status, expected_gets",
+                             [("a" * 40, "up_to_date", 0), ("b" * 40, "update_available", 3)])
+    def test_unchanged_upstream_revision_skips_bundle_download(
+            self, tmp_path, monkeypatch, recorded, expected_status, expected_gets):
+        """A lock entry whose recorded ``source_revision`` still matches the upstream tree
+        sha is reported ``up_to_date`` with zero file GETs; a moved tree pays the full fetch (#101454)."""
+        import tools.skills_hub as hub
+        (tmp_path / "skills" / "demo-skill").mkdir(parents=True)
+        monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill", "source": "github", "identifier": "owner/repo/demo-skill",
+            "content_hash": "installed-hash", "install_path": "demo-skill",
+            "metadata": {"source_revision": recorded},
+        }]
+        calls: dict = {}
+        source = self._github_source_with_tree("a" * 40, calls)
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert [r["status"] for r in results] == [expected_status]
+        assert calls.get("files", 0) == expected_gets
+        assert ("bundle" in results[0]) == (expected_status == "update_available")
+        if expected_status == "up_to_date":
+            assert results[0]["current_hash"] == results[0]["latest_hash"] == "installed-hash"
+
+    def test_bundle_with_a_failed_blob_fetch_records_no_revision(self):
+        """A transient blob failure installs with a gap; the lock must NOT carry the tree sha, or the
+        revision short-circuit would report the gap ``up_to_date`` forever instead of re-fetching."""
+        calls: dict = {}
+        source = self._github_source_with_tree("a" * 40, calls)
+        good_bytes = source._fetch_file_bytes
+        source._fetch_file_bytes = (
+            lambda repo, path, **kw: None if path.endswith("notes.md") else good_bytes(repo, path, **kw))
+
+        bundle = source.fetch("owner/repo/demo-skill")
+
+        assert bundle is not None and "references/notes.md" not in bundle.files
+        assert bundle.metadata["source_revision"] == ""
+        # and a clean fetch of the same tree does record it
+        source._fetch_file_bytes = good_bytes
+        assert source.fetch("owner/repo/demo-skill").metadata["source_revision"] == "a" * 40
 
 class TestCreateSourceRouter:
 

@@ -15,6 +15,7 @@ from tools import mcp_tool_discovery as discovery
 from tools.mcp_tool_config import _build_safe_env
 
 TOKEN_NAME, TOKEN_VALUE = "EXAMPLE_TOKEN", "profile-own-value"
+UNDECLARED_NAME = "PROFILE_ONLY_UNDECLARED"
 
 
 @pytest.fixture
@@ -22,11 +23,18 @@ def profile_home(tmp_path, monkeypatch):
     """A profile home whose ``.env`` holds the credential an external source tagged."""
     home = tmp_path / "profile"
     home.mkdir()
-    (home / ".env").write_text(f"{TOKEN_NAME}={TOKEN_VALUE}\n", encoding="utf-8")
+    (home / ".env").write_text(
+        f"{TOKEN_NAME}={TOKEN_VALUE}\n{UNDECLARED_NAME}=must-not-be-forwarded\n", encoding="utf-8")
 
     # An external secret source (secrets.command / bitwarden / 1password) tags names
-    # process-wide; the VALUE must come from the active profile's scope.
+    # process-wide; its immutable value snapshot is still owned by this profile.
     monkeypatch.setitem(env_loader._SECRET_SOURCES, TOKEN_NAME, "command")
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        str(home.resolve()),
+        {TOKEN_NAME: TOKEN_VALUE},
+    )
+    env_loader._APPLIED_HOMES.add(str(home.resolve()))
 
     home_token = set_hermes_home_override(str(home))
     set_multiplex_active(True)
@@ -66,6 +74,8 @@ def test_connect_resolves_the_owning_profiles_secret(profile_home, spawn_env, mo
     asyncio.run(discovery._connect_server("demo", {"command": "true"}))
 
     assert spawn_env["env"][TOKEN_NAME] == TOKEN_VALUE
+    assert UNDECLARED_NAME not in spawn_env["env"]
+    assert spawn_env["env"][TOKEN_NAME] != "launch-env-value"
     assert current_secret_scope() is None
 
 

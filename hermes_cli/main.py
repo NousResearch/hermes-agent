@@ -749,6 +749,8 @@ from hermes_cli.model_setup_flows import (
     _model_flow_anthropic,
     _model_flow_moa,
     _model_flow_ai_gateway,
+    _model_flow_plugin_provider,
+    _is_profile_plugin_flow_provider,
 )
 logger = logging.getLogger(__name__)
 from hermes_cli.main_agent_cmds import (
@@ -2104,6 +2106,9 @@ def select_provider_and_model(args=None):
     # _model_flow_* names at call time so test monkeypatches on
     # hermes_cli.main keep intercepting.
     flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
+    if flow is None and _is_profile_plugin_flow_provider(selected_provider):
+        # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
+        flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)  # noqa: E731
     if flow is not None:
         flow(config, current_model, args)
     elif (
@@ -2552,14 +2557,27 @@ def _dashboard_sanitize_desktop_env(headless_backend) -> None:
     HERMES_SERVE_HEADLESS=1). A shell inheriting those then running
     `hermes dashboard` would serve the desktop renderer ("Desktop IPC bridge
     is unavailable", #52945) or disable the SPA. Only Electron-packaged
-    WEB_DIST contamination is stripped — caller-managed overrides (dev /
-    custom builds) must still work, and the desktop-spawned backend itself
-    (HERMES_DESKTOP=1) keeps its dist. Headless `serve` re-sets
-    HERMES_SERVE_HEADLESS itself.
+    WEB_DIST contamination is stripped from browser dashboards — caller-managed
+    overrides (dev / custom builds) must still work, while headless `serve`
+    keeps the packaged path used by the Desktop backend. Headless `serve`
+    re-sets HERMES_SERVE_HEADLESS itself.
+
+    The Desktop's legacy fallback spawn (`dashboard --no-open`, taken when the
+    `serve --help` probe times out on a cold host) is not headless yet must keep
+    its packaged dist: it is told apart by the per-spawn
+    HERMES_DASHBOARD_SESSION_TOKEN, which the terminal pane never receives and
+    the terminal tool's env policy strips from agent children.
     """
-    if os.environ.get("HERMES_DESKTOP") != "1":
-        if _is_electron_packaged_web_dist(os.environ.get("HERMES_WEB_DIST", "")):
-            os.environ.pop("HERMES_WEB_DIST", None)
+    desktop_owned_child = (
+        os.environ.get("HERMES_DESKTOP") == "1"
+        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"))
+    )
+    if (
+        not headless_backend
+        and not desktop_owned_child
+        and _is_electron_packaged_web_dist(os.environ.get("HERMES_WEB_DIST", ""))
+    ):
+        os.environ.pop("HERMES_WEB_DIST", None)
     if not headless_backend:
         os.environ.pop("HERMES_SERVE_HEADLESS", None)
 
@@ -2630,21 +2648,27 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # ~350ms `mcp` SDK import, which holds the GIL against the web_server
     # import and delays the READY sentinel; _make_agent's bounded
     # wait_for_mcp_discovery covers a server still connecting at first turn.
-    mcp_discovery_after_bind = headless_backend and os.environ.get("HERMES_DESKTOP") == "1"
-    if not mcp_discovery_after_bind:
-        try:
-            from hermes_cli.mcp_startup import start_background_mcp_discovery
+    # A standalone (non-Desktop) dashboard may sit idle and unvisited for days
+    # (#58733): it arms discovery instead and the first /api/ws client fires it.
+    desktop = os.environ.get("HERMES_DESKTOP") == "1"
+    if headless_backend and desktop:
+        return True
+    try:
+        from hermes_cli.mcp_startup import (
+            defer_background_mcp_discovery,
+            start_background_mcp_discovery,
+        )
 
-            start_background_mcp_discovery(
-                logger=logger,
-                thread_name="dashboard-mcp-discovery",
-            )
-        except Exception:
-            logger.debug(
-                "Background MCP tool discovery failed at dashboard startup",
-                exc_info=True,
-            )
-    return mcp_discovery_after_bind
+        if desktop:
+            start_background_mcp_discovery(logger=logger, thread_name="dashboard-mcp-discovery")
+        else:
+            defer_background_mcp_discovery(logger=logger, thread_name="dashboard-mcp-discovery", delay=None)
+    except Exception:
+        logger.debug(
+            "Background MCP tool discovery failed at dashboard startup",
+            exc_info=True,
+        )
+    return False
 
 
 def cmd_dashboard(args):

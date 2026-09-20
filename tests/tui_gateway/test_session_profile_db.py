@@ -292,15 +292,14 @@ def test_truncation_does_not_copy_rows_into_the_launch_profile(
     ]
 
 
-def test_truncation_surfaces_the_profile_dbs_new_row_ids(
+def test_truncation_surfaces_the_profile_dbs_live_row_ids(
     server, launch_db, profile_db, monkeypatch
 ):
-    """``survivor_user_row_ids`` must carry the profile db's post-rewrite ids.
+    """``survivor_user_row_ids`` must carry the profile db's live ids.
 
-    ``replace_messages`` re-inserts the surviving prefix as NEW rows and the
-    client rebinds its cached stamps from this payload, so the ids have to come
-    from the db that actually did the rewrite. Ids minted anywhere else address
-    nothing in the profile's transcript, and the next rewind is refused 4018.
+    The client rebinds its cached stamps from this payload, so the ids have to
+    come from the db that did the rewrite. Since #82956 the kept prefix keeps its
+    rows (only the dropped suffix is archived), so those ids are the ORIGINAL ones.
     """
     profile_home, pdb = profile_db
     user_row_ids: list = []
@@ -331,8 +330,8 @@ def test_truncation_surfaces_the_profile_dbs_new_row_ids(
     assert survivors[0] == persisted_user_rows[0]
     assert len(persisted_user_rows) == 2
     assert persisted_user_rows[1] not in survivors  # the newly submitted edited prompt is not a survivor
-    # Retained rows are freshly inserted, not the pre-rewind ids the client sent in.
-    assert user_row_ids[0] not in survivors
+    # The kept prefix retains its row id; only the edited suffix gets a new id.
+    assert survivors == [user_row_ids[0]]
 
 
 def test_truncation_without_a_profile_uses_the_shared_handle(server, launch_db, monkeypatch):

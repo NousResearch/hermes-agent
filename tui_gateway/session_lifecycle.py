@@ -717,18 +717,18 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``)."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
-
-    # Transfer only this exact live generation's capabilities at the authenticated
-    # attachment seam, including records spawned through an older dispatch context.
-    with _active_subagents_lock:
-        _attach_session_transport(session, transport)
-        for record in _active_subagents.values():
-            if (record.get("owner_session_id") == sid
-                    and record.get("owner_session_record") is session
-                    and record.get("owner_transport") is not None):
-                record["owner_transport"] = session["transport"]
+    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
+    Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
+    at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
+    if transport is not _detached_ws_transport and _transport_is_dead(transport):
+        # The rebinding socket already closed: its disconnect cleanup ran before this late RPC (a
+        # resume-then-drop burst), so nothing will detach it again. The client is NOT back — re-arm the
+        # reap the caller cancelled instead of leaving a detached session with no Timer (#116464).
+        with _sessions_lock:
+            if _ws_session_is_detached(session) and sid not in _pending_ws_reaps:
+                _schedule_ws_orphan_reap(sid)
+        return
+    _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()

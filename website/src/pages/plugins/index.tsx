@@ -52,6 +52,12 @@ const META_URL = "/docs/api/plugins-meta.json";
 // Docs section describing the PR-based submission workflow.
 const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting-a-plugin-to-the-catalog";
 
+/** Deep link into the Desktop app's Install Plugin dialog, catalog mode: the app
+ *  resolves the reviewed pin itself, so the page never hands it a repo URL. */
+function desktopInstallLink(name: string): string {
+  return `hermes://plugin/install?catalog=${encodeURIComponent(name)}`;
+}
+
 const TIER_CONFIG: Record<
   string,
   { label: string; color: string; bg: string; border: string; icon: string }
@@ -288,7 +294,7 @@ function PluginCard({
           ))}
         </div>
 
-        {onPick && (
+        {onPick ? (
           <button
             className={styles.pickBtn}
             onClick={(e) => {
@@ -298,6 +304,15 @@ function PluginCard({
           >
             + Add to this Agent
           </button>
+        ) : (
+          <a
+            className={styles.pickBtn}
+            href={desktopInstallLink(plugin.name)}
+            title="Opens the Install Plugin dialog in Hermes Desktop at the reviewed version. No app? Use the install command below."
+            onClick={(e) => e.stopPropagation()}
+          >
+            Open in Hermes Desktop
+          </a>
         )}
 
         {expanded && (
@@ -373,32 +388,6 @@ function PluginCard({
         )}
       </div>
     </div>
-  );
-}
-
-const TRUST_ICONS = {
-  check: "M4 10.5l3.5 3.5L16 5.5",
-  lock: "M6 9V7a4 4 0 118 0v2M5 9h10v8H5z",
-  download: "M10 3v10m0 0l-4-4m4 4l4-4M4 17h12",
-} as const;
-
-function TrustChip({ icon, text }: { icon: keyof typeof TRUST_ICONS; text: string }) {
-  return (
-    <li className={styles.trustChip}>
-      <svg
-        className={styles.trustIcon}
-        viewBox="0 0 20 20"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d={TRUST_ICONS[icon]} />
-      </svg>
-      {text}
-    </li>
   );
 }
 
@@ -590,7 +579,7 @@ export default function PluginCatalogPage() {
             </nav>
             <p className={styles.heroSub}>
               Give Hermes new powers. Memory, voice, messaging, browsing, Desktop panes and more,
-              built by the community and reviewed by the Hermes team before it reaches you.
+              built by the community.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})
@@ -619,14 +608,6 @@ export default function PluginCatalogPage() {
                   {formatRelativeTime(meta.generatedAt) || "recently"}
                 </span>
               </p>
-            )}
-
-            {!catalogEmpty && (
-              <ul className={styles.trustRow} aria-label="What every listing gets you">
-                <TrustChip icon="check" text="Reviewed by the Hermes team" />
-                <TrustChip icon="lock" text="Installs exactly the version we reviewed" />
-                <TrustChip icon="download" text="One click from Hermes Desktop" />
-              </ul>
             )}
           </div>
         </header>

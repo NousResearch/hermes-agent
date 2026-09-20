@@ -332,6 +332,21 @@ class TestGeneratedSystemdUnits:
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
 
+    def test_user_unit_carries_ld_library_path_escaped_for_systemd(self, monkeypatch, tmp_path):
+        """#14613: glibc reads LD_LIBRARY_PATH only at process start, so the unit file is the
+        only place it can reach CUDA-backed tools; quotes/backslashes must survive systemd quoting."""
+        # The absent-env branch falls back to the installed unit: keep the host's real one out.
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "hermes-gateway.service")
+        monkeypatch.setenv("LD_LIBRARY_PATH", '/opt/cu"da/lib64:/opt/back\\slash/lib')
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cu\\"da/lib64:/opt/back\\\\slash/lib"' in unit
+
+        monkeypatch.setenv("LD_LIBRARY_PATH", "")
+        assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
+        monkeypatch.delenv("LD_LIBRARY_PATH")
+        assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
+
     def test_unit_stop_budget_beats_drain_only_formula_with_real_loaders(
         self, monkeypatch
     ):
@@ -1496,6 +1511,36 @@ class TestSystemUnitHermesHome:
         assert "After=user@1001.service" in unit_section
         assert "Wants=user@1001.service" in unit_section
         assert "user@" not in user_unit
+
+    def test_installed_unit_keeps_ld_library_path_when_the_shell_lacks_it(self, monkeypatch, tmp_path):
+        """The unit is regenerated and compared on every start/restart/status; a later shell without
+        the export (ssh, cron, sudo) must see the installed unit as current, not "repair" the line away."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda/lib64:/opt/pct%dir/lib")
+        unit_path.write_text(gateway_cli.generate_systemd_unit(system=False), encoding="utf-8")
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib"' in unit_path.read_text()
+
+        monkeypatch.delenv("LD_LIBRARY_PATH")
+
+        assert gateway_cli.systemd_unit_is_current(system=False)
+        assert 'LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib' in gateway_cli.generate_systemd_unit(system=False)
+
+    def test_system_unit_remaps_caller_home_ld_library_path_components(self, monkeypatch):
+        """#14613: under sudo the caller's /root/... library dirs are unreadable to the target
+        user, so each colon-separated component is remapped like the PATH entries are."""
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice", 1001),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/root/cuda/lib:/opt/cuda/lib64")
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'Environment="LD_LIBRARY_PATH=/home/alice/cuda/lib:/opt/cuda/lib64"' in unit
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice

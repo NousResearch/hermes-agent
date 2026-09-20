@@ -18,6 +18,7 @@ _OPENROUTER_DESCRIPTIONS = {
     "deepseek/deepseek-v4-flash-0731": "dated snapshot of v4-flash",
     "moonshotai/kimi-k3": "recommended",
     "z-ai/glm-5.2": "default",
+    "z-ai/glm-5.3-flashx": "high-speed tier of glm-5.3-flash",
     "openrouter/pareto-code": "auto-routes to cheapest coder meeting openrouter.min_coding_score",
     "openai/gpt-6-astra-fast": "2x price, priority tier",
     "openai/gpt-6-astra-flex": "0.5x price, flex tier",
@@ -38,7 +39,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.6", "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-flash-0731",
         "qwen/qwen3.8-max-0902", "qwen/qwen3.8-flash", "moonshotai/kimi-k3", "minimax/minimax-m3", "z-ai/glm-5.3",
-        "z-ai/glm-5.3-flash", "z-ai/glm-5.2", "xiaomi/mimo-v2.5-pro", "tencent/hy4-preview", "tencent/hy3",
+        "z-ai/glm-5.3-flash", "z-ai/glm-5.3-flashx", "z-ai/glm-5.2", "xiaomi/mimo-v2.5-pro", "tencent/hy4-preview",
+        "tencent/hy3",
         "stepfun/step-3.7-flash", "nvidia/nemotron-3-super-120b-a12b", "meta/muse-spark-1.2",
         "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "sakana/fugu-ultra",
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
@@ -347,14 +349,24 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
 # so a new provider reaches the picker, /model and every downstream consumer without edits here.
-# Non-api-key flows need bespoke picker UX and are skipped.
+# Admission is by slug only: every in-tree non-api-key profile (OAuth, external-process, cloud
+# SDK) already owns a hand-written row above, so the old auth_type skip set never excluded an
+# in-tree provider — it only hid out-of-tree plugins. Visibility is gated downstream by
+# credentials, not here: ``models._provider_has_credentials`` / ``_lap_canonical_rows`` route
+# through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
+# credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+
+
+def _plugin_provider_enters_picker(pp) -> bool:
+    """Picker admission for a plugin model-provider profile: any slug without a built-in row."""
+    return pp.name not in _canonical_slugs
+
+
 try:
     from providers import list_providers as _list_providers_for_canonical
     for _pp in _list_providers_for_canonical():
-        if _pp.name in _canonical_slugs or _pp.auth_type in {
-            "oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex",
-        }:
+        if not _plugin_provider_enters_picker(_pp):
             continue
         _label = _pp.display_name or _pp.name
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _pp.description or f"{_label} (direct API)"))

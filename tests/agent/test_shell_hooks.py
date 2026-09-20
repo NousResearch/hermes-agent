@@ -807,3 +807,43 @@ class TestRoutedProfileEnv:
         assert seen["home"] == str(routed)
         assert seen["key"] == ""
         assert "profile" in payload
+
+
+# ── bare script paths on native Windows ─────────────────────────────────
+# Real subprocesses, no mocked spawn: the failure being guarded is CreateProcess rejecting a text
+# file, which only exists on the host it happens on. Marked per the root AGENTS.md rule against
+# faking ``sys.platform``.
+
+
+@pytest.mark.windows_only
+def test_bare_script_hook_path_executes_on_windows(tmp_path):
+    """A hook whose command is a bare script path — the shape every example in
+    ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
+    kernel's shebang handling; CreateProcess has no equivalent, so the same config failed on
+    Windows while working everywhere else. A path that is not a file must still be reported as
+    missing rather than laundered through an interpreter."""
+    script = _write_script(tmp_path, "hook.sh", '#!/usr/bin/env bash\necho "ran" >&2\nexit 7\n')
+
+    def spec(command):
+        return shell_hooks.ShellHookSpec(event="pre_tool_call", command=command)
+
+    result = shell_hooks._spawn(spec(str(script)), "{}")
+    assert result["error"] is None, result["error"]
+    assert result["returncode"] == 7, "the script's own exit code must reach a fail_closed gate"
+    assert "ran" in result["stderr"]
+
+    missing = shell_hooks._spawn(spec(str(tmp_path / "gone.sh")), "{}")
+    assert missing["error"] == "command not found"
+
+
+@pytest.mark.windows_only
+def test_unroutable_script_hook_names_the_remediation(tmp_path):
+    """A suffix we deliberately do not route still fails, but the diagnostic has to say what to do:
+    the raw WinError text is localized, so a non-English Windows install could not act on it."""
+    script = _write_script(tmp_path, "hook.zsh", "#!/bin/zsh\necho hi\n")
+    spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+
+    result = shell_hooks._spawn(spec, "{}")
+
+    assert result["returncode"] is None
+    assert "interpreter" in result["error"] and "bash" in result["error"]

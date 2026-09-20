@@ -41,6 +41,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
+from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -632,7 +633,18 @@ def _cloud_stale_timeout(base: float, api_kwargs: dict) -> float:
 def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     """Stale-stream patience for a provider that is never a local endpoint (Bedrock):
     the OpenAI/Anthropic stale detector's budget minus its local branch."""
-    return _cloud_stale_timeout(_configured_stale_base(agent), api_kwargs)
+    return _cloud_stale_timeout_for(agent, api_kwargs)
+
+
+def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
+    """An explicit ``providers.<id>.stale_timeout_seconds`` is the operator's deadline and
+    wins over every implicit floor — the context-size tier as well as the reasoning-model
+    floor — so it can SHORTEN patience for a hung stream (#115024). Only the 180s default
+    is scaled and floored."""
+    explicit = get_provider_stale_timeout(agent.provider, agent.model)
+    if explicit is not None:
+        return explicit
+    return _cloud_stale_timeout(env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), api_kwargs)
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
@@ -1312,7 +1324,7 @@ def _reasoning_config_for_wire(agent):
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
-    if getattr(agent, "_reasoning_floor_required", False) and (
+    if getattr(agent, "_reasoning_floor_required", False) is True and (
         ephemeral_off or isinstance(cfg, dict) and (
             cfg.get("enabled") is False or cfg.get("effort") == "none"
         )
@@ -1921,6 +1933,23 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             logger.debug("Fallback to %s/%s: could not attach credential pool: %s", fb_provider, fb_model, exc)
 
 
+def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider) -> None:
+    """A billing switch is a WARNING naming the profile, both models and the remedy: the gateway
+    persists the turn as a transient failure otherwise, and nothing in the log says the paid
+    model was refused for credits or how to fix it (#115702). Other reasons stay INFO."""
+    if reason != FailoverReason.billing:
+        logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+        return
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    profile = profile_name_for_home(get_hermes_home()) or "default"
+    remedy = "hermes model" if profile == "default" else f"hermes -p {profile} model"
+    logger.warning(
+        "Profile %s: %s via %s refused for billing/credits — using fallback %s via %s. "
+        "Top up credits, or run `%s` to pick a model this account can use.",
+        profile, old_model, old_provider, fb_model, fb_provider, remedy,
+    )
+
+
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
@@ -2169,7 +2198,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # provenance so the restore path only emits a recovery notice after a real fallback.
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
-            logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+            _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)
@@ -2385,7 +2414,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs,
             lambda request: _dispatch_provider_request(
-                agent, request, lambda authorized: summary_client.chat.completions.create(**authorized)
+                agent, request,
+                lambda authorized: summary_client.chat.completions.create(
+                    **bypass_chat_sdk_request_transform(authorized, summary_client)),
             ),
             retry_count=retry_count,
         )
@@ -2839,6 +2870,10 @@ class _StreamingCall(StreamingWaitMonitor):
     def __init__(self, agent, api_kwargs: dict, on_first_delta):
         self.agent = agent
         self.api_kwargs = api_kwargs
+        self._initial_route = (
+            getattr(agent, "provider", None), getattr(agent, "base_url", None),
+            getattr(agent, "model", None), getattr(agent, "api_mode", None),
+        )
         self.on_first_delta = on_first_delta
         self.worker = None  # request thread; None in inline mode
         self.result = {"response": None, "error": None, "partial_tool_names": []}
@@ -3285,11 +3320,13 @@ class _StreamingCall(StreamingWaitMonitor):
                 _dropped_names)
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None)
-        if finish_reason is None and content_parts and not tool_calls_acc and usage_obj is None:
-            # Text-only drop: otherwise the partial text is stamped "stop" and the next step is
-            # lost. A usage object proves the provider finished (include_usage's final chunk).
+        if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
+            # Text/reasoning-only drop: otherwise the partial response is stamped "stop" and the
+            # next step is lost (a reasoning-only stop can surface an unfinished thought as the
+            # final answer). A usage object proves the provider finished (include_usage's final chunk).
             logger.warning(
-                "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
+                "Stream ended with no finish_reason after delivering text/reasoning with no tool calls; "
+                "treating as a mid-stream drop.")
             return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)
         effective_finish_reason = "length" if has_truncated_tool_args else (finish_reason or "stop")
         provider_stream_error = _provider_stream_error_from_text(
@@ -3471,8 +3508,18 @@ class _StreamingCall(StreamingWaitMonitor):
         if self._request_cancelled["value"]:
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
+        current_route = (
+            getattr(self.agent, "provider", None), getattr(self.agent, "base_url", None),
+            getattr(self.agent, "model", None), getattr(self.agent, "api_mode", None),
+        )
+        if current_route != self._initial_route:
+            logger.info("Streaming route changed while a request was in flight; returning the stale request error")
+            self.result["error"] = e
+            return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
-        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError))
+        _is_conn_err = isinstance(
+            e, (_httpx.NetworkError, _httpx.RemoteProtocolError, ConnectionError)
+        )
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
@@ -3495,14 +3542,15 @@ class _StreamingCall(StreamingWaitMonitor):
             self.clients.close_once("stream_options_rejected_retry")
             return True
 
-        if self.deltas_were_sent["yes"]:
-            # Died AFTER tokens were delivered: normally no retry (would duplicate
-            # text). Exception: a tool call in flight — aborting discards it, so
-            # retry TRANSIENT errors (a "reconnecting" marker + duplicated
-            # preamble beats a failed action; no tool has executed yet).
-            _partial_tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
-            if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
-                logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
+        _partial_tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
+        _visible_text_was_sent = self.deltas_were_sent["yes"] or bool(
+            (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip()
+        )
+        if _partial_tool_in_flight:
+            # A tool call has not executed yet, so a transient drop can safely retry even
+            # when quiet-mode/test consumers suppress ordinary text callbacks.
+            if not (_is_transient and attempt < max_retries):
+                logger.warning("Streaming failed mid tool-call; not retrying: %s", e)
                 self.result["error"] = e
                 return False
             # Marker explains the re-streamed preamble (``_emit_stream_drop`` logs the WARNING);
@@ -3522,6 +3570,13 @@ class _StreamingCall(StreamingWaitMonitor):
             self.first_delta_fired["done"] = False
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")
             return True
+
+        if _visible_text_was_sent:
+            # Text already reached the user: retrying would duplicate it. Return a partial stub
+            # even if the current consumer is quiet and therefore did not count the callback.
+            logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
+            self.result["error"] = e
+            return False
 
         if _is_transient or _is_empty_stream:
             # Transient network / timeout error: retry with a fresh connection first.
@@ -3659,7 +3714,7 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
             return
-        self._stream_stale_timeout = _cloud_stale_timeout(base, self.api_kwargs)
+        self._stream_stale_timeout = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
 
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the
@@ -3743,7 +3798,16 @@ class _StreamingCall(StreamingWaitMonitor):
         if self.agent._interrupt_requested:  # worker returned early before the monitor saw the flag
             raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
         if self.result["error"] is not None:
-            if self.deltas_were_sent["yes"]:
+            # Quiet/test consumers can suppress delta callbacks even though the stream accumulator
+            # has already received user-visible text or an incomplete tool call. Preserve the
+            # partial-stub contract based on captured state, not only on whether a UI consumed it.
+            has_partial_response = (
+                self.deltas_were_sent["yes"]
+                or bool((getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip())
+                or bool(getattr(self, "result", {}).get("partial_tool_names"))
+                or self.provider_tool_in_flight["yes"]
+            )
+            if has_partial_response:
                 return self._partial_stream_stub()
             raise self.result["error"]
         if self.result["response"] is not None:

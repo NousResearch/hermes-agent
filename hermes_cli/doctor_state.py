@@ -443,7 +443,7 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
                     "(set HERMES_GITHUB_BOT_TOKEN)",
                 )
     if get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN"):
-        check_ok("GitHub token configured (authenticated API access)")
+        check_ok("GitHub token configured", "(validity checked under API Connectivity)")
     else:
         check_bool(_gh_authenticated(), ("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)"),
                    ("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)"))

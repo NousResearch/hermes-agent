@@ -437,11 +437,46 @@ def _nous_portal_recommended_names() -> set[str]:
         return set()
 
 
+def _profile_owns_catalog(normalized: str) -> bool:
+    """True when the registered profile's catalog is not the generic ``{base_url}/models`` listing —
+    it overrides ``fetch_models`` or points ``models_url`` elsewhere — so that listing is not
+    authoritative for it (a relay may 200 with a different product catalog, #101705)."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(normalized)
+    return profile is not None and (
+        type(profile).fetch_models is not ProviderProfile.fetch_models or bool(profile.models_url))
+
+
+def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
+    """The managed llama.cpp runtime: the staged library on disk is the source of truth, not the
+    live listing. The router's model list is spawn-only (a GGUF landed after its start is
+    invisible to GET /models until a bounce), so validating a freshly downloaded model against
+    the live listing rejects the very file the user just staged — the Local Models "Use" flow
+    and the composer picker could never succeed for a non-catalog model. A staged id accepts
+    (case-insensitive: typing matches the file name, the router registers the preset id);
+    anything else falls through to the live listing, which stays authoritative for ids that
+    were never downloaded here."""
+    from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+    staged = {sid.lower() for sid in staged_model_ids()}
+    if req.lookup.strip().lower() in staged:
+        return _accept_with_note(
+            f"Note: `{req.requested}` was not found in the live /v1/models listing "
+            "but is downloaded in the managed local-models library — accepted."
+        )
+    return None
+
+
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     """Generic live /v1/models probe. Returns None when the API was unreachable (the caller then
-    tries Bedrock discovery / the curated catalog)."""
+    tries Bedrock discovery / the curated catalog). A profile that owns its catalog is validated
+    against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
+    if _profile_owns_catalog(req.normalized) and _match_in_catalog(req.lookup, _static_catalog(req.normalized)).exact:
+        return _accept()
     api_models = _m.fetch_api_models(req.api_key, req.base_url)
     if api_models is None:
         return None
@@ -542,8 +577,8 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
 # BEHAVIOR: moa → whitespace → OpenRouter preset parse → LM Studio → Ollama native → custom →
-# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → live listing → Bedrock →
-# curated-catalog fallback (always decides).
+# codex/xai static → MiniMax → managed local (staged library) → Anthropic native →
+# Anthropic Messages → live listing → Bedrock → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
     (lambda req: True, _reject_whitespace),
@@ -553,6 +588,7 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (_is_custom, _validate_custom),
     (_for("openai-codex", "xai-oauth"), _validate_static_catalog),
     (_for("minimax", "minimax-cn"), _validate_minimax),
+    (_for("llamacpp", "llama.cpp", "llama-cpp"), _validate_managed_local),
     (_for("anthropic"), _validate_anthropic),
     (lambda req: req.api_mode == "anthropic_messages", _validate_anthropic_messages),
     (lambda req: True, _validate_live_listing),

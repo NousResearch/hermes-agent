@@ -63,6 +63,8 @@ async def _device_metadata(client, server_url, auth_server_url):
     """Issuer-bound device metadata of one authorization server; raises when it is unusable."""
     from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls, validate_metadata_issuer
 
+    from tools.mcp_oauth_provider import metadata_issued_by_origin
+
     for url in build_oauth_authorization_server_metadata_discovery_urls(auth_server_url, server_url):
         response = await client.get(url)
         if response.status_code == 404:
@@ -71,7 +73,7 @@ async def _device_metadata(client, server_url, auth_server_url):
         if not data.get("device_authorization_endpoint"):
             raise RuntimeError("Server does not advertise device authorization; use --flow browser if supported")
         metadata = DeviceOAuthMetadata.model_validate(data)
-        if auth_server_url:
+        if auth_server_url and not metadata_issued_by_origin(metadata, auth_server_url, response):
             validate_metadata_issuer(metadata, auth_server_url)
         grants = metadata.grant_types_supported
         if grants is not None and DEVICE_GRANT not in grants:
@@ -110,7 +112,11 @@ async def _register(client, provider, cfg):
             raise RuntimeError("Server has no registration endpoint; configure oauth.client_id (and client_secret if required)")
         response = await client.post(str(endpoint), json=metadata)
         data = _payload(response, "Client registration")
-    data["issuer"] = str(context.oauth_metadata.issuer)
+    # SEP-2352: bind the credentials to the identifier the SDK's runtime flow compares them against — the
+    # advertised authorization server when the resource advertised one, else the metadata issuer (its Step 4
+    # rule). For a path-scoped server whose document names its origin (#116233) the two differ, and a
+    # binding to the document issuer would make the next 401 discard this client and its tokens.
+    data["issuer"] = str(context.auth_server_url or context.oauth_metadata.issuer)
     context.client_info = OAuthClientInformationFull.model_validate(data)
     provider._coerce_client_secret_post()
     try:

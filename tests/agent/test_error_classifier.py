@@ -748,6 +748,38 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.should_compress is False
 
+    def test_400_content_exists_risk_commandcode_moderation(self):
+        # CommandCode gateway (OpenAI-compatible aggregator fronting DeepSeek)
+        # rejects filtered prompts with HTTP 400 "Content Exists Risk" and a
+        # nested param envelope marking isRetryable=false — deterministic for
+        # the unchanged request, so the recovery is the fallback chain, not a
+        # same-provider retry. Without the pattern the 400 fell through to
+        # format_error and the surfaced copy blamed a malformed request. See
+        # #115218.
+        body = {
+            "error": {
+                "message": "Content Exists Risk",
+                "type": "AI_APICallError",
+                "param": {
+                    "error": "Content Exists Risk", "statusCode": 400,
+                    "name": "AI_APICallError", "message": "Content Exists Risk",
+                    "isRetryable": False, "type": "AI_APICallError",
+                },
+            }
+        }
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'Content Exists Risk'}}",
+            status_code=400,
+            body=body,
+        )
+        result = classify_api_error(
+            e, provider="commandcode", model="deepseek/deepseek-v4.1-flash"
+        )
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_compress is False
+
 
 
 

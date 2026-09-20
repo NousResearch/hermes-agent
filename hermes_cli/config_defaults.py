@@ -1754,13 +1754,9 @@ DEFAULT_CONFIG = {
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.
         # False = fail during the run instead.
         "preflight": True,
-        # Fail closed when an unpinned job's current global model/provider differs from its
-        # creation-time snapshot, so unattended jobs never silently inherit a paid default. False
-        # only when jobs should track changing global inference defaults.
-        "model_drift_guard": True,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
-        # cron.model > model.default. When set, unpinned jobs follow it deliberately and the drift
-        # guard does not engage for the model axis. "" = fall through to model.default.
+        # cron.model > model.default (the main agent model). An unpinned job follows the main
+        # model on every run; cron.model decouples the whole fleet from chat. "" = fall through.
         "model": "",
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
@@ -1935,16 +1931,17 @@ DEFAULT_CONFIG = {
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },
-    # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
-    # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools
-    # (terminal, file tools, todo, memory, browser_*, ...) are NEVER deferred.
+    # Tool Search replaces deferred tools in the model-facing array with the
+    # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
+    # Working-set core tools stay eager, while the explicit ``defer`` list below
+    # may include cold, event-triggered built-ins as well as plugin/MCP tools.
     "tools": {
         "tool_search": {
-            # Tiered: tier 0 (no deferrable tools) = everything eager; tier 1 = bridge + a
+            # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a
             # name+description manifest when it fits the budget (degrades to names-only); tier 2
             # (over budget even names-only, e.g. ~3,300-tool APIs) = bare bridge + a
             # one-line-per-server summary (name + tool count). "auto"|"on" = activate when at least
-            # one deferrable tool exists ("auto" is an alias of "on" today, reserved for a future
+            # one deferred tool exists ("auto" is an alias of "on" today, reserved for a future
             # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
             # "off" = pass-through, no bridge.
             "enabled": "auto",
@@ -1963,6 +1960,17 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
             # Range 200..60000.
             "listing_max_tokens": 4000,
+            # Tools replaced by the bridge by default. This list intentionally includes cold,
+            # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
+            # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
+            "defer": [
+                "computer_use", "session_search", "image_generate",
+                "todo_list", "process_manage", "cronjob_manage",
+                # Desktop GUI surface (desktop_ui + project toolsets)
+                "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+                "show_tip", "desktop_project", "close_terminal",
+                "apply_layout", "read_terminal", "read_window_below", "focus_pane",
+            ],
         },
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.

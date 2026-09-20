@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import ipaddress
 import logging
+import math
 import os
 import random
 import re
@@ -154,6 +155,9 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
 
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics."""
+    override = getattr(event, "reply_anchor_override", None)
+    if override is not None:
+        return override  # the turn was redirected onto another message (#115001)
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
@@ -1132,9 +1136,12 @@ def _log_safe_path(path: str) -> str:
     return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
-def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional[str]:
+def _validated_delivery_path(raw_path, session_key: str, label: str,
+                             dropped: Optional[List[dict]] = None) -> Optional[str]:
     """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
-    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466)."""
+    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466). When
+    ``dropped`` is a list, a rejected path is appended as ``{"path", "reason"}`` so the caller can
+    report the drop instead of booking a delivery that never happened (#115908)."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
@@ -1145,6 +1152,8 @@ def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional
         # a sandbox path failed to translate) and is not a security rejection.
         reason = "not found on this host" if not _existing_regular_file(raw) else "denied by the delivery policy"
         logger.warning("Skipping %s (%s): %s", label, reason, _log_safe_path(raw))
+        if dropped is not None:
+            dropped.append({"path": raw, "reason": reason})
     return safe_path
 
 
@@ -2111,14 +2120,13 @@ class BasePlatformAdapter(ABC):
         self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
 
     def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
-        """Write runtime status; log first failure per context at warning, rest at debug
-        (failures — permissions, ENOSPC — must neither be silent nor spam reconnect loops)."""
+        """Publish runtime status; log preparation failures without disrupting the adapter."""
         try:
-            from gateway.status import write_runtime_status
+            from gateway.status import publish_runtime_status
             # Multiplexed adapters share the status file; the runner stamps
             # ``<profile>:<platform>``.
             platform_key = getattr(self, "_runtime_status_platform_key", None) or self.platform.value
-            write_runtime_status(platform=platform_key, **kwargs)
+            publish_runtime_status(platform=platform_key, **kwargs)
         except Exception as exc:
             logged = _lazy_attr(self, "_status_write_logged", set)  # object.__new__ in tests
             first = (self.platform.value, context) not in logged
@@ -2397,6 +2405,36 @@ class BasePlatformAdapter(ABC):
     _SPLIT_THRESHOLD: int = 4000
     _text_batch_delay_seconds: float = 0.0
     _text_batch_split_delay_seconds: float = 0.0
+    # Shared cadence for adapters that batch: a quiet period long enough to merge a client-side
+    # split (Telegram's measured envelope), short enough that a single short message is not
+    # visibly delayed (#44883). Ceilings bound a misconfigured value fed to asyncio.sleep().
+    _TEXT_BATCH_DEFAULT_DELAY_S: float = 0.3
+    _TEXT_BATCH_MAX_DELAY_S: float = 2.0
+    _TEXT_BATCH_DEFAULT_SPLIT_DELAY_S: float = 1.0
+    _TEXT_BATCH_MAX_SPLIT_DELAY_S: float = 4.0
+
+    def _coerce_float_extra(self, key: str, default: float, *, min_value: float = 0.0, max_value: Optional[float] = None) -> float:
+        """Float from ``config.extra``; NaN/Inf/negative/unparseable → ``default``; clamped to ``[min_value, max_value]``."""
+        extra = getattr(self.config, "extra", None) or {}
+        try:  # float(None) → TypeError → default
+            parsed = float(extra.get(key))
+        except (TypeError, ValueError):
+            parsed = float(default)
+        if not math.isfinite(parsed) or parsed < 0:
+            parsed = float(default)
+        parsed = max(parsed, min_value)
+        if max_value is not None and parsed > max_value:
+            logger.warning("%s=%s exceeds the %s ceiling; clamped", key, parsed, max_value)
+            parsed = max_value
+        return parsed
+
+    def _configure_text_batch_delays(self) -> None:
+        """Read ``text_batch_delay_seconds`` / ``text_batch_split_delay_seconds`` from ``config.extra`` at the shared cadence."""
+        self._text_batch_delay_seconds = self._coerce_float_extra(
+            "text_batch_delay_seconds", self._TEXT_BATCH_DEFAULT_DELAY_S, max_value=self._TEXT_BATCH_MAX_DELAY_S)
+        self._text_batch_split_delay_seconds = self._coerce_float_extra(
+            "text_batch_split_delay_seconds", self._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S,
+            min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_MAX_SPLIT_DELAY_S)
 
     def _event_session_key(self, event: "MessageEvent") -> str:
         """Adapter-level session key for ``event``, profile-namespaced like the agent run."""
@@ -3086,11 +3124,12 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path, session_key=session_key)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(media_files, session_key: str = "",
+                                    dropped: Optional[List[dict]] = None) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths; ``dropped`` collects the rejects."""
         return [
             (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
-            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path"))]
+            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped))]
 
     @staticmethod
     def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:

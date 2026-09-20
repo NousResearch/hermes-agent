@@ -3054,6 +3054,8 @@ export interface ProcessEntry {
   watch_hit?: boolean | null
   notify_on_complete?: boolean | null
   exit_code?: number | null
+  exited_at?: number | null
+  completion_reason?: string | null
   detached?: boolean | null
   [key: string]: unknown
 }

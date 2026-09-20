@@ -77,7 +77,7 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
     raise value  # type: ignore[misc]
 
 
-def _scan_context_content(content: str, filename: str) -> str:
+def _scan_context_content(content: str, filename: str, *, user_authored: bool = False) -> str:
     """Scan a context file (AGENTS.md, .cursorrules, SOUL.md) for injection; matches are BLOCKED.
 
     "context" scope only (strict-scope SSH-backdoor/persistence/exfil patterns are too aggressive for a
@@ -88,6 +88,10 @@ def _scan_context_content(content: str, filename: str) -> str:
         content = content[1:]
     findings = _scan_for_threats(content, scope="context")
     if not findings:
+        return content
+    if user_authored and filename == "SOUL.md":
+        logger.warning("User-authored context file %s contains potential prompt injection: %s",
+                       filename, ", ".join(findings))
         return content
     logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
     return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
@@ -1532,7 +1536,19 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
             content = strip_legacy_protocol(content).strip()
         if not content:
             return None
-        return _truncate_content(_scan_context_content(content, "SOUL.md"),
+        # A distribution-owned persona is third-party content and remains blocked. A plain profile's
+        # SOUL.md (or a file omitted by an explicit distribution allowlist) is authored by its user.
+        user_authored_soul = False
+        try:
+            from hermes_cli.profile_distribution import read_manifest
+
+            manifest = read_manifest(soul_path.parent)
+            user_authored_soul = manifest is None or bool(
+                manifest.distribution_owned and "SOUL.md" not in manifest.distribution_owned
+            )
+        except Exception as exc:
+            logger.debug("Could not establish SOUL.md ownership at %s: %s", soul_path, exc)
+        return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=user_authored_soul),
                                  "SOUL.md", context_length=context_length,
                                  read_path=str(soul_path))
     except Exception as e:

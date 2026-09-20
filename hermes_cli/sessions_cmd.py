@@ -657,11 +657,14 @@ def _cmd_prune_or_archive(db, args, action):
     # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
     filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
     filters["include_pinned"] = getattr(args, "include_pinned", False)
+    # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
+    # never qualifies); the preview must show the same rows the archive will touch.
+    filters["lineage_tips_only"] = not prune
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
     candidates = db.list_prune_candidates(**filters)
-    # Archive expands each row to its compression lineage (may include open continuations), so a
-    # direct-open count would misdescribe its effect.
+    # Archive expands each matched tip to its compression lineage, so a direct-open count would
+    # misdescribe its effect.
     skipped_open = db.count_open_prune_matches(**filters) if prune else 0
     if skipped_open:
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "

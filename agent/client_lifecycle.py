@@ -77,16 +77,13 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
         is_anthropic = fb_provider == "anthropic"
         effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
-        agent._is_anthropic_oauth = (
-            _is_oauth_token(effective_key)
-            if is_anthropic and isinstance(effective_key, str) else False
-        )
+        agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return
     agent.api_key = credential
@@ -492,9 +489,9 @@ class ClientLifecycleMixin:
         return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
-        """OAuth flag only on native Anthropic; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
-        from agent.anthropic_credentials import _is_oauth_token
-        return _is_oauth_token(token) if self.provider == "anthropic" else False
+        """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
+        from agent.anthropic_credentials import anthropic_route_is_oauth
+        return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client

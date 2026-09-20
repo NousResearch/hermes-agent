@@ -390,9 +390,28 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
 _CONNECTION_ERROR_MARKERS = (
     r"(?:\w+\.)?(?:api\s*)?connection\s*(?:error|timeout)", r"(?:\w+\.)?connect\s*(?:error|timeout)",
     r"connection\s+refused", r"connection\s+reset", r"connection\s+aborted", r"actively\s+refused",
-    r"winerror\s+10061", r"errno\s+111", r"no\s+route\s+to\s+host", r"network\s+is\s+unreachable",
+    r"winerror\s+10061\b", r"errno\s+111\b", r"no\s+route\s+to\s+host", r"network\s+is\s+unreachable",
     r"cannot\s+connect", r"failed\s+to\s+establish", r"could\s+not\s+connect")
 _GATEWAY_CONNECTION_ERROR_RE = re.compile("(" + "|".join(_CONNECTION_ERROR_MARKERS) + ")", re.IGNORECASE)
+
+# An ESTABLISHED connection died mid-request. Says nothing about whether the endpoint is up:
+# an earlier call in the same turn may already have been answered by it (#26339, #116323).
+_CONNECTION_INTERRUPTED_MARKERS = (
+    r"connection\s+reset", r"connection\s+aborted", r"errno\s+104\b", r"errno\s+103\b",
+    r"broken\s+pipe", r"server\s+disconnected", r"peer\s+closed\s+connection",
+    r"connection\s+was\s+closed", r"network\s+connection\s+lost", r"unexpected\s+eof",
+    r"incomplete\s+chunked\s+read", r"response\s+ended\s+prematurely", r"socket\s+hang\s+up",
+    r"(?:\w+\.)?remoteprotocolerror", r"(?:\w+\.)?readerror")
+_GATEWAY_CONNECTION_INTERRUPTED_RE = re.compile(
+    "(" + "|".join(_CONNECTION_INTERRUPTED_MARKERS) + ")", re.IGNORECASE)
+
+# Nothing accepted the connection / no path to the host: "the endpoint is not up" IS the diagnosis.
+_ENDPOINT_UNREACHABLE_MARKERS = (
+    r"connection\s+refused", r"actively\s+refused", r"winerror\s+10061\b", r"errno\s+111\b",
+    r"no\s+route\s+to\s+host", r"network\s+is\s+unreachable", r"cannot\s+connect",
+    r"failed\s+to\s+establish", r"could\s+not\s+connect", r"(?:\w+\.)?connect\s*(?:error|timeout)")
+_GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
+    "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
@@ -589,15 +608,26 @@ def _format_exec_approval_fallback(
 # authentication failed: ... quota exhausted (429) ... Credentials are still valid") and re-auth can
 # never fix a quota, so text with both signals must fail safe toward the quota reply (#89401). Copy
 # names the slash command the chat user can run; raw provider text stays in the gateway log.
+#
+# The three connection rows are not interchangeable (#116323): a RESET/EOF on an established
+# connection says nothing about whether the endpoint is up (an earlier call in the same turn may have
+# been answered by it), a REFUSED/unroutable connect is the endpoint-down case #86570 wrote the
+# wording for, and a cause-free SDK ``APIConnectionError: Connection error.`` supports neither
+# diagnosis, so the catch-all names the failure without asserting a cause.
 _PROVIDER_ERROR_REPLIES = (
     (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
     (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
                              "or ask whoever runs this bot to run `hermes doctor` on the host."),
     (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
                                   "message, or use /model to switch models."),
-    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
-                                   "endpoint is not running or is unreachable. Wait a moment and use /retry; "
-                                   "if it persists, run `hermes doctor` on the host."))
+    (_GATEWAY_CONNECTION_INTERRUPTED_RE, "⚠️ The connection to the AI model service was interrupted mid-request — "
+                                         "usually transient. Use /retry to try again; if it keeps happening, run "
+                                         "`hermes doctor` on the host."),
+    (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
+                                       "endpoint is not running or is unreachable. Wait a moment and use /retry; "
+                                       "if it persists, run `hermes doctor` on the host."),
+    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ Hermes could not reach the AI model service (no further detail from the "
+                                   "SDK). Use /retry to try again; if it persists, run `hermes doctor` on the host."))
 
 
 # Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
@@ -669,6 +699,15 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     from agent.message_sanitization import _sanitize_surrogates
 
     text = _sanitize_surrogates(str(text))
+
+    # Some OpenAI-compatible providers leak their exact end-of-sequence control token into
+    # ``final_response`` even though finish_reason is already ``stop``.  It is transport metadata,
+    # not an assistant message; without filtering, chat adapters send a literal ``<|eos|>`` bubble.
+    # Reuse the MEDIA boundary's exact, terminal-only recognizer (#111046 / #111348): examples
+    # mentioning the token mid-response and non-exact variants remain byte-identical.
+    _eos_start = _terminal_sentinel_start(text)
+    if _eos_start >= 0:
+        text = text[:_eos_start].rstrip()
 
     # Cancellation metadata, not prose; ACP/TUI already suppress this sentinel, chat surfaces should too.
     # See #7921.
@@ -1881,8 +1920,6 @@ _AGENT_ENV_BRIDGE = {
     "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
     "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
     "session_stall_timeout": "HERMES_SESSION_STALL_TIMEOUT",
-    # Internal bridge only — config.yaml (agent.reconnect_attention_after) is the documented setting.
-    "reconnect_attention_after": "HERMES_RECONNECT_ATTENTION_AFTER_SECONDS",
     "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
     "cron_drain_timeout": "HERMES_CRON_DRAIN_TIMEOUT",
     "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
@@ -2140,6 +2177,7 @@ from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     _reply_anchor_for_event,
+    _terminal_sentinel_start,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
@@ -3204,26 +3242,37 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
 # Max seconds between platform reconnect retries (primary watcher and secondary profiles share it).
 _RECONNECT_BACKOFF_CAP = 300
 
-# Seconds continuously in the reconnect queue before NEEDS_ATTENTION. Retrying never stops (transient
-# outages must self-heal); this only makes a permanently-failing loop loud. 0 disables.
-_RECONNECT_ATTENTION_AFTER_SECONDS = _float_env("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200)
-
-
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def _reconnect_attention_after_secs() -> float:
+    """``agent.reconnect_attention_after`` of the profile whose scope is bound at call time (the launch
+    profile's when unbound). Seconds continuously in the reconnect queue before NEEDS_ATTENTION; retrying
+    never stops (transient outages must self-heal), this only makes a permanently-failing loop loud.
+    Non-positive disables. Read per call, never cached: one process serves many profiles and a config
+    edit must not need a gateway restart (#115635)."""
+    from hermes_cli.config import load_config_readonly
+    agent_cfg = load_config_readonly().get("agent")
+    raw = agent_cfg.get("reconnect_attention_after") if isinstance(agent_cfg, dict) else None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_DEFAULT_CONFIG["agent"]["reconnect_attention_after"])
+
+
 def _reconnect_needs_attention(info: dict, now: float) -> bool:
     """True when a reconnect-queue entry has waited long enough for NEEDS_ATTENTION.
     ``queued_at`` is re-stamped on each (re)entry, so only *continuous* failure escalates."""
-    if _RECONNECT_ATTENTION_AFTER_SECONDS <= 0:
+    threshold = _reconnect_attention_after_secs()
+    if threshold <= 0:
         return False  # escalation disabled
     queued_at = info.get("queued_at")
     if queued_at is None:
         info["queued_at"] = now
         return False
-    return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
+    return (now - queued_at) >= threshold
 
 
 # "No session DB pinned": lets ``_session_db`` distinguish "resolve from profile scope" from a
@@ -3238,10 +3287,10 @@ _AUTO_RESET_CONTEXT_NOTES = {
 
 
 def _write_runtime_status_quiet(**fields: Any) -> None:
-    """Best-effort ``gateway_state.json`` write; status persistence must never abort the caller."""
+    """Best-effort status publication; persistence must never abort or block the caller."""
     try:
-        from gateway.status import write_runtime_status
-        write_runtime_status(**fields)
+        from gateway.status import publish_runtime_status
+        publish_runtime_status(**fields)
     except Exception:
         pass
 
@@ -3449,6 +3498,11 @@ class GatewayRunner(
         self._busy_input_modes_by_profile: Dict[str, str] = {}
         self._busy_text_modes_by_profile: Dict[str, str] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
+        # Live launchd ``ExitTimeOut`` for this job (None when not launchd-owned). Read once at
+        # boot — launchd fixes it at load — and applied only to signal-driven stops, which are the
+        # only stops launchd times. See _load_launchd_exit_timeout().
+        self._stop_requested_by_signal = False
+        self._launchd_exit_timeout_s = self._load_launchd_exit_timeout(self._restart_drain_timeout)
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
@@ -4624,7 +4678,7 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
-    from gateway.run_profile_reconcile import _mcp_config_reconciler
+    from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4647,9 +4701,10 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        (60, "Curator tick", _housekeeping_curator),
-        (60, "Sync pull tick", _housekeeping_skill_sync),
-        (60, "Org sync pull tick", _housekeeping_org_skill_sync),
+        # Per served profile: each profile has its own skills tree, curator state and Nous login.
+        (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
+        (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
+        (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
@@ -5062,6 +5117,12 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
 
             _best_effort(_log_context, "format_context_for_log failed: %s")
             _best_effort(_diagnostic, "spawn_async_diagnostic failed: %s")
+        if not planned_takeover:
+            # Supervisor/operator SIGNAL stop (bootout, kickstart -k, systemd, s6, bare kill) — the
+            # only kind launchd times with ExitTimeOut. In-band SIGUSR1 restarts never pass through
+            # here, and a sibling-driven --replace takeover is not launchd-timed either, so both
+            # keep the configured drain. _stop_impl uses this to cap the drain to the live budget.
+            runner._stop_requested_by_signal = True
         asyncio.create_task(runner.stop())
     return shutdown_signal_handler
 

@@ -1082,8 +1082,9 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
-    Non-bundled plugins are asked about the privileged ``allow_tool_override`` grant;
-    tri-state: ``True``/``False`` skip the prompt, ``None`` asks. Bundled plugins are trusted.
+    Non-bundled plugins request consent for declared capabilities. The legacy
+    ``allow_tool_override`` grant changes only with an explicit True/False flag;
+    None leaves it unchanged. Bundled plugins are trusted.
     """
     from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
@@ -1127,10 +1128,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     declared_caps = _declared_capabilities_for_key(key)
     if declared_caps:
         _run_capability_consent(console, key, declared_caps, context="enable")
-        if allow_tool_override is not None:
-            _resolve_tool_override_grant(console, key, allow_tool_override)
-        return
-    _resolve_tool_override_grant(console, key, allow_tool_override)
+    # Enabling a plugin is not a request for undeclared privileges. Keep existing
+    # grants unchanged unless the operator explicitly grants or revokes one.
+    if allow_tool_override is not None:
+        _resolve_tool_override_grant(console, key, allow_tool_override)
 
 
 # ── Capability consent flow ──────────────────────────────────────────────────
@@ -1902,12 +1903,17 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
     if not toolset_key:
         return
     from hermes_cli.config import load_config
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
     config = load_config()
     platform_toolsets = _child_dict(config, "platform_toolsets")
     changed_toolsets = {}
-    for platform, ts_list in platform_toolsets.items():
-        if isinstance(ts_list, list) and enable != (toolset_key in ts_list):
+    for platform, raw in list(platform_toolsets.items()):
+        # A list-literal string (older `hermes config set`) is the user's real selection; toggling
+        # it re-saves the entry as a proper list so the string never persists.
+        ts_list = parse_platform_toolsets_value(raw)
+        if ts_list is not None and enable != (toolset_key in ts_list):
             (ts_list.append if enable else ts_list.remove)(toolset_key)
+            platform_toolsets[platform] = ts_list
             changed_toolsets[platform] = ts_list
     # Enabling with no platform lists yet: seed "cli" at minimum.
     if enable and not changed_toolsets and not platform_toolsets:
@@ -2046,9 +2052,16 @@ def _reapply_stash(git_exe: str, target: Path) -> bool:
 def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
     """Stash local edits before a pull. Returns ``(stash_created, error)``; a non-empty error means
     the tree is dirty but nothing was saved, so the pull must not run."""
-    status = _run_plugin_git(git_exe, target, "status", "--porcelain")
+    status = _run_plugin_git(git_exe, target, "status", "--porcelain", "-z")
     if status.returncode != 0 or not status.stdout.strip():
         return False, ""
+    # `git add -N` entries make `git stash push` fail outright (see update_cmd_stash), so promote them
+    # to real staged adds first; the checkout's own local edits are otherwise unstashable.
+    from hermes_cli.update_cmd_stash import _intent_to_add_paths
+
+    intent_to_add = _intent_to_add_paths(status.stdout)
+    if intent_to_add:
+        _run_plugin_git(git_exe, target, "add", "--", *intent_to_add)
     pre_stash = _stash_ref(git_exe, target)
     push = _run_plugin_git(
         git_exe, target, "stash", "push", "--include-untracked", "-m", "hermes-plugin-update-autostash")

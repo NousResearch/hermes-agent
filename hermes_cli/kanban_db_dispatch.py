@@ -1591,7 +1591,7 @@ def check_respawn_guard(
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
-    err = row["last_failure_error"]
+    err = _kb._lossy_text(row["last_failure_error"])
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
@@ -1634,15 +1634,20 @@ def check_respawn_guard(
         "SELECT body, created_at FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            handoffs = conn.execute(
-                "SELECT kind, payload FROM task_events WHERE task_id = ? AND created_at > ? "
-                "AND kind IN ('unblocked', 'reclaimed', 'promoted', 'review_reopened', "
-                "'changes_requested', 'assigned') ORDER BY id",
-                (task_id, c["created_at"]),
-            ).fetchall()
-            if not any(_is_handoff_event(event["kind"], event["payload"]) for event in handoffs):
-                return "active_pr"
+        body = _kb._lossy_text(c["body"])
+        if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
+            continue
+        events = conn.execute(
+            # Strictly after: a same-second tie stays guarded (fail closed).
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? AND created_at > ? "
+            "AND kind IN ('unblocked', 'reclaimed', 'promoted', 'review_reopened', "
+            "'changes_requested', 'assigned') ORDER BY id",
+            (task_id, int(c["created_at"] or 0)),
+        ).fetchall()
+        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+            return None
+        return "active_pr"
 
     return None
 

@@ -300,7 +300,9 @@ Multiple hermes processes (gateway + CLI sessions + worktree agents) share one
 `state.db`. The `SessionDB` class handles write contention with:
 
 - **Short SQLite timeout** (1 second) instead of the default 30s
-- **Application-level retry** with random jitter (20-150ms, up to 15 retries)
+- **Time-budgeted application-level retry** with random jitter (20-150ms for the
+  first 2s, then 250ms-1s): 20s for routine writes, 60s for transcript writes
+  (their failure aborts the turn), 0.5s for observation-only activity writes
 - **BEGIN IMMEDIATE** transactions to surface lock contention at transaction start
 - **Periodic WAL checkpoints** every 50 successful writes (PASSIVE mode)
 
@@ -308,11 +310,22 @@ This avoids the "convoy effect" where SQLite's deterministic internal backoff
 causes all competing writers to retry at the same intervals.
 
 ```
-_WRITE_MAX_RETRIES = 15
-_WRITE_RETRY_MIN_S = 0.020   # 20ms
-_WRITE_RETRY_MAX_S = 0.150   # 150ms
+_WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 60.0, 0.5
+_WRITE_RETRY_MIN_S, _WRITE_RETRY_MAX_S = 0.020, 0.150
+_WRITE_RETRY_SLOW_MIN_S, _WRITE_RETRY_SLOW_MAX_S = 0.250, 1.000
 _CHECKPOINT_EVERY_N_WRITES = 50
 ```
+
+When a writer exhausts its budget the turn ends with
+`session_persistence_failed:locked` and, on Linux, `hermes_state_lockowners`
+logs a WARNING naming the process that held the lock at that moment
+(`PID 594094 (hermes --worktree --yolo) holds WAL write lock on state.db-shm`),
+read from `/proc/locks` — SQLite's byte-range `fcntl` locks encode the lock kind
+in their offset (`state.db-shm` byte 120 = WAL write, 121 = checkpoint,
+123-127 = read slots; the 1 GiB pending-byte page on `state.db` = rollback-journal
+PENDING/RESERVED/SHARED). The open-descriptor scan cannot make this distinction
+because every Hermes process has the DB open. Look for that line in
+`~/.hermes/logs/errors.log` next to the `database is locked` failure.
 
 
 ## Common Operations

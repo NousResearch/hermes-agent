@@ -1247,6 +1247,33 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["session_id"] == "cyc-b"
 
+    def test_latest_descendant_never_resumes_into_a_subagent_or_branch_child(self):
+        """#115092: after a ws_orphan_reap the dashboard resumes the predecessor's newest descendant. A
+        subagent run (``_delegate_from``) or a /branch fork (``_branched_from``) is its own conversation and
+        never listed as a continuation, so following it parks the user's chat in a hidden row; only
+        compression continuations are followed."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="primary", source="tui")
+            db.create_session(session_id="primary-sub", source="tui", parent_session_id="primary",
+                              model_config={"_delegate_from": "primary"})
+            db.create_session(session_id="primary-fork", source="tui", parent_session_id="primary",
+                              model_config={"_branched_from": "primary"})
+            db.end_session("primary", "ws_orphan_reap")
+            assert self.client.get("/api/sessions/primary/latest-descendant").json()["session_id"] == "primary"
+
+            db._conn.execute("UPDATE sessions SET end_reason='compression' WHERE id='primary'")
+            db._conn.commit()
+            db.create_session(session_id="primary-cont", source="tui", parent_session_id="primary")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/primary/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "primary-cont"
+
 
 
 

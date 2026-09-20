@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
-    ProviderDef, custom_provider_aliases, determine_api_mode, get_label, host_mandated_api_mode,
-    is_aggregator, resolve_provider_full)
+    LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
+    host_mandated_api_mode, is_aggregator, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -1407,6 +1407,10 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         try:
             st.resolve_runtime(requested=st.target_provider, explicit_base_url=alias_url or None)
         except Exception as e:
+            if st.target_provider.strip().lower() in LLAMACPP_ALIASES:
+                # A local-runtime alias has no credential to add: the seam's own message ("server
+                # isn't running" / "turned off") is the actionable one, the auth hint below is noise.
+                return st.fail_on_target(str(e))
             return st.fail_on_target(
                 f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "
                 f"`hermes auth add {st.target_provider}`, or pick a connected provider in /model.\n"
@@ -1755,13 +1759,11 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
     cold-start disk I/O — async callers run this on a worker thread."""
     from pathlib import Path
-    from hermes_cli.config import get_config_path, read_user_config_raw, warn_unpinned_cron_jobs_after_model_config_change
+    from hermes_cli.config import get_config_path, read_user_config_raw
     from utils import atomic_roundtrip_yaml_update
     path = Path(config_path) if config_path else get_config_path()
     for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
         atomic_roundtrip_yaml_update(path, f"model.{key}", value)
-        # Same unpinned-cron notice as `hermes config set` for every model switch.
-        warn_unpinned_cron_jobs_after_model_config_change(f"model.{key}", value)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):

@@ -33,7 +33,7 @@ def _seed_bare_upstream(tmp_path) -> None:
     subprocess.run(["git", "init", "-q", "--bare", str(upstream)], check=True)
     work = tmp_path / "work"
     subprocess.run(["git", "clone", "-q", str(upstream), str(work)], check=True)
-    (work / "plugin.yaml").write_text("name: probe\ndescription: d\nversion: '1'\n")
+    (work / "plugin.yaml").write_text("name: probe\ndescription: d\nversion: '1'\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(work), "-c", "user.name=t", "-c", "user.email=t@t", "add", "."], check=True)
     subprocess.run(["git", "-C", str(work), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "i"], check=True)
     subprocess.run(["git", "-C", str(work), "push", "-q", "origin", "HEAD"], check=True)
@@ -75,8 +75,8 @@ def test_private_clone_falls_back_to_auth_after_credential_required_error(tmp_pa
     assert len(clone_calls) == 2, f"expected anonymous + auth fallback, got {len(clone_calls)} clone attempts"
     assert clone_calls[0] == [], "first (anonymous) clone attempt must not carry an Authorization header"
     assert clone_calls[1] == [f"Authorization: basic {expected}"], "fallback clone must inject the stored credential"
-    assert "s3cret" not in (dest / ".git" / "config").read_text()
-    assert expected not in (dest / ".git" / "config").read_text()
+    assert "s3cret" not in (dest / ".git" / "config").read_text(encoding="utf-8")
+    assert expected not in (dest / ".git" / "config").read_text(encoding="utf-8")
     # Non-HTTPS URLs get no header; the hardened base env is otherwise untouched.
     base = noninteractive_git_env()
     assert git_credentials.with_git_auth(base, "git@github.com:acme/probe.git") == dict(base)
@@ -84,10 +84,13 @@ def test_private_clone_falls_back_to_auth_after_credential_required_error(tmp_pa
 
 def _check_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch):
     helper = tmp_path / "helper.sh"
-    helper.write_text("#!/bin/sh\n[ \"$1\" = get ] && printf 'username=bob\\npassword=pw-from-helper\\n'\n")
+    helper.write_text("#!/bin/sh\n[ \"$1\" = get ] && printf 'username=bob\\npassword=pw-from-helper\\n'\n", encoding="utf-8")
     helper.chmod(0o755)
     gitconfig = tmp_path / "gitconfig"
-    gitconfig.write_text(f'[credential]\n\tuseHttpPath = true\n[credential "https://git.example.test/acme/x.git"]\n\thelper = !{helper}\n', encoding="utf-8")
+    gitconfig.write_text(
+        f'[credential]\n\tuseHttpPath = true\n'
+        f'[credential "https://git.example.test/acme/x.git"]\n\thelper = !{helper}\n',
+        encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
     monkeypatch.setenv("GIT_ASKPASS", "/nonexistent/askpass-must-not-run")
 
@@ -104,3 +107,65 @@ def test_credential_fill_uses_stored_helper_linux(tmp_path, monkeypatch):
 @pytest.mark.macos_only
 def test_credential_fill_uses_stored_helper_macos(tmp_path, monkeypatch):
     _check_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch)
+
+
+def _refused(argv):
+    return subprocess.CompletedProcess(
+        argv, 128, stdout="",
+        stderr="fatal: could not read Username for 'https://github.com': terminal prompts disabled\n")
+
+
+def test_rejected_env_token_falls_back_to_the_next_owned_credential(monkeypatch):
+    """An expired GITHUB_TOKEN in .env must not shadow a live ``gh auth login`` (#115257): after
+    the remote refuses the first credential, the run retries with the next one and stops there."""
+    monkeypatch.setattr(git_credentials, "iter_git_basic_auth", lambda url: iter([
+        ("GITHUB_TOKEN/GH_TOKEN", ("x-access-token", "ghp_dead")),
+        ("gh auth token", ("x-access-token", "gho_live")),
+        ("git credential helper", ("bob", "never-needed")),
+    ]))
+    attempts: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        headers = _auth_headers_for(kw["env"], "https://github.com")
+        attempts.append(headers)
+        live = base64.b64encode(b"x-access-token:gho_live").decode()
+        if headers == [f"Authorization: basic {live}"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return _refused(argv)
+
+    monkeypatch.setattr(git_credentials.subprocess, "run", fake_run)
+    url = "https://github.com/acme/private.git"
+    result = git_credentials.run_git_with_credential_fallback(
+        ["git", "clone", url, "dest"], url, env=noninteractive_git_env(), capture_output=True, text=True)
+
+    dead = base64.b64encode(b"x-access-token:ghp_dead").decode()
+    live = base64.b64encode(b"x-access-token:gho_live").decode()
+    assert result.returncode == 0
+    assert attempts == [[], [f"Authorization: basic {dead}"], [f"Authorization: basic {live}"]]
+
+
+def test_every_credential_rejected_names_the_dead_env_token(monkeypatch):
+    """When GitHub refuses every owned credential the git error gains a hint naming the .env token,
+    and a failure that stops being about credentials ends the retries without one."""
+    monkeypatch.setattr(git_credentials, "iter_git_basic_auth", lambda url: iter([
+        ("GITHUB_TOKEN/GH_TOKEN", ("x-access-token", "ghp_dead")),
+        ("gh auth token", ("x-access-token", "gho_dead_too")),
+    ]))
+    monkeypatch.setattr(git_credentials.subprocess, "run", lambda argv, **kw: _refused(argv))
+    url = "https://github.com/acme/private.git"
+    result = git_credentials.run_git_with_credential_fallback(
+        ["git", "clone", url, "dest"], url, env=noninteractive_git_env(), capture_output=True, text=True)
+    assert result.returncode != 0 and "GITHUB_TOKEN/GH_TOKEN in your .env was rejected" in result.stderr
+
+    calls = []
+
+    def not_found_once_authed(argv, **kw):
+        calls.append(kw["env"])
+        if _auth_headers_for(kw["env"], "https://github.com"):
+            return subprocess.CompletedProcess(argv, 128, stdout="", stderr=f"fatal: repository '{url}/' not found\n")
+        return _refused(argv)
+
+    monkeypatch.setattr(git_credentials.subprocess, "run", not_found_once_authed)
+    result = git_credentials.run_git_with_credential_fallback(
+        ["git", "clone", url, "dest"], url, env=noninteractive_git_env(), capture_output=True, text=True)
+    assert len(calls) == 2 and "not found" in result.stderr and "hint:" not in result.stderr

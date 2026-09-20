@@ -21,6 +21,8 @@ from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
 from agent.retry_utils import reset_delay_from_message
+from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+from agent.credential_pool_plugin import apply_plugin_refresh_result, recover_failed_plugin_refresh
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
@@ -249,7 +251,14 @@ class PooledCredential:
         # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
         if isinstance(data.get("last_status_at"), str):
             data["last_status_at"] = _parse_absolute_timestamp(data["last_status_at"])
-        data["extra"] = {k: payload[k] for k in _EXTRA_KEYS if payload.get(k) is not None}
+        # Every non-field key rides in ``extra`` (to_dict writes them all back), so metadata a plugin
+        # stores on its own rows survives load -> save -> load. ``_EXTRA_KEYS`` stays the attribute
+        # surface for core logic; unknown keys are opaque payload. ``provider`` is the row's owner
+        # (excluded from ``field_names`` above), never metadata — sweeping it in would write a
+        # stray provider name back over the row on to_dict().
+        data["extra"] = {
+            k: v for k, v in payload.items() if k not in field_names and k != "provider" and v is not None
+        }
         data.setdefault("id", uuid.uuid4().hex[:6])
         data.setdefault("label", payload.get("source", provider))
         data.setdefault("auth_type", AUTH_TYPE_API_KEY)
@@ -877,8 +886,10 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
     "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
 }
 
-# Providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Any other
-# provider is returned unchanged by that path, so callers must not report a refresh for them.
+# Built-in providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Plugin
+# providers are refreshable when their profile ships ``refresh_credential`` (see
+# ``hermes_cli.auth_plugin_providers.is_refreshable_oauth_provider``); any other provider is returned
+# unchanged by that path, so callers must not report a refresh for them.
 REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
 
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
@@ -1225,9 +1236,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         the pool store, is token authority for those sources; a row with no
         token material at all is refused for the same reason.
         """
-        if self.provider not in ("anthropic", "xai-oauth"):
+        if self.provider not in ("anthropic", "xai-oauth") and plugin_refresh_hook(self.provider) is None:
             return entry
         is_anthropic = self.provider == "anthropic"
+        is_xai = self.provider == "xai-oauth"
+        display = {"anthropic": "Anthropic", "xai-oauth": "xAI"}.get(self.provider, self.provider)
         if is_anthropic and is_borrowed_credential_source(entry.source, self.provider):
             return entry
         try:
@@ -1238,20 +1251,19 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if not isinstance(persisted, dict):
                 return entry
             stored = PooledCredential.from_dict(self.provider, persisted)
-            if is_anthropic and not (stored.access_token or "").strip() and not (stored.refresh_token or "").strip():
+            # No token material at all is never a "rotation" (anthropic borrowed rows, a plugin row a
+            # peer blanked mid-write): adopting it would replace a usable credential with nothing.
+            if not is_xai and not (stored.access_token or "").strip() and not (stored.refresh_token or "").strip():
                 return entry
             if stored.access_token != entry.access_token or stored.refresh_token != entry.refresh_token:
                 logger.debug(
                     "Pool entry %s: adopting %s OAuth tokens rotated by another pool instance",
-                    entry.id, "Anthropic" if is_anthropic else "xAI",
+                    entry.id, display,
                 )
                 self._replace_entry(entry, stored)
                 return stored
         except Exception as exc:
-            logger.debug(
-                "Failed to sync %s OAuth entry from credential pool: %s",
-                "Anthropic" if is_anthropic else "xAI", exc,
-            )
+            logger.debug("Failed to sync %s OAuth entry from credential pool: %s", display, exc)
         return entry
 
     _sync_anthropic_entry_from_pool_store = _sync_entry_from_pool_store
@@ -1440,7 +1452,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if force:
                 self._mark_exhausted(entry, None)
             return None
-        if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS:
+        # Plugin providers with a ``refresh_credential`` hook are treated as single-use by default:
+        # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
+        # a ``refresh_token_reused`` login loss. Eligibility comes from the hook, never a name set.
+        if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
             return self._refresh_entry_impl(entry, force=force)
 
         # Single-use refresh tokens: sync -> POST -> write-back must be atomic
@@ -1631,6 +1646,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
                 entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
+            elif (plugin_refresh := plugin_refresh_hook(self.provider)) is not None:
+                rotated = plugin_refresh(entry)
+                if not rotated:
+                    # ``None``/empty = the plugin could not rotate: bench like a failed refresh POST, never
+                    # report the stale row as refreshed (the loop would replay the dead bearer).
+                    raise RuntimeError("provider refresh_credential returned no rotated fields")
+                updated = apply_plugin_refresh_result(entry, rotated)
             elif self.provider == "nous":
                 stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
                 synced = self._sync_nous_entry_from_auth_store(entry)
@@ -1753,6 +1775,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     {auth_mod.NOUS_DEVICE_CODE_SOURCE, f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}"},
                 )
                 return None
+        elif plugin_refresh_hook(self.provider) is not None:
+            handled, result = recover_failed_plugin_refresh(self, entry, exc)
+            if handled:
+                return result
         self._mark_exhausted(entry, None)
         return None
 
@@ -2484,6 +2510,28 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     })
 
 
+# Warn once per token per process when Copilot exchange degrades to raw token (#114740).
+_COPILOT_RAW_DEGRADATION_WARNED: Set[str] = set()
+
+
+def _warn_copilot_raw_degradation_once(token: str) -> None:
+    """WARN once per token per process when Copilot exchange degrades to raw token (#114740)."""
+    fingerprint = fingerprint_secret_value(token) or "unknown"
+    if fingerprint in _COPILOT_RAW_DEGRADATION_WARNED:
+        return
+    _COPILOT_RAW_DEGRADATION_WARNED.add(fingerprint)
+    logger.warning(
+        "Copilot token exchange degraded to RAW token (exchange "
+        "unavailable); enterprise-only models may 400 with "
+        "model_not_available_for_integrator until exchange recovers."
+    )
+
+
+def _reset_copilot_raw_degradation_warned() -> None:
+    """Clear the degradation warning cache (for test isolation)."""
+    _COPILOT_RAW_DEGRADATION_WARNED.clear()
+
+
 def _seed_copilot_singleton(seed: _Seeder) -> None:
     # Copilot tokens are resolved dynamically via `gh auth token` or env vars
     # (COPILOT_GITHUB_TOKEN / GH_TOKEN); they don't live in the auth store.
@@ -2509,17 +2557,21 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
         # Per-source gate BEFORE the (~35s worst case) network exchange.
         if seed.is_suppressed(seed.provider, source_name):
             return
-        api_token, enterprise_base_url = get_copilot_api_token(token)
-        # get_copilot_api_token falls back to the RAW token when the exchange
-        # fails; the Copilot API then routes it to the fallback
-        # "copilot-language-server" integrator whose allowlist omits
-        # enterprise-only models -> HTTP 400 on every turn. Surface it.
-        if api_token == token and not enterprise_base_url:
-            logger.warning(
-                "Copilot token exchange degraded to RAW token (exchange "
-                "unavailable); enterprise-only models may 400 with "
-                "model_not_available_for_integrator until exchange recovers."
-            )
+        from hermes_cli.auth import is_provider_explicitly_configured
+        if not is_provider_explicitly_configured(seed.provider):
+            # Copilot is only discovered here (ambient gh CLI login), not selected anywhere: no
+            # model will be routed to it, so the network exchange — and its degradation warning on
+            # every pool load — buys nothing (#114740). Seed the raw token; the load that follows
+            # the user selecting copilot re-seeds and exchanges.
+            api_token, enterprise_base_url = token, None
+        else:
+            api_token, enterprise_base_url = get_copilot_api_token(token)
+            # get_copilot_api_token falls back to the RAW token when the exchange
+            # fails; the Copilot API then routes it to the fallback
+            # "copilot-language-server" integrator whose allowlist omits
+            # enterprise-only models -> HTTP 400 on every turn. Surface it once.
+            if api_token == token and not enterprise_base_url:
+                _warn_copilot_raw_degradation_once(token)
         pconfig = PROVIDER_REGISTRY.get(seed.provider)
         seed.upsert(source_name, {
             "auth_type": AUTH_TYPE_API_KEY,

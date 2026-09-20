@@ -177,6 +177,40 @@ def _model_title_upgrade_enabled() -> bool:
         return True
 
 
+def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
+    """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
+
+    A ``custom`` main route (llama.cpp, Ollama, vLLM, LM Studio…) whose ``auxiliary.title_generation``
+    is not pinned elsewhere shares one local server between the streaming main request and the
+    concurrent ``response_format: json_schema`` title request. Single-slot servers then serve the
+    title grammar/completion into the main turn: the user's reply arrives as ``{"title": ...}``, is
+    persisted as a genuine assistant row and replayed, and the model adopts the format (#117296).
+    Running the title call after the turn settles keeps the two requests off the wire at once.
+    Hosted providers multiplex requests independently and keep the turn-start timing.
+    """
+    provider = str((main_runtime or {}).get("provider") or "").strip().lower()
+    if provider != "custom":
+        return False
+    try:
+        cfg = _title_config()
+    except Exception:
+        return True
+    pinned_provider = str(cfg.get("provider") or "").strip().lower()
+    pinned_base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
+    main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
+    if pinned_provider and pinned_provider not in ("", "auto", "custom"):
+        return False
+    return not pinned_base_url or pinned_base_url == main_base_url
+
+
+def start_title_upgrade(upgrade: Optional[threading.Thread]) -> None:
+    """Start a (deferred) title upgrade thread; joinable via ``wait_for_title_upgrades`` only once started."""
+    if upgrade is None or upgrade.ident is not None:
+        return
+    _UPGRADE_THREADS.add(upgrade)
+    upgrade.start()
+
+
 def strip_control_wrappers(text: str) -> str:
     """Remove leading control wrappers (nested too) so a slash-command turn reduces to the prose the user typed."""
     current = (text or "").strip()
@@ -628,15 +662,18 @@ def maybe_auto_title(
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
-) -> None:
-    """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
+) -> Optional[threading.Thread]:
+    """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model.
+
+    Returns the upgrade thread: already started, or — when ``title_upgrade_must_wait_for_turn`` — left
+    UNSTARTED for the caller to hand to ``start_title_upgrade`` once the turn's model request settled."""
     if not session_db or not session_id or not user_message:
-        return
+        return None
     session = session_db.get_session(session_id)
     if session and session.get("source") == "kanban":
         # Dispatcher workers are named from their board card by the gateway. Do not persist
         # the first task instruction as an instant title when that card lookup is unavailable.
-        return
+        return None
     # History may be pre- or post-message. Past the opening turn, skip once the session holds an
     # ``llm``/``user`` name: count alone left a machinery-opened session nameless, and a ``derived``
     # name is still a placeholder (instant slice, or the model's greeting title for a bare "hi") that
@@ -647,7 +684,7 @@ def maybe_auto_title(
         _has_upgraded_title(session_db, session_id)
         or (user_msg_count > 3 and not _session_is_untitled(session_db, session_id))
     ):
-        return
+        return None
     kanban_title = _kanban_task_title()
     if kanban_title:
         # The card already carries a human-written name; an auxiliary model call per spawned worker
@@ -657,16 +694,16 @@ def maybe_auto_title(
             persisted = _persist_session_title(session_db, session_id, kanban_title, source="llm")
             if persisted:
                 _notify_title(title_callback, persisted, "llm", "Kanban task title")
-        return
+        return None
     if not is_titleable_user_message(user_message):
-        return
+        return None
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
-        return
+        return None
     apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview)
     if not _model_title_upgrade_enabled():
         logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
-        return
+        return None
     # The thread must resolve auxiliary.title_generation (config, provider key, language) for the
     # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
@@ -680,5 +717,8 @@ def maybe_auto_title(
         args=(session_db, session_id, user_message),
         kwargs=upgrade_kwargs,
     )
-    _UPGRADE_THREADS.add(upgrade)
-    upgrade.start()
+    if title_upgrade_must_wait_for_turn(main_runtime):
+        logger.debug("Auto-title upgrade deferred past the turn: shares the custom endpoint with the main request")
+        return upgrade
+    start_title_upgrade(upgrade)
+    return upgrade

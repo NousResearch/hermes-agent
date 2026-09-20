@@ -2,6 +2,7 @@ import {
   type GatewayEvent,
   isGatewayReauthRequired,
   isGatewayWebSocketUrl,
+  isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
   reconnectBackoffDelayMs,
@@ -271,6 +272,10 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Wall-clock of the current socket's 'open'; null while not open.
+    // reconnectAttempt, reconnectFailingSince and escalated reset only once an
+    // open proves stable (isStableOpen), judged when the socket closes.
+    let openedAt: number | null = null
     // Consecutive unanswered liveness probes (#95327): a busy-but-healthy
     // backend can fail one probe; only a STREAK proves a genuinely dead
     // socket while turns are in flight. Reset on any successful probe or a
@@ -281,7 +286,7 @@ export function useGatewayBoot({
     let livenessReprobeTimer: ReturnType<typeof setTimeout> | null = null
     // Wall-clock start of the current disconnect episode (first failed
     // reconnect attempt); null while healthy. Drives the time-based
-    // escalation below. Reset on a clean open or a manual/wake reconnect.
+    // escalation below. Reset on a stable open or a manual/wake reconnect.
     let reconnectFailingSince: number | null = null
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
@@ -304,8 +309,16 @@ export function useGatewayBoot({
 
     // Raised once the reconnect loop has been failing for
     // RECONNECT_ESCALATE_AFTER_MS so we fire a single non-blocking toast.
-    // Reset on a clean open or a manual/wake-driven reconnect.
+    // Reset together with the backoff counters: on a STABLE open (isStableOpen)
+    // or a manual/wake-driven reconnect — never on a bare 'open' that dies.
     let escalated = false
+
+    const resetReconnectBackoff = () => {
+      reconnectAttempt = 0
+      reconnectFailingSince = null
+      escalated = false
+    }
+
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
@@ -429,8 +442,6 @@ export function useGatewayBoot({
           return
         }
 
-        reconnectAttempt = 0
-        reconnectFailingSince = null
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
         // A legacy remote primary has no registry identity to scope by; fall
@@ -540,9 +551,7 @@ export function useGatewayBoot({
       }
 
       clearReconnectTimer()
-      reconnectAttempt = 0
-      reconnectFailingSince = null
-      escalated = false
+      resetReconnectBackoff()
       reconnectSecondaryGateways({ forceOpenSockets: forceOpenSocket })
 
       // Browser WebSocket state can remain OPEN after sleep even though the OS
@@ -703,9 +712,7 @@ export function useGatewayBoot({
         clearLivenessReprobeTimer()
         livenessProbeFailures = 0
         bootRetryAttempt = 0
-        reconnectAttempt = 0
-        reconnectFailingSince = null
-        escalated = false
+        resetReconnectBackoff()
         reauthNotified = false
         primaryReauthError = null
         bootFailed = false
@@ -967,11 +974,9 @@ export function useGatewayBoot({
 
       if (st === 'open') {
         bootSnapshotSuperseded = true
-        reconnectAttempt = 0
-        reconnectFailingSince = null
+        openedAt = Date.now()
         reauthNotified = false
         primaryReauthError = null
-        escalated = false
         livenessProbeFailures = 0
         clearReconnectTimer()
         clearLivenessReprobeTimer()
@@ -984,10 +989,18 @@ export function useGatewayBoot({
         if (bootCompleted) {
           completeDesktopBoot()
         }
-      } else if (bootCompleted && !$gatewaySwitching.get() && (st === 'closed' || st === 'error')) {
-        // The socket dropped after a healthy boot (typically sleep/wake). Try
-        // to bring it back instead of leaving the composer stuck disabled.
-        scheduleReconnect()
+      } else if (st === 'closed' || st === 'error') {
+        if (isStableOpen(openedAt)) {
+          resetReconnectBackoff()
+        }
+
+        openedAt = null
+
+        if (bootCompleted && !$gatewaySwitching.get()) {
+          // The socket dropped after a healthy boot (typically sleep/wake). Try
+          // to bring it back instead of leaving the composer stuck disabled.
+          scheduleReconnect()
+        }
       }
     })
 
@@ -1072,9 +1085,7 @@ export function useGatewayBoot({
       reauthNotified = false
       gateway.close()
       clearReconnectTimer()
-      reconnectAttempt = 0
-      reconnectFailingSince = null
-      escalated = false
+      resetReconnectBackoff()
       await attemptReconnect({
         profile: normalizeProfileKey($activeGatewayProfile.get()),
         activationEpoch: gatewayActivationEpoch()

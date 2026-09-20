@@ -349,6 +349,8 @@ Refresh tokens are bound to the authorization server that granted them: Hermes r
 
 The redirect back from the authorization server is checked against RFC 9207: when the server's metadata advertises `authorization_response_iss_parameter_supported`, a redirect without a matching `iss` is rejected. Figma's authorization server (`https://api.figma.com`) advertises that support and then omits `iss`; Hermes fills the missing value from the discovered issuer for that one issuer and logs a warning, so `hermes mcp login figma` completes. A present-but-different `iss` is still rejected, and no other server gets the exemption.
 
+The authorization server's metadata document must name the server the resource advertised (RFC 8414 §3.3); a document for a different server is rejected before any registration or login. One shape is accepted without an exact match: a server advertised with a path (`https://host/path`) whose document, fetched from `https://host/.well-known/oauth-authorization-server/path`, names the origin `https://host` as its issuer — Strava's MCP connector publishes exactly that pair. Only the origin's operator controls that well-known location, so the document is treated as the advertised server's own; a document naming another origin or another path, or one reached only through a redirect or a fallback location, still fails with `Authorization server metadata issuer mismatch`.
+
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
 - **Hermes Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.
@@ -388,6 +390,8 @@ mcp_servers:
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
+
+**Need longer than 5 minutes to approve?** Set `oauth.timeout` on the server entry (seconds). `hermes mcp login`, the dashboard and Desktop re-auth all wait `oauth.timeout` + 15 s (or the entry's `connect_timeout`, whichever is longer); a login that still runs out of time reports `Connecting to MCP server '<name>' timed out after Ns` naming both knobs instead of a blank failure line.
 
 ## mTLS / client certificates
 
@@ -831,6 +835,16 @@ npx --version
 ```
 
 Then verify your config and restart Hermes.
+
+The startup summary in `agent.log` names every server that did not register, with the recorded
+connect error, so you never have to work out the failing one by elimination:
+
+```
+MCP: registered 116 tool(s) from 4 server(s) (2 failed: github (Connection closed); notion (HTTP 401 from POST https://mcp.notion.com/mcp))
+```
+
+A server that was skipped this pass because it is still inside its retry cooldown from an earlier
+failure is listed as `not attempted (in retry cooldown)`.
 
 ### Remote (HTTP) server rejects the connection
 

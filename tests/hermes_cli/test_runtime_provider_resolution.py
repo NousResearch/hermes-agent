@@ -62,6 +62,32 @@ def _fake_invoke_jwt(ttl_seconds=3600):
     return f"{header}.{payload}.sig"
 
 
+def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeypatch):
+    """Copilot picked at runtime without a config write (`/model copilot/<m> --session`,
+    `--provider copilot`) must still hand the EXCHANGED token and the enterprise base_url to the
+    client: the seeder leaves an ambient gh-CLI credential raw while copilot is not configured
+    (#114740), and a raw token 400s on enterprise-only models."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {}}))
+    (hermes_home / "config.yaml").write_text("model:\n  provider: deepseek\n  default: deepseek-chat\n")
+    from hermes_cli import config as _cfg
+    _cfg._LOAD_CONFIG_CACHE.clear()
+    _cfg._RAW_CONFIG_CACHE.clear()
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("ghu_raw_gh_token", "gh auth token"))
+    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token",
+                        lambda tok: ("tid=exchanged;exp=1", "https://api.enterprise.ghe.example"))
+    monkeypatch.setattr(rp._models, "copilot_model_api_mode", lambda *a, **k: "chat_completions")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+
+    resolved = rp.resolve_runtime_provider(requested="copilot", target_model="gpt-4.1")
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_key"] == "tid=exchanged;exp=1"
+    assert resolved["base_url"].startswith("https://api.enterprise.ghe.example")
+
+
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
         access_token = "pool-token"
@@ -2133,6 +2159,19 @@ def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runt
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
 
     assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
+
+
+def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_expansion(monkeypatch):
+    """``provider: openai`` expands to the anonymous ``custom`` runtime (#116055) before the overlay runs;
+    the overlay must judge the name the user configured, or the documented ``openai`` opt-in is a silent no-op."""
+    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai", "default": "gpt-5.5-codex", "openai_runtime": "codex_app_server"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai", explicit_api_key="sk-explicit")
+
+    assert resolved["provider"] == "custom"  # the alias expansion itself is unchanged
+    assert resolved["api_mode"] == "codex_app_server"
 
 
 # ── #116055: ``provider: openai`` means the same thing on both auxiliary paths ──────────────────

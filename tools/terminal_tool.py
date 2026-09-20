@@ -1258,6 +1258,7 @@ def terminal_tool(
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
     _host_local: bool = False,
+    _completion_output_chars: int = 0,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1269,6 +1270,8 @@ def terminal_tool(
     is hard rate-limited (1 notification / 15s / process) and auto-disabled
     after repeated strikes or a lifetime cap, promoting to notify_on_complete —
     use it only for rare one-shot signals on long-lived processes.
+    ``_completion_output_chars`` (internal) sizes the completion notification's output for a
+    spawner whose output is the payload (a bot DM's reply); 0 keeps the usual tail.
     ``_host_local`` forces the local backend for Hermes-owned control-plane
     children (kept in a separate env cache from the configured backend).
     """
@@ -1333,6 +1336,7 @@ def terminal_tool(
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                completion_output_chars=_completion_output_chars,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)

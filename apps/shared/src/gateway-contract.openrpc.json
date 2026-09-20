@@ -18909,6 +18909,30 @@
             "default": null,
             "title": "Exit Code"
           },
+          "exited_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exited At"
+          },
+          "completion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion Reason"
+          },
           "detached": {
             "anyOf": [
               {

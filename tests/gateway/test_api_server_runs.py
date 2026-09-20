@@ -415,6 +415,42 @@ class TestStartRun:
 class TestRunStatus:
 
     @pytest.mark.asyncio
+    async def test_drain_boundary_is_visible_to_pollers_on_live_runs_only(self, adapter):
+        """GET /v1/runs/{id} shows ``shutdown_requested_at`` as soon as the drain starts (#115133).
+
+        A live run keeps ``status: running`` (it is still being served) but gains the marker,
+        durably (the idempotency record carries it across a restart); a run whose status is set
+        after the boundary inherits it; a terminal run is never touched.
+        """
+        status = adapter._set_run_status("run_live", "running")
+        _claim_run(adapter, "run_live")
+        scope = adapter._run_owners["run_live"]
+        adapter._run_idempotency_store.reserve(
+            scope, "shutdown-test-key", "shutdown-test-fingerprint", "run_live", status)
+        adapter._run_idempotency_ids.add("run_live")
+        adapter._run_statuses["run_done"] = {
+            "object": "hermes.run", "run_id": "run_done", "status": "completed"}
+        _claim_run(adapter, "run_done")
+
+        async with TestClient(TestServer(_create_runs_app(adapter))) as client:
+            before = await (await client.get("/v1/runs/run_live")).json()
+            assert "shutdown_requested_at" not in before
+
+            assert adapter.mark_shutdown_requested() == 1
+
+            live = await (await client.get("/v1/runs/run_live")).json()
+            assert live["status"] == "running"
+            marker = live["shutdown_requested_at"]
+            assert isinstance(marker, float)
+            done = await (await client.get("/v1/runs/run_done")).json()
+            assert "shutdown_requested_at" not in done
+
+        durable = adapter._run_idempotency_store.status_for_run(scope, "run_live")
+        assert durable["status"].get("shutdown_requested_at") == marker
+        adapter._set_run_status("run_late", "queued")
+        assert adapter._run_statuses["run_late"]["shutdown_requested_at"] == marker
+
+    @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

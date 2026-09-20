@@ -127,7 +127,7 @@ async def test_prefixed_line_webhook_is_verified_by_the_named_profiles_secret_un
 async def test_shared_listener_adapter_records_its_public_ingress_url(mux_home, monkeypatch):
     """Runtime status carries the /p/<profile>/ URL so `gateway status` / the dashboard can show it."""
     writes: list[dict] = []
-    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: writes.append(kw))
+    monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
     coder = _line_adapter("secret-coder", "coder")
     coder._runtime_status_platform_key = "coder:line"
     runner = _Runner({"coder": {Platform("line"): coder}})

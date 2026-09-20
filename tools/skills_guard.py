@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v5"
+SCANNER_VERSION = "skills-guard-v6"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -114,6 +114,14 @@ _NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|doesn\'?t|didn\'?t|won\'?t|isn
 # Real directives are short; unbounded filler let prose (output never enters your own context)
 # and feature descriptions match.
 _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
+# Delegation guard: the recipient named right after the verb is the agent's own subagent/worker
+# ("Send subagents the minimum context they need") — an in-process handoff, not a transfer off
+# the machine. A URL or external service as the destination is still `send_to_url`.
+_NOT_DELEGATE = r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?|workers?|delegates?|children|child)\b)'
+
+# POSIX shell names as one shared alternation, so every pipe-to-shell pattern below flags the
+# same set (the narrower `(ba)?sh` let `curl url | zsh` through while bash/sh were caught).
+_SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -244,7 +252,7 @@ THREAT_PATTERNS = [
      "tunnel_service", "high", "network", "uses tunneling service for external access"),
     (r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}', "hardcoded_ip_port", "medium", "network", "hardcoded IP address with port"),
     (r'0\.0\.0\.0:\d+|INADDR_ANY', "bind_all_interfaces", "high", "network", "binds to all network interfaces"),
-    (r'/bin/(ba)?sh\s+-i\s+.*>/dev/tcp/',
+    (rf'/bin/{_SHELL_NAMES_RE}\s+-i\s+.*>/dev/tcp/',
      "bash_reverse_shell", "critical", "network", "bash interactive reverse shell via /dev/tcp"),
     (r'python[23]?\s+-c\s+["\']import\s+socket',
      "python_socket_oneliner", "critical", "network", "Python one-liner socket connection (likely reverse shell)"),
@@ -259,7 +267,7 @@ THREAT_PATTERNS = [
      "hex_encoded_string", "medium", "obfuscation", "hex-encoded string (possible obfuscation)"),
     (r'\beval\s*\(\s*["\']', "eval_string", "high", "obfuscation", "eval() with string argument"),
     (r'\bexec\s*\(\s*["\']', "exec_string", "high", "obfuscation", "exec() with string argument"),
-    (r'echo\s+[^\n]*\|\s*(bash|sh|python|perl|ruby|node)',
+    (rf'echo\s+[^\n]*\|\s*(?:{_SHELL_NAMES_RE}|python|perl|ruby|node)',
      "echo_pipe_exec", "critical", "obfuscation", "echo piped to interpreter for execution"),
     (r'compile\s*\(\s*[^\)]+,\s*["\'].*["\']\s*,\s*["\']exec["\']\s*\)',
      "python_compile_exec", "high", "obfuscation", "Python compile() with exec mode"),
@@ -294,8 +302,8 @@ THREAT_PATTERNS = [
     (r'xmrig|stratum\+tcp|monero|coinhive|cryptonight', "crypto_mining", "critical", "mining", "cryptocurrency mining reference"),
     (r'hashrate|nonce.*difficulty', "mining_indicators", "medium", "mining", "possible cryptocurrency mining indicators"),
     # ── Supply chain: curl/wget pipe to shell ──
-    (r'curl\s+[^\n]*\|\s*(ba)?sh', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
-    (r'wget\s+[^\n]*-O\s*-\s*\|\s*(ba)?sh',
+    (rf'curl\s+[^\n]*\|\s*{_SHELL_NAMES_RE}', "curl_pipe_shell", "critical", "supply_chain", "curl piped to shell (download-and-execute)"),
+    (rf'wget\s+[^\n]*-O\s*-\s*\|\s*{_SHELL_NAMES_RE}',
      "wget_pipe_shell", "critical", "supply_chain", "wget piped to shell (download-and-execute)"),
     (r'curl\s+[^\n]*\|\s*python', "curl_pipe_python", "critical", "supply_chain", "curl piped to Python interpreter"),
     # ── Supply chain: unpinned/deferred dependencies ──
@@ -355,7 +363,14 @@ THREAT_PATTERNS = [
     (r'\.claude/settings|\.codex/config',
      "other_agent_config_ref", "low", "persistence", "references other agent configuration files (informational; only modification intent is scored)"),
     # ── Hardcoded secrets (credentials embedded in the skill itself) ──
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',
+    # A value that is itself an env-var NAME (SHOUTY_SNAKE, ≥2 underscore-separated
+    # segments) references where the credential lives instead of embedding it
+    # (#116221). Scoped case-sensitive — the table compiles with IGNORECASE and a
+    # lowercase snake value is the passphrase shape; requiring an underscore
+    # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
+     r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
     (r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',
      "embedded_private_key", "critical", "credential_exposure", "embedded private key"),
@@ -385,9 +400,10 @@ THREAT_PATTERNS = [
     # your own context", "**Include context:** cwd, env vars", "save tokens (no need to include code
     # in context)") describes the OPPOSITE of exfiltration and must not match: the verb→target gap is
     # bounded, a negation right after the verb voids the match, and a bare ``context`` target counts
-    # only under transfer verbs (print/send/share) — "include context" is window/information talk.
+    # only under transfer verbs (print/send/share) — "include context" is window/information talk —
+    # and not when the recipient is the agent's own subagent (delegation prose).
     (rf'\b(?:include|output|print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}(?:conversation|chat\s+history|previous\s+messages)\b'
-     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}context\b',
+     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_NOT_DELEGATE}{_SHORT_FILLER}context\b',
      "context_exfil", "high", "exfiltration", "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration", "instructs agent to send data to a URL"),

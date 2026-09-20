@@ -89,6 +89,48 @@ class TestCatchAllPatterns:
 # Non-secret keys → config.yaml
 # ---------------------------------------------------------------------------
 
+class TestGatewayPlatformsPrefixRedirect:
+    """#115212: ``gateway.platforms.<p>.<field>`` lands on the top-level ``platforms.<p>.<field>``
+    the gateway prefers, instead of a nested key that an existing top-level value shadows."""
+
+    def test_set_lands_on_top_level_platforms_block_the_loader_reads(self, _isolated_hermes_home, capsys):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "platforms:\n  telegram:\n    enabled: false\n", encoding="utf-8")
+        set_config_value("gateway.platforms.telegram.enabled", "true")
+        out = capsys.readouterr().out
+        assert "saved as platforms.telegram.enabled" in out
+        loaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert loaded["platforms"]["telegram"]["enabled"] is True
+        assert "gateway" not in loaded
+        from gateway.config import Platform, load_gateway_config
+        assert load_gateway_config().platforms[Platform.TELEGRAM].enabled is True
+
+    def test_nested_display_setting_still_reaches_display_platforms(self):
+        from hermes_cli.config import _redirect_platform_display_key
+        key, _ = _redirect_platform_display_key("gateway.platforms.telegram.streaming")
+        assert key == "display.platforms.telegram.streaming"
+
+    def test_get_and_unset_still_reach_a_legacy_nested_only_value(self, _isolated_hermes_home, capsys):
+        """A config whose value lives ONLY under ``gateway.platforms`` is still honoured by the gateway
+        (``merge_platform_sections``), so ``get`` must read it and ``unset`` must remove it instead of
+        reporting "not set" while the gateway keeps the platform enabled."""
+        from hermes_cli.config import get_config_value, unset_config_value
+
+        legacy = "gateway:\n  platforms:\n    telegram:\n      enabled: true\n"
+        (_isolated_hermes_home / "config.yaml").write_text(legacy, encoding="utf-8")
+        get_config_value("gateway.platforms.telegram.enabled")
+        assert capsys.readouterr().out.strip().lower() == "true"
+
+        unset_config_value("gateway.platforms.telegram.enabled")
+        assert "gateway" not in (yaml.safe_load(_read_config(_isolated_hermes_home)) or {})
+
+        # set on top of a nested-only value leaves one source of truth, not a shadowed duplicate
+        (_isolated_hermes_home / "config.yaml").write_text(legacy, encoding="utf-8")
+        set_config_value("gateway.platforms.telegram.enabled", "false")
+        loaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert loaded == {"platforms": {"telegram": {"enabled": False}}}
+
+
 class TestConfigYamlRouting:
     """Regular config keys should go to config.yaml, NOT .env."""
 
@@ -125,6 +167,17 @@ class TestConfigYamlRouting:
 
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "reasoning_effort: low" in _read_config(_isolated_hermes_home)
+
+    def test_tool_search_defer_is_recognized(self, _isolated_hermes_home, capsys):
+        """tools.tool_search.defer is read by ToolSearchConfig.from_raw, so it must be a
+        registered config key (not flagged as unrecognized) and coerce to a real list."""
+        set_config_value("tools.tool_search.defer", '["todo_list", "skill_manage"]')
+
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        assert "not a recognized config key" not in captured.err
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["tools"]["tool_search"]["defer"] == ["todo_list", "skill_manage"]
 
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
@@ -373,47 +426,6 @@ class TestListNavigation:
 # Unpinned-cron notice on a global model change (#59031, #44585)
 # ---------------------------------------------------------------------------
 
-def _write_cron_jobs(tmp_path, jobs):
-    cron_dir = tmp_path / "cron"
-    cron_dir.mkdir(parents=True, exist_ok=True)
-    (cron_dir / "jobs.json").write_text(
-        json.dumps({"jobs": jobs}),
-        encoding="utf-8",
-    )
-
-
-class TestCronModelChangeNotice:
-    """A global model change tells the operator which unpinned jobs stay on their snapshot."""
-
-    def test_notice_says_jobs_keep_running_and_names_the_user_owned_pin_path(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                }
-            ],
-        )
-
-        set_config_value("model.default", "new-model")
-
-        notice = capsys.readouterr().out
-        assert "keeps running" in notice
-        assert "fail closed" not in notice
-        assert "hermes cron edit <job_id> --provider <provider> --model <model>" in notice
-        assert "cronjob action=update" not in notice
-
-
-# ---------------------------------------------------------------------------
-# String-typed config values — regression tests for #47515
-# ---------------------------------------------------------------------------
 
 class TestStringTypedConfigValues:
     @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])

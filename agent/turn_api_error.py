@@ -15,7 +15,7 @@ import ssl
 import time
 from typing import Any, Dict, Optional
 
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
@@ -232,13 +232,6 @@ def _is_local_validation_error(api_error: Any) -> bool:
     return not (isinstance(api_error, TypeError) and "nonetype" in _text and "not iterable" in _text)
 
 
-# Non-retryable per the classifier, yet handled by the overflow/backoff paths instead.
-_RETRYABLE_CLIENT_REASONS = frozenset({
-    FailoverReason.rate_limit, FailoverReason.overloaded, FailoverReason.context_overflow,
-    FailoverReason.payload_too_large, FailoverReason.long_context_tier, FailoverReason.thinking_signature,
-})
-
-
 @dataclass
 class UnrecoveredErrorVerdict:
     """``action``: ``"continue"`` (retry), ``"break"`` (fallback armed / redirect pending) or
@@ -300,7 +293,7 @@ def settle_unrecovered_error(
         or (
             not classified.retryable
             and not classified.should_compress
-            and classified.reason not in _RETRYABLE_CLIENT_REASONS
+            and classified.reason not in RETRYABLE_CLIENT_REASONS
         )
     ) and not is_context_length_error
 

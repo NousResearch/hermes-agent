@@ -255,7 +255,7 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
@@ -272,8 +272,9 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, extra_or_secret as _extra_or_secret,
-    platform_gate_env as _scoped_gate_env, send_error, yaml_env_setter as _yaml_env_setter
+    decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
+    extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
+    yaml_env_setter as _yaml_env_setter
 )
 
 # Every refusal (slash command, approval button, picker, prompt) says the same thing.
@@ -1518,13 +1519,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return False, False
             ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
-                parent_id = None
-                if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                    parent_id = str(message.channel.parent_id)
-                free_channels = self._discord_free_response_channels()
-                channel_keys = self._discord_channel_keys(message, parent_id)
-                if "*" not in free_channels and not (channel_keys & free_channels):
-                    return False, False
+                # A thread the bot joined is not someone else's conversation, and the other two
+                # ingress paths already exempt it: _dispatch_recovered_message() and
+                # _handle_message(). Admission runs on both and can veto what they admit, so
+                # without this a third-party mention in a bot thread is dropped here even though
+                # the same message with no mention at all is admitted. ``thread_require_mention``
+                # still gates multi-bot threads, inside _in_bot_thread().
+                if not self._in_bot_thread(message):
+                    parent_id = None
+                    if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                        parent_id = str(message.channel.parent_id)
+                    free_channels = self._discord_free_response_channels()
+                    channel_keys = self._discord_channel_keys(message, parent_id)
+                    if "*" not in free_channels and not (channel_keys & free_channels):
+                        # Every other silent return in this function is at least guessable from
+                        # the outside; this one is not, and an operator seeing no log line cannot
+                        # tell it apart from the gateway never receiving the event.
+                        logger.debug(
+                            "[%s] admission: dropping message %s — mentions others, not self, "
+                            "not a bot thread, channel not free-response",
+                            self.name, getattr(message, "id", "?"))
+                        return False, False
         return True, role_authorized
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
@@ -2180,16 +2195,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         configured = self.config.extra.get("missed_message_backfill")
         if isinstance(configured, dict) and "channels" in configured:
             raw = configured.get("channels")
-            if isinstance(raw, list):
-                return {str(item).strip() for item in raw if str(item).strip()}
-            raw = str(raw or "")
-            if raw.strip():
-                return {item.strip() for item in raw.split(",") if item.strip()}
+            channels = self._gate_csv_set(raw)
+            # An explicit list (YAML list or JSON-list string, even empty) is authoritative — the
+            # operator disabled the scan; only the default "" string falls through to the env/default.
+            if channels or isinstance(_decode_json_list_literal(raw), list):
+                return channels
         raw = self._gate_env("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS")
         if not raw.strip():
             allowed = self._get_allowed_channels()
             return allowed | self._discord_free_response_channels()
-        return {item.strip() for item in raw.split(",") if item.strip()}
+        return self._gate_csv_set(raw)
 
     def _missed_message_backfill_number(self, key: str, env_key: str, default, cast, lo, hi=None):
         """Numeric ``missed_message_backfill.<key>`` (dict extra wins over env), clamped to [lo, hi]."""
@@ -4978,6 +4993,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _gate_csv_set(raw) -> set:
         if raw is None:
             return set()
+        raw = _decode_json_list_literal(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -5080,13 +5096,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        # YAML parses a bare numeric value as int; str() any scalar before splitting.
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
+        return self._gate_csv_set(raw)
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract user-mention IDs (``<@ID>`` and legacy ``<@!ID>``) from raw content,
@@ -5532,7 +5542,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return ""
 
     async def _resolve_channel(self, channel_id: Any) -> Any:
-        """Cached ``get_channel`` first, REST ``fetch_channel`` on miss (raises on API error)."""
+        """Cached ``get_channel`` first, REST ``fetch_channel`` on miss (raises on API error).
+
+        Every outbound target funnels through here (home channel, cron ``discord:<target>``,
+        thread metadata), so a pasted channel link is accepted at this one boundary instead of
+        dying in ``int()`` as a generic send failure."""
+        if isinstance(channel_id, str):
+            channel_id = discord_channel_id_from_link(channel_id.strip()) or channel_id
         channel = self._client.get_channel(int(channel_id))
         if not channel:
             channel = await self._client.fetch_channel(int(channel_id))

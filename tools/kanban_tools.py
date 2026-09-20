@@ -363,6 +363,15 @@ def _check_kanban_orchestrator_mode() -> bool:
 
 # --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---
 
+# Worker tools that terminate or transition a run's ownership. An unbound worker
+# (HERMES_KANBAN_RUN_ID unresolvable) must not run these: expected_run_id=None
+# would silently skip the run-ownership CAS in kanban_db. Non-lifecycle tools
+# (heartbeat / attach / attach_url) do not terminate a run and are not gated.
+_RUN_LIFECYCLE_TOOLS = frozenset({
+    "kanban_complete", "kanban_block",
+    "kanban_request_review", "kanban_request_changes",
+})
+
 class _Reject(Exception):
     """Carries a finished ``tool_error`` payload out of a validation helper."""
 
@@ -376,6 +385,16 @@ def _check(cond: Any, message: str) -> None:
         raise _Reject(message)
 
 
+# Keys a handler reads that its LLM-facing schema deliberately does not declare:
+# ``session_id`` is provenance stamped by internal callers (31fe2290393), ``project_id``
+# the pre-``project`` alias still honoured by ``_handle_create`` (e7811345c17).
+_UNDECLARED_ARGS: dict[str, frozenset[str]] = {
+    "kanban_create": frozenset({"session_id", "project_id"}),
+    # ``title`` is the pre-schema alias of ``filename`` that ``_handle_attach_url`` still honours.
+    "kanban_attach_url": frozenset({"title"}),
+}
+
+
 def _kanban_handler(tool_name: str) -> Callable:
     """Wrap a handler so every failure is a structured tool error. ``ValueError``
     (invalid board slug, DB validation such as cycle/self-link, ``AttachmentTooLarge``)
@@ -384,6 +403,13 @@ def _kanban_handler(tool_name: str) -> Callable:
         @functools.wraps(fn)
         def wrapper(args: dict, **kw) -> str:
             try:
+                # Reject typos before a handoff can succeed without its artifacts.
+                properties = registry.get_schema(tool_name)["parameters"]["properties"]
+                allowed = set(properties) | _UNDECLARED_ARGS.get(tool_name, frozenset())
+                unknown = sorted(set(args) - allowed)
+                _check(not unknown,
+                       f"{tool_name}: unknown parameter(s): {', '.join(unknown)}. "
+                       f"Valid parameters: {', '.join(sorted(properties))}. Nothing changed.")
                 return fn(args, **kw)
             except _Reject as e:
                 return e.args[0]
@@ -459,10 +485,36 @@ def _enforce_worker_task_ownership(tid: str) -> None:
 
 def _worker_guard(tool_name: str, args: dict) -> str:
     """Worker mutation preamble, in order: delegate-child rejection, task id
-    resolution, task-scope ownership. Returns the task id."""
+    resolution, task-scope ownership, run-identity proof. Returns the task id.
+
+    A dispatcher-spawned worker (``HERMES_KANBAN_TASK`` set) that cannot name
+    its run id is refused on the run-lifecycle mutations: ``expected_run_id=None``
+    would silently skip the run-ownership CAS in ``kanban_db`` (``complete_task`` /
+    ``block_task`` / ``request_review`` / ``request_changes`` only append
+    ``AND current_run_id = ?`` when the value is not ``None``), so an unbound
+    stale worker could complete a card a live successor owns. This mirrors
+    ``agent/kanban_stop.py``, which already treats an unbound run id as unknown
+    and fails closed. CLI / human / orchestrator paths (no ``HERMES_KANBAN_TASK``)
+    legitimately pass ``expected_run_id=None`` and are unaffected. Non-lifecycle
+    worker tools (heartbeat / attach / attach_url) do not terminate a run and are
+    not gated here.
+    """
     _reject_delegated_child_mutation(tool_name)
     tid = _require_task_id(args)
     _enforce_worker_task_ownership(tid)
+    if (
+        tool_name in _RUN_LIFECYCLE_TOOLS
+        and os.environ.get("HERMES_KANBAN_TASK")
+        and _worker_run_id(tid) is None
+    ):
+        raise _Reject(
+            f"{tool_name} refused: this worker cannot resolve its "
+            "HERMES_KANBAN_RUN_ID, so it cannot prove ownership of the card's "
+            "current run. A stale or unbound worker must not terminate a run a "
+            "live successor owns. Re-run through the dispatcher so the run id is "
+            "pinned, or use an orchestrator/CLI path that passes an explicit "
+            "expected_run_id."
+        )
     return tid
 
 

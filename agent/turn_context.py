@@ -194,7 +194,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
             for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")
         }
         # See #19027.
-        maybe_auto_title(
+        upgrade = maybe_auto_title(
             session_db,
             session_id,
             user_text,
@@ -211,8 +211,22 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
             ),
             title_preview=title_preview,
         )
+        # Unstarted = the title call would share a self-hosted endpoint with this turn's request
+        # (#117296); ``finalize_turn`` starts it once the model has answered.
+        if upgrade is not None and upgrade.ident is None:
+            agent._deferred_title_upgrade = upgrade
     except Exception:
         logger.debug("Turn-start auto-title dispatch failed", exc_info=True)
+
+
+def start_deferred_title_upgrade(agent: Any) -> None:
+    """Fire the title upgrade ``_maybe_title_session_at_turn_start`` held back; no-op when none."""
+    upgrade = getattr(agent, "_deferred_title_upgrade", None)
+    if upgrade is None:
+        return
+    agent._deferred_title_upgrade = None
+    from agent.title_generator import start_title_upgrade
+    start_title_upgrade(upgrade)
 
 
 def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
@@ -335,6 +349,32 @@ def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
         "Context compression timed out before it could commit while the request "
         f"was still approximately {request_tokens:,} tokens. The provider call "
         "was not sent. Run /compress and wait for it to finish, then retry."
+    )
+
+
+def _fail_closed_on_insufficient_progress(agent, request_tokens: int) -> None:
+    """Stop an over-window turn the moment preflight proves it cannot shrink the session, with
+    "start a new session" guidance, instead of sending a request the model cannot accept.
+
+    ``_fail_closed_after_preflight_timeout`` only stops a turn whose compression wait timed out. A
+    pass that ran and reclaimed nothing (or under 5%) on a request still above the model window used
+    to fall through to the provider call: the provider rejected it, the overflow handler forced
+    another compression pass, and each pass re-waited its budget while the UI sat blocked (#116472:
+    ~356k tokens on a 131k window). Only a ``True`` verdict fails closed — an unknown window or a
+    fitting request keeps the send-as-is behaviour — and a pass skipped by the summary-failure
+    cooldown is a defer, not proof of incompressibility, so it keeps its typed cooldown result.
+    """
+    from agent.conversation_compression import compression_blocked_transiently, request_exceeds_model_window
+
+    if request_exceeds_model_window(agent, request_tokens) is not True:
+        return
+    if compression_blocked_transiently(agent):
+        return
+    window = agent.context_compressor.context_length
+    raise PreflightCompressionTimedOut(
+        "Context compression could not bring this session under the model's context window "
+        f"(~{request_tokens:,} tokens vs {window:,}). The provider call was not "
+        "sent. Start a new session with /new; this session is too large to compress further."
     )
 
 

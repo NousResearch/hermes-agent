@@ -418,9 +418,9 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                     "turn so memory and DB stay aligned: %s",
                     sid, ordinal, exc, exc_info=True)
                 return _err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
-            # Survivors were re-inserted as NEW rows: surface the fresh ids so the client
-            # rebinds its cached rowIds (else a second rewind refuses with 4018).  None
-            # entries: the client must drop its cached id for that turn.
+            # Surface the survivors' live ids so the client rebinds its cached rowIds
+            # (a strict-prefix cut keeps them unchanged since #82956; a divergent
+            # rewrite mints new rows).  None entries: the client must drop that turn's id.
             if requested_rebind_ids is None:
                 fields["survivor_user_row_ids"] = [
                     _message_row_id(truncated[i]) for i in _history_user_indices(truncated)]
@@ -681,13 +681,13 @@ def _(rid, params: dict) -> dict:
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
     # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
+    # if a disconnect/fallback moved the session to stdio. Through _rebind_live_transport so a
+    # socket that already closed cannot cancel the orphan reap without coming back (#116464).
     with _session_resume_lock:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
         if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
+            _rebind_live_transport(sid, session, t)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn

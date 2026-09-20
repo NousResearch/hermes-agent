@@ -16,13 +16,14 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 from tools.plugin_guard_context import (
-    STEP_DOWN, is_agent_facing, is_base64_media, is_data_decode, is_doc_prose, is_inert_fixture_line,
-    is_regex_alternation_token, is_self_uninstall_doc, is_test_tree, prose_cap)
+    STEP_DOWN, is_agent_facing, is_base64_media, is_ci_workflow, is_data_decode, is_doc_prose,
+    is_inert_fixture_line, is_loopback_only, is_pip_install_in_prose_literal, is_regex_alternation_token,
+    is_self_uninstall_doc, is_test_tree, prose_cap)
 from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v6"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v8"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -159,7 +160,8 @@ def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) ->
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
     main_guard_lines = _main_guard_body_lines(file_path) if file_path.suffix.lower() == ".py" else set()
     is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
-    doc_prose = is_doc_prose(rel_path)
+    # A CI workflow definition runs on the forge's runner, not the host: same cap as a README.
+    doc_prose = is_doc_prose(rel_path) or is_ci_workflow(rel_path)
     lines = _file_lines(file_path) if findings else []
     out: List[Finding] = []
     for f in findings:
@@ -230,6 +232,10 @@ def _context_severity(f: Finding, rel_path: str, line: str, doc_prose: bool, is_
         sev = STEP_DOWN.get(sev, sev)
     if f.pattern_id == "base64_decode_pipe" and is_data_decode(line):
         sev = STEP_DOWN.get(sev, sev)
+    if is_loopback_only(f, line):
+        sev = "low"    # 127.0.0.0/8 is a local service, not egress
+    if is_code and is_pip_install_in_prose_literal(f, line):
+        sev = "low"    # "no pip install is needed" in a user-facing message
     return sev
 
 

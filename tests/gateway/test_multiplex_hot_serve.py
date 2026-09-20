@@ -15,6 +15,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.run_profile_reconcile import profile_serve_signature
+from gateway.status import flush_runtime_status
 
 
 class _Adapter:
@@ -56,6 +57,10 @@ def _runner(tmp_path, monkeypatch):
         started.append(profile_name)
         token = (profile_home / ".env").read_text() if (profile_home / ".env").exists() else ""
         if "DISCORD_BOT_TOKEN" not in token:
+            stale = runner._profile_adapters.get(profile_name, {}).pop(Platform.DISCORD, None)
+            if stale is not None:
+                from gateway.run import _write_runtime_status_quiet
+                _write_runtime_status_quiet(drop_platforms=[f"{profile_name}:discord"])
             return 0
         runner._profile_adapters.setdefault(profile_name, {})[Platform.DISCORD] = _Adapter(token)
         return 1
@@ -75,7 +80,8 @@ def _mkprofile(home, name, env=""):
 
 
 def _served_record(home):
-    return json.loads((home / "gateway_state.json").read_text()).get("served_profiles")
+    flush_runtime_status()
+    return json.loads((home / "gateway_state.json").read_text(encoding="utf-8")).get("served_profiles")
 
 
 @pytest.mark.asyncio

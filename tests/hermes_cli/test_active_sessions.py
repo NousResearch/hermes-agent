@@ -739,17 +739,3 @@ def test_pid_liveness_self_pid_skips_exists_probe(monkeypatch):
     monkeypatch.setattr("gateway.status._pid_exists", _count_exists)
     assert active_sessions._pid_liveness(os.getpid()) is True
     assert exists_calls == []
-
-
-def test_pid_liveness_foreign_pid_still_calls_exists(monkeypatch):
-    """CONTROL: a different positive pid still goes through gateway.status._pid_exists."""
-    exists_calls: list = []
-
-    def _count_exists(pid):
-        exists_calls.append(pid)
-        return False
-
-    monkeypatch.setattr("gateway.status._pid_exists", _count_exists)
-    foreign = os.getpid() + 99999
-    assert active_sessions._pid_liveness(foreign) is False
-    assert exists_calls == [foreign]

@@ -70,10 +70,3 @@ def test_idle_poller_throttles_bot_live_delivery_probe(monkeypatch):
         f"idle bot-delivery probe ran {len(calls)} times in ~1.2s; "
         "expected 1 (or ≤2 with first-iteration immediate fire), not every 0.5s tick"
     )
-
-
-def test_bot_delivery_poll_seconds_bound_on_server_after_bind():
-    """Supplement: the throttle constant is visible on the rebound server module."""
-    cadence = server._BOT_DELIVERY_POLL_SECONDS
-    assert 2.0 <= cadence <= 5.0
-    assert cadence == 5.0

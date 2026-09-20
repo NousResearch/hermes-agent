@@ -222,6 +222,33 @@ def _ensure_test_isolation(db_path: Path) -> None:
             )
 
 
+_CHMOD_REFUSED_WARNED = False
+
+
+def _best_effort_chmod(path: Path, mode: int) -> None:
+    """``os.chmod`` that tolerates filesystems which refuse mode changes.
+
+    Object-storage NFS gateways, ``all_squash`` exports, some NAS shares and
+    their virtiofs pass-through into a guest pin every file to a fixed
+    owner/mode and answer chmod with EPERM even on a file this process has
+    just created.  Tightening to 0600 is hardening, not correctness: letting
+    that EPERM escape aborted the whole ``SessionDB`` open, so the gateway ran
+    with no session persistence at all on such a home ("SQLite session store
+    not available").  Warn once per process and keep the mode the filesystem
+    enforces; any other ``OSError`` still propagates.
+    """
+    global _CHMOD_REFUSED_WARNED
+    try:
+        os.chmod(path, mode)
+    except PermissionError as exc:
+        if not _CHMOD_REFUSED_WARNED:
+            _CHMOD_REFUSED_WARNED = True
+            logger.warning(
+                "%s: filesystem refused chmod %o (%s); keeping the mode it enforces. Typical of "
+                "object-storage NFS and squashed mounts. This message fires once per process.",
+                path, mode, exc)
+
+
 def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     """Create/tighten a writable state database and its sidecars to 0600.
 
@@ -278,7 +305,7 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
             continue
         if not stat.S_ISREG(st.st_mode):
             continue
-        os.chmod(path, 0o600)
+        _best_effort_chmod(path, 0o600)
 
 
 # Openings of the background-review harness prompts (agent/background_review.py).

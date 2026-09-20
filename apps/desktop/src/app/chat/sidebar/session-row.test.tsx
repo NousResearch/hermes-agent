@@ -132,7 +132,7 @@ vi.mock('./session-actions-menu', () => ({
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), notePointerMove: vi.fn(), startPrewarm: vi.fn() })
 }))
 
 function makeSession(overrides: Partial<SessionInfo> & { title: string }): SessionInfo {

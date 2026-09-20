@@ -49,8 +49,14 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     from agent.delegation_context import delegated_child_subprocess_env
     try:
+        bash = "bash"
+        if IS_WINDOWS:
+            # CreateProcess searches System32 before PATH and may pick WSL's
+            # launcher. Reuse the terminal's native Git Bash resolution.
+            from tools.environments.local import _find_bash
+            bash = _find_bash()
         completed = subprocess.run(
-            ["bash", "-c", command],
+            [bash, "-c", command],
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',

@@ -397,7 +397,7 @@ class PluginDispatchMixin:
                 try:
                     # Fresh deep copy per subscriber: no callback can mutate what the next sees.
                     resolve_plugin_command_result(callback(**copy.deepcopy(item.payload)))
-                except Exception as exc:
+                except (Exception, SystemExit) as exc:
                     # A subscriber that fails identically on every emit is reported once (#111922).
                     self._report_hook_failure(item.event, callback, item.payload, exc, surface="Event")
         finally:
@@ -494,7 +494,7 @@ class PluginDispatchMixin:
 
         try:
             value = section.content(frozen_info) if callable(section.content) else section.content
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             _skip("raised and was skipped: %s", exc)
             return None
         if not isinstance(value, str):
@@ -523,7 +523,7 @@ class PluginDispatchMixin:
                 ret = cb(**kwargs)
                 if ret is not None:
                     results.append(ret)
-            except Exception as exc:
+            except (Exception, SystemExit) as exc:
                 # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
         return results

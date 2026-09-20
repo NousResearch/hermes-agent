@@ -1206,6 +1206,18 @@ class TestForceReloadSymmetry:
             mgr.invoke_hook("subagent_stop", parent_session_id="p1")
         assert later_calls == []
 
+    def test_system_exit_from_middleware_is_isolated(self, caplog):
+        """Middleware shares the hook isolation contract: sys.exit() in one callback skips only it."""
+        def exits(**_kwargs):
+            raise SystemExit("middleware requested process exit")
+
+        mgr = PluginManager()
+        mgr._middleware["tool_call"] = [exits, lambda **_kw: "survived"]
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            assert mgr.invoke_middleware("tool_call") == ["survived"]
+        assert "middleware requested process exit" in caplog.text
+
     def test_hung_callback_suppresses_repeat_fires(self, monkeypatch):
         """A still-running timed-out callback must not spawn another worker."""
         import time

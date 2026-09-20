@@ -517,6 +517,32 @@ def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> boo
     return any(bool(metadata.get(key)) for key in _DISCORD_NONCONVERSATIONAL_METADATA_KEYS)
 
 
+def _discord_send_suppress_kwargs(send_callable: Any, suppress_embeds: bool) -> Dict[str, bool]:
+    """Return the py-cord-version-compatible embed suppression kwargs.
+
+    Hermes runs its own venv. Most py-cord installs expose ``suppress_embeds``;
+    some forks expose ``suppress``. Only pass a kwarg when suppression is
+    requested and the callable signature explicitly accepts it.
+    """
+    if not suppress_embeds:
+        return {}
+    try:
+        import inspect as _inspect
+
+        signature = _inspect.signature(send_callable)
+    except (TypeError, ValueError):
+        return {}
+    accepted_kinds = {
+        _inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        _inspect.Parameter.KEYWORD_ONLY,
+    }
+    for name in ("suppress_embeds", "suppress"):
+        param = signature.parameters.get(name)
+        if param is not None and param.kind in accepted_kinds:
+            return {name: True}
+    return {}
+
+
 def _prompt_target_id(chat_id: str, metadata: Optional[dict]) -> str:
     """Interactive prompts post into ``metadata["thread_id"]`` when present, else ``chat_id``."""
     if metadata and metadata.get("thread_id"):
@@ -3000,6 +3026,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if metadata and metadata.get("thread_id"):
                 thread_id = metadata["thread_id"]
             nonconversational = _metadata_marks_nonconversational(metadata)
+            suppress_embeds = bool(metadata and metadata.get("suppress_embeds"))
             final_delivery = bool(metadata and metadata.get("notify"))
             if thread_id:
                 channel = await self._resolve_channel(thread_id)
@@ -3025,7 +3052,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    msg = await channel.send(
+                        content=chunk,
+                        reference=chunk_reference,
+                        **_discord_send_suppress_kwargs(channel.send, suppress_embeds),
+                    )
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -3033,7 +3064,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await channel.send(
+                            content=chunk,
+                            reference=None,
+                            **_discord_send_suppress_kwargs(channel.send, suppress_embeds),
+                        )
                     else:
                         raise
                 message_ids.append(str(msg.id))

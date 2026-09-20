@@ -4423,9 +4423,19 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
+                # When native images are extracted from a response, suppress rich
+                # link previews on the preceding text send. Discord otherwise
+                # unfurls source/page URLs (for example xkcd.com) and then the
+                # extracted image is sent below, producing a visual double post.
+                _text_send_metadata = _final_thread_metadata
+                if extracted.images:
+                    _text_send_metadata = {
+                        **(_final_thread_metadata or {}),
+                        "suppress_embeds": True,
+                    }
                 if text_content and not _tts_caption_delivered:
                     await self._send_final_text(
-                        event, session_key, text_content, _final_thread_metadata,
+                        event, session_key, text_content, _text_send_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,

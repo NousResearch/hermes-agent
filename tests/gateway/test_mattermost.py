@@ -1,6 +1,7 @@
 """Tests for Mattermost platform adapter."""
 import json
 import os
+from pathlib import Path
 import time
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -453,6 +454,85 @@ class TestMattermostFileUpload:
         assert result.success is True
         assert result.message_id == "post_with_file"
 
+    @pytest.mark.asyncio
+    async def test_send_voice_converts_local_ogg_to_temporary_mp3(self, tmp_path):
+        source = tmp_path / "voice.OGG"
+        source.write_bytes(b"original-ogg")
+        converted_paths = []
+
+        def convert(argv, **kwargs):
+            output = Path(argv[-1])
+            output.write_bytes(b"converted-mp3")
+            return MagicMock(returncode=0)
+
+        expected_result = object()
+
+        async def upload(chat_id, file_path, caption, reply_to, file_name=None, metadata=None):
+            converted = Path(file_path)
+            converted_paths.append(converted)
+            assert converted.is_file()
+            assert converted.suffix == ".mp3"
+            assert converted.read_bytes() == b"converted-mp3"
+            assert (chat_id, caption, reply_to, file_name, metadata) == (
+                "channel_1", "Voice note", "root_1", None, {"notify": True}
+            )
+            return expected_result
+
+        self.adapter._send_local_file = AsyncMock(side_effect=upload)
+        with patch("subprocess.run", side_effect=convert) as run:
+            result = await self.adapter.send_voice(
+                "channel_1",
+                str(source),
+                caption="Voice note",
+                reply_to="root_1",
+                metadata={"notify": True},
+                is_voice=True,
+            )
+
+        argv = run.call_args.args[0]
+        assert argv[0] == "ffmpeg"
+        assert argv[argv.index("-i") + 1] == str(source)
+        assert run.call_args.kwargs == {"capture_output": True, "check": False}
+        assert result is expected_result
+        assert source.read_bytes() == b"original-ogg"
+        assert converted_paths and not converted_paths[0].exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case,suffix", [
+        ("unavailable", ".opus"),
+        ("failed", ".ogg"),
+        ("bypass", ".wav"),
+    ])
+    async def test_send_voice_falls_back_or_bypasses_conversion(self, tmp_path, case, suffix):
+        source = tmp_path / f"voice{suffix}"
+        source.write_bytes(b"original-audio")
+        temporary_outputs = []
+
+        def convert(argv, **kwargs):
+            temporary_outputs.append(Path(argv[-1]))
+            if case == "unavailable":
+                raise FileNotFoundError("ffmpeg")
+            Path(argv[-1]).write_bytes(b"partial-output")
+            return MagicMock(returncode=1)
+
+        expected_result = object()
+        self.adapter._send_local_file = AsyncMock(return_value=expected_result)
+        with patch("subprocess.run", side_effect=convert) as run:
+            result = await self.adapter.send_voice(
+                "channel_1", str(source), caption="Voice note", metadata={"notify": True}, is_voice=False
+            )
+
+        if case == "bypass":
+            run.assert_not_called()
+        else:
+            run.assert_called_once()
+        self.adapter._send_local_file.assert_awaited_once_with(
+            "channel_1", str(source), "Voice note", None, metadata={"notify": True}
+        )
+        assert result is expected_result
+        assert source.read_bytes() == b"original-audio"
+        assert all(not path.exists() for path in temporary_outputs)
+
 
 # ---------------------------------------------------------------------------
 # Dedup cache
@@ -708,4 +788,3 @@ class TestMultiplexProfileScope:
             # skipped -- writing here would leak into every other profile's
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
-

@@ -2,13 +2,26 @@ import { describe, expect, it } from 'vitest'
 
 import {
   cronEditorUpdates,
+  cronModelChoiceValue,
   jobIsScriptOnly,
   lastErrorSummary,
   parseCronDeliveryTargets,
+  parseCronModelChoiceValue,
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
 import { nextRunOverdueMs } from './job-state'
+
+describe('cron model choice values', () => {
+  it('round-trips provider and model colons without ambiguous pairs', () => {
+    const customProvider = cronModelChoiceValue('custom:internlm', 'intern-latest')
+    const colonModel = cronModelChoiceValue('custom', 'internlm:intern-latest')
+
+    expect(customProvider).not.toBe(colonModel)
+    expect(parseCronModelChoiceValue(customProvider)).toEqual({ provider: 'custom:internlm', model: 'intern-latest' })
+    expect(parseCronModelChoiceValue(colonModel)).toEqual({ provider: 'custom', model: 'internlm:intern-latest' })
+  })
+})
 
 describe('jobIsScriptOnly', () => {
   it('is true when no_agent is set and a script is present', () => {

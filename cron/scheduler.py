@@ -3059,6 +3059,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if not d.success and _hold_s:
         # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
         mark_kwargs["quota_hold_seconds"] = _hold_s
+        mark_kwargs["quota_recover_occurrence"] = bool(job.get("_scheduled_instant"))
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:

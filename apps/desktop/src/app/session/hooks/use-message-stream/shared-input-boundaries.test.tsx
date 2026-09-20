@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -13,7 +14,6 @@ import { $providerWaitSessions, setSessionProviderWait } from '@/store/provider-
 import { $busy, $messages } from '@/store/session'
 import { $sessionStates, setSessionTileDelegate } from '@/store/session-states'
 import { $draftingToolSessions, setSessionDraftingTool } from '@/store/tool-drafting'
-import type { GatewayEvent } from '@hermes/shared'
 
 import { renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'

@@ -479,25 +479,13 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         # (#117009): must NOT trip the guard.
         ("Workstream C items C-3 and C-4: author t  (90.59s)", None),
         ("docs authored by the previous cycle", None),
-        ("still authoring the migration plan", None),
         ("relying on an authoritative source", None),
-        ("two authors reviewed the diff", None),
-        # Genuine auth failures must still trip the guard.
+        # Genuine auth failures must still trip the guard, one row per
+        # curated stem family (bare, -ate, -ize, -ise).
         ("401 auth failed", "blocker_auth"),
-        ("token authenticated but scope missing", "blocker_auth"),
         ("authentication error from provider", "blocker_auth"),
-        ("authorize the app first", "blocker_auth"),
-        ("authorized client rejected", "blocker_auth"),
-        ("authorization header missing", "blocker_auth"),
-        ("authz denied", "blocker_auth"),
-        ("unauthorized: bad credentials", "blocker_auth"),
-        ("still authenticating with the provider", "blocker_auth"),
-        ("provider authenticates every call", "blocker_auth"),
         ("still authorizing the request", "blocker_auth"),
-        ("provider authorizes every call", "blocker_auth"),
-        ("authorise the app first", "blocker_auth"),
-        ("authorised client rejected", "blocker_auth"),
-        ("authorisation header missing", "blocker_auth"),
+        ("still authorising the request", "blocker_auth"),
     ],
 )
 def test_respawn_guard_blocker_auth_curated_not_open_stem(

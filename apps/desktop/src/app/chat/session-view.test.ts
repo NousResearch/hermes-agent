@@ -2,7 +2,16 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $busy, $messages, $selectedStoredSessionId } from '@/store/session'
+import {
+  $activeSessionId,
+  $busy,
+  $currentModel,
+  $currentProvider,
+  $messages,
+  $selectedStoredSessionId,
+  setCurrentModel,
+  setCurrentProvider
+} from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
 import { PRIMARY_SESSION_VIEW } from './session-view'
@@ -35,6 +44,8 @@ describe('primary session view reads its own session slice', () => {
     $selectedStoredSessionId.set(null)
     $messages.set([])
     $busy.set(false)
+    setCurrentModel('')
+    setCurrentProvider('')
   })
 
   afterEach(cleanup)
@@ -82,6 +93,41 @@ describe('primary session view reads its own session slice', () => {
     $selectedStoredSessionId.set('stored-runtime-b')
 
     expect(PRIMARY_SESSION_VIEW.$busy.get()).toBe(false)
+  })
+
+  it('does not paint another chat sticky model onto a cold-resumed session', () => {
+    setCurrentModel('antigravity/gemini-3.8-flash-tiered')
+    setCurrentProvider('omniroute')
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set('stored-grok-chat')
+
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('')
+  })
+
+  it('still follows the last pick on a true new-chat draft', () => {
+    setCurrentModel('grok-4.6')
+    setCurrentProvider('xai-oauth')
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('grok-4.6')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('xai-oauth')
+  })
+
+  it('prefers the live session model over the global sticky', () => {
+    setCurrentModel('antigravity/gemini-3.8-flash-tiered')
+    setCurrentProvider('omniroute')
+    publishSessionState('runtime-grok', {
+      ...stateWith('runtime-grok', 'grok turn', false),
+      model: 'grok-4.6',
+      provider: 'xai-oauth'
+    })
+    $activeSessionId.set('runtime-grok')
+    $selectedStoredSessionId.set('stored-runtime-grok')
+
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('grok-4.6')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('xai-oauth')
   })
 
   it('returns to the draft atoms when the active session state is dropped', () => {

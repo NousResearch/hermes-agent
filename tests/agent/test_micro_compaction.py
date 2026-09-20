@@ -823,3 +823,63 @@ class TestDefragFlushCursorInvalidation:
             "finalize_turn must invalidate the bounded flush-scan cursor "
             "when the defrag pop stripped a live marker's stamp"
         )
+
+
+class TestMergeAdjacentUserTurnsPersistedMarker:
+    """Third pop site under the _DB_PERSISTED_MARKER contract: a supersede that
+    drops a stale micro marker can leave two persisted plain user dicts adjacent;
+    the merge rewrites the earlier one's content in place, so the stamp must be
+    popped and the flush-scan cursor invalidated or the merged text is
+    identity-skipped and never reaches state.db."""
+
+    def _spliced_merge(self):
+        from agent.context_compressor import (
+            _DB_PERSISTED_MARKER,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+            MICRO_COMPACT_MARKER_KEY,
+        )
+
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = "ROLLING"
+        u1 = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
+        stale_micro = {
+            "role": "assistant",
+            "content": "SUMMARY",
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+            MICRO_COMPACT_MARKER_KEY: True,
+            _DB_PERSISTED_MARKER: True,
+        }
+        u2 = {"role": "user", "content": "second", _DB_PERSISTED_MARKER: True}
+        exchange = [
+            {"role": "assistant", "content": "answer", _DB_PERSISTED_MARKER: True},
+            {"role": "user", "content": "third", _DB_PERSISTED_MARKER: True},
+        ]
+        messages = [u1, stale_micro, u2, *exchange]
+        # Dropping stale_micro leaves u1/u2 adjacent; the exchange is spliced out.
+        return cc, cc._splice_micro_compact_result(messages, 3, 5, supersede=True)
+
+    def test_merge_pops_persisted_marker_and_raises_flag(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        cc, result = self._spliced_merge()
+
+        merged = [m for m in result if m.get("role") == "user"]
+        assert len(merged) == 1
+        assert merged[0]["content"] == "first\n\nsecond"
+        assert _DB_PERSISTED_MARKER not in merged[0]
+        assert cc._flush_scan_cursor_invalidated is True
+
+    def test_untouched_survivors_keep_their_stamps(self):
+        """Only the rewritten dict loses its stamp; the merge must not strip
+        _db_persisted from messages it did not mutate (the archive would
+        re-insert them as duplicate active rows on failure)."""
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        _, result = self._spliced_merge()
+
+        markers = _summary_markers(result)
+        assert len(markers) == 1  # the fresh splice marker
+        stale_dropped = [m for m in result if m.get("content") == "SUMMARY"]
+        assert not stale_dropped
+        # The new marker was never persisted; it must not carry a stamp.
+        assert _DB_PERSISTED_MARKER not in markers[0]

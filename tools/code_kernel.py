@@ -656,6 +656,13 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     _ensure_background_reaper()
 
 
+def _pop_idle_expired(now: float, idle_timeout: float) -> List[SessionKernel]:
+    """Pop (caller holds ``_REGISTRY.lock``) every kernel idle past *idle_timeout*. Kernels with
+    attached cells are skipped: the last cell out tears them down."""
+    return [_KERNELS.pop(k) for k in list(_KERNELS)
+            if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+
+
 def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[SessionKernel, bool]:
     """Look up or register the kernel for *key*; returns (kernel, state_reset). Every entry also
     sweeps idle-expired kernels and enforces the process-wide LRU cap (doomed kernels are popped
@@ -664,10 +671,7 @@ def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[S
     ``shutdown_kernels_for_delegated_child``, so the cap has nothing to bound for them."""
     cap, idle_timeout = _lifecycle_limits()
     with _REGISTRY.lock:
-        now = time.monotonic()
-        # Reaping and eviction skip kernels with attached cells (the last cell out tears them down).
-        expired = [_KERNELS.pop(k) for k in list(_KERNELS)
-                   if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+        expired = _pop_idle_expired(time.monotonic(), idle_timeout)
         kernel = _KERNELS.get(key)
         state_reset = kernel is not None and (reset or kernel.dead())
         if state_reset:
@@ -697,7 +701,7 @@ def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[S
 # outlived a host which died without cleanup (SIGKILL / container restart).
 _STALE_STAGING_DIR_AGE = 7 * 86400
 _REAPER_INTERVAL_FLOOR, _REAPER_INTERVAL_CEIL = 30.0, 300.0
-_REAPER_GUARD = threading.Lock()
+_REAPER_STARTED = False
 
 
 def _sweep_stale_staging_dirs(now: Optional[float] = None) -> int:
@@ -724,9 +728,7 @@ def _reap_once() -> None:
     """One background pass: the acquire-path idle criteria, then the stale-dir sweep."""
     _, idle_timeout = _lifecycle_limits()
     with _REGISTRY.lock:
-        now = time.monotonic()
-        expired = [_KERNELS.pop(k) for k in list(_KERNELS)
-                   if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+        expired = _pop_idle_expired(time.monotonic(), idle_timeout)
     for doomed in expired:
         doomed.teardown()
     _sweep_stale_staging_dirs()
@@ -734,9 +736,13 @@ def _reap_once() -> None:
 
 def _ensure_background_reaper() -> None:
     """Start the reaper once per process (on the first kernel spawn)."""
-    if _REAPER_GUARD.acquire(blocking=False):
-        threading.Thread(target=_background_reaper, daemon=True,
-                         name="hermes-kernel-idle-reaper").start()
+    global _REAPER_STARTED
+    with _REGISTRY.lock:
+        if _REAPER_STARTED:
+            return
+        _REAPER_STARTED = True
+    threading.Thread(target=_background_reaper, daemon=True,
+                     name="hermes-kernel-idle-reaper").start()
 
 
 def _background_reaper() -> None:

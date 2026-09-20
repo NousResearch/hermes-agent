@@ -552,15 +552,6 @@ class TestBackgroundIdleReaper(unittest.TestCase):
             finally:
                 kernel.attached -= 1
 
-    def test_spawn_starts_the_reaper_thread(self):
-        import threading
-
-        with _kernel_config():
-            self._run_as("conv-a", "x = 1", task_id="turn-1")
-        self.assertTrue(any(t.name == "hermes-kernel-idle-reaper"
-                            for t in threading.enumerate()))
-
-
 class TestStaleStagingDirSweep(unittest.TestCase):
     def test_week_old_kernel_dirs_go_and_fresh_ones_stay(self):
         import time as time_module

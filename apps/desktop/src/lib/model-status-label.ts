@@ -31,13 +31,19 @@ export function currentPickerSelection(
   }
 }
 
-/** Canonical short provider labels used by the model selector. Keep OAuth
- * provider ids distinct from their direct-API counterparts while avoiding
- * internal route names in user-facing copy. */
-const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+/** Canonical provider labels shared by onboarding and the model pill. OAuth
+ * provider ids stay distinct from their direct-API counterparts so a session on
+ * `xai-oauth` never reads as the plain `xai` key path, and internal route names
+ * never reach user-facing copy. */
+export const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  anthropic: 'Anthropic API Key',
+  'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
+  'minimax-oauth': 'MiniMax',
+  nous: 'Nous Portal',
   'openai-codex': 'ChatGPT or Codex Subscription',
-  'xai-oauth': 'xAI Grok',
-  xai: 'xAI'
+  'qwen-oauth': 'Qwen Code',
+  xai: 'xAI',
+  'xai-oauth': 'xAI Grok'
 }
 
 export function providerDisplayName(provider: string): string {

@@ -21,7 +21,11 @@ def _cu_status(args) -> int:
     from tools.computer_use.cua_backend_driver import cua_driver_update_check, resolve_cua_driver_cmd
     # Must match the runtime resolver: Desktop/TUI processes can omit
     # ~/.local/bin even though the official installer put the driver there.
-    path = resolve_cua_driver_cmd()
+    try:
+        path = resolve_cua_driver_cmd()
+    except ValueError as exc:
+        print(f"cua-driver target error: {exc}", file=sys.stderr)
+        return 1
     override = _os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
     if not path:
         print("cua-driver: not installed")
@@ -89,7 +93,8 @@ def _cu_perms_status(args) -> None:
         print(f"Computer Use is not supported on {st['platform']}.")
         sys.exit(1)
     if not st["installed"]:
-        print("cua-driver: not installed. Run: hermes computer-use install")
+        print(f"cua-driver: {st['error']}" if st["error"] else
+              "cua-driver: not installed. Run: hermes computer-use install")
         sys.exit(1)
     glyph = lambda v: "✅" if v is True else ("❌" if v is False else "•")  # noqa: E731
     print(f"cua-driver: {st['version'] or 'installed'} ({st['platform']})")

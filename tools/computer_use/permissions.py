@@ -70,10 +70,16 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
     UI keys off: macOS = both TCC grants, elsewhere = driver health (no TCC model); ``None`` = unknown (binary missing /
     probe failed). ``can_grant`` is macOS-only."""
     from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd  # same resolver as the tool itself
-    plat, binary = sys.platform, resolve_cua_driver_cmd(driver_cmd)
+    plat = sys.platform
     out: Dict[str, Any] = {"platform": plat, "platform_supported": plat in _RUNTIME_PLATFORMS,
-                           "installed": bool(binary), "version": None, "ready": None, "can_grant": plat == "darwin",
+                           "installed": False, "version": None, "ready": None, "can_grant": plat == "darwin",
                            "checks": [], "source": None, "error": None, **{k: None for k in _BOOLS}}
+    try:
+        binary = resolve_cua_driver_cmd(driver_cmd)
+    except ValueError as exc:
+        out["error"] = str(exc)
+        return out
+    out["installed"] = bool(binary)
     if not binary:
         return out
     with suppress(Exception):
@@ -91,12 +97,16 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
 
 def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
     """Run ``cua-driver permissions grant`` (macOS), streaming its output. Returns the driver's exit code (0 ok), 2 if
-    the binary is missing, 64 on a non-macOS platform (no TCC model to grant)."""
+    the binary is missing or the target is invalid, 64 on a non-macOS platform (no TCC model to grant)."""
     if sys.platform != "darwin":
         print("Computer Use permissions are a macOS concept; nothing to grant here.")
         return 64
     from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
-    binary = resolve_cua_driver_cmd(driver_cmd)
+    try:
+        binary = resolve_cua_driver_cmd(driver_cmd)
+    except ValueError as exc:
+        print(f"cua-driver permissions grant failed: {exc}", file=sys.stderr)
+        return 2
     if not binary:
         print("cua-driver: not installed. Run: hermes computer-use install")
         return 2

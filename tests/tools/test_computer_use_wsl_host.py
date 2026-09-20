@@ -179,3 +179,51 @@ def test_discovery_failure_retries_and_selection_never_crosses_targets(interop, 
     monkeypatch.setattr('tools.bot_desktop.runtime.published_env', lambda: {'DISPLAY': ':20'})
     with pytest.raises(ValueError, match='active Linux Bot Screen'):
         driver.resolve_cua_driver_cmd()
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("failure", ["nonzero", "empty", "multiline", "missing", "timeout"])
+def test_manifest_translation_failure_is_a_retryable_tool_error(interop, tmp_path, monkeypatch, failure):
+    """The existing tool boundary must refuse startup, not drop the manifest or cache a broken backend."""
+    from hermes_cli.config import save_config
+
+    host, _, _ = interop
+    manifest = tmp_path / "capabilities.yaml"
+    manifest.write_text("version: 3\n")
+    save_config({"computer_use": {"target": "windows", "permission_mode": "bounded",
+                                  "capability_manifest": str(manifest)}})
+    real_run = cb._run_quiet
+    translations = []
+
+    def failed_translation(argv, **kwargs):
+        if argv[:2] == ["wslpath", "-w"]:
+            translations.append(argv)
+            if failure == "missing":
+                raise FileNotFoundError("wslpath is unavailable")
+            if failure == "timeout":
+                raise driver.subprocess.TimeoutExpired(argv, 3.0)
+            output = {"nonzero": "ignored", "empty": "", "multiline": "first\nsecond"}[failure]
+            return SimpleNamespace(returncode=1 if failure == "nonzero" else 0, stdout=output)
+        return real_run(argv, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(cb, "_run_quiet", failed_translation)
+        result = json.loads(registry.dispatch("computer_use", {"action": "capture", "app": "screen"},
+                                              session_id="manifest-error"))
+    assert translations == [["wslpath", "-w", str(manifest)]]
+    assert "computer_use backend unavailable:" in result["error"], result
+    message = "wslpath" if failure in {"missing", "timeout"} else "Cannot translate the capability manifest"
+    assert message in result["error"], result
+    assert not tool._backends
+    launches = [json.loads(line) for line in host.with_suffix(".log").read_text().splitlines()]
+    assert not any(args[0] in {"serve", "mcp"} for args in launches)
+
+    # Retrying through the same public entry point succeeds once translation recovers.
+    result = json.loads(registry.dispatch("computer_use", {"action": "list_windows"}, session_id="manifest-error"))
+    assert result["windows"][0]["app_name"] == "HOST", result
+    launches = [json.loads(line) for line in host.with_suffix(".log").read_text().splitlines()]
+    serve = [args for args in launches if args[0] == "serve"]
+    assert len(serve) == 1
+    args = serve[0]
+    assert args[args.index("--capability-manifest") + 1] == r"\\wsl.localhost\Ubuntu\manifest.yaml"
+    assert "--approve-capability-manifest" in args

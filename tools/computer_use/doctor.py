@@ -330,7 +330,11 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
         with suppress(AttributeError, OSError):
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
-    binary = resolve_cua_driver_cmd(driver_cmd)
+    try:
+        binary = resolve_cua_driver_cmd(driver_cmd)
+    except ValueError as exc:
+        print(f"cua-driver target error: {exc}", file=sys.stderr)
+        return 2
     if not binary:
         print(f"cua-driver: not installed (looked for {driver_cmd or 'cua-driver (PATH and canonical install paths)'!r}).\n  Run: hermes computer-use install")
         return 2

@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from agent.coding_context import INTERACTIVE_CODING_PLATFORMS as _LOCAL_PLATFORMS
+from agent.prompt_builder import STEER_MARKER_OPEN, STEER_MARKER_CLOSE
 from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
 from plugins.memory.honcho.client import _host_block, _HostLookup
@@ -36,14 +37,27 @@ logger = logging.getLogger(__name__)
 # Gateway-internal notifications arrive through the same user-role channel as genuine
 # user messages; they are execution metadata and must never become durable memory.
 # Deliberately anchored: a human discussing one of these strings mid-message is valid input.
+#
+# The background-process family below is emitted by tools/process_registry_notifications.py
+# (format_process_notification / _format_async_delegation / _format_task_failure_notice),
+# gateway/run.py (_format_gateway_process_notification, same shapes) and
+# tools/process_registry.py (_emit_watch_disabled, _global_watch_event). Session ids are
+# either bare ints (legacy) or ``proc_<hex>`` — match both with \S+ rather than \d+. New
+# notification shapes from that emitter belong in this alternation, not a second mechanism.
 _INTERNAL_GATEWAY_TURN_RE = re.compile(
     r"^\s*(?:"
     r"\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE[^\]]*\]|"
+    r"\[ASYNC DELEGATION TASK FAILED[^\]]*\]|"
     r"\[CONTEXT COMPACTION[^\]]*\]|"
     r"\[CONTEXT SUMMARY\]:?|"
     r"\[PRIOR CONTEXT[^\]]*\]|"
     r"\[Your active task list was preserved across context compression\]|"
-    r"\[IMPORTANT: Background process \d+ matched watch pattern[^\n]*|"
+    r"\[IMPORTANT: Background process \S+ (?:matched watch pattern|completed normally|"
+    r"exited|terminated by|marked lost because|failed to start)[^\n]*|"
+    r"\[IMPORTANT: \d+ background processes? completed\.[^\n]*|"
+    r"\[IMPORTANT: Watch patterns? disabled for process[^\n]*|"
+    r"\[IMPORTANT: Watch-pattern overflow:[^\n]*|"
+    r"\[IMPORTANT: Watch-pattern notifications resumed\.[^\n]*|"
     r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
     r"A background subagent you dispatched earlier has finished\."
     r")",
@@ -54,6 +68,23 @@ _INTERNAL_GATEWAY_TURN_RE = re.compile(
 def _is_internal_gateway_turn(text: str) -> bool:
     """Return True for machine-generated gateway/delegation notifications."""
     return bool(_INTERNAL_GATEWAY_TURN_RE.match(text or ""))
+
+
+# A mid-turn /steer arrives wrapped in the OUT-OF-BAND marker (agent.prompt_builder) so the
+# model can tell it apart from tool output — but unlike the notifications above, the payload
+# IS genuine user text and must not be dropped. Strip the wrapper and ingest the inner text
+# instead of discarding the whole turn (open question in the originating bug report).
+_STEER_WRAPPER_RE = re.compile(
+    r"^\s*" + re.escape(STEER_MARKER_OPEN) + r"\s*\n?(.*?)\n?\s*" + re.escape(STEER_MARKER_CLOSE) + r"\s*$",
+    re.DOTALL,
+)
+
+
+def _strip_steer_wrapper(text: str) -> str:
+    """Unwrap a mid-turn OUT-OF-BAND steer marker, returning the genuine user text inside.
+    Text with no wrapper (the common case) is returned unchanged."""
+    match = _STEER_WRAPPER_RE.match(text or "")
+    return match.group(1) if match else text
 
 
 def _cfg_usable(cfg) -> bool:
@@ -782,7 +813,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
+        clean_user_content = sanitize_context(_strip_steer_wrapper(user_content) or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
         # Skip only when the whole turn is empty: an interrupted or tool-only turn can have
         # an empty assistant side, and the user's message must still be persisted.

@@ -1620,15 +1620,18 @@ class TestTodoSnapshotScaffoldingTails:
                 id="prefix_only_scaffold",
             ),
             pytest.param(
-                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "__CONTEXT_SUMMARY__"},
                 id="compressor_classified_scaffold",
             ),
         ],
     )
     def test_snapshot_fold_covers_synthetic_tail_categories(self, tail: dict):
         """Every synthetic user-tail category absorbs one snapshot without becoming human intent."""
+        from agent.context_compressor import SUMMARY_PREFIX
         from tools.todo_tool import TODO_INJECTION_HEADER
 
+        if tail["content"] == "__CONTEXT_SUMMARY__":
+            tail = {**tail, "content": f"{SUMMARY_PREFIX}\nsummary"}
         original_text = str(tail["content"])
         original_flags = {key: value for key, value in tail.items() if key.startswith("_")}
         agent = MagicMock()

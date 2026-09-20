@@ -3619,12 +3619,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # candidate itself is discarded downstream by the working-attempt check; bail here so the
             # attribute writes never land. Entry-generation claims (lock sit-outs) do not count; the
             # working marker is the ownership boundary for summary state.
-            from agent.conversation_compression import (
-                _COMPRESSOR_ATTEMPT_GENERATION,
-                _working_attempt_is_current,
-            )
-            if not _working_attempt_is_current(self, _COMPRESSOR_ATTEMPT_GENERATION.get()):
-                raise AuxiliaryExplicitCancellation()
+            from agent.conversation_compression import _raise_if_stale_attempt
+
+            _raise_if_stale_attempt(self)
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
             self._summary_model_fallen_back = False
@@ -3774,12 +3771,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
         # A detached stale attempt must not arm a failure cooldown or stamp error state the fallback
         # attempt owns; unwind as a cancellation so none of the shared-state writes below can land.
-        from agent.conversation_compression import (
-            _COMPRESSOR_ATTEMPT_GENERATION,
-            _working_attempt_is_current,
-        )
-        if not _working_attempt_is_current(self, _COMPRESSOR_ATTEMPT_GENERATION.get()):
-            raise AuxiliaryExplicitCancellation()
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
         # RuntimeErrors are transient and must get the main-model retry below first.
         # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response
@@ -4823,11 +4817,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Roll back the self-heal rehydration so the aborted attempt is a true no-op (#57835). Only the
         # attempt still owning summary work may roll back: a detached stale attempt (reachable here via
         # the deterministic summary pin) must not revert the fallback's _previous_summary.
-        from agent.conversation_compression import (
-            _COMPRESSOR_ATTEMPT_GENERATION,
-            _working_attempt_is_current,
-        )
-        if _working_attempt_is_current(self, _COMPRESSOR_ATTEMPT_GENERATION.get()):
+        from agent.conversation_compression import _caller_attempt_is_current
+
+        if _caller_attempt_is_current(self):
             self._previous_summary = previous_summary_before_scan
         if not self.quiet_mode:
             logger.warning(message, n_skipped)
@@ -5023,12 +5015,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         """
         # A detached stale attempt must not even reset per-call state the fallback owns. Staleness that
         # arises mid-compress is caught by the write-point gates below; this covers stale-at-entry.
-        from agent.conversation_compression import (
-            _COMPRESSOR_ATTEMPT_GENERATION,
-            _working_attempt_is_current,
-        )
-        if not _working_attempt_is_current(self, _COMPRESSOR_ATTEMPT_GENERATION.get()):
-            raise AuxiliaryExplicitCancellation()
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
@@ -5085,12 +5074,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Choke point for staleness that arose during phases 1-2: everything below writes shared state
         # (feasibility counters, fallback diagnostics, finalize's cursor/rearm resets), and the inner
         # _summarize_window/_generate_summary gates cover staleness arising during the LLM call itself.
-        from agent.conversation_compression import (
-            _COMPRESSOR_ATTEMPT_GENERATION,
-            _working_attempt_is_current,
-        )
-        if not _working_attempt_is_current(self, _COMPRESSOR_ATTEMPT_GENERATION.get()):
-            raise AuxiliaryExplicitCancellation()
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
         summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
         if not feasibility_skip:

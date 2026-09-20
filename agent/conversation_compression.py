@@ -226,11 +226,28 @@ _COMPRESSOR_ATTEMPT_GENERATION: contextvars.ContextVar[Any] = contextvars.Contex
 )
 
 
+def _compressor_attempt_serial_lock(compressor: Any) -> Any:
+    """Per-compressor lock serializing the durable cooldown rollback against claims. The process-wide
+    claim lock must stay cheap (every compressor in a gateway shares it), so the slow SQLite write in
+    ``_restore_compressor_attempt_state`` is fenced by THIS lock instead; ``_claim_compressor_attempt``
+    takes it first so a claim on that compressor waits for the restore while other compressors proceed.
+    A slotted/frozen compressor that cannot hold the attribute gets a no-op (its guard is off anyway)."""
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        lock = getattr(compressor, "_compression_attempt_serial_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            try:
+                compressor._compression_attempt_serial_lock = lock
+            except Exception:
+                return contextlib.nullcontext()
+        return lock
+
+
 def _claim_compressor_attempt(compressor: Any) -> int:
     """Claim the compressor for a new attempt; return its monotonic generation id.
     Restores or cancelled-check mutations stamped with an OLDER generation no-op, so a detached late attempt
     cannot clobber its successor's state."""
-    with _COMPRESSOR_ATTEMPT_LOCK:
+    with _compressor_attempt_serial_lock(compressor), _COMPRESSOR_ATTEMPT_LOCK:
         generation = int(getattr(compressor, "_compression_attempt_generation", 0) or 0) + 1
         try:
             compressor._compression_attempt_generation = generation
@@ -260,6 +277,19 @@ def _mark_compressor_working_attempt(compressor: Any, generation: int) -> None:
     with _COMPRESSOR_ATTEMPT_LOCK:
         with contextlib.suppress(Exception):
             compressor._compression_working_attempt_generation = generation
+
+
+def _raise_if_stale_attempt(compressor: Any) -> None:
+    """Unwind the CALLING attempt (its generation rides the ContextVar) as a cancellation when a newer
+    attempt has since begun summary work on *compressor*, so none of the shared-state writes that
+    follow the call site can land."""
+    if not _caller_attempt_is_current(compressor):
+        raise AuxiliaryExplicitCancellation()
+
+
+def _caller_attempt_is_current(compressor: Any) -> bool:
+    """Working-attempt check for the calling attempt's own generation (ContextVar; None → unguarded)."""
+    return _working_attempt_is_current(compressor, _COMPRESSOR_ATTEMPT_GENERATION.get())
 
 
 def _working_attempt_is_current(compressor: Any, generation: Any) -> bool:
@@ -345,14 +375,17 @@ def _restore_compressor_attempt_state(
         )
         return
     restored = copy.deepcopy(snapshot)
-    # Re-validate under the claim lock AND run the durable rollback inside it: the slow DB
+    # Re-validate AND run the durable rollback under this compressor's serial lock: the slow DB
     # write used to sit between the first ownership check and this re-check, so a fallback
     # claiming mid-restore could have its freshly written cooldown row overwritten by this
-    # attempt's stale snapshot row. Holding the lock across the durable write serializes
-    # it against _claim_compressor_attempt. The row still lands BEFORE the in-memory
-    # restore so the next refresh cannot overwrite the rollback.
-    with _COMPRESSOR_ATTEMPT_LOCK:
-        if attempt_generation and int(getattr(compressor, "_compression_attempt_generation", 0) or 0) != attempt_generation:
+    # attempt's stale snapshot row. _claim_compressor_attempt takes the same per-compressor
+    # lock, so the write is serialized against claims on THIS compressor without stalling
+    # every other compressor behind the process-wide claim lock. The row still lands BEFORE
+    # the in-memory restore so the next refresh cannot overwrite the rollback.
+    with _compressor_attempt_serial_lock(compressor):
+        with _COMPRESSOR_ATTEMPT_LOCK:
+            lost = attempt_generation and int(getattr(compressor, "_compression_attempt_generation", 0) or 0) != attempt_generation
+        if lost:
             logger.warning(
                 "Skipping stale compressor attempt-state restore at write "
                 "time: attempt generation %s lost the compressor mid-restore.", attempt_generation,

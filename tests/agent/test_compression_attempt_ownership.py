@@ -244,21 +244,6 @@ class TestMidRestoreClaimRace:
         assert compressor._previous_summary == "FALLBACK STATE"
 
 
-def _run_as_attempt(generation, fn):
-    """Run ``fn`` with the attempt-generation ContextVar bound, exactly as
-    ``_run_summary_dispatch`` does around ``compress_fn``. Tolerates the var
-    being absent so the tests still exercise behavior on pre-fix revisions."""
-    from agent import conversation_compression as _cc
-
-    var = getattr(_cc, "_COMPRESSOR_ATTEMPT_GENERATION", None)
-    token = var.set(generation) if var is not None else None
-    try:
-        return fn()
-    finally:
-        if token is not None:
-            var.reset(token)
-
-
 class TestStaleAttemptEndToEnd:
     """E2E: two real attempts through ``_run_summary_dispatch`` on a shared
     real ``ContextCompressor``. The detached primary's late completion must
@@ -428,8 +413,9 @@ class TestDurableRollbackAtomicity:
     """Gap: the durable cooldown DB write ran BETWEEN the two ownership
     checks, so a fallback claiming mid-restore had its cooldown row
     overwritten by the primary's stale snapshot row. The write now sits
-    inside the claim-lock critical section: durable row + in-memory
-    restore are an atomic pair against ``_claim_compressor_attempt``."""
+    under the compressor's own serial lock, which ``_claim_compressor_attempt``
+    takes too: durable row + in-memory restore are an atomic pair against
+    claims on THAT compressor, while other compressors' claims never wait."""
 
     def test_durable_write_and_restore_are_atomic_against_claims(self):
         import threading
@@ -475,3 +461,37 @@ class TestDurableRollbackAtomicity:
         assert written == ["s1"]
         assert compressor._previous_summary == "primary-era"
         assert claims == [2]
+
+    def test_durable_write_does_not_stall_other_compressors(self):
+        import threading
+        import time
+
+        compressor, other = _compressor(), _compressor()
+        gen = _claim_compressor_attempt(compressor)
+        snapshot = {
+            "_summary_failure_cooldown_until": time.monotonic() + 100.0,
+            "_previous_summary": "primary-era",
+            "_cooldown_persist_failed": False,
+        }
+        other_claims_during_write = []
+
+        class _DB:
+            def record_compression_failure_cooldown(self, sid, until, err):
+                # A busy state.db write on THIS compressor must not block a claim on an
+                # unrelated compressor (gateway: N sessions share the module lock).
+                t = threading.Thread(
+                    target=lambda: other_claims_during_write.append(_claim_compressor_attempt(other)),
+                    daemon=True,
+                )
+                t.start()
+                t.join(timeout=2.0)
+
+        compressor._session_db = _DB()
+        compressor._session_id = "s1"
+
+        _restore_compressor_attempt_state(
+            compressor, snapshot, durable_cooldown_authoritative=None, attempt_generation=gen,
+        )
+
+        assert other_claims_during_write == [1]
+        assert compressor._previous_summary == "primary-era"

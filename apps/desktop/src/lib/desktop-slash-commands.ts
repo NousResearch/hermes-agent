@@ -66,6 +66,7 @@ export type DesktopActionId =
   | 'new'
   | 'pet'
   | 'profile'
+  | 'reasoning'
   | 'skin'
   | 'stop'
   | 'title'
@@ -188,6 +189,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('branch')
   },
   { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
+  {
+    name: '/reasoning',
+    description: 'Reasoning effort or display [<level> [--global]|show|hide|full|clamp]',
+    surface: action('reasoning'),
+    argumentMode: 'options'
+  },
   {
     name: '/wake',
     description: 'Control the desktop wake-word listener [on|off|status]',

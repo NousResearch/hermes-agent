@@ -235,20 +235,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free",
     ],
-    # OpenCode keyless free tier — OFFLINE FLOOR only. provider_model_ids("opencode-free")
-    # revalidates live against GET /zen/v1/models and filters to the anonymous tier, so this list
-    # may lag the relay (intentional). Known-delisted models are REMOVED (the offline fallback must
-    # not offer a model that 401s; x-preview-f-free delisted 2026-08-26, hy3-free and
-    # laguna-s-2.1-free delisted 2026-09-09, and deepseek-v4-flash-free delisted
-    # 2026-09-15 — all removed from this offline floor after their relay delisting).
-    "opencode-free": [
-        "mimo-v2.5-free",
-        "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free",
-        "muse-spark-1.3-contributor-free",
-    ],
     # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
     # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"
-    # — the Go-subscription twin of Zen's keyless Ox Alpha — was delisted 2026-09-09.
+    # — the Go-subscription twin of Zen's Ox Alpha — was delisted 2026-09-09.
     "opencode-go": [
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "gpt-5.6-luna", "grok-4.5", "glm-5.3",
         "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro",
@@ -358,14 +347,24 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
 # so a new provider reaches the picker, /model and every downstream consumer without edits here.
-# Non-api-key flows need bespoke picker UX and are skipped.
+# Admission is by slug only: every in-tree non-api-key profile (OAuth, external-process, cloud
+# SDK) already owns a hand-written row above, so the old auth_type skip set never excluded an
+# in-tree provider — it only hid out-of-tree plugins. Visibility is gated downstream by
+# credentials, not here: ``models._provider_has_credentials`` / ``_lap_canonical_rows`` route
+# through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
+# credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+
+
+def _plugin_provider_enters_picker(pp) -> bool:
+    """Picker admission for a plugin model-provider profile: any slug without a built-in row."""
+    return pp.name not in _canonical_slugs
+
+
 try:
     from providers import list_providers as _list_providers_for_canonical
     for _pp in _list_providers_for_canonical():
-        if _pp.name in _canonical_slugs or _pp.auth_type in {
-            "oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex",
-        }:
+        if not _plugin_provider_enters_picker(_pp):
             continue
         _label = _pp.display_name or _pp.name
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _pp.description or f"{_label} (direct API)"))
@@ -394,7 +393,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "qwen-oauth"]),
-    "opencode": ("OpenCode",        "Zen pay-as-you-go, Go subscription, or free tier", ["opencode-zen", "opencode-go", "opencode-free"]),
+    "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription", ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
     "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
 }
@@ -462,8 +461,7 @@ _PROVIDER_ALIASES = dict((
     ("minimax-china", "minimax-cn"), ("minimax_cn", "minimax-cn"), ("minimax-portal", "minimax-oauth"),
     ("minimax-global", "minimax-oauth"), ("minimax_oauth", "minimax-oauth"), ("claude", "anthropic"),
     ("claude-code", "anthropic"), ("deep-seek", "deepseek"), ("opencode", "opencode-zen"), ("zen", "opencode-zen"),
-    ("go", "opencode-go"), ("opencode-go-sub", "opencode-go"), ("free", "opencode-free"),
-    ("opencode_free", "opencode-free"), ("aigateway", "ai-gateway"), ("vercel", "ai-gateway"),
+    ("go", "opencode-go"), ("opencode-go-sub", "opencode-go"), ("aigateway", "ai-gateway"), ("vercel", "ai-gateway"),
     ("vercel-ai-gateway", "ai-gateway"), ("kilo", "kilocode"), ("kilo-code", "kilocode"),
     ("kilo-gateway", "kilocode"), ("dashscope", "alibaba"), ("aliyun", "alibaba"), ("qwen", "alibaba"),
     ("alibaba-cloud", "alibaba"), ("qwen-portal", "qwen-oauth"), ("hf", "huggingface"),
@@ -475,7 +473,7 @@ _PROVIDER_ALIASES = dict((
     ("grok-oauth", "xai-oauth"), ("xai-oauth", "xai-oauth"), ("x-ai-oauth", "xai-oauth"),
     ("xai-grok-oauth", "xai-oauth"), ("x-ai", "xai"), ("x.ai", "xai"), ("nim", "nvidia"), ("nvidia-nim", "nvidia"),
     ("build-nvidia", "nvidia"), ("nemotron", "nvidia"), ("lmstudio", "lmstudio"), ("lm-studio", "lmstudio"),
-    ("lm_studio", "lmstudio"),
+    ("lm_studio", "lmstudio"), ("chatgpt", "openai-codex"), ("chatgpt-codex", "openai-codex"),
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
 ))
@@ -542,12 +540,6 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "opencode-go", "opencode-zen", "deepseek", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
     "perplexity", "groq", "nvidia", "huggingface", "zai", "gemini", "google", "xai", "xai-oauth",
 })
-
-
-# Providers whose catalog is served with NO credential get a constant credential fingerprint in
-# the disk cache: the anonymous opencode-free catalog's freshness comes from TTL revalidation,
-# so folding in unrelated auth.json mtimes would only bust the SWR cache needlessly.
-_KEYLESS_STABLE_CACHE_PROVIDERS = frozenset({"opencode-free"})
 
 
 # OpenRouter-style ids -> Copilot ids. Dash-notation Claude ids are accepted too: Hermes' default

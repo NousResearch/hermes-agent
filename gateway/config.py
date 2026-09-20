@@ -652,7 +652,9 @@ class GatewayConfig:
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
-                asdict(r) if is_dataclass(r) and not isinstance(r, type) else r for r in self.profile_routes
+                {k: v for k, v in asdict(r).items() if k != "user_id" or v is not None}
+                if is_dataclass(r) and not isinstance(r, type) else r
+                for r in self.profile_routes
             ],
         }
 

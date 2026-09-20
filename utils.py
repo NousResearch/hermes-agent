@@ -583,6 +583,13 @@ def base_url_hostname(base_url: str) -> str:
     return _hostname_of(_parse_base_url(base_url))
 
 
+def base_url_path(base_url: str) -> str:
+    """Lowercased URL path without the trailing slash (``""`` for a bare host); same scheme
+    tolerance as :func:`base_url_hostname` so host and path checks agree on one URL."""
+    parsed = _parse_base_url(base_url)
+    return (parsed.path if parsed else "").lower().rstrip("/")
+
+
 def model_forces_max_completion_tokens(model: str) -> bool:
     """True for OpenAI families that reject ``max_tokens`` (HTTP 400 ``unsupported_parameter``)."""
     m = (model or "").strip().lower().rsplit("/", 1)[-1]

@@ -9,6 +9,7 @@ successful transcript flush — not silently discarded (#78182, #82616).
 import json
 import logging
 import threading
+import time
 
 import pytest
 
@@ -22,7 +23,10 @@ def _make_store(db):
     store._transcript_retry_lock = threading.Lock()
     store._dirty_transcripts = {}
     store._transcript_append_failures = {}
-    store._fts_rebuild_attempted = True
+    store._fts_rebuild_last_attempt_at = time.monotonic()
+    # These tests exercise the cap-eviction spool path; keep the stalled-session spool (which
+    # normally fires first, at the escalation threshold) out of the way.
+    store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD = 10 ** 6
     return store
 
 

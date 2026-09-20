@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-import { ERROR_CODE_KEYS, errorRecoveryPlan, type ErrorSurface, formatErrorDiagnostics, parseErrorSurface } from './error-surface'
+import {
+  ERROR_CODE_KEYS,
+  errorRecoveryPlan,
+  type ErrorSurface,
+  formatErrorDiagnostics,
+  formatLimitReset,
+  parseErrorSurface
+} from './error-surface'
 import { errorCardText } from './error-surface-copy'
 
 describe('parseErrorSurface', () => {
@@ -108,7 +115,8 @@ describe('error copy never names a hidden Retry', () => {
     'format_error',
     'ssl_cert_verification',
     'context_overflow',
-    'interpreter_shutdown'
+    'interpreter_shutdown',
+    'upstream_blocked'
   ])
 
   const surfaces: ErrorSurface[] = [
@@ -136,6 +144,16 @@ describe('error copy never names a hidden Retry', () => {
   it('a credential rejection keeps Retry, so its body may still say retry', () => {
     const surface: ErrorSurface = { authKind: 'api_key', code: 'auth', layer: 'auth', provider: 'openai', retryable: false }
     expect(errorRecoveryPlan(surface).retry).toBe(true)
+  })
+
+  it('a WAF block names the firewall and the User-Agent fix, not the key and not a retry', () => {
+    const surface = parseErrorSurface({ code: 'upstream_blocked', layer: 'provider', provider: 'custom', retryable: false })!
+    const { body, title } = errorCardText(thread, surface)
+    expect(title).toBe(en.assistant.thread.errorCodes.upstream_blocked.title)
+    expect(body).toMatch(/firewall/i)
+    expect(body).toMatch(/User-Agent/)
+    expect(body).not.toBe(thread.errorLayerBodies.provider)
+    expect(errorRecoveryPlan(surface).retry).toBe(false)
   })
 })
 
@@ -176,5 +194,32 @@ describe('free-tier refusals', () => {
       expect(text).not.toMatch(/free (service|model|tier) is (off|switched off|unavailable|down)/)
       expect(text).not.toMatch(/anonymous|guest|credential|token|rate limit/)
     }
+  })
+})
+
+describe('limit reset (#98852)', () => {
+  it('parses resets_at and renders "HH:mm (in Nh MMm)" while the reset is ahead', () => {
+    const now = Date.UTC(2026, 0, 1, 12, 0, 0)
+    const resetsAt = now / 1000 + 3600 + 5 * 60
+
+    const surface = parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true, resets_at: resetsAt })
+
+    expect(surface?.resetsAt).toBe(resetsAt)
+
+    const at = new Date(resetsAt * 1000)
+    const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+
+    expect(formatLimitReset(surface?.resetsAt, now)).toBe(`${clock} (in 1h 05m)`)
+    expect(en.assistant.thread.errorLimitResets(`${clock} (in 1h 05m)`)).toContain(clock)
+    expect(formatErrorDiagnostics({ errorText: 'x', surface })).toContain('resets_at: ')
+  })
+
+  it('shows nothing once the reset has passed or when the backend sent none', () => {
+    const now = Date.now()
+
+    expect(formatLimitReset(now / 1000 - 60, now)).toBeNull()
+    expect(formatLimitReset(undefined, now)).toBeNull()
+    expect(parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true })?.resetsAt).toBeUndefined()
+    expect(parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true, resets_at: 'soon' })?.resetsAt).toBeUndefined()
   })
 })

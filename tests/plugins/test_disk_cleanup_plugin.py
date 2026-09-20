@@ -15,6 +15,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 import importlib
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,57 @@ class TestProfileUserTreesNeverCleaned:
 
         assert keep.exists(), "empty dir inside workspace/ must survive the sweep"
         assert not sweepable.exists(), "unprotected empty dirs are still swept"
+
+
+class TestProtectedDirsNeverRmtreed:
+    """A tracked DIRECTORY under a protected top level (``cache/`` holds terminal snapshots)
+    must never be rmtree'd by the tracked-item path, only by-file aging; ``kanban/`` is never
+    tracked at all (its attachments/workspaces have their own lifecycle)."""
+
+    def test_stale_cache_dir_entry_is_skipped_but_its_old_files_still_age_out(self, _isolate_env):
+        dg = _load_lib()
+        cache = _isolate_env / "cache"
+        (cache / "terminal").mkdir(parents=True)
+        old_file = cache / "scratch.txt"
+        old_file.write_text("x")
+        assert dg.guess_category(cache) is None, "the cache dir itself is never tracked"
+        assert dg.guess_category(old_file) == "temp", "files under cache/ still age out as temp"
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        dg.save_tracked([
+            {"path": str(cache), "category": "temp", "timestamp": old_ts, "size": 0},
+            {"path": str(old_file), "category": "temp", "timestamp": old_ts, "size": 1},
+        ])
+
+        summary = dg.quick()
+
+        assert (cache / "terminal").is_dir(), "protected top-level dir must survive a stale tracked entry"
+        assert not old_file.exists(), "old temp FILE under cache/ is still pruned (control)"
+        assert summary["deleted"] == 1
+        assert dg.load_tracked() == [], "the stale dir entry is dropped, not retried every session"
+        assert "SKIPPED" in (_isolate_env / "disk-cleanup" / "cleanup.log").read_text()
+
+    def test_kanban_test_files_are_never_tracked_or_deleted(self, _isolate_env):
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        att = _isolate_env / "kanban" / "attachments" / "t1" / "test_evidence.sh"
+        att.parent.mkdir(parents=True)
+        att.write_text("x")
+        assert dg.guess_category(att) is None
+        # A stale pre-fix entry must be dropped by re-validation instead of deleted.
+        dg.save_tracked([{"path": str(att), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(att), "content": "x"},
+                              result="OK", task_id="t1", session_id="s_kb")
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(scratch), "content": "x"},
+                              result="OK", task_id="t1", session_id="s_kb")
+
+        pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
+
+        assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
+        assert dg.load_tracked() == []
 
 
 class TestStaleCronEntryMigration:

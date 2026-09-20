@@ -76,3 +76,36 @@ def test_rerun_adopts_the_dm_behind_the_failed_attempts_tool_scaffolding(monkeyp
     agent, seen = _quiet_turn(monkeypatch, [{"role": "assistant", "content": "earlier"}, tail, *scaffolding], "1")
     assert seen["history"] == [{"role": "assistant", "content": "earlier"}]
     assert agent._pending_cli_user_message is tail and tail[_DB_PERSISTED_MARKER] is True
+
+
+def test_turn_report_is_written_before_the_exit_linger_and_the_path_is_not_inherited(monkeypatch, tmp_path):
+    """A spawner that bounds only the turn (cron Bot Chat lane, #113608) reads the outcome from
+    HERMES_QUIET_TURN_REPORT_FILE: written the moment the turn ends — before the one-shot exit
+    linger — stamped with this pid, and the variable is popped before the turn spawns anything."""
+    from hermes_cli import quiet_single_query as qsq
+
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    report = tmp_path / "turn.json"
+    monkeypatch.setenv(qsq.TURN_REPORT_FILE_ENV, str(report))
+    seen = {}
+
+    def run_conversation(**kwargs):
+        seen["env_during_turn"] = os.environ.get(qsq.TURN_REPORT_FILE_ENV)
+        seen["report_during_turn"] = report.exists()
+        return {"final_response": "ok"}
+
+    def linger(*args, **kwargs):
+        seen["report_at_linger"] = qsq.read_turn_report(str(report), os.getpid())
+        return {"waited": [], "completed": [], "timed_out": []}
+
+    monkeypatch.setattr("tools.process_registry.process_registry.wait_for_pending_completions", linger)
+    agent = SimpleNamespace(run_conversation=run_conversation, session_id="s-1")
+    try:
+        cli._run_quiet_single_query(SimpleNamespace(agent=agent, conversation_history=[], session_id="s-1"), "hello")
+    except SystemExit as exc:
+        assert exc.code == 0
+    assert seen["env_during_turn"] is None and seen["report_during_turn"] is False
+    assert seen["report_at_linger"] == {"pid": os.getpid(), "exit_code": 0, "error": ""}
+    # Another process's record is not this child's report.
+    assert qsq.read_turn_report(str(report), os.getpid() + 1) is None

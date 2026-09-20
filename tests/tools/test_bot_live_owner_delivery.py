@@ -158,3 +158,28 @@ def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
         mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
     with pytest.raises(PermissionError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
+
+
+def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog):
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
+    bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    bad.write_text('"oops"', encoding="utf-8")  # parses, but is not a record
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert sum(r.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
+               for r in caplog.records) == 1
+    # Malformed is not absent: exact-id reads fail closed rather than overwrite the receipt.
+    with pytest.raises(ValueError):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
+    with pytest.raises(ValueError):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)
+    assert bad.read_text(encoding="utf-8") == '"oops"'

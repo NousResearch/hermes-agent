@@ -48,10 +48,11 @@ async def restore_heartbeat_watches(runner) -> None:
                 if entry.origin is None or not entry.session_id or entry.suspended:
                     continue
                 try:
-                    with runner._profile_scope_for_source(entry.origin):
+                    source = runner._restored_source(entry)
+                    with runner._profile_scope_for_source(source):
                         manager = HeartbeatManager(entry.session_id)
                         if manager.is_active():
-                            restored.append((entry.session_key, entry.origin, entry.session_id))
+                            restored.append((entry.session_key, source, entry.session_id))
                 except Exception:
                     logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
         return restored

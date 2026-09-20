@@ -44,11 +44,11 @@ export function ScopeChip({ active, label, onSelect }: { active: boolean; label:
 }
 
 /** Shared "Applies to" profile selector for the config-backed settings pages
- *  (Model, Workspace, Safety, Memory & Context, Voice, Tools & Keys) and the
- *  Messaging overlay. Backed by one nanostore ($settingsScopeOverride) so the
- *  selection persists across pages. Hidden with fewer than two profiles, so
- *  single-profile users never see it and every request keeps its unscoped
- *  default shape. */
+ *  (Model, Workspace, Safety, Memory & Context, Voice, Tools & Keys), Custom
+ *  Endpoints, and the Messaging overlay. Backed by one nanostore
+ *  ($settingsScopeOverride) so the selection persists across pages. Hidden with
+ *  fewer than two profiles, so single-profile users never see it and every
+ *  request keeps its unscoped default shape. */
 export function SettingsProfileScope({ className }: { className?: string }) {
   const { t } = useI18n()
   const scope = t.settings.profileScope
@@ -108,9 +108,9 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   )
 }
 
-/** Read-only note for Providers pages whose requests carry no scope and so
- *  always edit the app's ACTIVE profile (Custom Endpoints, Local Models) — the
- *  reporter's "which profile am I editing?" gap. Same string as the selector's
+/** Read-only note for Providers pages whose requests carry no settings-scope
+ *  override and so always edit the app's ACTIVE profile (Local Models — the
+ *  managed llama.cpp runtime is machine-scoped). Same string as the selector's
  *  note above; hidden with fewer than two profiles like the selector itself. */
 export function ActiveProfileNote({ className }: { className?: string }) {
   const { t } = useI18n()

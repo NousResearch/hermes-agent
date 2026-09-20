@@ -139,9 +139,9 @@ describe('SettingsProfileScope', () => {
   })
 })
 
-// Custom Endpoints / Local Models send unscoped requests, so they always edit
-// the ACTIVE profile; the note must say which one — and stay silent for
-// single-profile users, like the selector.
+// Local Models sends unscoped requests, so it always edits the ACTIVE profile;
+// the note must say which one — and stay silent for single-profile users, like
+// the selector.
 describe('ActiveProfileNote', () => {
   it('names the active profile (by its chip label) only with two or more profiles', () => {
     $activeGatewayProfile.set('setup')

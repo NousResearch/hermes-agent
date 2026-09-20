@@ -290,7 +290,7 @@ def test_truncation_does_not_copy_rows_into_the_launch_profile(
     ]
 
 
-def test_truncation_surfaces_the_profile_dbs_new_row_ids(
+def test_truncation_surfaces_the_profile_dbs_live_row_ids(
     server, launch_db, profile_db, monkeypatch
 ):
     """``survivor_user_row_ids`` must carry the profile db's live ids.

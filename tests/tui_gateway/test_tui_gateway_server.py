@@ -22455,7 +22455,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
                 "method": "prompt.submit",
                 "params": {
                     "session_id": sid,
-                    "text": "rewound second (fresh id)",
+                    "text": "rewound second (same id)",
                     "truncate_before_row_id": original_row_ids[2],
                     "truncate_before_user_ordinal": 1,
                     "confirm_truncate": True,
@@ -22467,7 +22467,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         assert sess["history"][0]["content"] == "first"
         active = db.get_messages_as_conversation(session_key)
         # The cut, plus the prompt just sent (durable at submit, #111868).
-        assert [m["content"] for m in active] == ["first", "reply 1", "rewound second (fresh id)"]
+        assert [m["content"] for m in active] == ["first", "reply 1", "rewound second (same id)"]
         # And the second response rebinds again: one surviving user turn.
         survivors2 = resp2["result"].get("survivor_user_row_ids")
         assert isinstance(survivors2, list) and len(survivors2) == 1

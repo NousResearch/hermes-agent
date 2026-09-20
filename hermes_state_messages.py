@@ -41,7 +41,7 @@ _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls FROM messages "
-                      "WHERE session_id = ? AND active = 1 ORDER BY id")
+                      "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
 _SET_DISPLAY_META_SQL = "UPDATE messages SET display_metadata = ? WHERE id = ?"
@@ -561,33 +561,44 @@ class SessionMessagesMixin:
                     conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
-            kept = 0
+            kept = kept_tool_calls = 0
             if archive_dropped:
-                live = conn.execute(_LIVE_IDENTITY_SQL, (session_id,)).fetchall()
-                kept = self._kept_live_prefix(live, messages)
+                # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
+                # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
+                live = conn.execute(_LIVE_IDENTITY_SQL, (session_id, len(messages) + 1)).fetchall()
+                kept = self._stamp_kept_live_prefix(live, messages)
+                kept_tool_calls = sum(_tool_calls_len(row[4], scalar=1) for row in live[:kept])
                 if kept < len(live):
                     # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
                     conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id >= ?",
                                  (session_id, live[kept][0]))
             else:
                 conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
-            self._insert_message_rows(conn, session_id, messages[kept:])
-            message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
+            inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
+            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
+                         (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
         self._execute_write(_do)
 
-    def _kept_live_prefix(self, live: list, messages: List[Dict[str, Any]]) -> int:
-        """Length of the in-order prefix of *messages* already present as the leading live rows (matched on
-        the role/content/tool_call_id/tool_calls identity ``_insert_message_rows`` would write). Matched
-        messages get their existing ``_row_id`` stamped, mirroring what a fresh insert would set."""
+    @classmethod
+    def _row_identity(cls, role: str, content: Any, tool_call_id: Any, tool_calls: Any) -> tuple:
+        """The (role, content, tool_call_id, tool_calls) columns a message writes — the identity the
+        kept-prefix match compares. *content* is passed through the loader's lens first so a message
+        read back from the DB matches the row it came from."""
+        return (role, cls._encode_content(cls._loaded_view_content(role, content)), tool_call_id,
+                json.dumps(tool_calls) if tool_calls else None)
+
+    def _stamp_kept_live_prefix(self, live: list, messages: List[Dict[str, Any]]) -> int:
+        """Length of the in-order prefix of *messages* already present as the leading live rows; each
+        matched message gets its existing ``_row_id`` stamped, as a fresh insert would set it."""
         kept = 0
         for row, msg in zip(live, messages):
-            tool_calls = _parse_tool_calls(msg.get("tool_calls"))
             role = msg.get("role", "unknown")
-            identity = (role, self._encode_content(self._loaded_view_content(role, msg.get("content"))),
-                        msg.get("tool_call_id"), json.dumps(tool_calls) if tool_calls else None)
-            row_content = self._encode_content(self._loaded_view_content(row[1], self._decode_content(row[2])))
-            if identity != (row[1], row_content, row[3], row[4]):
+            # Cheap scalars first; the content compare pays decode/sanitize/encode on both sides.
+            if row[1] != role or row[3] != msg.get("tool_call_id"):
+                break
+            identity = self._row_identity(role, msg.get("content"), msg.get("tool_call_id"),
+                                          _parse_tool_calls(msg.get("tool_calls")))
+            if identity != self._row_identity(row[1], self._decode_content(row[2]), row[3], _parse_tool_calls(row[4])):
                 break
             msg["_row_id"] = row[0]
             kept += 1

@@ -1041,7 +1041,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         finally:
             with state.runtime_lock:
                 state.command_op = False
-            await self._drain_queued_prompts(state, session_id, self._conn)
+            # Drain AFTER this response is queued, never inside it: a prompt that arrived
+            # mid-switch would otherwise run a whole turn before the client sees the
+            # (possibly failed) switch result.
+            self._schedule_soon(lambda: self._drain_queued_prompts(state, session_id, self._conn))
         logger.info(
             "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
         )

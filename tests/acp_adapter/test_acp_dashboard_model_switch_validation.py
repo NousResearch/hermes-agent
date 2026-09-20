@@ -179,3 +179,42 @@ def test_acp_set_session_model_rejection_is_invalid_params_and_leaves_session_un
         asyncio.run(agent.set_session_model("other", "s1"))
     assert not isinstance(rebuild_exc.value, RequestError)
     assert state.model == "claude-sonnet-5" and state.agent is old_agent
+
+
+def test_acp_set_session_model_does_not_run_queued_prompts_inside_the_rpc(monkeypatch):
+    """A prompt that arrives while ``switch_model`` is off-loop is queued behind ``command_op``;
+    it must run AFTER the set_model response (error or success) is queued, never inside the RPC —
+    otherwise a failed switch is reported only after a whole agent turn."""
+    import asyncio
+
+    from acp.exceptions import RequestError
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+                        lambda **_kw: ModelSwitchResult(success=False, error_message="`nope` is not a model"))
+    agent, _made = _acp_agent()
+    state = _state()
+    state.queued_prompts = ["hello, queued mid-switch"]
+    agent.session_manager.get_session = lambda sid: state
+
+    class _Conn:
+        async def session_update(self, *_a, **_k):
+            pass
+
+    agent._conn = _Conn()
+    ran: list = []
+
+    async def _prompt(*, prompt, session_id):
+        ran.append(prompt[0].text)
+
+    agent.prompt = _prompt
+
+    async def _run():
+        with pytest.raises(RequestError):
+            await agent.set_session_model("nope", "s1")
+        assert ran == [], "the queued prompt ran inside the set_model RPC"
+        await asyncio.sleep(0)  # let the scheduled drain run once the response is out
+        await asyncio.sleep(0)
+        return list(ran)
+
+    assert asyncio.run(_run()) == ["hello, queued mid-switch"]
+    assert state.command_op is False

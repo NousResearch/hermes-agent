@@ -5,6 +5,7 @@ in ``tools.memory_tool`` and is read lazily."""
 
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -21,6 +22,17 @@ MEMORY_BLOCK_HEADERS = {
     "memory": "MEMORY (your personal notes)", "user": "USER PROFILE (who the user is)"}
 
 ENTRY_DELIMITER = "\n§\n"
+
+# A warning must be high confidence: it is advisory because deciding whether
+# related facts belong in one memory entry is semantic, not lexical.
+_NEAR_DUPLICATE_MIN_SHARED_TOKENS = 6
+_NEAR_DUPLICATE_CONTAINMENT = 0.45
+_NEAR_DUPLICATE_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_NEAR_DUPLICATE_STOP_WORDS = frozenset({
+    "about", "after", "also", "and", "are", "because", "been", "being", "but", "for",
+    "from", "has", "have", "into", "its", "not", "of", "or", "that", "the", "their",
+    "then", "this", "to", "was", "were", "with", "you", "your",
+})
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
@@ -62,6 +74,36 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False
+
+
+def _near_duplicate_warning(entries: List[str], content: str) -> Optional[str]:
+    """Return an advisory only for high-confidence lexical restatements.
+
+    Topic fragmentation cannot be solved by token overlap: related facts often
+    have no shared wording.  This deliberately narrow signal therefore never
+    blocks a write; it only nudges callers to merge a likely restatement with
+    ``replace`` before the same fact consumes more memory budget.
+    """
+    content_tokens = {
+        token.casefold() for token in _NEAR_DUPLICATE_TOKEN_RE.findall(content)
+        if len(token) > 2 and token.casefold() not in _NEAR_DUPLICATE_STOP_WORDS
+    }
+    if len(content_tokens) < _NEAR_DUPLICATE_MIN_SHARED_TOKENS:
+        return None
+    for entry in entries:
+        entry_tokens = {
+            token.casefold() for token in _NEAR_DUPLICATE_TOKEN_RE.findall(entry)
+            if len(token) > 2 and token.casefold() not in _NEAR_DUPLICATE_STOP_WORDS
+        }
+        shared = len(content_tokens & entry_tokens)
+        if (len(entry_tokens) >= _NEAR_DUPLICATE_MIN_SHARED_TOKENS
+                and shared >= _NEAR_DUPLICATE_MIN_SHARED_TOKENS
+                and shared / min(len(content_tokens), len(entry_tokens)) >= _NEAR_DUPLICATE_CONTAINMENT):
+            return (
+                "This entry may restate an existing memory entry. It was saved, but consider using "
+                "replace to merge overlapping facts into one concise entry."
+            )
+    return None
 
 
 class MemoryStore:
@@ -238,7 +280,8 @@ class MemoryStore:
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            return self._success_response(target, result[1])
+            extra = result[2] if len(result) > 2 else {}
+            return self._success_response(target, result[1], **extra)
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -257,7 +300,9 @@ class MemoryStore:
                     f"({len(content)} chars) would exceed the limit. Consolidate now: use 'replace' to merge "
                     f"overlapping entries into shorter ones or 'remove' stale or less important entries (see "
                     f"current_entries below), then retry this add — all in this turn."))
-            return entries + [content], "Entry added."
+            warning = _near_duplicate_warning(entries, content)
+            extra = {"near_duplicate_warning": warning} if warning else {}
+            return entries + [content], "Entry added.", extra
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
@@ -340,10 +385,16 @@ class MemoryStore:
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
+            near_duplicate_warnings = []
             for i, op in enumerate(ops):
                 act = op.get("action")
-                msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
-                                           (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
+                content = (op.get("content") or op.get("new_text") or "").strip()
+                if act == "add" and content and content not in working:
+                    warning = _near_duplicate_warning(working, content)
+                    if warning:
+                        near_duplicate_warnings.append(warning)
+                msg = self._apply_batch_op(working, act, content, (op.get("old_text") or "").strip(),
+                                           f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
             if entries and not working:
@@ -363,7 +414,8 @@ class MemoryStore:
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                     f"entries in the same batch (see current_entries below), then retry."))
-            return working, f"Applied {len(operations)} operation(s)."
+            extra = {"near_duplicate_warning": near_duplicate_warnings[0]} if near_duplicate_warnings else {}
+            return working, f"Applied {len(operations)} operation(s).", extra
         return self._mutate(target, _apply)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
@@ -371,7 +423,7 @@ class MemoryStore:
         it, preserving the prefix cache); None if empty."""
         return self._system_prompt_snapshot.get(target, "") or None
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None, **extra) -> Dict[str, Any]:
         """TERMINAL and WITHOUT the entries list: echoing entries invites the model to
         "find more to fix" and re-issue the same ops. A successful write resets the
         per-turn failure budget."""
@@ -381,7 +433,7 @@ class MemoryStore:
         return {"success": True, "done": True, "target": target,
                 "usage": self._usage_pct(target, self._char_count(target)),
                 "entry_count": len(self._entries_for(target)), **({"message": message} if message else {}),
-                "note": "Write saved. This update is complete — do not repeat it."}
+                "note": "Write saved. This update is complete — do not repeat it.", **extra}
 
     def _render_block(self, target: str, entries: List[str]) -> str:
         """System prompt block: header + usage indicator + entries ("" when empty)."""

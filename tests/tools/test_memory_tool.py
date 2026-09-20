@@ -184,6 +184,60 @@ class TestMemoryStoreAdd:
         assert result["success"] is False
         assert "Blocked" in result["error"]
 
+    def test_reworded_restatement_warns_but_is_saved(self, store):
+        original = (
+            "Jack has bipolar disorder and lives in a trailer in Barnegat New Jersey "
+            "that needs roof air conditioning and flooring repairs."
+        )
+        restatement = (
+            "Jack lives in a Barnegat New Jersey trailer and has bipolar disorder; "
+            "contractors need to repair its roof air conditioning and flooring."
+        )
+
+        assert store.add("memory", original)["success"] is True
+        result = store.add("memory", restatement)
+
+        assert result["success"] is True
+        assert result["near_duplicate_warning"]
+        assert restatement in store.memory_entries
+
+    def test_distinct_or_short_entries_do_not_warn_as_near_duplicates(self, store):
+        assert store.add("memory", "Jack lives in Barnegat New Jersey.")["success"] is True
+
+        distinct = store.add(
+            "memory", "The PostgreSQL backup runs every Sunday and is retained for thirty days."
+        )
+        short = store.add("memory", "Jack likes coffee in Barnegat New Jersey.")
+
+        assert "near_duplicate_warning" not in distinct
+        assert "near_duplicate_warning" not in short
+
+    def test_exact_duplicates_and_other_targets_keep_existing_behavior(self, store):
+        content = "Taylor uses Python and PostgreSQL for the reporting service."
+        assert store.add("user", content)["success"] is True
+
+        isolated = store.add("memory", content)
+        exact_duplicate = store.add("memory", content)
+
+        assert "near_duplicate_warning" not in isolated
+        assert exact_duplicate["message"] == "Entry already exists (no duplicate added)."
+        assert "near_duplicate_warning" not in exact_duplicate
+        assert store.memory_entries == [content]
+        assert store.user_entries == [content]
+
+    def test_batch_add_warns_for_a_reworded_restatement(self, store):
+        result = store.apply_batch("memory", [
+            {"action": "add", "content": (
+                "The production API uses PostgreSQL and Redis for its customer sessions."
+            )},
+            {"action": "add", "content": (
+                "Customer sessions in the production API are stored with PostgreSQL and Redis."
+            )},
+        ])
+
+        assert result["success"] is True
+        assert result["near_duplicate_warning"]
+
 
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):

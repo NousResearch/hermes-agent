@@ -333,8 +333,8 @@ def _require_client_secret() -> None:
         _fail("ERROR: No client secret stored. Run --client-secret first.")
 
 
-def get_auth_url(email: Optional[str] = None) -> None:
-    """Print the OAuth URL for the user to visit; persists PKCE state under ``email``
+def get_auth_url(email: Optional[str] = None) -> str:
+    """Return (and print) the OAuth URL; persists PKCE state under ``email``
     so two users can be mid-flow in parallel."""
     _require_client_secret()
     _ensure_deps()
@@ -346,11 +346,13 @@ def get_auth_url(email: Optional[str] = None) -> None:
     auth_url, state = flow.authorization_url(access_type="offline", prompt="consent")
     _save_pending_auth(state=state, code_verifier=flow.code_verifier, email=email)
     print(auth_url)
+    return auth_url
 
 
-def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
+def exchange_auth_code(code: str, email: Optional[str] = None) -> str:
     """Exchange an auth code (or pasted redirect URL) for a refresh token stored
-    at the per-user path for ``email`` (legacy single-user path when None)."""
+    at the per-user path for ``email`` (legacy single-user path when None).
+    Returns the same status text printed for the CLI."""
     _require_client_secret()
     pending_auth = _load_pending_auth(email)
     raw_callback = code
@@ -385,16 +387,27 @@ def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
     token_path = _token_path(email)
     _write_private_json(token_path, token_payload)
     _pending_auth_path(email).unlink(missing_ok=True)
-    print(f"OK: Authenticated. Token saved to {token_path}")
-    print(f"Profile path: {display_hermes_home()}/{_token_rel(email)}")
+    lines = [
+        f"OK: Authenticated. Token saved to {token_path}",
+        f"Profile path: {display_hermes_home()}/{_token_rel(email)}",
+    ]
+    text = "\n".join(lines)
+    print(text)
+    return text
 
 
-def revoke(email: Optional[str] = None) -> None:
+def revoke(email: Optional[str] = None) -> str:
     """Revoke the stored token with Google and delete it locally."""
     token_path = _token_path(email)
+    lines: list[str] = []
+
+    def _note(msg: str) -> None:
+        print(msg)
+        lines.append(msg)
+
     if not token_path.exists():
-        print("No token to revoke.")
-        return
+        _note("No token to revoke.")
+        return "\n".join(lines)
     _ensure_deps()
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -410,12 +423,13 @@ def revoke(email: Optional[str] = None) -> None:
                 method="POST",
                 headers={"Content-Type": "application/x-www-form-urlencoded"}),
             timeout=15)
-        print("Token revoked with Google.")
+        _note("Token revoked with Google.")
     except Exception as exc:
-        print(f"Remote revocation failed (token may already be invalid): {exc}")
+        _note(f"Remote revocation failed (token may already be invalid): {exc}")
     token_path.unlink(missing_ok=True)
     _pending_auth_path(email).unlink(missing_ok=True)
-    print(f"Deleted {token_path}")
+    _note(f"Deleted {token_path}")
+    return "\n".join(lines)
 
 
 def main() -> None:

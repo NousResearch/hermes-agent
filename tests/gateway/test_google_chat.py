@@ -1243,6 +1243,40 @@ class TestPerUserAttachmentRouting:
         assert adapter._user_chat_api is legacy_api
         assert adapter._user_credentials is legacy_creds
 
+    @pytest.mark.asyncio
+    async def test_setup_files_start_uses_returned_url_not_stdout_scrape(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """The OAuth URL must come from get_auth_url's return value.
+
+        Scraping helper stdout (and taking splitlines()[-1]) let a concurrent
+        gateway print become the URL the user is told to open.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "google_chat_user_client_secret.json").write_text("{}", encoding="utf-8")
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m",
+                                        "error": None})()
+        )
+        url = "https://accounts.google.com/o/oauth2/auth?state=abc"
+
+        def _fake_auth(email):
+            print("UNRELATED GATEWAY LINE")
+            return url
+
+        from plugins.platforms.google_chat import oauth as helper
+        with patch.object(helper, "get_auth_url", side_effect=_fake_auth):
+            await adapter._handle_setup_files_command(
+                chat_id="spaces/S",
+                thread_id=None,
+                raw_text="/setup-files start",
+                sender_email="alice@example.com",
+            )
+
+        body = adapter._create_message.call_args.args[1]
+        assert url in body["text"]
+        assert "UNRELATED GATEWAY LINE" not in body["text"]
+
 
 # ===========================================================================
 # Persistent thread-count store (restart-safe side-thread heuristic)

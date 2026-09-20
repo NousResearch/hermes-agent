@@ -7,8 +7,6 @@ delegates here. Logs under the adapter's pinned logger name.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import io
 import logging
 from typing import Any, Callable, Dict, Optional
 
@@ -42,11 +40,17 @@ _EXITED = object()  # _run_helper marker: helper called sys.exit but the step to
 
 
 async def _run_captured(fn: Callable[..., Any], *args: Any) -> str:
-    """Run ``fn`` in a thread with stdout captured (the oauth helpers print their output)."""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        await asyncio.to_thread(fn, *args)
-    return buf.getvalue()
+    """Run ``fn`` in a thread and return its string result.
+
+    The oauth helpers used to be CLI-only (print + ``sys.exit``). Scraping
+    their stdout with process-global ``redirect_stdout`` around
+    ``asyncio.to_thread`` remapped every gateway thread's stdout for the
+    duration, so a concurrent print could become the "OAuth URL"
+    (``splitlines()[-1]``) and other platforms lost console output
+    (#55769 class). Helpers now return the text they also print.
+    """
+    result = await asyncio.to_thread(fn, *args)
+    return result if isinstance(result, str) else ""
 
 
 async def handle_setup_files_command(
@@ -129,7 +133,7 @@ async def handle_setup_files_command(
             return True
         output = await _run_helper("start", _START_EXIT_TEXT, oauth_helper.get_auth_url, sender_key)
         if output is not None:
-            await _reply(_START_INSTRUCTIONS.format(auth_url=output.strip().splitlines()[-1]))
+            await _reply(_START_INSTRUCTIONS.format(auth_url=output.strip()))
         return True
 
     if arg == "revoke":

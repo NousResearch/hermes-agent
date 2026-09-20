@@ -10,6 +10,8 @@ not at module load).
 
 from __future__ import annotations
 
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,6 +54,13 @@ def _unconfigured():
 
 def test_router_configured_false_when_model_unset():
     with _unconfigured():
+        assert router.router_configured() is False
+        assert router.configured_model() is None
+
+
+def test_router_configured_false_when_config_load_fails():
+    # When _get_auxiliary_task_config raises, config load should fail gracefully
+    with patch("agent.auxiliary_client._get_auxiliary_task_config", side_effect=RuntimeError("config error")):
         assert router.router_configured() is False
         assert router.configured_model() is None
 
@@ -127,6 +136,17 @@ def test_ask_jev_passes_task_name_to_call_llm():
     with _configured(), patch("agent.auxiliary_client.call_llm", mock_llm):
         router.is_trivial(_task())
     assert mock_llm.call_args.kwargs["task"] == "triage_router"
+
+
+def test_is_trivial_false_when_auxiliary_client_import_fails():
+    with _configured():
+        # Create a fake module without the required attributes
+        # When Python tries to `from agent.auxiliary_client import _get_task_timeout, call_llm`,
+        # it will raise ImportError because these attributes don't exist in the fake module
+        fake_aux = types.ModuleType('agent.auxiliary_client')
+
+        with patch.dict('sys.modules', {'agent.auxiliary_client': fake_aux}):
+            assert router.is_trivial(_task()) is False
 
 
 # ---------------------------------------------------------------------------

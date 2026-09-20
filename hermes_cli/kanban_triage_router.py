@@ -46,8 +46,12 @@ _VERDICTS = {"TRIVIAL": "trivial", "NEEDS_SHAPE": "needs_shape", "UNSURE": "unsu
 
 
 def _router_task_config() -> dict:
-    from agent.auxiliary_client import _get_auxiliary_task_config
-    return _get_auxiliary_task_config("triage_router")
+    try:
+        from agent.auxiliary_client import _get_auxiliary_task_config
+        return _get_auxiliary_task_config("triage_router")
+    except Exception as exc:
+        logger.debug("triage router: config load failed — falling back to unconfigured: %s", exc)
+        return {}
 
 
 def configured_model() -> Optional[str]:

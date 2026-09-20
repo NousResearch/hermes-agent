@@ -1255,6 +1255,9 @@ export const zhOverrides = {
       voiceShortcutHintTitle: '语音录制快捷键',
       voiceShortcutHintDesc:
         '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止语音对话”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
+      largePasteAttachTitle: '将大段粘贴转为附件',
+      largePasteAttachDesc:
+        '粘贴超过 3,000 字符的文本时，会将其作为 .txt 文件附加，而不是直接插入输入框。关闭后长文本将保留在输入框中——当粘贴的内容本身就是提示词（规格说明、代理任务、日志）时非常有用。',
       showOptions: '显示选项'
     },
     hudModifier: {

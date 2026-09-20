@@ -1205,6 +1205,9 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
+      largePasteAttachTitle: 'Convert large pastes to attachments',
+      largePasteAttachDesc:
+        'Pasting more than 3,000 characters attaches the text as a .txt file instead of inserting it inline. Turn off to keep long pastes inline in the composer — useful when the pasted text is the prompt itself (specs, agent tasks, logs).',
       showOptions: 'Show options'
     },
     hudModifier: {

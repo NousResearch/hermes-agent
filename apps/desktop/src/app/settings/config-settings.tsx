@@ -27,6 +27,7 @@ import { recordSettingsSaved } from '@/store/desktop-metrics'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
 import { $keepAwakeMode, type KeepAwakeMode, setKeepAwakeMode } from '@/store/keep-awake'
+import { $largePasteAttachEnabled, setLargePasteAttachEnabled } from '@/store/large-paste-attach'
 import { refreshMemoryStatus } from '@/store/memory-status'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
@@ -508,7 +509,12 @@ function ConfigSettingsInner({
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
-      {showAttachments ? <AttachmentSizeSetting /> : null}
+      {showAttachments ? (
+        <>
+          <AttachmentSizeSetting />
+          <LargePasteAttachSetting />
+        </>
+      ) : null}
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
@@ -644,6 +650,27 @@ function AttachmentSizeSetting() {
       description={c.attachmentSizeDesc}
       id={settingElementId(SETTING_IDS.chat.attachmentSize)}
       title={c.attachmentSizeTitle}
+    />
+  )
+}
+
+/**
+ * Device-local on/off for the large-paste-to-attachment conversion. Default on
+ * (the conversion keeps the composer clean); off inserts the paste inline,
+ * subject to the normal composer limits. Same renderer-side split as the
+ * disable-F12 toggle — the main process never reads this.
+ */
+function LargePasteAttachSetting() {
+  const { t } = useI18n()
+  const c = t.settings.config
+  const enabled = useStore($largePasteAttachEnabled)
+
+  return (
+    <ToggleRow
+      checked={enabled}
+      description={c.largePasteAttachDesc}
+      label={c.largePasteAttachTitle}
+      onChange={setLargePasteAttachEnabled}
     />
   )
 }

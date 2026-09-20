@@ -342,6 +342,44 @@ Hermes passes the parsed namespace, not provider-declared flags: ask for provide
 interactively (or read your own config/env). Rows the plugin stores in the pool are its own — extra keys
 survive `load → save → load`, and Hermes passes no secrets beyond that pooled row to `refresh_credential`.
 
+### Declarative OAuth (PKCE) for plugins
+
+A provider whose IdP speaks standard OAuth 2.0 Authorization Code + PKCE does not need to write the
+hooks above by hand: declare the endpoints in `OAuthPKCEConfig` and let the two factories build them.
+
+```python
+from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, pkce_auth_handler, pkce_refresh_credential
+from providers import register_provider
+from providers.base import ProviderProfile
+
+cfg = OAuthPKCEConfig(
+    client_id="hermes-public-client",                       # public client — no secret, PKCE is the proof
+    authorize_url="https://auth.example.com/oauth/authorize",
+    token_url="https://auth.example.com/oauth/token",
+    scopes=("inference", "offline_access"),
+    redirect_port=0,                                        # 0 = OS-assigned; pin it if the IdP allowlists the URI
+)
+
+register_provider(ProviderProfile(
+    name="example-pkce", auth_type="oauth_external", base_url="https://api.example.com/v1",
+    auth_handler=pkce_auth_handler(cfg), refresh_credential=pkce_refresh_credential(cfg)))
+```
+
+Hermes then owns the whole lifecycle: `hermes auth add example-pkce [--no-browser]` opens the browser (or
+prints the URL, with the SSH-tunnel hint on a remote box), listens on `http://127.0.0.1:<port>/callback`,
+checks the CSRF `state`, exchanges the code with S256 PKCE and stores the grant as a pooled `oauth`
+credential (`source: manual:loopback_pkce`, `expires_at_ms`, `refresh_token`); `auth status` reports
+logged in / expired; `auth logout` removes the rows; `auth refresh` and the 401 recovery paths rotate via
+the `refresh_token` grant, re-reading `auth.json` under the auth lock first so a peer's rotation is adopted
+instead of spending a single-use refresh token twice.
+
+Security boundary (enforced before any request, on login and refresh alike): both endpoints must be
+`https://` (plain `http://` is accepted only for a loopback-literal host — a local development IdP);
+the `token_url` host must be the `authorize_url` host or a subdomain of it (or listed in `allowed_hosts`);
+the listener binds the literal `127.0.0.1`; tokens, `state` and the PKCE verifier are never logged.
+Optional fields: `audience`, `extra_authorize_params`, `extra_token_params`, `redirect_path`,
+`timeout_seconds`, `label`.
+
 ## Discovery timing
 
 Provider discovery is **lazy** — triggered by the first `get_provider_profile()` or `list_providers()` call in the process. In practice this happens early at startup (`auth.py` module load extends `PROVIDER_REGISTRY` eagerly). If you need to verify your plugin loaded, run:

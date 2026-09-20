@@ -289,10 +289,11 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
-    adapter, session_db
+@pytest.mark.parametrize("detached", [False, True])
+async def test_session_chat_stream_disconnect_preserves_default_and_detached_contracts(
+    adapter, session_db, detached
 ):
-    """Disconnects must interrupt the live run without dropping its control refs early."""
+    """Only the authenticated detached opt-in can outlive an SSE disconnect."""
     session_id = session_db.create_session("disconnect-stream-session", "api_server")
     run_started = threading.Event()
     interrupt_called = threading.Event()
@@ -329,7 +330,7 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
                 raise ConnectionResetError("simulated client disconnect")
 
     request = MagicMock()
-    request.headers = {}
+    request.headers = {"X-Hermes-Detached-Stream": "true"} if detached else {}
     request.match_info = {"session_id": session_id}
 
     def _create_agent(**kwargs):
@@ -361,23 +362,29 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
         assert run_started.is_set()
         run_id = next(iter(adapter._run_statuses))
 
-        for _ in range(40):
-            if interrupt_called.is_set():
-                break
-            await asyncio.sleep(0.05)
-
-        assert interrupt_called.is_set()
-        assert run_id in adapter._active_run_agents
-        # Not in _active_run_tasks: session-stream turns are counted via
-        # _inflight_agent_runs; a task entry would double-count them in the
-        # shutdown drain (active_agent_work_count).
-        assert run_id not in adapter._active_run_tasks
-        assert not handler_task.done()
-
-        allow_finish.set()
-        await handler_task
-
-    assert run_id not in adapter._active_run_agents
+        if detached:
+            await asyncio.sleep(0.1)
+            assert not interrupt_called.is_set()
+            assert run_id in adapter._active_run_agents
+            assert handler_task.done()
+            allow_finish.set()
+            for _ in range(40):
+                if run_id not in adapter._active_run_agents:
+                    break
+                await asyncio.sleep(0.05)
+            assert run_id not in adapter._active_run_agents
+        else:
+            for _ in range(40):
+                if interrupt_called.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert interrupt_called.is_set()
+            assert run_id in adapter._active_run_agents
+            assert run_id not in adapter._active_run_tasks
+            assert not handler_task.done()
+            allow_finish.set()
+            await handler_task
+            assert run_id not in adapter._active_run_agents
 
 
 @pytest.mark.asyncio
@@ -1096,6 +1103,46 @@ async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"archived": True})
         assert (await resp.json())["session"]["archived"] is True
         assert bool(session_db.get_session(session_id)["archived"]) is True
+
+
+@pytest.mark.asyncio
+async def test_dashboard_legacy_policy_is_ignored_for_a_unified_session(adapter, session_db):
+    """A legacy dashboard policy must never constrain a continuing chat."""
+    app = _create_session_app(adapter)
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return ({"final_response": "logic only", "session_id": kwargs["session_id"]}, {"total_tokens": 1})
+
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            created = await cli.post(
+                "/api/sessions",
+                json={
+                    "id": "dashboard-general-policy",
+                    "source": "dashboard",
+                    "title": "General",
+                    "model_config": {"dashboard_agent_policy": {"mode": "general"}},
+                },
+            )
+            assert created.status == 201, await created.text()
+            assert "dashboard_agent_policy" not in (await created.json())["session"]
+
+            session_db.replace_messages(
+                "dashboard-general-policy",
+                [{"role": "user", "content": f"turn {index}"} for index in range(16)],
+            )
+            completed = await cli.post(
+                "/api/sessions/dashboard-general-policy/chat",
+                json={"message": "current turn"},
+            )
+            assert completed.status == 200, await completed.text()
+
+    assert "dashboard_agent_policy" not in captured
+    assert [message["content"] for message in captured["conversation_history"]] == [
+        f"turn {index}" for index in range(16)
+    ]
 
 
 @pytest.mark.asyncio

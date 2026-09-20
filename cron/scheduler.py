@@ -510,6 +510,11 @@ def _is_cron_silence_response(text: str) -> bool:
 
     return is_autonomous_silence_response(text)
 
+
+# Public alias for sibling split modules: ``scheduler_prompt`` reaches this late-bound instead
+# of poking the private name, so a rename of the private helper cannot break it silently.
+is_cron_silence_response = _is_cron_silence_response
+
 # Persistent pool for parallel cron jobs: tick() submits and returns; long jobs never block it.
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None

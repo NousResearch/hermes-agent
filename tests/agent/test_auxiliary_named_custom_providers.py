@@ -396,6 +396,8 @@ class TestCustomProviderAliasCollision:
 
     @pytest.mark.parametrize("provider", ["llamacpp", "custom:llamacpp"])
     def test_named_llamacpp_wins_over_local_server_alias(self, tmp_path, provider):
+        """A ``providers:`` entry whose name is also a local-server alias (``llamacpp``) resolves to
+        its configured base_url, not to the alias's generic ``custom`` branch (#115990)."""
         _write_config(tmp_path, {
             "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
             "providers": {

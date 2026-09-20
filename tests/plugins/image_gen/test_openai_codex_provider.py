@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import importlib
 import json
+from io import BytesIO
 from pathlib import Path
 
 import httpx
@@ -35,6 +36,24 @@ def _png_bytes() -> bytes:
 
 def _b64_png() -> str:
     return base64.b64encode(_png_bytes()).decode()
+
+
+def _jpeg_bytes() -> bytes:
+    from PIL import Image
+
+    out = BytesIO()
+    Image.new("RGB", (2, 2), (20, 40, 60)).save(out, format="JPEG")
+    return out.getvalue()
+
+
+def _heic_bytes() -> bytes:
+    import pillow_heif
+    from PIL import Image
+
+    pillow_heif.register_heif_opener()
+    out = BytesIO()
+    Image.new("RGB", (8, 8), (120, 60, 200)).save(out, format="HEIF")
+    return out.getvalue()
 
 
 @pytest.fixture(autouse=True)
@@ -162,11 +181,13 @@ class TestGenerate:
         assert not any(key in body for key in ("tools", "input", "instructions"))
 
     def test_source_images_post_edits_with_inline_data_urls(self, provider, codex_backend, tmp_path):
-        local = tmp_path / "ref.png"
-        local.write_bytes(_png_bytes())
-        data_url = "data:image/png;base64," + _b64_png()
+        jpeg = _jpeg_bytes()
+        local = tmp_path / "ref.jpg"
+        local.write_bytes(jpeg)
+        jpeg_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        png_url = "data:image/png;base64," + _b64_png()
 
-        result = provider.generate("edit these", image_url=str(local), reference_image_urls=[data_url])
+        result = provider.generate("edit these", image_url=str(local), reference_image_urls=[png_url])
 
         assert result["success"] is True
         assert result["modality"] == "image"
@@ -174,7 +195,28 @@ class TestGenerate:
         (request,) = codex_backend["requests"]
         assert request.url.path.endswith("/backend-api/codex/images/edits")
         body = json.loads(request.content)
-        assert [img["image_url"] for img in body["images"]] == [data_url, data_url]
+        assert [img["image_url"] for img in body["images"]] == [jpeg_url, png_url]
+
+    def test_heic_sources_are_transcoded_to_png_for_edits(
+        self, provider, codex_backend, tmp_path
+    ):
+        raw = _heic_bytes()
+        local = tmp_path / "ref.heic"
+        local.write_bytes(raw)
+        data_url = "data:image/heic;base64," + base64.b64encode(raw).decode()
+
+        result = provider.generate(
+            "edit these", image_url=str(local), reference_image_urls=[data_url]
+        )
+
+        assert result["success"] is True
+        body = json.loads(codex_backend["requests"][0].content)
+        assert body["images"] and len(body["images"]) == 2
+        for image in body["images"]:
+            encoded = image["image_url"]
+            assert encoded.startswith("data:image/png;base64,")
+            converted = base64.b64decode(encoded.partition(",")[2])
+            assert converted.startswith(b"\x89PNG\r\n\x1a\n")
 
     def test_remote_source_url_is_fetched_and_inlined(self, provider, codex_backend, monkeypatch):
         # The backend's own URL downloader 400s on ordinary public images; we fetch client-side.

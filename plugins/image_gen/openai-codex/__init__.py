@@ -92,10 +92,42 @@ def _sniff_image_mime(raw: bytes) -> Optional[str]:
     return mime if mime in _ACCEPTED_INPUT_MIME else None
 
 
+def _transcode_heic_to_png(raw: bytes) -> bytes:
+    """Decode a HEIC/HEIF edit source and return provider-compatible PNG bytes."""
+    from io import BytesIO
+
+    try:
+        import pillow_heif
+        from PIL import Image
+    except ImportError as exc:
+        raise ValueError(
+            "HEIC/HEIF image input requires pillow-heif; install it or convert the image "
+            "to PNG/JPEG first"
+        ) from exc
+
+    try:
+        pillow_heif.register_heif_opener()
+        with Image.open(BytesIO(raw)) as image:
+            image.load()
+            if image.mode not in ("RGB", "RGBA", "L"):
+                image = image.convert("RGBA")
+            out = BytesIO()
+            image.save(out, format="PNG")
+        return out.getvalue()
+    except Exception as exc:
+        raise ValueError("HEIC/HEIF image input could not be decoded and converted to PNG") from exc
+
+
 def _encode_input_image(raw: bytes, too_big: str, unsupported: str) -> str:
     """Size- and MIME-check raw image bytes, then return a canonical ``data:`` URL."""
     if len(raw) > _MAX_INPUT_IMAGE_BYTES:
         raise ValueError(too_big)
+    from agent.image_routing import _sniff_mime_from_bytes
+
+    if _sniff_mime_from_bytes(raw) == "image/heic":
+        raw = _transcode_heic_to_png(raw)
+        if len(raw) > _MAX_INPUT_IMAGE_BYTES:
+            raise ValueError(too_big)
     mime = _sniff_image_mime(raw)
     if mime is None:
         raise ValueError(unsupported)

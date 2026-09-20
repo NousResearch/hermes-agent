@@ -67,8 +67,9 @@ def test_outbox_drain_reoffers_a_claimed_envelope_the_desktop_never_delivered(ho
     """A Desktop that disconnects between ``outbox.drain`` and ``bot_relay.deliver`` leaves the
     envelope in ``claimed/`` with no reply: silent until the waiter's deadline, then swept, while
     every later drain saw an empty outbox (#111021, redo of #111207). Once it has sat unanswered
-    for ``REOFFER_AFTER_SECONDS`` the next drain hands it out again — exactly once per window — and
-    an envelope whose reply already landed is never re-offered."""
+    for ``REOFFER_AFTER_SECONDS`` the next drain hands it out again — exactly once, ever — an
+    envelope whose reply already landed is never re-offered, and one still unanswered when the
+    waiter's ``REPLY_WAIT_SECONDS`` run out gets a ``delivery_timeout`` reply instead of a turn loop."""
     import os
     import time
 
@@ -82,14 +83,23 @@ def test_outbox_drain_reoffers_a_claimed_envelope_the_desktop_never_delivered(ho
     # Fresh claims are the Desktop's for a whole window: nothing to re-offer yet.
     assert _result(drain(2, {}))["envelopes"] == []
     claimed_dir = bot_relay.relay_root(home) / bot_relay.CLAIMED_DIR
+    lost_path = claimed_dir / f"{lost['id']}.json"
     old = time.time() - bot_relay.REOFFER_AFTER_SECONDS - 1
     for path in claimed_dir.glob("*.json"):
         os.utime(path, (old, old))
     reoffered = _result(drain(3, {}))["envelopes"]
     assert [(e["id"], e["message"]) for e in reoffered] == [(lost["id"], "lost")]
-    # The re-offer opened a new window (mtime bumped): the same drain does not hand it out twice.
+    # One re-offer per envelope: a second silent loss is not handed out again, however old it gets.
+    os.utime(lost_path, (old, old))
     assert _result(drain(4, {}))["envelopes"] == []
-    assert (claimed_dir / f"{lost['id']}.json").stat().st_mtime > old + 1
+    assert json.loads(lost_path.read_text(encoding="utf-8"))["reoffered_at"] >= int(old)
+    # Past the waiter's deadline the drain settles it with a typed timeout so the sender learns.
+    stale = json.loads(lost_path.read_text(encoding="utf-8"))
+    stale["created_at"] = int(time.time()) - bot_relay.REPLY_WAIT_SECONDS - 1
+    lost_path.write_text(json.dumps(stale), encoding="utf-8")
+    assert _result(drain(5, {}))["envelopes"] == []
+    reply = json.loads((bot_relay.relay_root(home) / bot_relay.REPLIES_DIR / f"{lost['id']}.json").read_text(encoding="utf-8"))
+    assert reply["reason"] == "delivery_timeout" and reply["error"]
 
 
 def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):

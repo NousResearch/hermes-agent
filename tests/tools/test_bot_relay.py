@@ -199,14 +199,17 @@ def test_waiter_is_a_runner_entrypoint_the_approval_gate_lets_through(root):
 def test_waiter_outlives_the_desktop_deliver_deadline():
     """The Desktop posts its timeout reply when RELAY_DELIVER_TIMEOUT_MS passes. A waiter that gave
     up first left that reply, and any turn finishing after minute 15, in a file nobody read (#93911).
-    relay-deliver-budget.test.ts pins the TS constants against these Python ones."""
-    desktop_budget_s = (
-        bot_relay.TURN_WAIT_SECONDS_FALLBACK
-        + bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS * bot_relay.TURN_MAX_ATTEMPTS
-        + bot_relay.DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
-    )
+    relay-deliver-budget.test.ts pins the TS constants against these Python ones.
+
+    The re-offer window (#111021) sits between the two: only past the Desktop's deadline — and the
+    gateway's own worst-case deliver hold, which ends before it — is a claimed envelope's silence
+    provably a dead Desktop rather than a slow turn, and the waiter must still be listening when the
+    ONE re-offered delivery hits its own Desktop deadline."""
+    live_hold_s = bot_relay.TURN_WAIT_SECONDS_FALLBACK + bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS * bot_relay.TURN_MAX_ATTEMPTS
+    desktop_budget_s = live_hold_s + bot_relay.DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
     assert bot_relay.DESKTOP_DELIVER_TIMEOUT_SECONDS == desktop_budget_s
-    assert bot_relay.REPLY_WAIT_SECONDS > desktop_budget_s
+    assert bot_relay.REOFFER_AFTER_SECONDS > desktop_budget_s > live_hold_s
+    assert bot_relay.REPLY_WAIT_SECONDS > bot_relay.REOFFER_AFTER_SECONDS + desktop_budget_s
 
 
 @pytest.mark.parametrize(

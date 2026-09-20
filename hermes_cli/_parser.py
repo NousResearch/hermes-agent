@@ -135,6 +135,7 @@ Examples:
     hermes dashboard              Start web UI dashboard (port 9119)
     hermes dashboard --stop       Stop running dashboard processes
     hermes dashboard --status     List running dashboard processes
+    hermes dashboard totp         Pair an authenticator app (2FA) for dashboard login
 
 For more help on a command:
     hermes <command> --help

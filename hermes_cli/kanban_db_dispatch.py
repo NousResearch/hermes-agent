@@ -1965,6 +1965,34 @@ def dispatch_once(
     return result
 
 
+def _effective_default_skills(board: Optional[str], card_skills: Optional[list]) -> list[str]:
+    """Merge board/global forced skills into card skills without duplicates."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    kanban = cfg.get("kanban") or {}
+    defaults = kanban.get("default_skills")
+    if board:
+        try:
+            board_defaults = _kb.read_board_metadata(board).get("default_skills")
+        except Exception:
+            board_defaults = None
+        if board_defaults is not None:
+            defaults = board_defaults
+    elif board is None:
+        try:
+            board_defaults = _kb.read_board_metadata(None).get("default_skills")
+        except Exception:
+            board_defaults = None
+        if board_defaults is not None:
+            defaults = board_defaults
+    if not isinstance(defaults, list):
+        defaults = []
+    return list(dict.fromkeys([*(card_skills or []), *(str(skill) for skill in defaults if skill)]))
+
+
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
@@ -2059,6 +2087,10 @@ def _dispatch_lane_task(
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+    # Board defaults override the global list when explicitly configured;
+    # otherwise use kanban.default_skills. Preserve card order and remove
+    # duplicates so a default never shadows a card skill.
+    claimed.skills = _effective_default_skills(board, claimed.skills)
     if lane == "review":
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.

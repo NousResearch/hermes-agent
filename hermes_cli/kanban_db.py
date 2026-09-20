@@ -556,6 +556,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "default_workdir": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
+        "default_skills": None,
         "created_at": None,
         "archived": False,
     }
@@ -578,6 +579,7 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    default_skills: Optional[list[str]] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
@@ -597,6 +599,8 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    if default_skills is not None:
+        meta["default_skills"] = list(dict.fromkeys(str(skill) for skill in default_skills if skill))
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -611,13 +615,13 @@ def write_board_metadata(
 def create_board(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
-    project_id: Optional[str] = None,
+    project_id: Optional[str] = None, default_skills: Optional[list[str]] = None,
 ) -> dict:
     """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
     normed = _require_slug(slug)
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
-        default_workdir=default_workdir, project_id=project_id,
+        default_workdir=default_workdir, project_id=project_id, default_skills=default_skills,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)

@@ -670,6 +670,33 @@ def test_dispatch_text_and_daemon_stuck_warning_name_guard_reason(
     assert "Last tick held back: active_pr=1, memory_pressure=elevated." in err
 
 
+def test_dispatch_force_loads_global_default_skills_without_duplicates(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *args, **kwargs: {"kanban": {"default_skills": ["shared", "global-only"]}},
+    )
+    captured: list[list[str]] = []
+
+    def spawn(task, workspace):
+        captured.append(list(task.skills or []))
+        return None
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="default skills", assignee="worker", skills=["card", "shared"],
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured == [["card", "shared", "global-only"]]
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

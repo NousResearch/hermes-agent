@@ -1276,6 +1276,7 @@ class CreateBoardBody(BaseModel):
     default_workdir: Optional[str] = None
     # Project (id or slug) scoping the board: default_workdir mirrors its primary repo, tasks inherit it.
     project_id: Optional[str] = None
+    default_skills: Optional[list[str]] = None
     switch: bool = False
 
 
@@ -1287,6 +1288,7 @@ class RenameBoardBody(BaseModel):
     # For both fields: ``None`` = leave unchanged; "" = clear; value = validate/resolve + set.
     default_workdir: Optional[str] = None
     project_id: Optional[str] = None
+    default_skills: Optional[list[str]] = None
 
 
 # Board transfer exchanges filesystem PATHS, not bytes (same contract as profile export/import):
@@ -1414,7 +1416,7 @@ def create_board_endpoint(payload: CreateBoardBody):
         default_workdir = primary_path
     with _value_error_400():
         meta = kanban_db.create_board(
-            payload.slug, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+            payload.slug, default_workdir=default_workdir, project_id=project_id, default_skills=payload.default_skills, **_board_display_kwargs(payload))
     if payload.switch:
         with _value_error_400():
             kanban_db.set_current_board(meta["slug"])
@@ -1440,7 +1442,7 @@ def rename_board(slug: str, payload: RenameBoardBody):
         else:
             project_id = ""  # clear the scope
     meta = kanban_db.write_board_metadata(
-        normed, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+        normed, default_workdir=default_workdir, project_id=project_id, default_skills=payload.default_skills, **_board_display_kwargs(payload))
     return {"board": _annotate_board_meta(meta)}
 
 

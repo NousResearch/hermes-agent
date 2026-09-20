@@ -7,6 +7,7 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
+import { $sidebarShowArchived, setSidebarGrouping } from '@/store/layout'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
 import { makeSessionInfo } from '@/test/session-info'
@@ -80,6 +81,8 @@ describe('ChatSidebar navigation activity', () => {
     $selectedStoredSessionId.set('tile-one')
     $sessions.set(sessionRows)
     $removedSessionIds.set(new Set())
+    setSidebarGrouping('date')
+    $sidebarShowArchived.set(false)
     $layoutTree.set(
       split('row', [
         group(['workspace'], { active: 'workspace', id: 'workspace-group' }),
@@ -96,6 +99,8 @@ describe('ChatSidebar navigation activity', () => {
     $selectedStoredSessionId.set(null)
     $sessions.set([])
     $removedSessionIds.set(new Set())
+    setSidebarGrouping('date')
+    $sidebarShowArchived.set(false)
     $layoutTree.set(null)
     noteActiveTreeGroup(null)
   })
@@ -160,5 +165,24 @@ describe('ChatSidebar navigation activity', () => {
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
+  })
+
+  it('shows session import only in the flat Sessions header', () => {
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByRole('button', { name: 'Import session' })).toBeTruthy()
+
+    cleanup()
+    setSidebarGrouping('project')
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByRole('button', { name: 'Import session' })).toBeNull()
+
+    cleanup()
+    setSidebarGrouping('date')
+    $sidebarShowArchived.set(true)
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByRole('button', { name: 'Import session' })).toBeNull()
   })
 })

@@ -8,7 +8,7 @@ import { useLocation } from 'react-router'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
@@ -140,6 +140,7 @@ import {
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  SESSION_IMPORT_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution
 } from '../../routes'
@@ -366,6 +367,17 @@ export function ChatSidebar({
         ]
       }),
     [navContributions]
+  )
+
+  const openSessionImport = useCallback(
+    () =>
+      onNavigate({
+        id: 'session-import',
+        icon: props => <Codicon name="cloud-download" {...props} />,
+        label: t.sessionImport.action,
+        route: SESSION_IMPORT_ROUTE
+      }),
+    [onNavigate, t.sessionImport.action]
   )
 
   const panesFlipped = useStore($panesFlipped)
@@ -1629,6 +1641,12 @@ export function ChatSidebar({
                               }
                             }}
                           />
+                          {isNewSession && (
+                            <ContextMenuItem onSelect={openSessionImport}>
+                              <Codicon name="cloud-download" size="0.875rem" />
+                              <span>{t.sessionImport.action}</span>
+                            </ContextMenuItem>
+                          )}
                         </ContextMenuContent>
                       </ContextMenu>
                     ) : (
@@ -1829,6 +1847,22 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
+                        {!showArchived && !agentsGrouped && (
+                          <Tip label={t.sessionImport.action}>
+                            <Button
+                              aria-label={t.sessionImport.action}
+                              className={HEADER_ACTION_BTN}
+                              onClick={event => {
+                                event.stopPropagation()
+                                openSessionImport()
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name="cloud-download" size="0.75rem" />
+                            </Button>
+                          </Tip>
+                        )}
                         {/* The flat-list header "+" is a drag source too — the
                             same gesture as the nav's "New session" row: drag
                             it onto a chat zone's tab strip / edge / center to

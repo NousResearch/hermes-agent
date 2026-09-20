@@ -40,3 +40,32 @@ def test_install_removes_the_half_installed_dir_before_npm_runs(tmp_path, monkey
     main_desktop._install_desktop_workspace_deps("npm", {})
 
     assert seen == [False], "npm must run only after the stale dir is gone"
+
+
+def test_install_is_skipped_while_manifests_and_electron_are_unchanged(tmp_path, monkeypatch):
+    """Root `npm ci` re-reifies the whole graph; only manifest changes or a pruned Electron warrant it. See #43837."""
+    import hermes_cli.main as main_mod
+    import hermes_cli.main_web_build as web_build
+    from hermes_constants import get_default_hermes_root
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(main_desktop, "_nixos_build_env", lambda: {})
+    (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}', encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "apps" / "desktop").mkdir(parents=True)
+    (tmp_path / "apps" / "desktop" / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "node_modules" / "electron").mkdir(parents=True)
+    (tmp_path / "node_modules" / "electron" / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[Path] = []
+    monkeypatch.setattr(web_build, "_run_npm_install_deterministic",
+                        lambda npm, cwd, **kw: calls.append(cwd) or type("R", (), {"returncode": 0})())
+
+    main_desktop._install_desktop_workspace_deps("npm", {})
+    main_desktop._install_desktop_workspace_deps("npm", {})
+    assert calls == [tmp_path], "second build with unchanged manifests must not npm ci again"
+    assert list(get_default_hermes_root().glob(".npm_lock_hash_*_desktop")), "stamp lives beside pass 1's"
+
+    (tmp_path / "apps" / "desktop" / "package.json").write_text('{"name": "bumped"}', encoding="utf-8")
+    main_desktop._install_desktop_workspace_deps("npm", {})
+    assert calls == [tmp_path, tmp_path], "a changed manifest must reinstall"

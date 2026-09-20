@@ -537,21 +537,36 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
         return True
 
 
-def _npm_lock_cache_file(hermes_root: Path) -> Path:
-    """Per-checkout cache path: keyed by PROJECT_ROOT so parallel worktrees don't collide."""
+def _npm_lock_cache_file(hermes_root: Path, scope: str = "") -> Path:
+    """Per-checkout cache path: keyed by PROJECT_ROOT so parallel worktrees don't collide.
+    *scope* separates install closures that share the digest (workspace-scoped vs. full desktop)."""
     from hermes_cli.update_cmd import _m
     cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
-    return hermes_root / f".npm_lock_hash_{cache_key}"
+    return hermes_root / f".npm_lock_hash_{cache_key}{scope}"
 
 
-def _record_npm_lockfile_hash(hermes_root: Path) -> None:
+def _record_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
     digest = _npm_manifests_digest()
     if digest is None:
         return
     try:
-        _npm_lock_cache_file(hermes_root).write_text(digest, encoding="utf-8")
+        _npm_lock_cache_file(hermes_root, scope).write_text(digest, encoding="utf-8")
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
+
+
+def _desktop_deps_changed(hermes_root: Path) -> bool:
+    """True when the full-graph root ``npm ci`` the desktop build needs must run again: manifests
+    changed since its last success, or Electron is gone (the workspace-scoped pass-1 install prunes
+    it whenever it runs). See #43837."""
+    from hermes_cli.update_cmd import _m
+    current = _npm_manifests_digest()
+    if current is None or not (_m().PROJECT_ROOT / "node_modules" / "electron" / "package.json").is_file():
+        return True
+    try:
+        return _npm_lock_cache_file(hermes_root, "_desktop").read_text(encoding="utf-8").strip() != current
+    except OSError:
+        return True
 
 
 def _repair_node_deps_on_current_checkout(

@@ -1423,7 +1423,12 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     """npm-install the desktop workspace; exits on a failure that isn't a repairable missing Electron dist."""
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_web_build import _run_npm_install_deterministic
-    from hermes_constants import with_hermes_node_path
+    from hermes_cli.update_cmd_deps import _desktop_deps_changed, _record_npm_lockfile_hash
+    from hermes_constants import get_default_hermes_root, with_hermes_node_path
+    hermes_root = get_default_hermes_root()
+    if not _desktop_deps_changed(hermes_root):
+        print("→ Desktop workspace dependencies unchanged, skipping install")
+        return
     print("→ Installing desktop workspace dependencies...")
     _remove_half_installed_get_windows(PROJECT_ROOT)
     # Managed Node on PATH so npm's child scripts that shell out to bare `node`
@@ -1433,6 +1438,7 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     nixos_env = with_hermes_node_path(_nixos_build_env())
     install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
     if install_result.returncode == 0:
+        _record_npm_lockfile_hash(hermes_root, "_desktop")
         return
     if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
         print(f"✗ Desktop dependency install failed\n  Run manually:  cd {PROJECT_ROOT} && npm ci")

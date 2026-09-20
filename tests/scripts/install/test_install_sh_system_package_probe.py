@@ -23,6 +23,9 @@ def _write_executable(path: Path, body: str) -> None:
 
 
 def test_system_package_probe_finds_commands_in_link_dir(tmp_path):
+    bash = shutil.which("bash")
+    assert bash is not None
+
     home = tmp_path / "home"
     link_dir = home / ".local" / "bin"
     path_dir = tmp_path / "path"
@@ -42,7 +45,7 @@ def test_system_package_probe_finds_commands_in_link_dir(tmp_path):
         'printf "ripgrep=%s ffmpeg=%s\\n" "$HAS_RIPGREP" "$HAS_FFMPEG"\n'
     )
     result = subprocess.run(
-        ["bash", "-c", script],
+        [bash, "-c", script],
         capture_output=True,
         text=True,
         check=True,

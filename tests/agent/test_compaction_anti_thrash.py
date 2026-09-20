@@ -134,13 +134,16 @@ class TestFutilityGuard:
         cc = _compressor(threshold_tokens=24_576)
 
         with pytest.MonkeyPatch.context() as monkeypatch:
-            now = iter((1_000.0, 1_120.0, 1_240.0, 1_240.0, 1_240.0))
+            now = iter((1_000.0, 1_120.0, 1_240.0))
             monkeypatch.setattr("agent.context_compressor.time.time", lambda: next(now))
             for _ in range(cc._FREQUENT_COMPACTION_LIMIT):
                 cc.record_completed_compaction()
                 cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 1})
 
             assert cc._ineffective_compression_count == 0
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr("agent.context_compressor.time.time", lambda: 1_240.0)
             should_compress, reason = cc.should_compress_info(cc.threshold_tokens + 1)
 
         assert should_compress is False

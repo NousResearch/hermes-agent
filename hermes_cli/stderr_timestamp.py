@@ -49,7 +49,18 @@ def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, objec
             pass
 
     previous: dict[int, object] = {}
-    for signum in (signal.SIGTERM, signal.SIGINT, getattr(signal, "SIGHUP", None)):
+    # SIGUSR1 is the gateway's drain-aware restart request. launchd owns THIS wrapper's PID,
+    # so `hermes update` signals us, not the gateway; an unforwarded SIGUSR1 kills the wrapper
+    # (Python's default action), launchd tears the group down with SIGTERM and applies its
+    # ~60 s crash back-off per sibling profile (#101426).
+    forwarded = (
+        signal.SIGTERM,
+        signal.SIGINT,
+        getattr(signal, "SIGHUP", None),
+        getattr(signal, "SIGUSR1", None),
+        getattr(signal, "SIGUSR2", None),
+    )
+    for signum in forwarded:
         if signum is not None:
             try:
                 previous[signum] = signal.getsignal(signum)

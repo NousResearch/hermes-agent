@@ -571,8 +571,9 @@ def strip_redacted_reasoning(kwargs):
     if all(content is None for content in cleaned_contents):
         return kwargs
     return {**kwargs, "messages": [
-        {**msg, "content": content} for msg, content in zip(messages, cleaned_contents)
-        if content is None or len(content) > 0 or not isinstance(msg, dict)
+        msg if content is None else {**msg, "content": content}
+        for msg, content in zip(messages, cleaned_contents)
+        if content is None or len(content) > 0
     ]}
 
 
@@ -691,7 +692,10 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
             # ReasoningContentBlock is a tagged union: reasoningText and redactedContent must go
             # out as separate blocks (#115865). Undecodable redacted entries are skipped alone.
             if isinstance(reasoning.get("text"), str):
-                content_blocks.append({"reasoningContent": {"reasoningText": {"text": reasoning["text"]}}})
+                reasoning_text: Dict[str, str] = {"text": reasoning["text"]}
+                if isinstance(reasoning.get("signature"), str) and reasoning["signature"]:
+                    reasoning_text["signature"] = reasoning["signature"]  # models that sign thinking reject unsigned replay
+                content_blocks.append({"reasoningContent": {"reasoningText": reasoning_text}})
             encoded = reasoning.get("redactedContentBase64")
             if isinstance(encoded, str) and encoded:
                 redacted = _decode_redacted(encoded)
@@ -797,15 +801,21 @@ class _ResponseParts:
         self.tool_calls: List[SimpleNamespace] = []
 
     def absorb_reasoning(self, reasoning: Any, block: Dict[str, Any], on_text=None) -> None:
-        """Fold a Converse ``reasoningContent`` payload into the accumulators and ``block``."""
+        """Fold a Converse ``reasoningContent`` payload into the accumulators and ``block``. The sync response
+        nests ``reasoningText: {text, signature}``; stream deltas carry ``text`` / ``signature`` flat."""
         if not isinstance(reasoning, dict):
             return
+        if isinstance(reasoning.get("reasoningText"), dict):
+            reasoning = {**reasoning, **reasoning["reasoningText"]}
         thinking_text = reasoning.get("text", "")
         if thinking_text:
             self.reasoning_parts.append(str(thinking_text))
             if on_text:
                 on_text(thinking_text)
             block["text"] = block.get("text", "") + str(thinking_text)
+        signature = reasoning.get("signature")
+        if isinstance(signature, str) and signature:
+            block["signature"] = block.get("signature", "") + signature
         encoded = _encode_redacted(reasoning.get("redactedContent"))
         if encoded:
             self.reasoning_details.append({"type": "redacted_thinking", "data": encoded})
@@ -931,7 +941,7 @@ def stream_converse_with_callbacks(
                 current_tool["input_json"] += delta["toolUse"].get("input", "")
             elif "reasoningContent" in delta:
                 reasoning = delta["reasoningContent"]
-                if isinstance(reasoning, dict) and (reasoning.get("text", "") or _encode_redacted(reasoning.get("redactedContent"))):
+                if isinstance(reasoning, dict) and (reasoning.get("text", "") or reasoning.get("signature") or _encode_redacted(reasoning.get("redactedContent"))):
                     block = stream_blocks.setdefault(idx, {"reasoningContent": {}}).setdefault("reasoningContent", {})
                     parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
         elif "contentBlockStop" in event:

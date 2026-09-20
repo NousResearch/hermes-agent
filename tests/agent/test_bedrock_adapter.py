@@ -1540,142 +1540,102 @@ class TestBearerTokenRoutesToConverse:
 
 
 # ---------------------------------------------------------------------------
-# Reasoning-text replay + redacted-reasoning resend-once (#115865)
+# Reasoning replay through the Converse tagged union + sealed-blob resend-once (#115865)
 # ---------------------------------------------------------------------------
 
-REDACTED_REJECTION = (
-    "An error occurred (ValidationException) when calling the Converse "
-    "operation: The provided redacted thinking block contains encrypted "
-    "content that is not valid for this model, please reformat your input "
-    "and try again."
+CROSS_REGION_REJECTION = (
+    "An error occurred (ValidationException) when calling the ConverseStream operation: The model returned "
+    'the following errors: {"error":{"code":"validation_error","message":"Encrypted content cannot be used in a '
+    'different region from the one that created it.","param":null,"type":"invalid_request_error"}}'
 )
 
 
-class TestReasoningTextReplay:
-    """Converse ReasoningContentBlock members are reasoningText/redactedContent
-    only — replaying captured thinking as {"text": ...} dies client-side with
-    ParamValidationError (#115865)."""
-
-    def test_ordered_replay_emits_reasoningText(self):
-        from agent.bedrock_adapter import _replay_ordered_blocks
-        blocks = _replay_ordered_blocks([{
-            "reasoningContent": {
-                "text": "let me think",
-                "redactedContentBase64": "cjE=",
-            },
-        }])
-        assert blocks == [
-            {"reasoningContent": {"reasoningText": {"text": "let me think"}}},
-            {"reasoningContent": {"redactedContent": b"r1"}},
-        ]
-
-    def test_replayed_blocks_pass_botocore_converse_validation(self):
-        import botocore.session
-        from botocore.validate import validate_parameters
-        from agent.bedrock_adapter import _replay_ordered_blocks
-        blocks = _replay_ordered_blocks([{
-            "reasoningContent": {
-                "text": "let me think",
-                "redactedContentBase64": "cjE=",
-            },
-        }])
-        model = botocore.session.get_session().get_service_model("bedrock-runtime")
-        shape = model.operation_model("Converse").input_shape
-        validate_parameters(
-            {"modelId": "test-model",
-             "messages": [{"role": "assistant", "content": blocks}]},
-            shape,
-        )  # raises ParamValidationError while replay emits {"text": ...}
-
-
-def _redacted_history():
+def _kimi_turn_history():
+    """Turn 1 as the ConverseStream path captures it: signed thinking, a sealed blob, then a tool call."""
+    from agent.bedrock_adapter import normalize_converse_stream_events
+    events = [
+        {"messageStart": {"role": "assistant"}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "let me think"}}}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"signature": "sig-1"}}}},
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+        {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"reasoningContent": {"redactedContent": b"sealed"}}}},
+        {"contentBlockStop": {"contentBlockIndex": 1}},
+        {"contentBlockStart": {"contentBlockIndex": 2, "start": {"toolUse": {"toolUseId": "t1", "name": "read_file"}}}},
+        {"contentBlockDelta": {"contentBlockIndex": 2, "delta": {"toolUse": {"input": "{}"}}}},
+        {"contentBlockStop": {"contentBlockIndex": 2}},
+        {"messageStop": {"stopReason": "tool_use"}},
+        {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1}}},
+    ]
+    msg = normalize_converse_stream_events({"stream": events}).choices[0].message
     return [
         {"role": "user", "content": "go"},
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": "call_1", "type": "function",
-                "function": {"name": "read_file", "arguments": "{}"},
-            }],
-            "reasoning_details": [{
-                "type": "redacted_thinking", "data": "cjE=",
-            }],
-            "bedrock_content_blocks": [
-                {"reasoningContent": {
-                    "text": "let me think", "redactedContentBase64": "cjE=",
-                }},
-                {"toolUse": {
-                    "toolUseId": "call_1", "name": "read_file", "input": {},
-                }},
-            ],
-        },
-        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        {"role": "assistant", "content": None, "reasoning_content": msg.reasoning_content,
+         "reasoning_details": msg.reasoning_details, "bedrock_content_blocks": msg.bedrock_content_blocks,
+         "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "ok"},
     ]
 
 
-def _ok_response():
-    return {
-        "output": {"message": {"role": "assistant",
-                               "content": [{"text": "done"}]}},
-        "stopReason": "end_turn",
-        "usage": {"inputTokens": 1, "outputTokens": 1},
-    }
+def _ok_converse_response():
+    return {"output": {"message": {"role": "assistant", "content": [{"text": "done"}]}},
+            "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}}
 
 
-def _assert_second_attempt_stripped(call_args_list):
-    assert len(call_args_list) == 2
-    resent = call_args_list[1].kwargs["messages"]
-    assistant = next(m for m in resent if m["role"] == "assistant")
-    for block in assistant["content"]:
-        assert "redactedContent" not in block.get("reasoningContent", {})
+class TestReasoningReplaySchema:
+    """Converse ``reasoningContent`` is a tagged union (``reasoningText{text,signature}`` | ``redactedContent``);
+    replaying captured thinking as a bare ``text`` key dies client-side with ParamValidationError (#115865)."""
 
-
-class TestRedactedReasoningResendOnce:
-    """Redacted thinking blobs are sealed to the issuing model/flow — replaying
-    them elsewhere fails with an encrypted-content ValidationException. Drop
-    the redacted blocks and resend once (#115865)."""
-
-    def test_call_converse_strips_redacted_blocks_and_resends_once(self):
+    def test_call_converse_replays_thinking_botocore_accepts(self):
+        import botocore.session
+        from botocore.validate import validate_parameters
         from agent.bedrock_adapter import call_converse
+        shape = botocore.session.get_session().get_service_model("bedrock-runtime").operation_model("Converse").input_shape
         client = MagicMock()
-        client.converse.side_effect = [Exception(REDACTED_REJECTION), _ok_response()]
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
-                   return_value=client):
-            response = call_converse(
-                region="us-east-1", model="test-model", messages=_redacted_history(),
-            )
+
+        def converse(**kwargs):
+            validate_parameters(kwargs, shape)  # the real client's client-side validation
+            return _ok_converse_response()
+        client.converse.side_effect = converse
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            response = call_converse(region="us-east-1", model="global.moonshotai.kimi-k3", messages=_kimi_turn_history())
         assert response.choices[0].message.content == "done"
-        _assert_second_attempt_stripped(client.converse.call_args_list)
+        replayed = client.converse.call_args.kwargs["messages"][1]["content"]
+        assert replayed[0] == {"reasoningContent": {"reasoningText": {"text": "let me think", "signature": "sig-1"}}}
+        assert replayed[1] == {"reasoningContent": {"redactedContent": b"sealed"}}
+        assert "toolUse" in replayed[2]
 
-    def test_call_converse_reraises_when_nothing_redacted_to_strip(self):
+    def test_sync_response_reads_nested_reasoning_text(self):
+        from agent.bedrock_adapter import normalize_converse_response
+        msg = normalize_converse_response({
+            "output": {"message": {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": {"text": "hmm", "signature": "s"}}}, {"text": "hi"}]}},
+            "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1},
+        }).choices[0].message
+        assert msg.reasoning_content == "hmm"
+        assert msg.bedrock_content_blocks[0] == {"reasoningContent": {"text": "hmm", "signature": "s"}}
+
+
+class TestSealedReasoningResendOnce:
+    """A redacted blob is sealed to the region/model that minted it; a ``global.*`` profile routed elsewhere
+    rejects it with ValidationException. Drop the sealed blocks, keep everything else, resend once (#115865)."""
+
+    def test_call_converse_strips_sealed_blocks_and_keeps_other_turns_intact(self):
         from agent.bedrock_adapter import call_converse
         client = MagicMock()
-        client.converse.side_effect = Exception(REDACTED_REJECTION)
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
-                   return_value=client):
+        client.converse.side_effect = [Exception(CROSS_REGION_REJECTION), _ok_converse_response()]
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            response = call_converse(region="us-east-1", model="global.moonshotai.kimi-k3", messages=_kimi_turn_history())
+        assert response.choices[0].message.content == "done"
+        assert client.converse.call_count == 2
+        first, resent = (c.kwargs["messages"] for c in client.converse.call_args_list)
+        assert resent[1]["content"] == [b for b in first[1]["content"] if "redactedContent" not in b.get("reasoningContent", {})]
+        assert resent[0] == first[0] and resent[2] == first[2]  # untouched turns are replayed verbatim
+
+    def test_call_converse_reraises_when_nothing_sealed_remains(self):
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.side_effect = Exception(CROSS_REGION_REJECTION)
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
             with pytest.raises(Exception, match="ValidationException"):
-                call_converse(
-                    region="us-east-1", model="test-model",
-                    messages=[{"role": "user", "content": "hi"}],
-                )
+                call_converse(region="us-east-1", model="m", messages=[{"role": "user", "content": "hi"}])
         assert client.converse.call_count == 1
-
-    def test_call_converse_stream_strips_redacted_blocks_and_resends_once(self):
-        from agent.bedrock_adapter import call_converse_stream
-        client = MagicMock()
-        client.converse_stream.side_effect = [Exception(REDACTED_REJECTION), {"stream": [
-            {"messageStart": {"role": "assistant"}},
-            {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
-            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "done"}}},
-            {"contentBlockStop": {"contentBlockIndex": 0}},
-            {"messageStop": {"stopReason": "end_turn"}},
-            {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1}}},
-        ]}]
-        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
-                   return_value=client):
-            response = call_converse_stream(
-                region="us-east-1", model="test-model", messages=_redacted_history(),
-            )
-        assert response.choices[0].message.content == "done"
-        _assert_second_attempt_stripped(client.converse_stream.call_args_list)

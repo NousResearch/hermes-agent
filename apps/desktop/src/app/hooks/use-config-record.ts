@@ -1,10 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { useRef } from 'react'
 
 import { type ProfileScope, profileScopeKey } from '@/api/client'
-import { peekConfigReadOrigin } from '@/api/config'
+import { bindConfigReadOrigin, peekConfigReadOrigin } from '@/api/config'
 import { getHermesConfigRecord } from '@/hermes'
-import { queryClient, writeCache } from '@/lib/query-client'
+import { queryClient } from '@/lib/query-client'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 // One shared cache for the whole profile config record (`GET /api/config`).
@@ -31,15 +30,6 @@ export const hermesConfigKey = (profile?: ProfileScope) =>
 // `profile` scopes both the query key and the fetch; omitting it preserves the
 // exact app-wide behavior (base key, `profileScoped(undefined)` fallback).
 export const useHermesConfigRecord = (profile?: ProfileScope) => {
-  const writeScopeRef = useRef<{ connectionId?: string; profile?: string } | null>(null)
-  const scopeKey = profileScopeKey(profile)
-  const scopeKeyRef = useRef(scopeKey)
-
-  if (scopeKeyRef.current !== scopeKey) {
-    scopeKeyRef.current = scopeKey
-    writeScopeRef.current = null
-  }
-
   const query = useQuery({
     queryKey: hermesConfigKey(profile),
     // null/undefined both mean "no override" → fetch with undefined so
@@ -48,27 +38,39 @@ export const useHermesConfigRecord = (profile?: ProfileScope) => {
     queryFn: async () => {
       const record = await getHermesConfigRecord(profile ?? undefined)
 
-      if (!writeScopeRef.current) {
-        writeScopeRef.current = peekConfigReadOrigin(record) ?? {}
-      }
-
       return record
     },
-    staleTime: 0
+    staleTime: 0,
+    // The read origin is held in a WeakMap keyed by the record itself. Keep
+    // the fetched object intact so the cached record and its origin cannot
+    // diverge during React Query's structural-sharing pass.
+    structuralSharing: false
   })
 
   return {
     ...query,
-    writeScope: writeScopeRef.current
+    writeScope: peekConfigReadOrigin(query.data) ?? null
   }
 }
 
 // setHermesConfigCache writes the app-wide (base-key) record. Pass a profile to
 // write the suffixed per-profile cache instead — keeps the selector's optimistic
 // write-through landing on the same key its query reads.
-export const setHermesConfigCache = writeCache<HermesConfigRecord>(HERMES_CONFIG_KEY)
-export const hermesConfigCacheWriter = (profile?: ProfileScope) =>
-  writeCache<HermesConfigRecord>(hermesConfigKey(profile))
+const writeHermesConfigCache = (key: ReturnType<typeof hermesConfigKey>) =>
+  (next: HermesConfigRecord | undefined | ((previous: HermesConfigRecord | undefined) => HermesConfigRecord | undefined)) =>
+    void queryClient.setQueryData<HermesConfigRecord>(key, previous => {
+      const record = typeof next === 'function' ? next(previous) : next
+      const origin = peekConfigReadOrigin(previous)
+
+      if (record && origin) {
+        bindConfigReadOrigin(record, origin)
+      }
+
+      return record
+    })
+
+export const setHermesConfigCache = writeHermesConfigCache(HERMES_CONFIG_KEY)
+export const hermesConfigCacheWriter = (profile?: ProfileScope) => writeHermesConfigCache(hermesConfigKey(profile))
 
 export const invalidateHermesConfig = (profile?: ProfileScope) =>
   queryClient.invalidateQueries({ queryKey: hermesConfigKey(profile) })

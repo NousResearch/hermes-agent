@@ -47,11 +47,9 @@ def _default_threshold_tokens_cap():
     (500K on a 1M-window model) and the default cap would be gone after the first turn
     (#117093). An explicit ``threshold_tokens: null`` stays ratio-only — the key is present,
     so ``.get`` returns it untouched."""
-    try:
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
-        return (DEFAULT_CONFIG.get("compression") or {}).get("threshold_tokens")
-    except Exception:
-        return None
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    return (DEFAULT_CONFIG.get("compression") or {}).get("threshold_tokens")
 
 
 def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:

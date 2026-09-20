@@ -436,6 +436,52 @@ def _forget_stale_turns(session_id: str, turn_id: str) -> None:
 
 # ── Complexity classification ────────────────────────────────────────────
 
+def _message_text(msg: Dict[str, Any]) -> str:
+    """Extract plain text from a message's content (str or multimodal list)."""
+    content = msg.get("content")
+    if isinstance(content, list):
+        return " ".join(
+            str(p.get("text") or "") for p in content if isinstance(p, dict)
+        )
+    return content if isinstance(content, str) else ""
+
+
+def _has_work_keywords(text: str) -> bool:
+    """True when text carries EN or ZH complexity keywords."""
+    return bool(
+        _COMPLEXITY_KEYWORDS_EN.search(text)
+        or _COMPLEXITY_KEYWORDS_ZH.search(text)
+    )
+
+
+def _keyword_superseded(messages: List[Dict[str, Any]], idx: int) -> bool:
+    """True when a later user turn without work keywords ended that topic.
+
+    A keyword hit in a user message is a topic signal, not proof of ongoing
+    work. If any LATER user message carries no work keywords, the keyword
+    task is no longer the active topic and its signal decays.
+    """
+    for later in messages[idx + 1:]:
+        if not isinstance(later, dict) or later.get("role") != "user":
+            continue
+        if not _has_work_keywords(_message_text(later)):
+            return True
+    return False
+
+
+def _non_tool_work_signals(messages: List[Dict[str, Any]], last_user_idx: int) -> int:
+    """Count keyword topic signals in PAST user messages, with decay applied."""
+    depth = 0
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        if i == last_user_idx:
+            continue
+        if _has_work_keywords(_message_text(msg)) and not _keyword_superseded(messages, i):
+            depth += 1
+    return depth
+
+
 def _session_work_depth(messages: Optional[List[Dict[str, Any]]]) -> int:
     """Count work signals in the conversation history visible to this call.
 
@@ -445,33 +491,30 @@ def _session_work_depth(messages: Optional[List[Dict[str, Any]]]) -> int:
       * assistant tool_calls entries             — the model chose to act
       * user messages carrying complexity cues   — the topic is work
 
+    Decay rule (sticky-complexity fix): keyword hits in user messages are a
+    *topic* signal, not proof of ongoing work — once a later user turn has
+    no work keywords, the old task's signal decays. Tool activity never
+    decays: it is objective evidence of the loop doing work. The LAST user
+    message is the current turn's input and is never counted here
+    (classify_effort already reads it directly).
+
     Returns:
         Count of work signals (0 for a cold/pure-chat history).
     """
     if not isinstance(messages, list):
         return 0
-    depth = 0
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        if role == "tool":
-            depth += 1
-            continue
-        if role == "assistant" and msg.get("tool_calls"):
-            depth += 1
-            continue
-        if role == "user":
-            content = msg.get("content")
-            text = content if isinstance(content, str) else ""
-            if isinstance(content, list):
-                text = " ".join(
-                    str(p.get("text") or "")
-                    for p in content if isinstance(p, dict)
-                )
-            if _COMPLEXITY_KEYWORDS_EN.search(text) or _COMPLEXITY_KEYWORDS_ZH.search(text):
-                depth += 1
-    return depth
+    last_user_idx = max(
+        (i for i, m in enumerate(messages)
+         if isinstance(m, dict) and m.get("role") == "user"),
+        default=-1,
+    )
+    tool_depth = sum(
+        1 for m in messages
+        if isinstance(m, dict)
+        and (m.get("role") == "tool"
+             or (m.get("role") == "assistant" and m.get("tool_calls")))
+    )
+    return tool_depth + _non_tool_work_signals(messages, last_user_idx)
 
 def classify_effort(user_message: str, *, tool_errors: int = 0,
                     cfg: Optional[Dict[str, Any]] = None,

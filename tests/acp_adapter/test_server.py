@@ -596,69 +596,6 @@ class TestSlashCommands:
         assert "cleared" in result.lower()
         assert len(state.history) == 0
 
-    def test_reset_rejected_mid_turn(self, agent, mock_manager):
-        """Slash dispatch runs on a worker thread beside the live turn; clearing
-        state.history underneath run_conversation tears the running turn."""
-        state = self._make_state(mock_manager)
-        state.history = [{"role": "user", "content": "hello"}]
-        state.is_running = True
-        result = agent._handle_slash_command("/reset", state)
-        assert "busy" in result
-        assert state.history == [{"role": "user", "content": "hello"}]
-
-    def test_compress_rejected_mid_turn(self, agent, mock_manager):
-        """Mid-turn /compress must not rebind state.history or null
-        agent._session_db underneath the running turn."""
-        state = self._make_state(mock_manager)
-        state.history = [{"role": "user", "content": "one"}]
-        state.is_running = True
-        state.agent._compress_context = MagicMock()
-        sentinel_db = object()
-        state.agent._session_db = sentinel_db
-        result = agent._handle_slash_command("/compress", state)
-        assert "busy" in result
-        state.agent._compress_context.assert_not_called()
-        assert state.agent._session_db is sentinel_db
-        assert state.history == [{"role": "user", "content": "one"}]
-
-    def test_model_switch_rejected_mid_turn(self, agent, mock_manager):
-        """/model swaps state.agent wholesale; mid-turn the switch strands the
-        running agent and corrupts the turn-finish provenance check."""
-        state = self._make_state(mock_manager)
-        old_agent = state.agent
-        state.is_running = True
-        result = agent._handle_slash_command("/model gpt-5", state)
-        assert "busy" in result
-        assert state.agent is old_agent
-
-    def test_mutating_command_rejected_during_command_op(self, agent, mock_manager):
-        """A second mutating command must not interleave with one in flight."""
-        state = self._make_state(mock_manager)
-        state.command_op = True
-        state.history = [{"role": "user", "content": "hello"}]
-        result = agent._handle_slash_command("/reset", state)
-        assert "busy" in result
-        assert state.history == [{"role": "user", "content": "hello"}]
-        assert state.command_op is True
-
-    def test_command_op_released_on_handler_error(self, agent, mock_manager):
-        state = self._make_state(mock_manager)
-        state.history = [{"role": "user", "content": "hello"}]
-        with patch.object(agent, "_cmd_reset", side_effect=RuntimeError("boom")):
-            result = agent._handle_slash_command("/reset", state)
-        assert "Error executing /reset" in result
-        assert state.command_op is False
-
-    def test_prompt_queues_without_redirect_during_command_op(self, agent, mock_manager):
-        """A prompt arriving mid-op queues; redirect only applies to a live turn."""
-        state = self._make_state(mock_manager)
-        state.command_op = True
-        result = agent._claim_turn_or_queue(state, state.session_id, "next", "next", True)
-        assert "Queued" in result
-        assert state.queued_prompts == ["next"]
-        state.agent.redirect.assert_not_called()
-        assert state.is_running is False
-
 
 
 

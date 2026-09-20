@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -250,42 +251,117 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
     assert out["reply"] == "pong" and spawned and not submitted
 
 
-def test_deliver_hands_off_to_a_bot_chat_owned_by_another_process(home, monkeypatch):
-    """#113753: the relay RPC lands in whichever backend the Desktop routes the target CONNECTION
-    to, while the Desktop-opened Bot Chat can be live in a sibling process for that profile
-    (per-(connection, profile) pool, per-profile SSH dashboards). That owner's lease refuses the
-    subprocess transport with SESSION_NOT_OWNED, so the handler must hand the DM to the owner
-    through the durable mailbox local DMs use, and never spawn the CLI.
-    """
+def _lease_open_bot_chat(home, *, live_session_id="live-in-other-process"):
+    """A Bot Chat leased by a mailbox-capable live owner in the target's home (real state.db row,
+    real lease) — what a Desktop-opened Bot Chat looks like from the relay handler's side."""
     from hermes_cli.active_sessions import try_acquire_active_session
     from hermes_state import SessionDB
-    from tools import bot_live_delivery as mailbox
 
     ops_home = home / "profiles" / "ops"
     db = SessionDB(db_path=ops_home / "state.db")
     db.create_session(session_id="chat", source="desktop")
     db.set_session_title("chat", "Bot Chat")
     db.close()
-    # The sibling process's lease: a mailbox-capable live owner registered in the target's home.
     lease, refusal = try_acquire_active_session(
         session_id="chat", surface="desktop", config={}, registry_home=ops_home,
-        metadata={"live_session_id": "live-in-other-process", "bot_live_delivery_consumer": True})
+        metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True})
     assert refusal is None
-    spawned = []
+    return ops_home, lease
 
+
+def _no_cli_transport(monkeypatch, spawned):
     def _fake_run(argv, *a, **k):
         if argv and argv[0] != "git":
             spawned.append(argv)
         raise AssertionError("the CLI transport collides with the live owner")
 
-    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
+    # Guard the deliver child's runner, whichever this tree has: subprocess.run today, and
+    # quiet_single_query.run_reported_turn once the relay books turns from their report
+    # (#114980) — guarding only the first would let a real ``hermes chat -Q`` child spawn there.
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
+
+
+def _owner_settles(ops_home, outcome: dict) -> threading.Thread:
+    """Stand in for the owner's poller (session_notifications._poll_bot_live_delivery_once): claim
+    the queued DM, run "the turn", write the terminal receipt."""
+    from tools import bot_live_delivery as mailbox
+
+    def run():
+        owner = mailbox.find_canonical_live_owner(ops_home)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            claimed = mailbox.claim_pending_delivery(ops_home, owner)
+            if claimed is not None:
+                mailbox.complete_delivery(ops_home, claimed["delivery_id"], **outcome)
+                return
+            time.sleep(0.05)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+@pytest.mark.parametrize(
+    ("live_here", "outcome", "expect"),
+    [
+        (True, {"status": "settled", "reply": "pong from the open chat"}, ("reply", "pong from the open chat")),
+        (False, {"status": "failed", "error": "Error code: 429 - rate limit exceeded", "reason": "provider_rate_limit"},
+         ("reason", "provider_rate_limit")),
+    ],
+    ids=["answer-from-a-chat-live-here", "typed-failure-from-a-chat-live-elsewhere"],
+)
+def test_deliver_into_an_open_bot_chat_returns_the_owners_answer(home, monkeypatch, live_here, outcome, expect):
+    """#113753 put a relayed DM into the mailbox of a Bot Chat live in a sibling process, and the
+    owner settles a receipt carrying the reply — the receipt local DMs wait on (_wait_live_dm).
+    The relay answered with a receipt sentence instead, so the sending agent never got the target's
+    answer whenever its Bot Chat happened to be open. Now the handler waits on the receipt, on the
+    local lane's budget: the reply comes back, a failed turn as the typed 5092 refusal, and the
+    CLI is never spawned. A mailbox-capable chat live in THIS process takes the same door — one
+    door, one receipt — and prompt.submit (#100523) stays the fallback for a live session with no
+    mailbox (test_deliver_lands_in_live_bot_chat_instead_of_subprocess)."""
+    ops_home, lease = _lease_open_bot_chat(home)
+    spawned, submitted = [], []
+    _no_cli_transport(monkeypatch, spawned)
+    monkeypatch.setitem(
+        srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"}))
     monkeypatch.setattr(srv, "_profile_home", lambda name: ops_home)
-    monkeypatch.setattr(srv, "_sessions", {})  # THIS process hosts nothing for ops
+    monkeypatch.setattr(srv, "_sessions", (
+        {"live-ops": {"profile_home": str(ops_home), "pending_title": "Bot Chat", "history": []}} if live_here else {}))
+    monkeypatch.setattr("tools.bot_mode_dm._LIVE_WAIT_SECONDS", 10)
+    try:
+        owner = _owner_settles(ops_home, outcome)
+        out = srv._methods["bot_relay.deliver"](1, {
+            "profile": "ops", "message": "ping", "from_profile": "cody", "from_handle": "cody",
+            "from_connection": "conn-a"})
+        owner.join(timeout=10)
+        assert not spawned and submitted == []
+        key, value = expect
+        if key == "reply":
+            assert _result(out)["reply"] == value
+        else:
+            assert out["error"]["code"] == 5092 and out["error"]["data"]["reason"] == value
+    finally:
+        lease.release()
+
+
+def test_deliver_into_a_busy_open_bot_chat_reports_it_queued_and_keeps_the_receipt(home, monkeypatch):
+    """The owner admits at its next idle boundary; a DM not answered within the budget is reported
+    queued there — the record stays for the owner, carrying the message and the relayed sender as
+    the turn author, and the sender is told not to resend."""
+    from tools import bot_live_delivery as mailbox
+
+    ops_home, lease = _lease_open_bot_chat(home)
+    spawned = []
+    _no_cli_transport(monkeypatch, spawned)
+    monkeypatch.setattr(srv, "_profile_home", lambda name: ops_home)
+    monkeypatch.setattr(srv, "_sessions", {})
+    monkeypatch.setattr("tools.bot_mode_dm._LIVE_WAIT_SECONDS", 0.6)
     try:
         out = _result(srv._methods["bot_relay.deliver"](1, {
             "profile": "ops", "message": "ping", "from_profile": "cody", "from_handle": "cody",
             "from_connection": "conn-a"}))
-        assert not spawned and "open Bot Chat" in out["reply"]
+        assert not spawned and "open Bot Chat" in out["reply"] and "Do not resend" in out["reply"]
         (queued,) = [
             r for p in (ops_home / "runtime" / mailbox.DELIVERY_DIR_NAME).glob("*.json")
             if (r := json.loads(p.read_text(encoding="utf-8")))]

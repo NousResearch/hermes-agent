@@ -508,3 +508,43 @@ async def test_primary_adapter_busy_origin_uses_routed_privacy(
     assert asdict(event.source) == original
     assert get_hermes_home_override() == ambient
     assert key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_secondary_busy_text_timing_follows_profile_config_not_process_env(tmp_path, monkeypatch):
+    """Debounce / hard-cap are per-profile config (#116893): a launch-process env value must not
+    reach a secondary profile's adapter, and each profile keeps its own numbers across A->B->A."""
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", "9.0")
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_HARD_CAP_SECONDS", "9.0")
+    runner = _runner()
+    runner._busy_text_timing = (0.35, 1.0)
+    homes = {"alpha": tmp_path / "alpha", "beta": tmp_path / "beta"}
+    for name, (debounce, cap) in {"alpha": (0.1, 0.5), "beta": (2.0, 4.0)}.items():
+        homes[name].mkdir()
+        (homes[name] / "config.yaml").write_text(
+            f"display:\n  busy_text_debounce_seconds: {debounce}\n  busy_text_hard_cap_seconds: {cap}\n",
+            encoding="utf-8")
+
+    seen = {}
+    for name in ("alpha", "beta", "alpha"):
+        assert await runner._start_one_profile_adapters(name, homes[name], {}) == 0
+        adapter = _adapter()
+        runner._profile_adapters[name][Platform.TELEGRAM] = adapter
+        runner._configure_profile_adapter(adapter, name, Platform.TELEGRAM)
+        seen.setdefault(name, []).append((adapter._busy_text_debounce_seconds, adapter._busy_text_hard_cap_seconds))
+
+    assert seen["alpha"] == [(0.1, 0.5), (0.1, 0.5)]
+    assert seen["beta"] == [(2.0, 4.0)]
+    # A fresh adapter never carries the process-env value either.
+    fresh = _adapter()
+    assert (fresh._busy_text_debounce_seconds, fresh._busy_text_hard_cap_seconds) == (0.35, 1.0)
+
+
+def test_busy_text_timing_rejects_non_numeric_config(caplog):
+    """A typo in the timing keys warns and falls back instead of crashing or silently coercing."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="gateway.run_config_loaders"):
+        timing = GatewayRunner._busy_text_timing_from_config(
+            {"display": {"busy_text_debounce_seconds": "fast", "busy_text_hard_cap_seconds": -3}})
+    assert timing == (0.35, 1.0)
+    assert "busy_text_debounce_seconds" in caplog.text and "busy_text_hard_cap_seconds" in caplog.text

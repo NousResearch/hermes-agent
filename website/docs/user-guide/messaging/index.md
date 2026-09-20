@@ -440,7 +440,11 @@ Gateway steers (including explicit `/steer`) and active-turn redirects carry the
 display:
   busy_input_mode: steer   # or queue, or interrupt (default)
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
+  busy_text_debounce_seconds: 0.35   # quiet window before merged busy text is delivered
+  busy_text_hard_cap_seconds: 1.0    # never hold merged busy text longer than this
 ```
+
+All four keys are read from each profile's own `config.yaml`, so multiplexed profiles keep independent busy policies; there is no process-environment override.
 
 The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 

@@ -107,9 +107,8 @@ def _or_default(thunk, default, exc=(TypeError, ValueError)):
         return default
 
 
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    return _or_default(lambda: float(raw) if raw else default, default)
+DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS = 0.35
+DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS = 1.0
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
@@ -1896,12 +1895,13 @@ class BasePlatformAdapter(ABC):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
-        # Legacy env knob; the runner syncs the busy_input_mode value after construction.
-        # Default "interrupt" so a pre-sync read never silently queues.
-        self._busy_text_mode: str = (
-            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower() or "interrupt")
-        self._busy_text_debounce_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35)
-        self._busy_text_hard_cap_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_HARD_CAP_SECONDS", 1.0)
+        # Busy-text policy is a per-profile config decision the runner installs after construction
+        # (``_wire_adapter_handlers``); a constructor-time process-env read would freeze the launch
+        # profile's values into every profile's adapter under multiplexing (#116893). Defaults here
+        # only cover a pre-sync read so it never silently queues.
+        self._busy_text_mode: str = "interrupt"
+        self._busy_text_debounce_seconds: float = DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS
+        self._busy_text_hard_cap_seconds: float = DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS
         self._text_debounce: dict[str, TextDebounceState] = {}
         # handle_message() tasks; shutdown cancels them so a replaced gateway stops working.
         self._background_tasks: set[asyncio.Task] = set()

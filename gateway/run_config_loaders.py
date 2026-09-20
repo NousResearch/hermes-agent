@@ -271,6 +271,29 @@ class GatewayConfigLoadersMixin:
             text_mode = fallback_text
         return input_mode, text_mode
 
+    @staticmethod
+    def _busy_text_timing_from_config(config: dict) -> tuple[float, float]:
+        """``display.busy_text_debounce_seconds`` / ``display.busy_text_hard_cap_seconds`` for one
+        profile, without consulting process env (#116893). A non-numeric or negative value is
+        rejected with a warning naming the key, never silently coerced."""
+        from gateway.platforms.base import DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS, DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS
+        out = []
+        for key, default in (("busy_text_debounce_seconds", DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS),
+                             ("busy_text_hard_cap_seconds", DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS)):
+            raw = cfg_get(config, "display", key, default=None)
+            if raw is None or raw == "":
+                out.append(default)
+                continue
+            try:
+                value = float(raw)
+                if value < 0 or value != value:
+                    raise ValueError(raw)
+            except (TypeError, ValueError):
+                logger.warning("display.%s=%r is not a non-negative number; using %s", key, raw, default)
+                value = default
+            out.append(value)
+        return out[0], out[1]
+
     def _snapshot_profile_busy_modes(self, profile_name: str, config: dict) -> None:
         """Cache a routed profile's busy policy for this gateway lifetime."""
         input_mode, text_mode = self._busy_modes_from_config(
@@ -279,6 +302,8 @@ class GatewayConfigLoadersMixin:
         )
         self.__dict__.setdefault("_busy_input_modes_by_profile", {})[profile_name] = input_mode
         self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
+        self.__dict__.setdefault("_busy_text_timing_by_profile", {})[profile_name] = (
+            self._busy_text_timing_from_config(config))
 
     def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the routed profile whose busy policy applies, if any."""

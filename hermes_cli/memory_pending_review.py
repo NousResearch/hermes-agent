@@ -18,12 +18,18 @@ def memory_pending_diff(rest, *, memory_store=None) -> str:
     payload = record.get("payload", {})
     header = f"# Pending memory write {record['id']}: {record.get('summary', '')}\n\n"
     try:
-        from tools.memory_tool import ENTRY_DELIMITER, MemoryStore, load_on_disk_store
+        from tools.memory_tool import ENTRY_DELIMITER, MemoryStore, get_builtin_memory_config
 
         target = payload.get("target", "memory")
         if payload.get("provider") or target not in ("memory", "user"):
             raise ValueError("Not a native memory target")
-        store = memory_store if memory_store is not None else load_on_disk_store()
+        store = memory_store
+        if store is None:
+            # Loading a store creates its directories; review needs only the configured limit.
+            from hermes_cli.config_effective import load_user_config_effective
+            config = get_builtin_memory_config(load_user_config_effective() or {})
+            store = MemoryStore(int(config.get("memory_char_limit", 2200)),
+                                int(config.get("user_char_limit", 1375)))
         path = MemoryStore._path_for(target)
         raw, readable = MemoryStore._read_raw_checked(path)
         if not readable:

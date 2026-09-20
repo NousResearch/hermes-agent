@@ -109,6 +109,8 @@ def test_no_live_store_honors_config_and_empty_file(tmp_path, monkeypatch):
     (tmp_path / 'config.yaml').write_text('memory:\n  user_char_limit: 19\n')
     record = wa.stage_write(wa.MEMORY, {'action': 'add', 'target': 'user', 'content': 'first preference'},
                             summary='new', origin='foreground')
+    assert not (tmp_path / 'memories').exists()
     out = handle_pending_subcommand(wa.MEMORY, ['diff', record['id']])
+    assert not (tmp_path / 'memories').exists()
     assert '+first preference' in out and '/ 19' in out
     assert load_on_disk_store().user_entries == []

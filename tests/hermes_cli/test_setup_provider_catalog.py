@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 
-@pytest.mark.parametrize("live", [True, False])
+@pytest.mark.parametrize("live", [True, False, "raises"])
 def test_setup_offers_registered_provider_catalog(monkeypatch, live):
     import providers
     from providers.base import ProviderProfile
@@ -14,6 +14,8 @@ def test_setup_offers_registered_provider_catalog(monkeypatch, live):
         def fetch_models(self, *, api_key=None, base_url=None):
             assert api_key == "synthetic-test-key"
             assert base_url == self.base_url
+            if live == "raises":
+                raise ConnectionError("synthetic catalog unavailable")
             return list(self.fallback_models) if live else None
 
     profile = SetupProfile(

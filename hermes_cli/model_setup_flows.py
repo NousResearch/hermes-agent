@@ -892,7 +892,11 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     if profile is not None:
         # Provider catalogs can use a different endpoint, auth, or response shape.
         curated = curated or list(profile.fallback_models)
-        live_models = profile.fetch_models(api_key=api_key_for_probe, base_url=effective_base)
+        try:
+            live_models = profile.fetch_models(api_key=api_key_for_probe, base_url=effective_base)
+        except Exception:
+            # Plugin overrides may raise instead of returning an unavailable catalog.
+            live_models = None
     else:
         live_models = fetch_api_models(api_key_for_probe, effective_base)
     if live_models and len(live_models) >= len(curated):

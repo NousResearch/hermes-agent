@@ -203,7 +203,7 @@ class HostedRoomRuntime:
                 "last_error": self._last_error, "cycles": self._cycles}
 
     # ------------------------------------------------------------------ public ops
-    def cancel(self, identity: state.TaskIdentity, *, cancel_id: str) -> dict[str, Any]:
+    def cancel(self, identity: state.TaskIdentity, *, cancel_id: str, publish: bool = True) -> dict[str, Any]:
         """Persist a stop intent, then commit cancellation after acknowledgement.
 
         The worker transitions tasks concurrently, so the status read is only a routing
@@ -229,7 +229,7 @@ class HostedRoomRuntime:
                     if binding is not None:
                         lease = self._ensure_lease(binding)
                         if self._peer_stop_acknowledged(binding, result) or (
-                            not self._settle_stopping_completion(binding, result, lease)
+                            not self._settle_stopping_completion(binding, result, lease, publish=publish)
                             and self._interrupt_stopping_task(binding, result)):
                             self._complete_cancel(result, cancel_id=cancel_id)
                 except Exception as exc:
@@ -311,13 +311,14 @@ class HostedRoomRuntime:
             **asdict(terminal))
 
     def _finish_stop(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, publish: bool = True
     ) -> bool:
         """Terminalize a stopping task from its receipt or an acknowledged interrupt."""
-        if self._settle_stopping_completion(binding, task, lease):
+        if self._settle_stopping_completion(binding, task, lease, publish=publish):
             return True
         if self._interrupt_stopping_task(binding, task):
-            self._complete_acknowledged_stop(binding, task, lease)
+            self._complete_acknowledged_stop(binding, task, lease, publish=publish)
             return True
         return False
 
@@ -381,7 +382,8 @@ class HostedRoomRuntime:
             or str(result.get("status") or "") in _STOP_ACK_STATUSES)
 
     def _settle_stopping_completion(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, publish: bool = True
     ) -> bool:
         """Publish a terminal receipt that arrived before Stop was acknowledged."""
         transport, profile, session_id = self._open_session(binding, task)
@@ -390,7 +392,7 @@ class HostedRoomRuntime:
         receipt = self._terminal_from_history(transport, profile, session_id, task)
         if receipt is None:
             return False
-        self._fenced(state.settle_stopping_task, binding, task, lease, **asdict(receipt))
+        self._fenced(state.settle_stopping_task, binding, task, lease, publish=publish, **asdict(receipt))
         return True
 
     def _report_pending_action(
@@ -729,13 +731,14 @@ class HostedRoomRuntime:
         return None
 
     def _complete_acknowledged_stop(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        *, publish: bool = True
     ) -> dict[str, Any]:
         """Terminalize an acknowledged Stop: deadline stops publish an explicit failure."""
         if not str(task.get("cancel_id") or "").startswith("deadline:"):
             return self._complete_cancel(task)
         return self._fenced(
-            state.settle_stopping_task, binding, task, lease,
+            state.settle_stopping_task, binding, task, lease, publish=publish,
             settlement_id=f"deadline:{int(task['execution_generation'])}", status="failed",
             result={
                 "error": "This Group Chat turn exceeded its configured time limit and was stopped.",

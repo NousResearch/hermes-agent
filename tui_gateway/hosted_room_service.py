@@ -270,7 +270,9 @@ class HostedRoomService:
                     # A consumer writer failure cannot turn a committed renewal
                     # into failure or lose its authenticated recovery notification.
                     key = 'gateway.hosted.route.recovered.v1:' + json.dumps([room_id, member_id], separators=(',', ':'))
-                    value = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+                    value = json.dumps(dict(
+                        old=hosted_room_links.route_security_digest(previous.as_record()) if previous else '',
+                        new=hosted_room_links.route_security_digest(record)), sort_keys=True)
                     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                                  'ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, value))
                 return previous
@@ -676,7 +678,7 @@ class HostedRoomService:
                 # and cancel a task whose source event is now behind the room stop fence.
                 fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
                 if decision.source_event_seq is not None and decision.source_event_seq < fence:
-                    self.runtime.cancel(admitted["identity"], cancel_id=f"stop-fence:{fence}")
+                    self.runtime.cancel(admitted["identity"], cancel_id=f"stop-fence:{fence}", publish=False)
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
@@ -726,9 +728,12 @@ class HostedRoomService:
             for task in tasks.values():
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
-                result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
+                result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id, publish=False)
                 if result["status"] == "stopping":
                     pending += 1
+        # Completion callbacks were suppressed only for this lock-owning control.
+        # Publish from fresh durable state after its outer policy claim is released.
+        self.prepare_room(HostedRoomBinding(room_id, gateway_id, epoch))
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()

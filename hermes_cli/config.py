@@ -1876,6 +1876,26 @@ def _canonicalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return _normalize_root_model_keys(_normalize_max_turns_config(config))
 
 
+def _apply_user_moa_presets(merged: Dict[str, Any], raw: Dict[str, Any]) -> None:
+    """Treat an explicit user MoA preset map as authoritative.
+
+    ``moa.presets`` is a named map. Generic default merging must not union the
+    schema's built-in names into a user map, because that resurrects presets
+    the user deleted. An omitted ``moa.presets`` key still receives defaults;
+    an explicit empty map remains empty.
+    """
+    raw_moa = raw.get("moa") if isinstance(raw, dict) else None
+    if not isinstance(raw_moa, dict) or "presets" not in raw_moa:
+        return
+    raw_presets = raw_moa.get("presets")
+    if not isinstance(raw_presets, dict):
+        return
+    merged_moa = merged.get("moa")
+    if not isinstance(merged_moa, dict):
+        return
+    merged_moa["presets"] = copy.deepcopy(raw_presets)
+
+
 # Sentinel for an unlimited turn budget. ``sys.maxsize`` survives the str->int round-trip through
 # the HERMES_MAX_ITERATIONS env bridge, works in every ``<``/``>=``/``max - used`` comparison in
 # the iteration budget without an "unlimited" special case, and is unreachable in practice.
@@ -2222,7 +2242,9 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
         from hermes_cli.config_backups import load_newest_good_backup
         raw_good = load_newest_good_backup(config_path)
         if raw_good is not None:
-            normalized = _canonicalize_config(_deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good))
+            merged_good = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good)
+            _apply_user_moa_presets(merged_good, raw_good)
+            normalized = _canonicalize_config(merged_good)
             expanded_good: Dict[str, Any] = _expand_env_vars(normalized)  # type: ignore[assignment]
             lkg, _ = _merge_managed_overlay(expanded_good)
             fallback = "last-known-good-backup"
@@ -2329,6 +2351,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
+                _apply_user_moa_presets(config, user_config)
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.

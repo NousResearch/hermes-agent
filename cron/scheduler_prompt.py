@@ -63,6 +63,31 @@ _UPSTREAM_CONTEXT_INTRO = (
 )
 
 
+def _archive_answer(archive: str) -> str | None:
+    """The reusable answer of a stored run: the text after ``## Response``.
+
+    Archives without the heading (script-mode runs) stay whole-document.
+    ``None`` marks "no usable answer" — a ``[SILENT]`` or blank response — so
+    the caller falls through to an older archive instead of injecting prompt
+    noise the job already has.
+    """
+    if "## Response" not in archive:
+        return archive
+    answer = archive.partition("## Response")[2].strip()
+    if answer in ("", "[SILENT]"):
+        return None
+    return answer
+
+
+def _clip_to_context_budget(text: str) -> str:
+    """Clip oversized context head+tail; conclusions and summaries sit at the end."""
+    if len(text) <= _MAX_CONTEXT_CHARS:
+        return text
+    keep = _MAX_CONTEXT_CHARS // 2
+    omitted = len(text) - 2 * keep
+    return f"{text[:keep]}\n\n[... {omitted} chars omitted ...]\n\n{text[-keep:]}"
+
+
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     """Prepend the latest output of each ``context_from`` job; returns ``(prompt, injected)``."""
     context_from = job.get("context_from")
@@ -102,14 +127,16 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if candidate and not silent_audit:
-                    latest_output = candidate
-                    break
-            if len(latest_output) > _MAX_CONTEXT_CHARS:
-                latest_output = (
-                    latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
+                if not candidate or silent_audit:
+                    continue
+                answer = _archive_answer(candidate)
+                if answer is None:
+                    continue  # [SILENT]/blank response — try an older archive
+                latest_output = answer
+                break
             if not latest_output:
-                continue  # silent skip — empty output
+                continue  # silent skip — no archive with a usable answer
+            latest_output = _clip_to_context_budget(latest_output)
             if is_self:
                 prompt = _prepend_context_block(
                     prompt, "Your previous run's output", _SELF_CONTEXT_INTRO, latest_output)

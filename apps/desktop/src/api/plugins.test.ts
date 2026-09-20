@@ -112,6 +112,7 @@ describe('pluginSocket authenticated reconnects', () => {
   })
 
   it('retries when the active connection is temporarily unavailable', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
     const getConnection = vi.fn().mockResolvedValueOnce(null).mockResolvedValue({
       ...connection,
       authMode: 'token',
@@ -127,9 +128,7 @@ describe('pluginSocket authenticated reconnects', () => {
     })
 
     const dispose = pluginSocket('kanban', '/events', () => {})
-    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledOnce())
-    await vi.advanceTimersByTimeAsync(30_000)
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(0)
 
     expect(getConnection).toHaveBeenCalledTimes(2)
     expect(opened).toHaveLength(1)

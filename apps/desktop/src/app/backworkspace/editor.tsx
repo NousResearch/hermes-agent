@@ -39,16 +39,19 @@ const PAGE_THEME = EditorView.theme({
   // does not move when the page first outgrows the window. Without it a scroll
   // bar appears, the content box narrows by its width, and every line re-wraps —
   // which is how a command being read out loud broke across `rm -` / `rf`.
-  // `both-edges` rather than the plain `stable` used elsewhere in the app: this
-  // column is centred in its box, so a gutter on one side alone would hold the
-  // writing permanently off-centre.
+  // One side only, and the column sits half a scroll bar left of centre for it.
+  // `both-edges` would centre it, but a gutter on the LEFT moves the scroller's
+  // padding box in, and that is the box the browser lays the caret and
+  // selection layers out from — while CodeMirror works out where to draw them
+  // from the border box. Measured: the caret stood 8px right of the text it
+  // belonged to, and every selection with it.
   '.cm-scroller': {
     cursor: 'text',
     fontFamily: 'var(--bw-hand)',
     lineHeight: '1.5',
     overflowY: 'auto',
     paddingInline: 'max(2rem, calc((100% - var(--bw-measure)) / 2))',
-    scrollbarGutter: 'stable both-edges'
+    scrollbarGutter: 'stable'
   },
   // `drawSelection` paints its own caret and selection, and CodeMirror's base
   // theme colours them for a light page (a black caret, invisible here). Both

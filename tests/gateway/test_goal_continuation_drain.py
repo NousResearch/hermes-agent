@@ -183,6 +183,13 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     runner.session_store._generate_session_key.return_value = adapter_key
 
     adapter = _DrainProbeAdapter()
+    handled: list[str] = []
+
+    async def handler(event):
+        handled.append(event.text)
+        return "continued"
+
+    adapter.set_message_handler(handler)
     runner.adapters = {Platform.SLACK: adapter}
 
     GoalManager(session_entry.session_id).set("ship it")
@@ -197,11 +204,67 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         )
         await asyncio.sleep(0.05)
 
-    assert adapter_key in adapter._pending_messages, (
-        "continuation enqueued under a different key than the adapter "
-        f"drains: pending keys={list(adapter._pending_messages)} "
-        f"expected={adapter_key}"
-    )
-    assert adapter._pending_messages[adapter_key].text.startswith(
-        "[Continuing toward your standing goal]"
-    )
+    for _ in range(40):
+        if handled:
+            break
+        await asyncio.sleep(0.05)
+    assert handled and handled[0].startswith("[Continuing toward your standing goal]")
+    assert adapter_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_goal_continuation_preserves_existing_fifo_and_no_continue(hermes_home):
+    from unittest.mock import MagicMock, patch
+    from datetime import datetime
+    import uuid
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry
+    from hermes_cli.goals import GoalManager
+
+    src = _slack_thread_source()
+    key = build_session_key(src)
+    runner = object.__new__(GatewayRunner)
+    from gateway.config import GatewayConfig
+    runner.config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")})
+    entry = SessionEntry(session_key=key, session_id=f"goal-sess-{uuid.uuid4().hex[:8]}",
+                         created_at=datetime.now(), updated_at=datetime.now(),
+                         platform=Platform.SLACK, chat_type="channel")
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = entry
+    from types import SimpleNamespace
+    fifo_state = SimpleNamespace(conversation=SimpleNamespace(queued_events=[]))
+    runner._peek_session_state = lambda _key: fifo_state
+    runner._session_state = lambda _key: fifo_state
+    adapter = _DrainProbeAdapter()
+    runner.adapters = {Platform.SLACK: adapter}
+    existing = MessageEvent(text="real user message", message_type=MessageType.TEXT, source=src)
+    adapter._pending_messages[key] = existing
+
+    GoalManager(entry.session_id).set("ship it")
+    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "still needs work", False, None, False)):
+        await runner._post_turn_goal_continuation(session_entry=entry, source=src, final_response="partial")
+    assert adapter._pending_messages[key] is existing
+    assert fifo_state.conversation.queued_events[-1].text.startswith("[Continuing toward your standing goal]")
+
+
+@pytest.mark.asyncio
+async def test_goal_continuation_stop_does_not_enqueue(hermes_home):
+    from unittest.mock import MagicMock, AsyncMock
+    from datetime import datetime
+    import uuid
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry
+    from gateway.config import GatewayConfig
+
+    src = _slack_thread_source()
+    key = build_session_key(src)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")})
+    entry = SessionEntry(session_key=key, session_id=f"goal-sess-{uuid.uuid4().hex[:8]}",
+                         created_at=datetime.now(), updated_at=datetime.now(),
+                         platform=Platform.SLACK, chat_type="channel")
+    runner._post_turn_manager = AsyncMock(return_value=None)
+    adapter = _DrainProbeAdapter()
+    runner.adapters = {Platform.SLACK: adapter}
+    await runner._post_turn_goal_continuation(session_entry=entry, source=src, final_response="finished")
+    assert key not in adapter._pending_messages

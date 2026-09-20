@@ -311,7 +311,19 @@ class GatewayGoalsMixin:
             adapter = self._delivery_adapter_for(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
-                self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
+                continuation = self._synthetic_prompt_event(source, prompt)
+                self._enqueue_fifo(_quick_key, continuation, adapter)
+                # Post-turn hooks can run after the adapter's normal drain (for example when
+                # invoked by a non-adapter runner path). In that case the FIFO is idle and needs
+                # an active handoff. Do this without an await between the claim and dispatch: a
+                # real inbound event then either wins the empty slot or queues behind this event,
+                # preserving FIFO arrival order. A live session remains owned by its normal drain.
+                pending = getattr(adapter, "_pending_messages", None)
+                active = getattr(adapter, "_active_sessions", None)
+                if (isinstance(pending, dict) and pending.get(_quick_key) is continuation
+                        and not (isinstance(active, dict) and _quick_key in active)):
+                    pending.pop(_quick_key, None)
+                    await adapter.handle_message(continuation)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 

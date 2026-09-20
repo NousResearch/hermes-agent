@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 POOL_SOURCE = "manual:loopback_pkce"  # ``manual:`` prefix = never pruned by load_pool() re-seeding
 _LOOPBACK_LITERALS = frozenset({"127.0.0.1", "::1"})
+# Same grant-dead codes as the pool's plugin recovery (kept local so this module
+# can load while hermes_cli.auth is still importing).
+_GRANT_DEAD_CODES = frozenset({"invalid_grant", "invalid_token", "refresh_token_reused"})
 
 
 @dataclass(frozen=True)
@@ -56,10 +59,12 @@ class OAuthPKCEConfig:
     label: str = ""
 
 
-def _err(provider: str, message: str, code: str):
+def _err(provider: str, message: str, code: str, *, relogin_required: bool = False):
     from hermes_cli.auth_constants import AuthError
 
-    return AuthError(f"{provider}: {message}", provider=provider, code=code)
+    return AuthError(
+        f"{provider}: {message}", provider=provider, code=code, relogin_required=relogin_required,
+    )
 
 
 def _host_allowed(host: str, allowlist: Tuple[str, ...]) -> bool:
@@ -104,7 +109,7 @@ def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, co
     except Exception as exc:
         raise _err(provider, f"OAuth token request failed: {type(exc).__name__}", code) from exc
     if response.status_code >= 400:
-        raise _err(provider, f"OAuth token request failed with HTTP {response.status_code}.", code)
+        raise _token_http_error(provider, response, code)
     payload = response.json()
     access_token = str(payload.get("access_token") or "").strip()
     if not access_token:
@@ -116,6 +121,34 @@ def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, co
         "expires_at_ms": int(time.time() * 1000) + ttl * 1000 if ttl else None,
         "last_refresh": _utc_now_z(),
     }
+
+
+def _token_http_error(provider: str, response: Any, fallback_code: str):
+    """Map a failed token HTTP response. Grant-dead JSON ``error`` values are terminal.
+    The response body is not logged."""
+    error = ""
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            error = str(payload.get("error") or "").strip()
+    except Exception:
+        error = ""
+    if error in _GRANT_DEAD_CODES:
+        return _err(
+            provider,
+            f"OAuth token request failed with HTTP {response.status_code} ({error}).",
+            error,
+            relogin_required=True,
+        )
+    return _err(provider, f"OAuth token request failed with HTTP {response.status_code}.", fallback_code)
+
+
+def _pool_provider(args: Any) -> str:
+    """Canonical profile name for the credential pool. ``args.provider`` may be an alias."""
+    raw = str(getattr(args, "provider", "") or "").strip().lower()
+    from providers import get_provider_profile
+    profile = get_provider_profile(raw)
+    return profile.name if profile is not None else raw
 
 
 def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> Dict[str, Any]:
@@ -183,7 +216,7 @@ def pkce_auth_handler(cfg: OAuthPKCEConfig) -> Callable[[str, Any], bool]:
     def handler(action: str, args: Any) -> bool:
         from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
 
-        provider = str(getattr(args, "provider", "") or "").strip().lower()
+        provider = _pool_provider(args)
         if action == "add":
             tokens = login(provider, cfg, open_browser=not getattr(args, "no_browser", False))
             entry = load_pool(provider).add_entry(PooledCredential(

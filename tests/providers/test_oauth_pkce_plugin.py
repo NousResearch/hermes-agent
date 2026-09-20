@@ -105,3 +105,60 @@ def test_token_url_off_authorize_allowlist_refused_before_any_request(idp, monke
     assert {login_err.value.code, refresh_err.value.code} == {"oauth_token_host_rejected"}
     with pytest.raises(AuthError, match="HTTPS"):
         pkce.validate_config(PROVIDER, _config(idp, authorize_url="http://auth.example.com/authorize"))
+
+
+def test_spent_refresh_token_is_grant_dead_and_marks_the_pool_row_dead(idp, monkeypatch, tmp_path, request):
+    """RFC 6749 invalid_grant on refresh is terminal. The pool must DEAD the row, not EXHAUST it."""
+    from agent.credential_pool import STATUS_DEAD, load_pool
+
+    monkeypatch.setattr(pkce.webbrowser, "open", _browser_hits)
+    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
+    cfg = _config(idp)
+    handler, refresh = pkce.pkce_auth_handler(cfg), pkce.pkce_refresh_credential(cfg)
+    register_provider(ProviderProfile(name=PROVIDER, auth_type="oauth_external",
+                                      base_url="https://example.invalid/v1",
+                                      auth_handler=handler, refresh_credential=refresh))
+    request.addfinalizer(lambda: (providers._REGISTRY.pop(PROVIDER, None),
+                                  hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None)))
+    args = SimpleNamespace(provider=PROVIDER, no_browser=False)
+    assert handler("add", args) is True
+    rows = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"][PROVIDER]
+    spent = rows[0]["refresh_token"]
+    idp.refresh_tokens.discard(spent)
+
+    with pytest.raises(AuthError) as excinfo:
+        refresh(SimpleNamespace(provider=PROVIDER, id=rows[0]["id"], refresh_token=spent,
+                                access_token=rows[0]["access_token"], expires_at_ms=None))
+    assert excinfo.value.code == "invalid_grant" and excinfo.value.relogin_required is True
+
+    pool = load_pool(PROVIDER)
+    result = pool.try_refresh_matching(credential_id=rows[0]["id"])
+    assert result is None or result.last_status == STATUS_DEAD
+    disk = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"][PROVIDER][0]
+    assert disk["last_status"] == STATUS_DEAD
+
+
+def test_alias_login_stores_the_row_under_the_canonical_profile_name(idp, monkeypatch, tmp_path, request):
+    """hermes auth add <alias> must write the pool under ProviderProfile.name, not the typed alias."""
+    from agent.credential_pool import load_pool
+
+    alias = "example-pkce-alias"
+    monkeypatch.setattr(pkce.webbrowser, "open", _browser_hits)
+    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
+    cfg = _config(idp)
+    handler = pkce.pkce_auth_handler(cfg)
+    register_provider(ProviderProfile(
+        name=PROVIDER, aliases=(alias,), auth_type="oauth_external",
+        base_url="https://example.invalid/v1",
+        auth_handler=handler, refresh_credential=pkce.pkce_refresh_credential(cfg)))
+    request.addfinalizer(lambda: (
+        providers._REGISTRY.pop(PROVIDER, None),
+        providers._ALIASES.pop(alias, None),
+        hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None),
+        hermes_cli.auth.PROVIDER_REGISTRY.pop(alias, None)))
+    args = SimpleNamespace(provider=alias, no_browser=False)
+    assert handler("add", args) is True
+    pool = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]
+    assert PROVIDER in pool and alias not in pool
+    assert handler("status", args) is True
+    assert load_pool(PROVIDER).entries()[0].provider == PROVIDER

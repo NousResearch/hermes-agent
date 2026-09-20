@@ -10,7 +10,7 @@ maintainer: apoapostolov
 tier: community
 category: desktop
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/cdp-manager
-version: "1.0.1"
+version: "1.0.0"
 image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/c7edbf8dd5a6a977531b04d9757b0c10a2c0f1a6/public/cdp-manager/docs/hero.png
 platforms: []
 capabilities:

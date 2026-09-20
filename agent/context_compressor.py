@@ -477,11 +477,27 @@ def _salvage_reduce_todo_snapshot(out: List[Dict[str, Any]]) -> None:
             continue
         content = msg.get("content")
         stripped = _strip_stale_todo_snapshot(content)
-        notice_idx = content.find(_PRUNED_SKILL_RELOAD_NOTICE_HEADER) if isinstance(content, str) else -1
-        if notice_idx >= 0:
-            notice = content[notice_idx:]
+        notice: Any = None
+        if isinstance(content, str):
+            notice_idx = content.find(_PRUNED_SKILL_RELOAD_NOTICE_HEADER)
+            if notice_idx >= 0:
+                notice = content[notice_idx:]
+        elif isinstance(content, list):
+            for part in content:
+                text = str(part.get("text") or "") if isinstance(part, dict) and part.get("type") == "text" else ""
+                notice_idx = text.find(_PRUNED_SKILL_RELOAD_NOTICE_HEADER) if text else -1
+                if notice_idx >= 0:
+                    notice = {**part, "text": text[notice_idx:]}
+                    break
+        if notice is not None:
             if isinstance(stripped, str) and _PRUNED_SKILL_RELOAD_NOTICE_HEADER not in stripped:
                 stripped = f"{stripped}\n\n{notice}".strip()
+            elif isinstance(stripped, list) and not any(
+                _PRUNED_SKILL_RELOAD_NOTICE_HEADER in str(part.get("text") or "")
+                for part in stripped
+                if isinstance(part, dict) and part.get("type") == "text"
+            ):
+                stripped.append(notice)
         if _todo_snapshot_is_only_content(content, stripped):
             del out[i]
         else:

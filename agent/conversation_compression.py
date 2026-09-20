@@ -2305,6 +2305,7 @@ def _retain_durable_todo_from_ephemeral(message: Any) -> bool:
 
 def _durable_compaction_projection(messages: list) -> tuple[list, set[int]]:
     """Return durable TODO-only rows plus source ids of adjacent ephemeral rows removed."""
+    from agent.context_compressor import _append_text_to_content
     projected: list[tuple[Any, Any]] = []
     removed_source_ids: set[int] = set()
     changed = False
@@ -2318,11 +2319,63 @@ def _durable_compaction_projection(messages: list) -> tuple[list, set[int]]:
             ):
                 source, _ = projected.pop()
                 removed_source_ids.add(id(source))
-            projected.append((message, candidate))
+            if projected and _role(projected[-1][1]) == _role(candidate) == "user":
+                source, previous = projected[-1]
+                previous = dict(previous)
+                separator = "\n\n" if _message_text(previous).strip() else ""
+                _replace_message_content(
+                    previous,
+                    _append_text_to_content(previous.get("content"), f"{separator}{candidate['content']}"),
+                )
+                projected[-1] = (source, previous)
+                removed_source_ids.add(id(message))
+            else:
+                projected.append((message, candidate))
+            changed = True
+        elif (
+            isinstance(candidate, dict)
+            and candidate.get("_todo_snapshot_synthetic")
+            and any(candidate.get(flag) for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS)
+        ):
+            # Last-resort salvage may remove the durable TODO payload while retaining the
+            # live retry nudge. Do not publish that now-ephemeral-only carrier, or the next
+            # session replays recovery scaffolding as user intent. Drop its paired synthetic
+            # assistant too so the durable transcript still alternates roles.
+            while (
+                projected
+                and isinstance(projected[-1][0], dict)
+                and any(projected[-1][0].get(flag) for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS)
+            ):
+                source, _ = projected.pop()
+                removed_source_ids.add(id(source))
+            removed_source_ids.add(id(message))
             changed = True
         else:
             projected.append((message, message))
     return ([value for _, value in projected] if changed else messages), removed_source_ids
+
+
+def _cleanup_ephemeral_todo_tail(messages: list, ephemeral_flags: tuple[str, ...]) -> bool:
+    """Keep a folded TODO at cleanup while removing its ephemeral pair without breaking alternation."""
+    from agent.context_compressor import _append_text_to_content
+    if not messages or not _retain_durable_todo_from_ephemeral(messages[-1]):
+        return False
+    while (
+        len(messages) > 1
+        and isinstance(messages[-2], dict)
+        and any(messages[-2].get(flag) for flag in ephemeral_flags)
+    ):
+        messages.pop(-2)
+    if len(messages) > 1 and _role(messages[-2]) == _role(messages[-1]) == "user":
+        snapshot = messages[-1].get("content")
+        previous = messages[-2]
+        separator = "\n\n" if _message_text(previous).strip() else ""
+        _replace_message_content(
+            previous,
+            _append_text_to_content(previous.get("content"), f"{separator}{snapshot}"),
+        )
+        messages.pop()
+    return True
 
 
 def _durable_compaction_messages(messages: list) -> list:

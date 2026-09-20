@@ -102,7 +102,11 @@ def test_salvage_last_resort_preserves_pruned_skill_reload_notice():
 
 def test_salvage_preserves_recovery_nudge_around_folded_todo():
     """Last-resort TODO removal must retain other content sharing its user row."""
-    from agent.conversation_compression import _fold_todo_snapshot
+    from agent.conversation_compression import (
+        _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
+        _durable_compaction_messages,
+        _fold_todo_snapshot,
+    )
     from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
 
     original = [
@@ -110,8 +114,12 @@ def test_salvage_preserves_recovery_nudge_around_folded_todo():
         {"role": "assistant", "content": "ok"},
     ]
     candidate = [
-        {"role": "user", "content": "summary of the ask"},
-        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "summary of the ask\n[SKILL_PRUNED: example-skill]"},
+        {
+            "role": "assistant",
+            "content": "(empty)",
+            "_empty_recovery_synthetic": True,
+        },
         {
             "role": "user",
             "content": _EMPTY_TOOL_RESPONSE_NUDGE,
@@ -132,6 +140,14 @@ def test_salvage_preserves_recovery_nudge_around_folded_todo():
     recovery_rows = [m for m in out if _EMPTY_TOOL_RESPONSE_NUDGE in str(m.get("content"))]
     assert len(recovery_rows) == 1
     assert TODO_INJECTION_HEADER not in str(recovery_rows[0]["content"])
+    assert _PRUNED_SKILL_RELOAD_NOTICE_HEADER in str(recovery_rows[0]["content"])
+
+    durable = _durable_compaction_messages(out)
+    assert _EMPTY_TOOL_RESPONSE_NUDGE not in str(durable)
+    assert not any(
+        previous.get("role") == current.get("role")
+        for previous, current in zip(durable, durable[1:])
+    )
 
 
 def test_salvage_returns_none_when_nothing_can_shrink():

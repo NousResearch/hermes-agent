@@ -132,12 +132,19 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         except Exception as exc:
             return _fabricated_entry(idx, "error", str(exc), _child_by_index.get(idx))
 
-    with DaemonThreadPoolExecutor(max_workers=batch.max_children) as executor:
+    executor = DaemonThreadPoolExecutor(max_workers=batch.max_children)
+    # ``with`` would join every worker on exit, so a child wedged in an
+    # uninterruptible call defeats the interrupt fast-path: the poll loop marks
+    # it interrupted and returns, then the join hangs forever. Shutdown without
+    # waiting on the interrupt path instead (same shape as moa_loop).
+    interrupted = False
+    try:
         futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
                 results.extend(_entry_of(f, futures[f]) for f in pending)
+                interrupted = True
                 break
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
@@ -157,6 +164,10 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                         _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
                         push_task_failure_notice(
                             batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
+    finally:
+        # Abandoned workers unwind on their own (daemon threads, and the
+        # child-run layer already applies the deferred-close transport drain).
+        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
     results.sort(key=lambda r: r["task_index"])  # match input order
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:

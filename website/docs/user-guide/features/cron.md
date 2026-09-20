@@ -876,6 +876,18 @@ A timed-out delivery is recorded in `last_delivery_error`; the bot's turn may st
 
 The cap bounds the bot's **turn** only. When that turn messages a teammate (`message_agent`), the delivery process stays alive afterwards — bounded by `terminal.oneshot_completion_wait_seconds` — so the teammate's reply can land in the Bot Chat; that wait is not part of the delivery and is never counted against, or cut short by, this cap.
 
+## Standalone send timeout
+
+When the live gateway adapter cannot deliver (or no gateway is running), a target is sent through the platform's standalone sender. That send is bounded by a wall-clock timeout — 60 seconds by default — so a transport that is mid-reconnect cannot pin the job run (and a pending restart drain behind it) indefinitely:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  standalone_send_timeout_seconds: 120
+```
+
+A timed-out send is recorded in `last_delivery_error` as `standalone send to <target> timed out after Ns`; the message may still land if the adapter had already accepted it.
+
 ## No-agent mode (script-only jobs)
 
 For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/memory alerts, heartbeats, CI pings — pass `no_agent=True` at creation time. The scheduler runs your script on schedule and delivers its stdout directly, skipping the agent entirely:

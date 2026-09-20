@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
@@ -286,3 +288,40 @@ def test_plugin_usage_hook_is_bounded_and_fails_open(monkeypatch):
     assert time.monotonic() - t0 < 1.3 and started.is_set()
     account_usage.fetch_account_usage("openrouter")
     assert builtin_calls == [1]
+
+
+def test_plugin_usage_hook_failure_never_reaches_threading_excepthook(monkeypatch):
+    """A raising hook fails open in the caller — it must not die on a worker thread, where
+    ``threading.excepthook`` prints a traceback into every ``/usage`` surface."""
+    import threading
+
+    from agent import account_usage
+
+    class _Boom(ProviderProfile):
+        def fetch_account_usage(self, *, base_url=None, api_key=None):
+            raise RuntimeError("boom from plugin")
+
+    _register_profile(monkeypatch, _Boom(name="plugin-boom"))
+    monkeypatch.setattr(account_usage, "_USAGE_FETCHERS", {})
+    escaped = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: escaped.append(args.exc_value))
+
+    assert account_usage.fetch_account_usage("plugin-boom") is None
+    for t in threading.enumerate():
+        if t is not threading.current_thread() and "account-usage" in t.name:
+            t.join(2)
+    assert escaped == []
+
+
+def test_base_noop_usage_hook_spawns_no_thread(monkeypatch):
+    """A profile inheriting ``ProviderProfile.fetch_account_usage`` costs no thread."""
+    import threading
+
+    from agent import account_usage
+
+    _register_profile(monkeypatch, ProviderProfile(name="plugin-noop"))
+    monkeypatch.setattr(account_usage, "_USAGE_FETCHERS", {})
+    monkeypatch.setattr(threading.Thread, "start",
+                        lambda self: pytest.fail(f"base no-op hook spawned thread {self.name!r}"))
+
+    assert account_usage.fetch_account_usage("plugin-noop") is None

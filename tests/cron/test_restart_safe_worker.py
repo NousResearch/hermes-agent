@@ -194,6 +194,43 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert not stderr_capture.exists()
 
 
+def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch):
+    """The gateway polls ``ack_path.exists()`` then reads it (#107184, #116164 form 1): the ack
+    must appear atomically with its full body, or the parent logs "unreadable acknowledgement"
+    and loses the worker pid for a handoff that actually succeeded."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"})
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_a, **_k: True)
+
+    real_dump = json.dump
+    visible_while_writing = []
+
+    def spying_dump(obj, fp, *args, **kwargs):
+        # The body is being produced right now: a reader must not be able to see the ack yet.
+        visible_while_writing.append(ack.exists())
+        return real_dump(obj, fp, *args, **kwargs)
+
+    monkeypatch.setattr(scheduler.json, "dump", spying_dump)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert visible_while_writing == [False]
+    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-1"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("exec-1")] == [ack.name]
+
+
 def test_external_worker_refuses_to_run_without_durable_ownership(
     tmp_path, monkeypatch
 ):

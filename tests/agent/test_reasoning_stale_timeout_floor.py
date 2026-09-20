@@ -248,3 +248,23 @@ def test_stream_stale_timeout_floor_for_nemotron_3_ultra():
         est_tokens=10_000,
     )
     assert timeout == 600.0
+
+
+def test_explicit_provider_stale_timeout_wins_over_context_tier_and_reasoning_floor(monkeypatch, tmp_path):
+    """``providers.<id>.stale_timeout_seconds`` must be able to SHORTEN patience (#115024):
+    a 60s explicit value on a >50k-token request for a reasoning model stays 60s, while the
+    same request with no explicit value still gets the 240s tier / 600s floor (control)."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    from agent.chat_completion_helpers import _derive_stream_stale_timeout
+
+    api_kwargs = {"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "word " * 60_000}]}
+    agent = SimpleNamespace(provider="custom", model="gpt-5.6-sol", base_url="https://api.example.invalid/v1")
+
+    _write_config(tmp_path, "providers:\n  custom:\n    stale_timeout_seconds: 60\n")
+    assert _derive_stream_stale_timeout(agent, api_kwargs) == 60.0
+
+    _write_config(tmp_path, "")
+    assert _derive_stream_stale_timeout(agent, api_kwargs) == 600.0

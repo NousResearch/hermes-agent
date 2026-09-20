@@ -74,6 +74,16 @@ _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
 _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 
+_AUDIO_EXTENSIONS = {
+    "audio/ogg": ".ogg", "audio/mp4": ".m4a", "audio/mpeg": ".mp3",
+    "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/webm": ".webm",
+    "audio/flac": ".flac", "audio/aac": ".aac",
+}
+_IMAGE_EXTENSIONS = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+    "image/webp": ".webp", "image/bmp": ".bmp",
+}
+
 
 def _is_loopback_host(host: Optional[str]) -> bool:
     """True when `host` binds only to the local machine (falsy → non-loopback: usually a public default bind)."""
@@ -221,11 +231,25 @@ class WebhookAdapter(BasePlatformAdapter):
                 raise ValueError(f"[webhook] Route '{name}' sets both deliver_only and cron_job. They are mutually "
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
                                  f"an existing cron job (which handles its own delivery).")
-        if route.get("source_platform") and route.get("coalesce"):
-            raise ValueError(
-                f"[webhook] Route '{name}' combines source_platform with coalesce. Synthetic-source routes "
-                "must dispatch immediately so thread creation failures remain retryable.")
+        self._validate_synthetic_source(route)
         validate_coalesce_config(name, route)
+
+    @staticmethod
+    def _validate_synthetic_source(route: dict) -> Optional[Platform]:
+        if route.get("source_platform") is None:
+            return None
+        try:
+            platform = Platform(str(route["source_platform"]))
+        except ValueError:
+            raise ValueError("Invalid configured source platform") from None
+        if platform in {Platform.WEBHOOK, Platform.API_SERVER}:
+            raise ValueError("Invalid configured source platform")
+        if not all(str(route.get(k) or "") for k in ("source_chat_id", "source_user_id")):
+            raise ValueError("Synthetic source requires source_chat_id and source_user_id")
+        for mode in ("coalesce", "cron_job", "deliver_only"):
+            if route.get(mode):
+                raise ValueError(f"source_platform cannot be combined with {mode}")
+        return platform
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
@@ -590,6 +614,12 @@ class WebhookAdapter(BasePlatformAdapter):
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
             return error_response
+        assert route_config is not None
+        # Dynamic routes can change after startup; use the same validation before any side effects.
+        try:
+            source_platform = self._validate_synthetic_source(route_config)
+        except ValueError as exc:
+            return _json_error(str(exc), 500)
         # Rate limiting (after auth)
         if not self._record_rate_limit_hit(route_name, time.time()):
             return _json_error("Rate limit exceeded", 429)
@@ -625,17 +655,8 @@ class WebhookAdapter(BasePlatformAdapter):
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
-        source_platform = None
         target_adapter = None
-        if route_config.get("source_platform") is not None:
-            try:
-                source_platform = Platform(str(route_config["source_platform"]))
-            except ValueError:
-                return _json_error("Invalid configured source platform", 500)
-            if source_platform in {Platform.WEBHOOK, Platform.API_SERVER}:
-                return _json_error("Invalid configured source platform", 500)
-            if not all(str(route_config.get(k) or "") for k in ("source_chat_id", "source_user_id")):
-                return _json_error("Synthetic source requires source_chat_id and source_user_id", 500)
+        if source_platform is not None:
             target_adapter = self._find_adapter(source_platform, profile)
             if (target_adapter is None or not getattr(target_adapter, "_running", False)
                     or not callable(getattr(target_adapter, "handle_message", None))):
@@ -643,6 +664,8 @@ class WebhookAdapter(BasePlatformAdapter):
 
         audio_bytes = None
         image_bytes = None
+        mime = ""
+        ext = ""
         # Base64 media is synthetic-source ingress only. Ordinary webhook routes create their own
         # text events, so caching attachments here would acknowledge and then discard them.
         if source_platform is not None:
@@ -664,6 +687,14 @@ class WebhookAdapter(BasePlatformAdapter):
                 return _json_error("Invalid media payload", 400)
             if audio_bytes is not None and image_bytes is not None:
                 return _json_error("Only one media payload is supported per webhook", 400)
+            if audio_bytes is not None:
+                mime = str(payload.get("audio_mime_type") or payload.get("voice_mime_type") or "audio/ogg")
+                ext = _AUDIO_EXTENSIONS.get(mime, "")
+            elif image_bytes is not None:
+                mime = str(payload.get("image_mime_type") or payload.get("screenshot_mime_type") or "image/jpeg")
+                ext = _IMAGE_EXTENSIONS.get(mime, "")
+            if (audio_bytes is not None or image_bytes is not None) and not ext:
+                return _json_error("Unsupported media MIME type", 400)
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
@@ -675,15 +706,11 @@ class WebhookAdapter(BasePlatformAdapter):
         message_type = MessageType.TEXT
         try:
             if audio_bytes is not None:
-                mime = str(payload.get("audio_mime_type") or payload.get("voice_mime_type") or "audio/ogg")
-                media_urls.append(cache_audio_from_bytes(
-                    audio_bytes, ext=".m4a" if mime == "audio/mp4" else ".ogg"))
+                media_urls.append(cache_audio_from_bytes(audio_bytes, ext=ext))
                 media_types.append(mime)
                 message_type = MessageType.VOICE
             if image_bytes is not None:
-                mime = str(payload.get("image_mime_type") or payload.get("screenshot_mime_type") or "image/jpeg")
-                media_urls.append(cache_image_from_bytes(
-                    image_bytes, ext=".png" if mime == "image/png" else ".jpg"))
+                media_urls.append(cache_image_from_bytes(image_bytes, ext=ext))
                 media_types.append(mime)
                 message_type = MessageType.PHOTO
         except (OSError, ValueError):
@@ -718,8 +745,6 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
                     len(prompt), delivery_id)
         if source_platform is not None:
-            session_chat_id = f"webhook:{route_name}:{delivery_id}"
-
             def rollback_dispatch() -> None:
                 for path in media_urls or []:
                     with suppress(OSError):

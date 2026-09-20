@@ -253,6 +253,12 @@ def record_response_usage(
             # _ensure_db_session() may fail, and UPDATE on a missing row affects 0 rows.
             if not agent._session_db_created:
                 agent._ensure_db_session()
+            # Persist provider-reported actual cost separately from estimated —
+            # downstream analytics distinguish the two. When the provider reports
+            # the true cost (status=actual), fold it into actual_cost_usd; otherwise
+            # it goes to estimated_cost_usd as before.
+            _actual_delta = _cost_delta if cost_result.status == "actual" else None
+            _estimated_delta = _cost_delta if cost_result.status != "actual" else None
             agent._session_db.queue_token_counts(
                 agent.session_id,
                 source=_agent_session_source(agent),
@@ -261,7 +267,8 @@ def record_response_usage(
                 cache_read_tokens=canonical_usage.cache_read_tokens,
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
-                estimated_cost_usd=_cost_delta,
+                estimated_cost_usd=_estimated_delta,
+                actual_cost_usd=_actual_delta,
                 cost_status=cost_result.status,
                 cost_source=cost_result.source,
                 billing_provider=agent.provider,

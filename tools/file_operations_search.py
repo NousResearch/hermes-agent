@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import errno
 import os
 import posixpath
 import re
@@ -342,7 +343,15 @@ class SearchMixin:
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
                 start_new_session=True)
         except OSError as exc:
-            return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+            # rg can fail to spawn with ENOENT/ENOTPERM without meaning the search
+            # itself is hopeless — e.g. a directory it cannot traverse on macOS
+            # (ENOTPERM) or a path component that vanished (ENOENT). Treat those as
+            # graceful empty results rather than the fatal "rg is broken" path.
+            if exc.errno in (errno.ENOENT, errno.ENOTPERM):
+                logger.warning(
+                    "rg: %s — returning empty matches", exc
+                )
+                return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.

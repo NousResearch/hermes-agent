@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -69,10 +70,12 @@ def message_agent_tool_schema() -> dict:
                 "asynchronous, like texting: it validates the target against the live "
                 "roster, delivers your message into that agent's own Bot Chat with your "
                 "attribution automatically prefixed, and returns immediately with a "
-                "delivery acknowledgement. It does NOT return their reply and you must "
-                "not wait or poll for one — send it, finish your turn, and the reply "
-                "arrives later as a background-process completion notification that "
-                "wakes you. COMPOSE the message yourself: write what YOU want to say to "
+                "dispatch acknowledgement — status queued plus a delivery_id (the hand-off to a background "
+                "delivery process, not a delivery receipt). It does NOT return their reply and you must "
+                "not wait or poll for one — send it, finish your turn, and that process's "
+                "completion notification wakes you with the outcome: their reply, or the "
+                "delivery failure — unless the ack returns reply_delivery=\"poll\", in which case "
+                "follow its process(action=\"wait\") instruction before ending the turn. COMPOSE the message yourself: write what YOU want to say to "
                 "that agent (lead with the point; include the concrete ask or result). "
                 "Never paste the user's words verbatim — paraphrase the actionable "
                 "substance, and keep private 1:1 chat content private. Message one "
@@ -305,7 +308,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             # per the #93091 reason enum).
             return json.dumps({"error": str(exc), "reason": exc.reason})
         label = f"@{match['handle']} on {match['connection_label'] or match['connection_id']}"
-        raw = _spawn_delivery(waiter_command(root, envelope), label, task_id=task_id, agent=agent)
+        raw = _spawn_delivery(waiter_command(root, envelope), label, delivery_id=envelope["id"], task_id=task_id, agent=agent)
         waiter_error = json.loads(raw).get("error")
         if not waiter_error:
             return raw
@@ -314,7 +317,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         # sender resend and deliver the message twice. Same shape as the live-owner branch of
         # _start_delivery: queued + notification_error.
         return json.dumps({
-            "status": "queued", "to": label, "notification_error": waiter_error,
+            "status": "queued", "delivery_id": envelope["id"], "to": label, "notification_error": waiter_error,
             "detail": (f"Message queued for {label}; the relay delivers it on its own, but the reply "
                        "waiter did not start, so the reply will NOT wake you. Do NOT resend."),
         })
@@ -454,6 +457,12 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     return proc.returncode
 
 
+def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
+    """One delivery id per DM file: the dispatch ack, the live-owner intent and every retry
+    of the runner derive it the same way, so the sender can correlate all of them."""
+    return hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
+
+
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
     from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
@@ -469,7 +478,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
         if owner is None:
             return None
         intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8"),
-                      delivery_id=hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest(),
+                      delivery_id=_dm_delivery_id(dm_file),
                       **({"author": author} if author else {}))
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -543,8 +552,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
             try:
                 record = _admit_live_dm(home, dm_file, author)
             except Exception as exc:
-                print(json.dumps({"status": "ambiguous", "delivery_id": hashlib.sha256(
-                    str(Path(dm_file).resolve()).encode()).hexdigest(),
+                print(json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
                     "error": f"Live admission outcome unknown: {exc}. Do not resend.",
                     "evidence_file": dm_file}))
                 return 1
@@ -593,8 +601,7 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
         try:
             record = _admit_live_dm(profile_home, dm_file, author)
         except Exception as exc:
-            return json.dumps({"status": "ambiguous", "delivery_id": hashlib.sha256(
-                str(Path(dm_file).resolve()).encode()).hexdigest(),
+            return json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
                 "error": f"Live delivery admission could not be confirmed: {exc}. Do not resend.",
                 "evidence_file": dm_file})
         if record is not None:
@@ -606,6 +613,11 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
                 result["notification_error"] = notification["error"]
             elif notification.get("process_id"):
                 result["process_id"] = notification["process_id"]
+                result["reply_delivery"] = notification.get("reply_delivery", "notification")
+                if result["reply_delivery"] == "poll":
+                    # Same runner, same stdout-borne reply (#101142): a non-push sender must get
+                    # the poll instruction here too, not 'finish your turn'.
+                    result["detail"] = f"Durably queued for the live Bot Chat owner. Do NOT resend. {notification['detail']}"
             return json.dumps(result)
     try:
         command = _delivery_command(argv, dm_file, stdin_file=stdin_file, profile_home=profile_home, author=author)
@@ -615,11 +627,13 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
     return _spawn_delivery(command, label, dm_file=dm_file, task_id=task_id, agent=agent)
 
 
-def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
+def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, delivery_id: Optional[str] = None,
                     task_id: Optional[str], agent: Any) -> str:
     """Launch the cleanup-owning runner and transfer file ownership on ack. ``dm_file``
     is None for relay deliveries (the waiter watches a reply file; envelope artifacts
-    are owned/swept by ``tools/bot_relay.py``)."""
+    are owned/swept by ``tools/bot_relay.py``), which pass the envelope id as ``delivery_id``
+    instead. The ack is ``queued`` + ``delivery_id`` like the live-owner branch: hand-off
+    to a background process, never a delivery receipt."""
     transferred = False
     try:
         from tools.terminal_tool import terminal_tool
@@ -643,14 +657,33 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
             return _err(f"Delivery to {label} failed to start: no process id returned")
         # From here the background runner owns the file (removed after the consumer finishes).
         transferred = True
+        if parsed.get("notify_on_complete") is False:
+            # terminal_tool refused the completion promise: this session (api_server, one-shot
+            # runner) cannot receive an async completion, so the recipient's reply would never
+            # be injected here (#101142). Say so and name the return path the surface supports.
+            detail = (f"Message handed to a background delivery process for {label}, but THIS session "
+                      "cannot receive completion notifications, so the reply will NOT arrive on its own. "
+                      f"Before ending your turn, retrieve the outcome with process(action='wait', "
+                      f"session_id='{proc_id}') — its output is the reply (relay it, attributed to that "
+                      "agent) or the delivery failure (report it; the message was NOT delivered); "
+                      "if wait returns status=timeout, call wait again until the process exits.")
+            if _persist_reply_when_done(proc_id, agent):
+                detail += (" Its outcome is also saved into this session's transcript as a delivery row "
+                           "when the process exits, so it survives even if the turn ends first.")
+        else:
+            detail = (f"Message queued for {label}: this acknowledges the hand-off to a "
+                      "background delivery process, not a delivery receipt — do NOT wait or poll. "
+                      "Finish your turn now; that process's completion notification carries the "
+                      "delivery outcome — the reply (relay it then, attributed to that agent) or "
+                      "the delivery failure (report it; the message was NOT delivered).")
         return json.dumps({
-            "status": "sent",
+            "status": "queued",
+            "delivery_id": delivery_id or (_dm_delivery_id(dm_file) if dm_file else ""),
             "to": label,
-            "detail": (f"Message dispatched to {label}. This is asynchronous — do NOT wait "
-                       "or poll. Finish your turn now; when the delivery completes, its "
-                       "notification carries the reply — relay it then, attributed to that agent."),
+            "reply_delivery": "poll" if parsed.get("notify_on_complete") is False else "notification",
+            "detail": detail,
             "process_id": proc_id,
-            "sent_at": int(time.time()),
+            "queued_at": int(time.time()),
         })
     except Exception as exc:
         logger.error("message_agent delivery spawn failed: %s", exc, exc_info=True)
@@ -660,8 +693,77 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
             _unlink_dm_file(dm_file)
 
 
+def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
+    """#101142 durable leg. A non-push sender (api_server, one-shot runner) gets no completion
+    notification, so once the tracked runner exits its stdout — the recipient's reply or the
+    delivery failure — is appended to the sender's session transcript as a DELIVERY row
+    (``display_kind="process_complete"``, the shape push surfaces persist for the same
+    completion; mirrors gateway.wake.persist_delegation_delivery). A sender that already read
+    the outcome via process(action='wait'/'log') is not told twice. Returns False (nothing
+    armed) when the sender has no session transcript or the process is not tracked here."""
+    from tools.process_registry import process_registry
+
+    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    proc = process_registry.get(proc_id)
+    if proc is None or not session_id or not callable(getattr(db, "append_message", None)):
+        return False
+
+    def _run() -> None:
+        from tools.process_registry_notifications import (
+            format_process_notification, process_completion_display_text,
+        )
+
+        proc._completion_event.wait()
+        if process_registry.is_completion_consumed(proc_id):
+            return
+        evt = {"type": "completion", "session_id": proc_id, **process_registry._exit_snapshot(proc, "exited")}
+        try:
+            db.append_message(session_id, "user", content=format_process_notification(evt),
+                              display_kind="process_complete",
+                              display_metadata={"display_text": process_completion_display_text([evt])})
+        except Exception as exc:
+            logger.warning("message_agent: could not persist the reply of %s into session %s: %s",
+                           proc_id, session_id, exc)
+
+    threading.Thread(target=_run, name=f"message-agent-reply-{proc_id}", daemon=True).start()
+    return True
+
+
+def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
+    """The relay reply waiter (``tools/bot_relay.waiter_command``): block until the sender-side
+    reply file exists, print it as the completion notification the sender wakes on, exit 1 on a
+    delivery error or when the budget runs out. Stdlib only: this runs as a background process
+    from any bot turn, and the sender's completion notification is exactly its stdout."""
+    try:
+        deadline = time.time() + float(budget_seconds)
+    except ValueError:
+        return 2
+    while time.time() < deadline:
+        if os.path.exists(reply_path):
+            with open(reply_path, encoding="utf-8") as fh:
+                d = json.load(fh)
+            if d.get("error"):
+                # Typed reason code rides ahead of the free text so the sender can branch on it
+                # without parsing provider prose. See #93091.
+                code = str(d.get("reason") or "").strip()
+                tag = f" [reason: {code}]" if code else ""
+                print(f"Delivery to {label} failed{tag}: {d['error']}")
+                return 1
+            print(f"Reply from {label}:")
+            print(d.get("reply") or "(empty reply)")
+            return 0
+        # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
+        time.sleep(0.25)
+    print(f"No reply from {label} within {budget_seconds}s. The message may still be delivered when "
+          "the Desktop reconnects; do not resend blindly.")
+    return 1
+
+
 def _delivery_main(args: list[str]) -> int:
-    """Runner entry for the argv ``_delivery_command`` builds. Malformed argv exits 2 without touching the DM file."""
+    """Runner entry for the argv ``_delivery_command`` and ``bot_relay.waiter_command`` build.
+    Malformed argv exits 2 without touching the DM file."""
+    if args[:1] == ["--wait-reply"]:
+        return _wait_reply_main(*args[1:]) if len(args) == 4 else 2
     if not args or args[0] != "--run-delivery":
         return 2
     rest, author = args[1:], None
@@ -680,13 +782,12 @@ def _delivery_main(args: list[str]) -> int:
             profile_home, argv = Path(argv[1]), argv[2:]
         return _run_delivery(argv, rest[1], stdin_file=rest[0] == "stdin", profile_home=profile_home, author=author)
     except Exception as exc:
-        # 'target_busy': the queued delivery gave up after its bounded wait — surface the
-        # structured payload on stdout so the completion notification carries it back.
-        if getattr(exc, "reason", "") == "target_busy":
-            # See #93091.
-            print(json.dumps({"error": str(exc), "reason": "target_busy"}))
-        else:
-            print(f"message_agent delivery failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        # Every refusal ships a typed reason on stdout so the completion notification carries it
+        # back to the sender (#93091): 'target_busy' from the queue's bounded wait, otherwise the
+        # same vocabulary-guarded classification the relay lane applies.
+        from tools.bot_failure_reasons import delivery_failure_reason
+
+        print(json.dumps({"error": str(exc), "reason": delivery_failure_reason(exc)}))
         return 1
 
 

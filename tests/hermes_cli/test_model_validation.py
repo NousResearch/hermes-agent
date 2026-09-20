@@ -348,8 +348,6 @@ class TestNormalizeOpencodeBaseUrlFamilyPath:
     @pytest.mark.parametrize("provider, api_mode, url, expected", [
         ("opencode-go", "chat_completions", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go/v1"),
         ("opencode-zen", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
-        # opencode-free is served on the Zen relay, so it maps back to /zen (not /zen/go).
-        ("opencode-free", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
         # Family healed first, then the /v1 strip for the Anthropic SDK — both apply.
         ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go"),
         ("opencode-zen", "anthropic_messages", "https://opencode.ai/zen/go", "https://opencode.ai/zen"),
@@ -357,6 +355,13 @@ class TestNormalizeOpencodeBaseUrlFamilyPath:
         ("opencode-go", "chat_completions", "https://gateway.internal.example/zen/v1", "https://gateway.internal.example/zen/v1"),
         # Non-/zen paths on the real host keep the pre-existing /v1 behaviour.
         ("opencode-go", "chat_completions", "https://opencode.ai/api", "https://opencode.ai/api/v1"),
+        # A custom provider merely NAMED after a family declared its relay explicitly: no family
+        # heal, but still the family's /v1 handling.
+        ("opencode-zen-bridge", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1"),
+        ("opencode-go-bridge", "chat_completions", "https://opencode.ai/zen/go", "https://opencode.ai/zen/go/v1"),
+        # The host check is on the hostname, so a port does not defeat the heal; query survives.
+        ("opencode-go", "chat_completions", "https://opencode.ai:443/zen/v1", "https://opencode.ai:443/zen/go/v1"),
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1?x=1", "https://opencode.ai/zen/go?x=1"),
     ])
     def test_family_path_follows_the_resolved_provider(self, provider, api_mode, url, expected):
         from hermes_cli.models import normalize_opencode_base_url

@@ -35,7 +35,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
     stable host cwd for the agent's tools.
     """
-    if source != "cli" or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in CLI_FAMILY_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
     try:
         return os.getcwd()
@@ -50,6 +50,11 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
 # Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
 _UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
 
+# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
+# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
+ONESHOT_SOURCE = "oneshot"
+CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
+
 
 def _session_source_for_agent(platform: Optional[str]) -> str:
     try:
@@ -57,9 +62,12 @@ def _session_source_for_agent(platform: Optional[str]) -> str:
     except Exception:
         get_session_env = os.environ.get
     source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
-    if (source in _UI_TRANSPORT_SOURCES and get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
-            and get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") != "1"):
+    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
+    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
         source = ""
+    if single_query and not source and (platform or "cli") == "cli":
+        return ONESHOT_SOURCE
     return source or platform or "cli"
 
 
@@ -619,7 +627,7 @@ class AIAgent(
             "on chatgpt.com/backend-api/codex (no stream events, no error). "
             "This is a known backend-side pattern that has affected ChatGPT "
             "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, "
             "or switch to a different model/provider in your fallback chain. "
             "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See hermes-agent#21444 for symptom history."
@@ -661,6 +669,13 @@ class AIAgent(
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
         if normalized_provider in ("nous", "custom") or is_actual_route(provider):
+            return False
+        # ACP facades expose the OpenAI-compatible chat.completions shape regardless of model
+        # family and have no ``responses`` attribute, so neither primary routing nor GPT-5
+        # fallback activation may upgrade them. Keyed on the profile's auth_type: every
+        # external-process provider, not one vendor's names.
+        from hermes_cli.runtime_provider_backends import _is_external_process_provider
+        if _is_external_process_provider(normalized_provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -934,6 +949,9 @@ class AIAgent(
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
         self._close_request_clients("cache_evict")
+        # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
+        # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
+        _quietly(self._close_codex_session)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never

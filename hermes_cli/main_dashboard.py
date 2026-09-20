@@ -18,10 +18,27 @@ from hermes_cli.cli_output import line_input
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
 
-def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None) -> list[int]:
-    """Return PIDs of stale ``dashboard``/``serve`` processes for update cleanup."""
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
-    return [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
+                               scope_home: str | None = None) -> list[int]:
+    """PIDs of running ``dashboard``/``serve`` backends the caller may stop.
+
+    *scope_home*: keep only backends whose resolved Hermes home (see
+    ``_hermes_home_for_pid``) is this home; unreadable ownership is spared, never guessed.
+    ``--stop`` and the post-update cleanup pass their own home so another install's or
+    profile's backend on the same machine is never a target (#113978).
+    """
+    from hermes_cli.dashboard_procs import (
+        _caller_ancestor_pids,
+        _is_caller_wrapper_shell,
+        _pids_owned_by_hermes_home,
+        _scan_dashboard_processes,
+    )
+    pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+    # The argv substring scan also selects the caller's own wrapper shell (``bash -c
+    # 'hermes dashboard --stop'``); killing it takes down the invoking terminal.
+    ancestors = _caller_ancestor_pids()
+    pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
+    return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
@@ -233,6 +250,8 @@ def _loaded_launchd_backend_jobs(
     if sys.platform != "darwin":
         return []
     import plistlib
+    from xml.parsers.expat import ExpatError
+
     from hermes_cli.gateway import _launchd_print_service_pid
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
     jobs: list[tuple[str, str, list[str], int | None]] = []
@@ -245,7 +264,11 @@ def _loaded_launchd_backend_jobs(
             try:
                 with open(plist_path, "rb") as f:
                     data = plistlib.load(f)
-            except (OSError, ValueError, plistlib.InvalidFileException):
+            # ExpatError is NOT a ValueError: plistlib propagates it unwrapped for
+            # XML that is not well-formed (e.g. a hand-edited plist with a raw
+            # `&` in `ProgramArguments`), and one such operator file must skip —
+            # not abort — the whole post-pull cleanup scan.
+            except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
                 continue
             if not isinstance(data, dict):
                 continue

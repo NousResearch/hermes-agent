@@ -29,6 +29,7 @@ import {
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
   setMessagingSessions,
@@ -366,7 +367,12 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
       return withAuthoritativeTurnState(previous, message)
     }
 
-    const sameText = nextText === previousVisibleText || nextText === previousText.trim()
+    // Empty prose carries no identity: an empty-text cached assistant and an
+    // empty/tool-only hydrated row can share a role ordinal while being
+    // different turns, and plain `'' === ''` would pair them (#114543),
+    // grafting the cached reasoning/tool parts onto the unrelated row.
+    const sameText =
+      nextText.length > 0 && (nextText === previousVisibleText || nextText === previousText.trim())
 
     // Mid-turn, the authoritative text has advanced past the cached copy by one
     // or more deltas. That is still the same turn, and the cached row holds the
@@ -383,12 +389,15 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // inherit its reasoning/tool parts (#76444 review / salvage).
     const sameTurn =
       sameText ||
-      (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
+      (nextText.length > 0 &&
+        previousTrimmed.length > 0 &&
+        isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
       (message.role === 'assistant' &&
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
         !hasStructuralParts(message) &&
-        isLiveTailRow(previous))
+        isLiveTailRow(previous) &&
+        isLiveTailRow(message))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
@@ -1435,14 +1444,16 @@ export function dropListedSession(storedSessionId: string): void {
   setUnlistedSessionOwnerRows(prev => prev.filter(keep))
 }
 
+export function listedSliceTarget(session: SessionInfo): ListedSessionSlice {
+  return isMessagingSource(session.source)
+    ? 'messaging'
+    : normalizeSessionSource(session.source) === 'cron'
+      ? 'cron'
+      : 'sessions'
+}
+
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
-  const target: ListedSessionSlice =
-    slice ??
-    (isMessagingSource(session.source)
-      ? 'messaging'
-      : normalizeSessionSource(session.source) === 'cron'
-        ? 'cron'
-        : 'sessions')
+  const target: ListedSessionSlice = slice ?? listedSliceTarget(session)
 
   const prepend = (prev: SessionInfo[]) => [
     session,
@@ -1467,7 +1478,7 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
-  setSessions(prev => [
+  const prepend = (prev: SessionInfo[]) => [
     session,
     ...prev.filter(existing => {
       if (sessionMatchesStoredId(existing, storedSessionId)) {
@@ -1476,7 +1487,23 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 
       return (existing._lineage_root_id ?? existing.id) !== lineage
     })
-  ])
+  ]
+
+  // A resolve can observe a source move (cross-room /resume rewrites the row to
+  // source='matrix', #113827): the row belongs to its current slice, and the
+  // stale copy in every other slice must go or the session shows twice.
+  // Identity-stable when nothing matched — every sidebar memo keys on these
+  // arrays, and a resolve runs on each row open.
+  const evict = (prev: SessionInfo[]) =>
+    prev.some(existing => sessionMatchesStoredId(existing, storedSessionId))
+      ? prev.filter(existing => !sessionMatchesStoredId(existing, storedSessionId))
+      : prev
+
+  const target = listedSliceTarget(session)
+
+  setSessions(target === 'sessions' ? prepend : evict)
+  setMessagingSessions(target === 'messaging' ? prepend : evict)
+  setCronSessions(target === 'cron' ? prepend : evict)
 }
 
 // Every session row reachable through the profile-scoped project tree —
@@ -1663,7 +1690,16 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'reasoningEffortWire'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -1717,6 +1753,10 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
   if (state.reasoningEffort !== undefined) {
     setCurrentReasoningEffort(state.reasoningEffort)
+  }
+
+  if (state.reasoningEffortWire !== undefined) {
+    setCurrentReasoningEffortWire(state.reasoningEffortWire)
   }
 
   if (state.serviceTier !== undefined) {
@@ -1781,6 +1821,10 @@ export function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort === 'string') {
     sessionState.reasoningEffort = info.reasoning_effort
+  }
+
+  if (typeof info.reasoning_effort_wire === 'string') {
+    sessionState.reasoningEffortWire = info.reasoning_effort_wire
   }
 
   if (typeof info.service_tier === 'string') {

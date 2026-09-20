@@ -398,9 +398,8 @@ class PluginDispatchMixin:
                     # Fresh deep copy per subscriber: no callback can mutate what the next sees.
                     resolve_plugin_command_result(callback(**copy.deepcopy(item.payload)))
                 except Exception as exc:
-                    logger.warning(
-                        "Event '%s' subscriber %s raised: %s", item.event,
-                        getattr(callback, "__name__", repr(callback)), exc)
+                    # A subscriber that fails identically on every emit is reported once (#111922).
+                    self._report_hook_failure(item.event, callback, item.payload, exc, surface="Event")
         finally:
             self._emit_depth.value = previous_depth
 

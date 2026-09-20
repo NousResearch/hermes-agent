@@ -13,6 +13,8 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _DB_PERSISTED_MARKER,
     ContextCompressor,
+    _newest_checkpoint_carrier,
+    drop_shadowed_checkpoints,
     user_originated_turn_view,
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
@@ -207,12 +209,17 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         ) and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT):
             msg[_DB_PERSISTED_MARKER] = True
             continue
+        if getattr(agent, "_mute_notification_reply", False):
+            # Only new rows, never the cached history prefix. Keep evidence/model
+            # context intact while transcript pollers omit unsolicited presentation.
+            msg["display_kind"] = "hidden"
+            msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
         batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs
 
 
-def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict]) -> None:
+def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict], messages: List[Dict]) -> None:
     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
     if not batch_rows:
         return
@@ -223,6 +230,11 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
     )
     sync_flushed_message_markers(batch_msgs, batch_rows)
+    if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
+        # The insert already rewrote the older rows (SessionDB._drop_shadowed_checkpoint_rows); mirror it on
+        # the live transcript so forks/compaction built from memory carry one checkpoint too. Markers stay:
+        # the rows are durable exactly as the dicts now read.
+        drop_shadowed_checkpoints(messages)
 
 
 def _db_flush_adopt_compression_tip(agent) -> bool:
@@ -375,7 +387,7 @@ class SessionPersistenceMixin:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
             batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
-            _db_flush_write(self, batch_rows, batch_msgs)
+            _db_flush_write(self, batch_rows, batch_msgs, messages)
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)

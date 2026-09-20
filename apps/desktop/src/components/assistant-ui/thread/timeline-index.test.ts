@@ -65,4 +65,33 @@ describe('timeline metadata index', () => {
     await expect(fetchTimelineIndex('session', 'default')).rejects.toThrow('offline')
     expect((await fetchTimelineIndex('session', 'default')).complete).toBe(true)
   })
+
+  it('names the mark before an anchor, paging a partial index only as far as one lookup may', async () => {
+    api
+      .mockResolvedValueOnce({
+        entries: [{ row_id: 10, preview: 'Prompt 10' }, { row_id: 20, preview: 'Prompt 20' }],
+        pagination: { next_cursor: 20, has_more: true }
+      })
+      .mockResolvedValueOnce({
+        entries: [{ row_id: 30, preview: 'Prompt 30' }, { row_id: 40, preview: 'Prompt 40' }],
+        pagination: { next_cursor: null, has_more: false }
+      })
+      .mockResolvedValue(page(1, true))
+    const { previousPromptRowId } = await import('./timeline-index')
+
+    // The anchor sits past the first page; the lookup advances the shared index.
+    expect(await previousPromptRowId('session', 'default', 40)).toBe(30)
+    expect(api).toHaveBeenCalledTimes(2)
+    // Complete index: a mark before it needs no further request.
+    expect(await previousPromptRowId('session', 'default', 20)).toBe(10)
+    expect(api).toHaveBeenCalledTimes(2)
+    // The oldest mark has nothing before it, and an unknown anchor is never guessed.
+    expect(await previousPromptRowId('session', 'default', 10)).toBeNull()
+    expect(await previousPromptRowId('session', 'default', undefined)).toBeNull()
+    expect(api).toHaveBeenCalledTimes(2)
+    // A session whose index never completes nor covers the anchor: the lookup
+    // stops at its per-lookup ceiling instead of walking the whole session.
+    expect(await previousPromptRowId('endless', 'default', 99_999)).toBe(1)
+    expect(api).toHaveBeenCalledTimes(5)
+  })
 })

@@ -22,7 +22,6 @@
   "/platforms": "terminal",
   "/plugins": "terminal",
   "/quit": "terminal",
-  "/reasoning": "advanced",
   "/redraw": "terminal",
   "/reload": "terminal",
   "/reload-mcp": "advanced",

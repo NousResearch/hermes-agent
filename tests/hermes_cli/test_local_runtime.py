@@ -870,3 +870,16 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+def test_manifest_verified_tolerates_non_dict_manifest(tmp_path):
+    """A parseable-but-non-object manifest used to raise AttributeError out of
+    manifest_verified (the .get ran inside a try that only caught decode/OSError),
+    breaking any() scans over install dirs."""
+    from hermes_cli.local_runtime.binaries import manifest_verified
+
+    m = tmp_path / "manifest.json"
+    m.write_text('"oops"', encoding="utf-8")
+    assert manifest_verified(m) is False
+    m.write_text(json.dumps({"verified_version": "5015 (abc)"}), encoding="utf-8")
+    assert manifest_verified(m) is True

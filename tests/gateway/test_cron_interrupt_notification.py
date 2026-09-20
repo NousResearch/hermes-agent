@@ -78,6 +78,25 @@ class TestNotifyInterruptedCronJobs:
         assert adapter.sent_calls[0][0] == "123456"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("setting", [None, False, True])
+    async def test_interrupt_notice_is_a_suppressible_diagnostic(self, tmp_path, monkeypatch, setting):
+        import json
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+        cfg = {} if setting is None else {"display": {"suppress_warning_notifications": setting}}
+        (tmp_path / "config.yaml").write_text(json.dumps(cfg))
+        runner, adapter = make_restart_runner()
+        _bind_notifier(runner)
+        job = _telegram_job()
+        with patch("cron.jobs.get_job", return_value=job), \
+             patch("cron.scheduler._resolve_delivery_targets",
+                   return_value=[_telegram_target()]):
+            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+        expected = 0 if setting is True else 1
+        assert sent == expected
+        assert len(adapter.sent) == expected
+
+    @pytest.mark.asyncio
     async def test_says_restarting_when_restart_was_requested(self):
         runner, adapter = make_restart_runner()
         _bind_notifier(runner)

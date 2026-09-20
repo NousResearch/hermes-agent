@@ -44,7 +44,6 @@ _VIDEO_URL_PARAM = {
         "`public_url` from a prior xAI Imagine result."
     ),
 }
-_MODEL_PARAM = {"type": "string", "description": "Optional xAI Imagine model override."}
 
 
 def _xai_video_schema(name: str, verb: str, noun: str, prompt_verb: str, extra: Dict[str, Any]) -> Dict[str, Any]:
@@ -65,7 +64,6 @@ def _xai_video_schema(name: str, verb: str, noun: str, prompt_verb: str, extra: 
                 },
                 "video_url": _VIDEO_URL_PARAM,
                 **extra,
-                "model": _MODEL_PARAM,
             },
             "required": ["prompt", "video_url"],
         },
@@ -106,8 +104,7 @@ def _run_xai_video_tool(args: Dict[str, Any], op: str, run, **extra: Any) -> str
             "error_type": "provider_not_configured",
             "provider": "xai",
         })
-    model = _clean_string(args.get("model"))
-    return json.dumps(run(prompt=prompt, video_url=video_url, model=model, **extra))
+    return json.dumps(run(prompt=prompt, video_url=video_url, **extra))
 
 
 def _handle_xai_video_edit(args: Dict[str, Any], **_kw: Any) -> str:

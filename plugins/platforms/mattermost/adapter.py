@@ -185,8 +185,9 @@ class MattermostAdapter(BasePlatformAdapter):
                 or not self._last_post_failure_is_broken_thread_root()):
             return data
         flat_payload = {k: v for k, v in payload.items() if k != "root_id"}
-        flat_payload["message"] = ("⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n"
-                                   + str(flat_payload.get("message") or "")).strip()
+        body = str(flat_payload.get("message") or "")
+        flat_payload["message"] = self.warning_text(
+            ("⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n" + body).strip(), body)
         logger.warning("Mattermost: falling back to flat channel delivery for notify-worthy post in %s", chat_id)
         return await self._api_post("posts", flat_payload)
 

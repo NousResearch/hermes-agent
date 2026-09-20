@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import sys
@@ -172,6 +173,50 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     # Board location and workspace routing ride along with the fence marker.
     assert env["HERMES_KANBAN_DB"] == str(home / "kanban.db")
     assert env["HERMES_KANBAN_WORKSPACE"] == str(tmp_path / "parent-workspace")
+
+
+def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    """An inherited child marker fences both bridge writes instead of faking success, and says
+    so once at WARNING (the DEBUG-only refusal hid a starving claim for a day). An in-process
+    delegate child stays fenced too, quietly, without consuming the worker's heartbeat window."""
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from agent.delegation_context import delegated_child_context
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools
+
+    conn = kbc.connect()
+    try:
+        task_before = kb.get_task(conn, tid)
+        events_before = kb.list_events(conn, tid)
+        monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path / ".hermes"))
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+        # raising=False: a regression that drops the module flag must fail on the
+        # symptom assertions below, not on this attribute probe.
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_fence_warned", False, raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="tools.kanban_tools"):
+            assert kanban_tools.heartbeat_current_worker_from_env() is False
+            monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+            assert kanban_tools.heartbeat_current_worker_from_env() is False
+        fence_warnings = [r for r in caplog.records if "HERMES_DELEGATED_CHILD_CONTEXT" in r.getMessage()]
+        assert len(fence_warnings) == 1 and tid in fence_warnings[0].getMessage()
+
+        monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT")
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+        with delegated_child_context("child-1"):
+            assert kanban_tools.heartbeat_current_worker_from_env() is False
+        assert kanban_tools._auto_heartbeat_last_attempt == 0.0
+
+        task_after = kb.get_task(conn, tid)
+        assert task_after.claim_expires == task_before.claim_expires
+        assert task_after.last_heartbeat_at == task_before.last_heartbeat_at
+        assert kb.list_events(conn, tid) == events_before
+    finally:
+        conn.close()
 
 
 def test_delegate_child_kanban_cli_cannot_delete_parent_board(

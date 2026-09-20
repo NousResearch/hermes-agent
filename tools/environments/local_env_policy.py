@@ -181,6 +181,37 @@ def _is_hermes_internal_secret(key: str) -> bool:
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
 
 
+# Authorization gates: the env names platform adapters read to decide WHO may talk to the
+# agent (allow/deny lists, allow-all opt-ins, bot policy, channel scoping). Not credentials, so
+# no secret scrub touches them, and most profiles' ``.env`` files do not define them, so the
+# child's own dotenv load never overwrites an inherited value: a child spawned FOR profile B
+# from a process that loaded profile A's gates (or a unit-file ``Environment=``) would enforce
+# A's channel/user/role list as its own (#113270). Matched by shape so a gate added to any
+# adapter is covered without a second edit; ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``,
+# ``HERMES_ALLOW_PRIVATE_URLS`` are process settings, not adapter gates).
+_PROFILE_GATE_ENV_MARKERS = (
+    "_ALLOWED_", "_ALLOW_ALL_", "_ALLOW_FROM", "_ALLOW_BOTS", "_ALLOW_PUBLIC_", "_IGNORED_CHANNELS",
+    "_NO_THREAD_CHANNELS", "_FREE_RESPONSE_CHANNELS", "_BACKFILL_CHANNELS", "_GROUP_ALLOWED",
+)
+
+
+def is_profile_gate_env(name: str) -> bool:
+    """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``TELEGRAM_ALLOW_ALL_USERS``,
+    ``GATEWAY_ALLOWED_USERS``, ``WHATSAPP_GROUP_ALLOW_FROM`` ...) — profile-scoped policy a child acting
+    for ANOTHER profile must never inherit."""
+    upper = name.upper()
+    if upper.startswith("HERMES_") or upper.startswith("_"):
+        return False
+    return any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS)
+
+
+def strip_profile_gate_env(env: dict) -> dict:
+    """Drop every authorization gate from *env* in place (see :func:`is_profile_gate_env`)."""
+    for key in [k for k in env if is_profile_gate_env(k)]:
+        del env[key]
+    return env
+
+
 def _plugin_terminal_env_strip_keys() -> frozenset:
     """Credential env keys owned by plugin-registered terminal backends (Tier-1:
     stripped from every spawned subprocess). Computed at call time because plugins

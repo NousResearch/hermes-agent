@@ -158,7 +158,9 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             reset_secret_scope(secret_token)
             reset_hermes_home_override(home_token)
     except Exception as exc:
-        msg = str(exc)
+        from tools.mcp_dashboard_oauth import exception_message
+
+        msg = exception_message(exc)
         # Providers gating RFC 7591 registration to pre-approved clients 403 the
         # register call before any auth URL exists; say so, not "403 Forbidden".
         try:

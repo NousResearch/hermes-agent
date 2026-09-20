@@ -1,5 +1,5 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -1136,8 +1136,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                           {' · '}
                           {current.reasoning_effort === 'none'
                             ? `${m.reasoning} ${m.reasoningOff}`
-                            : (t.shell.modelOptions[current.reasoning_effort as keyof typeof t.shell.modelOptions] ??
-                              current.reasoning_effort)}
+                            : (isReasoningEffort(current.reasoning_effort)
+                                ? t.shell.modelOptions[current.reasoning_effort]
+                                : current.reasoning_effort)}
                         </span>
                       )}
                     </span>

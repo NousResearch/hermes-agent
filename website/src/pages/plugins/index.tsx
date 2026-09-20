@@ -2,7 +2,6 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
-import { pluginCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface PluginCapabilities {
   providesTools?: string[];
@@ -50,8 +49,8 @@ interface CatalogMeta {
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
 
-const CATALOG_README_URL =
-  "https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog";
+// Docs section describing the PR-based submission workflow.
+const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting-a-plugin-to-the-catalog";
 
 const TIER_CONFIG: Record<
   string,
@@ -191,7 +190,6 @@ function PluginCard({
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
   const pinUrl = `${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/tree/${plugin.sha}`;
-  const installUrl = pluginCatalogInstallUrl(plugin);
 
   return (
     <div
@@ -290,7 +288,7 @@ function PluginCard({
           ))}
         </div>
 
-        {onPick ? (
+        {onPick && (
           <button
             className={styles.pickBtn}
             onClick={(e) => {
@@ -300,14 +298,6 @@ function PluginCard({
           >
             + Add to this Agent
           </button>
-        ) : (
-          <a
-            className={styles.pickBtn}
-            href={installUrl}
-            onClick={(e) => e.stopPropagation()}
-          >
-            Install in Hermes
-          </a>
         )}
 
         {expanded && (
@@ -382,17 +372,6 @@ function PluginCard({
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function StatCard({ value, label, color }: { value: number; label: string; color: string }) {
-  return (
-    <div className={styles.stat}>
-      <span className={styles.statValue} style={{ color }}>
-        {value}
-      </span>
-      <span className={styles.statLabel}>{label}</span>
     </div>
   );
 }
@@ -567,7 +546,7 @@ export default function PluginCatalogPage() {
   return (
     <Layout
       title="Plugin Catalog"
-      description="Browse reviewed, SHA-pinned plugins for Hermes Agent"
+      description="Give Hermes new powers: reviewed plugins you can install in one click"
     >
       <div className={`${styles.page} ${pickerMode ? styles.pickerMode : ""}`}>
         <header className={styles.hero}>
@@ -584,49 +563,36 @@ export default function PluginCatalogPage() {
               </span>
             </nav>
             <p className={styles.heroSub}>
-              Reviewed, SHA-pinned plugins. Open in Hermes Desktop to review and install, or copy the CLI command.
+              Give Hermes new powers. Memory, voice, messaging, browsing, Desktop panes and more,
+              built by the community.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})
                 </span>
               )}
             </p>
-            {meta.generatedAt && !catalogEmpty && (
-              <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
-                Catalog refreshed{" "}
-                <span title={meta.generatedAt}>
-                  {formatRelativeTime(meta.generatedAt) || "recently"}
-                </span>
-                {meta.starsFetchedAt && (
-                  <>
-                    {" · "}ranked by GitHub stars as of{" "}
-                    <span title={meta.starsFetchedAt}>
-                      {formatRelativeTime(meta.starsFetchedAt) || "recently"}
-                    </span>
-                  </>
-                )}
+            {!catalogEmpty && (
+              <p className={styles.heroSub} style={{ fontSize: "0.9rem" }}>
+                Built a plugin?{" "}
+                <Link className={styles.heroLink} to={SUBMIT_PLUGIN_URL}>
+                  Submit it to the catalog →
+                </Link>
               </p>
             )}
-
-            {!catalogEmpty && (
-              <div className={styles.statsRow}>
-                <StatCard
-                  value={allPlugins.filter((p) => p.tier === "official").length}
-                  label="Official"
-                  color="#ffd700"
-                />
-                <StatCard
-                  value={allPlugins.filter((p) => p.tier === "community").length}
-                  label="Community"
-                  color="#94a3b8"
-                />
-                <StatCard
-                  value={Object.keys(categoryCounts).length}
-                  label="Categories"
-                  color="#7dd3fc"
-                />
-                <StatCard value={meta.removedCount ?? 0} label="Removed" color="#f87171" />
-              </div>
+            {meta.generatedAt && !catalogEmpty && (
+              <p className={styles.heroMeta}>
+                {allPlugins.length} plugins across {Object.keys(categoryCounts).length} categories
+                {" · "}updated{" "}
+                <span
+                  title={
+                    meta.starsFetchedAt
+                      ? `Catalog ${meta.generatedAt}; popularity ranking as of ${meta.starsFetchedAt}`
+                      : meta.generatedAt
+                  }
+                >
+                  {formatRelativeTime(meta.generatedAt) || "recently"}
+                </span>
+              </p>
             )}
           </div>
         </header>
@@ -650,7 +616,8 @@ export default function PluginCatalogPage() {
               <input
                 ref={searchRef}
                 type="text"
-                placeholder='Search plugins... (press "/" to focus)'
+                placeholder="Search plugins by name or by what you want Hermes to do"
+                title='Tip: press "/" to jump here'
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className={styles.searchInput}
@@ -744,14 +711,9 @@ export default function PluginCatalogPage() {
                 Submissions are open.
               </p>
               <div className={styles.emptyActions}>
-                <a
-                  className={styles.emptyCta}
-                  href={CATALOG_README_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  How to submit a plugin ↗
-                </a>
+                <Link className={styles.emptyCta} to={SUBMIT_PLUGIN_URL}>
+                  How to submit a plugin
+                </Link>
                 <Link className={styles.emptyCtaSecondary} to="/user-guide/features/plugin-catalog">
                   Read the catalog docs
                 </Link>

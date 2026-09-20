@@ -6,6 +6,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from hermes_cli.config import (
     config_command,
@@ -117,6 +118,17 @@ class TestConfigYamlRouting:
 
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
+
+    def test_tool_search_defer_is_recognized(self, _isolated_hermes_home, capsys):
+        """tools.tool_search.defer is read by ToolSearchConfig.from_raw, so it must be a
+        registered config key (not flagged as unrecognized) and coerce to a real list."""
+        set_config_value("tools.tool_search.defer", '["todo_list", "skill_manage"]')
+
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        assert "not a recognized config key" not in captured.err
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["tools"]["tool_search"]["defer"] == ["todo_list", "skill_manage"]
 
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
@@ -504,23 +516,66 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
-    """#34067 / #112003: an unknown path UNDER a known section is a typo and is refused before
-    anything is written (headline case ``gateway.discord.gateway_restart_notification``, correct
-    path ``discord.gateway_restart_notification``). Unknown TOP-LEVEL keys stay writable — their
-    scalars bridge into os.environ for skills/external apps — with a post-write notice.
+    """#34067 / #112003 / #114107: only a WRONG-PREFIX path under a known section is provably a typo
+    and refused before anything is written (headline case
+    ``gateway.discord.gateway_restart_notification``, correct path
+    ``discord.gateway_restart_notification``). Every other unknown path — unseeded runtime-read keys
+    and same-section misspellings alike — is written with a post-write notice, because
+    DEFAULT_CONFIG is not a complete registry of what the runtime reads.
     """
 
-    def test_unknown_subkey_under_known_section_refused_before_write(self, _isolated_hermes_home, capsys):
+    @pytest.mark.parametrize("key,suggestion", [
+        ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
+        # The stray middle segment ``gateway`` fuzzy-matches the sibling ``agent.gateway_timeout``;
+        # the structural wrong-prefix match must win so the path is refused, not written with
+        # a misleading did-you-mean.
+        ("agent.gateway.strict", "gateway.strict"),
+    ])
+    def test_unknown_subkey_under_known_section_refused_before_write(
+        self, key, suggestion, _isolated_hermes_home, capsys
+    ):
         config_path = _isolated_hermes_home / "config.yaml"
         config_path.write_text("model: gpt-4o\n", encoding="utf-8")
 
         with pytest.raises(SystemExit):
-            set_config_value("gateway.discord.gateway_restart_notification", "true")
+            set_config_value(key, "true")
 
         assert config_path.read_text(encoding="utf-8") == "model: gpt-4o\n"
         err = capsys.readouterr().err
         assert "nothing was written" in err
-        assert "discord.gateway_restart_notification" in err
+        assert f"Did you mean: {suggestion}" in err
+
+    @pytest.mark.parametrize("key,value,expected,suggestion", [
+        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
+        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
+        ("stt.provider", "whisper", "whisper", None),
+        # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
+        # from an unseeded key, so it is written too — the user gets the sibling suggestion
+        # (``agent.max_turns``) instead of a refusal.
+        ("agent.max_turnz", "50", 50, "agent.max_turns"),
+        # ``filter_silence_narration`` is an _EXTRA_KNOWN_ROOT_KEYS top-level form of a nested
+        # gateway setting (gateway/config_loader.py bridge). Its presence in the known roots
+        # must not turn the nested path into a wrong-prefix refusal.
+        ("gateway.filter_silence_narration", "false", False, None),
+    ])
+    def test_unknown_leaf_under_known_section_is_written_with_notice(
+        self, key, value, expected, suggestion, _isolated_hermes_home, capsys
+    ):
+        """Unseeded runtime settings are not proven typos merely by a schema walk."""
+        set_config_value(key, value)
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        section, name = key.split(".")
+        assert saved[section][name] == expected
+        out = capsys.readouterr().out
+        assert "not a recognized config key" in out
+        # Nested paths are written but never env-bridged: the top-level-only footer must not print.
+        assert "bridged to the environment" not in out
+        assert "Use --force" in out
+        if suggestion is None:
+            assert "Did you mean" not in out
+        else:
+            assert f"Did you mean: {suggestion}" in out
 
     def test_unknown_top_level_key_still_written_with_notice(self, _isolated_hermes_home, capsys):
         set_config_value("brand_new_future_key", "value")
@@ -569,6 +624,10 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
+        # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
+        # key" notice with a bogus near-miss suggestion (platform_hints.cli).
+        "platform_toolsets.cli",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
@@ -579,6 +638,8 @@ class TestValidateConfigKey:
         ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
+        # A typo of an _EXTRA_KNOWN_ROOT_KEYS root points at the real root, not a near-miss.
+        ("platform_toolset.cli", "platform_toolsets.cli"),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
         from hermes_cli.config import _validate_config_key
@@ -989,3 +1050,111 @@ class TestConfigGetRedaction:
         else:
             assert out == {"TERMINAL_SSH_HOST": self.SECRET, "mcp_servers.s.auth": "oauth"}.get(
                 key, "${UNSET_THING_API_KEY}")
+
+
+class TestContainerTypeRefusal:
+    """A value of the wrong shape for a list/mapping key is refused, never warn-and-stored
+    (#114471): every isinstance-gated reader would ignore the string while ``config get``
+    echoed it back."""
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    def test_string_where_schema_wants_list_is_refused(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers", "plainstring")
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers", '- name: x\n  model: "C:\\models\\x"')
+
+        err = capsys.readouterr().err
+        assert "must be a list, got a string" in err
+        assert "not valid YAML/JSON" in err
+        assert "custom_providers" not in _read_config(_isolated_hermes_home)
+
+    def test_valid_literal_and_scalar_keys_still_write(self, _isolated_hermes_home):
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m", "aliases": {"a": "p/m"}}})
+
+        set_config_value("custom_providers", "[{name: ok, base_url: http://h/v1}]")
+        set_config_value("model.default", "bar")
+        with pytest.raises(SystemExit):
+            set_config_value("model.aliases", "notamap")
+        # --force keeps its documented meaning: replace a whole mapping section.
+        set_config_value("model.aliases", "replaced", force=True)
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["custom_providers"] == [{"name": "ok", "base_url": "http://h/v1"}]
+        assert saved["model"] == {"default": "bar", "aliases": "replaced"}
+
+    @pytest.mark.parametrize("key", ["model.aliases", "providers", "toolsets"])
+    def test_unseeded_or_top_level_container_key_is_refused_without_on_disk_value(
+            self, _isolated_hermes_home, key):
+        # #114471 writer atom: the shape is fixed by the readers, not by what is on disk yet.
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        with pytest.raises(SystemExit):
+            set_config_value(key, "notacontainer")
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved == {"model": {"default": "m"}}
+
+    def test_bare_name_for_string_list_slot_is_stored_as_one_item_list(self, _isolated_hermes_home):
+        # agent.disabled_toolsets readers accept a bare name (parse_config_string_list); keep it writable.
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        set_config_value("agent.disabled_toolsets", "web")
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["disabled_toolsets"] == ["web"]
+
+
+class TestProviderSwitchClearsBaseUrl:
+    """``config set model.provider X`` must not carry the previous provider's route (#113719,
+    #40862): a ``base_url``/``api_mode`` that is not X's own endpoint goes, with a notice, so X's
+    key is never posted to the old endpoint. A route that IS X's stays."""
+
+    ROUTE = {"base_url": "https://chatgpt.com/backend-api/codex", "api_mode": "codex_responses"}
+
+    def _seed(self, tmp_path, model):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "model": model,
+            "custom_providers": [{"name": "mylab", "base_url": "http://10.0.0.5:8000/v1", "api_key": "k"}]}))
+
+    @pytest.mark.parametrize("target, seed_route", [
+        ("anthropic", ROUTE),                    # the reporter's switch: both route keys are stale
+        ("mylab", ROUTE),                        # named custom entry has its own endpoint
+        ("anthropic", {"api_mode": "codex_responses"}),  # wire mode alone is old-route state
+    ])
+    def test_switching_provider_clears_foreign_route(self, _isolated_hermes_home, capsys, target, seed_route):
+        self._seed(_isolated_hermes_home, {"provider": "opencode-go", "default": "gpt-5.3-codex", **seed_route})
+        set_config_value("model.provider", target)
+        model = yaml.safe_load(_read_config(_isolated_hermes_home))["model"]
+        assert model == {"provider": target, "default": "gpt-5.3-codex"}
+        out = capsys.readouterr().out
+        assert "Cleared" in out and "opencode-go" in out
+        for key, value in seed_route.items():
+            assert f"model.{key} ({value})" in out
+
+    @pytest.mark.parametrize("key, target, seed", [
+        ("model.default", "gpt-5", {"provider": "opencode-go", **ROUTE}),          # not a provider switch
+        ("model.provider", "opencode-go", {"provider": "opencode-go", **ROUTE}),   # same provider: no-op
+        ("model.provider", "openai-codex", {"provider": "opencode-go", **ROUTE}),  # route IS the target's
+        ("model.provider", "mylab", {"provider": "openai", "base_url": "http://10.0.0.5:8000/v1"}),
+        ("model.provider", "custom", {"provider": "openai", "base_url": "https://api.openai.com/v1"}),
+        ("model.provider", "anthropic", {"provider": "opencode-go", "base_url": "http://proxy.internal:8080/v1"}),
+    ])
+    def test_route_that_belongs_to_target_is_kept(self, _isolated_hermes_home, capsys, key, target, seed):
+        self._seed(_isolated_hermes_home, {**seed, "default": "m"})
+        set_config_value(key, target)
+        model = yaml.safe_load(_read_config(_isolated_hermes_home))["model"]
+        expected = {**seed, "default": "m", key.split(".", 1)[1]: target}
+        assert model == expected
+        out = capsys.readouterr().out
+        assert "Cleared" not in out
+        # Unknown host: kept, but the user is told the old route still applies (from #113725).
+        assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])

@@ -131,9 +131,8 @@ def unregister_gateway_notify(session_key: str) -> None:
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        entry.event.set()
+        for entry in _gateway_queues.pop(session_key, []):
+            entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -162,13 +161,32 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
-
-    for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
-        entry.event.set()
+        # Popping the entry and committing its outcome are ONE critical section: the waiter's
+        # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
+        # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
+        for entry in targets:
+            entry.result = choice
+            if reason:
+                entry.reason = reason
+            entry.event.set()
     return len(targets)
+
+
+def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
+    """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
+    The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
+    idling for the whole approvals.timeout (#112548). False when it is no longer pending."""
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        entry = next((e for e in queue if e.data.get("request_id") == request_id), None)
+        if entry is None:
+            return False
+        queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+        entry.cancelled = cause
+        entry.event.set()
+    return True
 
 
 def list_gateway_approvals(session_key: str) -> list[dict]:
@@ -272,12 +290,11 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
-        # the prompt was withdrawn, nobody denied it.
-        entry.cancelled = "the session ended before the prompt was answered"
-        entry.event.set()
+        for entry in _gateway_queues.pop(session_key, []):
+            # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
+            # the prompt was withdrawn, nobody denied it.
+            entry.cancelled = "the session ended before the prompt was answered"
+            entry.event.set()
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
     # finished conversation cannot leak a live interpreter.
@@ -944,7 +961,8 @@ def _run_approval_gate(
     Order: yolo bypass → session-cache short-circuit → interactive/gateway/unattended branch →
     prompt → persistence. Input-shape checks (hardline, allowlist, pattern detection) are the
     caller's job. ``fail_closed_when_no_human``: a non-interactive, non-gateway, non-cron
-    context BLOCKS instead of auto-approving, so a plugin-flagged action never runs ungated.
+    context without an ask bridge BLOCKS instead of auto-approving, so a plugin-flagged action
+    never runs ungated.
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     """
@@ -959,7 +977,7 @@ def _run_approval_gate(
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
-    if not is_cli and not is_gateway:
+    if not is_cli and not is_gateway and not is_ask:
         log_args = (autoapprove_log_prefix, pattern_key, description)
         # Every unattended context resolves instantly — never a pending approval nobody can answer.
         deny_messages = {
@@ -1081,9 +1099,9 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     it asks the SAME human gate as Tier-2 dangerous shell patterns (session/permanent
     allowlist, CLI prompt, gateway pending, once/session/always/deny, timeout fail-closed), so
     the LLM cannot skip it. Cron honors ``approvals.cron_mode``; any OTHER non-interactive
-    non-gateway context fails CLOSED. ``rule_key`` controls the ``[a]lways`` allowlist grain;
-    when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons on the same tool
-    persist independently. Returns the ``check_dangerous_command`` result shape.
+    context without an approval bridge fails CLOSED. ``rule_key`` controls the ``[a]lways``
+    allowlist grain; when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons
+    on the same tool persist independently. Returns the ``check_dangerous_command`` result shape.
     """
     description = reason or f"Plugin requires approval for {tool_name}"
     if not rule_key:

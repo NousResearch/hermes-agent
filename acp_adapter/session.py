@@ -137,6 +137,7 @@ class SessionState:
     cwd: str = "."
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
+    observed_active_ids: List[int] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
     # A state-mutating slash command (/reset, /compress, /model) is in flight. Turn claims
@@ -276,10 +277,12 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: List[Dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: List[Dict[str, Any]], *, persist: bool = True,
+                       observed_active_ids: Optional[List[int]] = None) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
-        state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
-                             history=history, cancel_event=threading.Event())
+        state = SessionState(
+            session_id=session_id, agent=agent, cwd=cwd, model=model, history=history,
+            observed_active_ids=list(observed_active_ids or []), cancel_event=threading.Event())
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -361,13 +364,27 @@ class SessionManager:
             # #13675).
             agent = state.agent
             if getattr(agent, "_session_db", None) is db and getattr(agent, "_session_db_created", False):
+                if getattr(db, "uses_external_conversation_store", False):
+                    state.observed_active_ids = db.get_active_message_ids(state.session_id)
                 return
             # A non-owning agent (model switch, /restore: fresh agent, _session_db_created=False)
             # may still sit on archived rows, so replace ONLY the active=1 set: on a fresh
             # create/fork every row is active (== full replace), and archived rows survive.
             # Unconditional because an existence probe would fail OPEN on DB error and can
             # race a concurrent archive_and_compact. Still rolls back on mid-rewrite failure.
-            db.replace_messages(state.session_id, state.history, active_only=True)
+            replacement = [dict(message) for message in state.history]
+            external_store = getattr(db, "uses_external_conversation_store", False)
+            if external_store:
+                db.replace_messages(
+                    state.session_id, replacement, active_only=True,
+                    expected_active_ids=list(state.observed_active_ids))
+            else:
+                db.replace_messages(state.session_id, replacement, active_only=True)
+            if external_store:
+                state.observed_active_ids = [
+                    int(message["_row_id"]) for message in replacement
+                    if isinstance(message.get("_row_id"), int)
+                ]
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 
@@ -434,10 +451,22 @@ class SessionManager:
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
         try:
-            history = db.get_messages_as_conversation(session_id, repair_alternation=True)
+            external_store = getattr(db, "uses_external_conversation_store", False)
+            history_kwargs = {"repair_alternation": True}
+            if external_store:
+                history_kwargs["include_row_ids"] = True
+            stored_history = db.get_messages_as_conversation(session_id, **history_kwargs)
+            observed_active_ids = ([
+                int(message["_row_id"]) for message in stored_history
+                if isinstance(message.get("_row_id"), int)
+            ] if external_store else [])
+            history = ([
+                {key: value for key, value in message.items() if key != "_row_id"}
+                for message in stored_history
+            ] if external_store else stored_history)
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
-            history = []
+            history, observed_active_ids = [], []
 
         try:
             agent = self._make_agent(
@@ -447,8 +476,9 @@ class SessionManager:
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
-        state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+        state = self._install_state(
+            session_id, agent, cwd, model or getattr(agent, "model", "") or "", history,
+            persist=False, observed_active_ids=observed_active_ids)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 

@@ -2946,6 +2946,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response(f"Session already exists: {session_id}", 409, code="session_exists")
         if err and err.startswith("title:"):
             return _error_response(err[len("title:"):], 400, code="invalid_title")
+        if db.uses_external_conversation_store:
+            await asyncio.to_thread(db._ensure_external_conversation, session_id)
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
 
     @_require_auth

@@ -45,7 +45,10 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
             (session_id, clean_title, time.time()))
         return session_id
 
-    return await asyncio.to_thread(db._execute_write, atomic)
+    ensured_session_id = await asyncio.to_thread(db._execute_write, atomic)
+    if db.uses_external_conversation_store:
+        await asyncio.to_thread(db._ensure_external_conversation, ensured_session_id)
+    return ensured_session_id
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":

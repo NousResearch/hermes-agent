@@ -409,9 +409,18 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                 old_survivor_row_ids = [_message_row_id(message) for message in truncated]
                 # active_only: a bare replace would DELETE the compaction archive (active=0
                 # rows) on every edit.  archive_dropped: a mis-aimed cut stays recoverable.
-                db.replace_messages(
-                    truncation_key, truncated, active_only=True, archive_dropped=True,
-                    reject_active_turn_lease=True)
+                if getattr(db, "uses_external_conversation_store", False):
+                    db.replace_messages(
+                        truncation_key, truncated, active_only=True, archive_dropped=True,
+                        reject_active_turn_lease=True,
+                        expected_active_ids=[
+                            int(message["_row_id"]) for message in history
+                            if isinstance(message.get("_row_id"), int)
+                        ])
+                else:
+                    db.replace_messages(
+                        truncation_key, truncated, active_only=True, archive_dropped=True,
+                        reject_active_turn_lease=True)
             except Exception as exc:
                 logger.error(
                     "prompt.submit: replace_messages failed for session %s (ordinal=%d); refusing "

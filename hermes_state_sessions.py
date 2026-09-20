@@ -936,6 +936,23 @@ class SessionSessionsMixin:
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            result = self._conversation_store.update_conversation(
+                session_id, {"archived": bool(archived)},
+                expected_revision=self.conversation_revision(session_id), include_lineage=True)
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store archive mutation must return ConversationMutationResult")
+            if result.affected_count <= 0:
+                return False
+            try:
+                self._set_lineage_column("archived", session_id, int(archived))
+            except Exception:
+                logger.warning(
+                    "Canonical archive mutation committed but local shadow update failed for %s",
+                    session_id, exc_info=True)
+            return True
         return self._set_lineage_column("archived", session_id, int(archived))
 
     # Accidental end reasons recovery treats as resumable (also interpolated into
@@ -988,24 +1005,80 @@ class SessionSessionsMixin:
         Exempt the canonical Bot Chat (hidden + exact registry title): the desktop contract keeps it
         hidden and reachable only through the bot row, and unhiding it would also disable the
         rename guard in ``_set_session_title`` that protects its identity (see review on #106180)."""
+        row = self.get_session(session_id) if pinned else None
+        is_canonical_bot_chat = bool(row) and bool(row.get("hidden")) and (
+            (row.get("title") or "") == self.CANONICAL_BOT_CHAT_TITLE
+        )
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            changes = {"pinned": bool(pinned)}
+            if pinned and not is_canonical_bot_chat:
+                changes["hidden"] = False
+            result = self._conversation_store.update_conversation(
+                session_id, changes, expected_revision=self.conversation_revision(session_id),
+                include_lineage=True)
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store pin mutation must return ConversationMutationResult")
+            if result.affected_count <= 0:
+                return False
+            try:
+                self._set_lineage_column("pinned", session_id, int(pinned))
+                if pinned and not is_canonical_bot_chat:
+                    self._set_lineage_column("hidden", session_id, 0)
+            except Exception:
+                logger.warning(
+                    "Canonical pin mutation committed but local shadow update failed for %s",
+                    session_id, exc_info=True)
+            return True
         result = self._set_lineage_column("pinned", session_id, int(pinned))
-        if pinned:
-            row = self.get_session(session_id)
-            is_canonical_bot_chat = bool(row) and bool(row.get("hidden")) and (
-                (row.get("title") or "") == self.CANONICAL_BOT_CHAT_TITLE
-            )
-            if not is_canonical_bot_chat:
-                self._set_lineage_column("hidden", session_id, 0)
+        if pinned and not is_canonical_bot_chat:
+            self._set_lineage_column("hidden", session_id, 0)
         return result
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            result = self._conversation_store.update_conversation(
+                session_id, {"hidden": bool(hidden)},
+                expected_revision=self.conversation_revision(session_id), include_lineage=True)
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store visibility mutation must return ConversationMutationResult")
+            if result.affected_count <= 0:
+                return False
+            try:
+                self._set_lineage_column("hidden", session_id, int(hidden))
+            except Exception:
+                logger.warning(
+                    "Canonical visibility mutation committed but local shadow update failed for %s",
+                    session_id, exc_info=True)
+            return True
         return self._set_lineage_column("hidden", session_id, int(hidden))
 
     def set_session_read(self, session_id: str, read: bool = True) -> bool:
         """Mark read/unread across the compression lineage. ``last_read_at`` is a watermark: unread when
         activity postdates it (no write on the message path). NULL = never tracked = read; 0 = unread."""
-        return self._set_lineage_column("last_read_at", session_id, time.time() if read else 0.0)
+        watermark = time.time() if read else 0.0
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            result = self._conversation_store.update_conversation(
+                session_id, {"last_read_at": watermark},
+                expected_revision=self.conversation_revision(session_id), include_lineage=True)
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store read-state mutation must return ConversationMutationResult")
+            if result.affected_count <= 0:
+                return False
+            try:
+                self._set_lineage_column("last_read_at", session_id, watermark)
+            except Exception:
+                logger.warning(
+                    "Canonical read-state mutation committed but local shadow update failed for %s",
+                    session_id, exc_info=True)
+            return True
+        return self._set_lineage_column("last_read_at", session_id, watermark)
 
     @staticmethod
     def session_unread(session_row: Dict[str, Any]) -> bool:

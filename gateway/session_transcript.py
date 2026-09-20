@@ -481,7 +481,8 @@ class SessionTranscriptMixin:
 
     def rewrite_transcript(
         self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
-        reject_active_turn_lease: bool = False) -> bool:
+        reject_active_turn_lease: bool = False,
+        expected_active_ids: Optional[List[int]] = None) -> bool:
         """Replace a session's transcript (/retry, /compress). DESTRUCTIVE by default:
         ``active_only=False`` DELETEs every row incl. soft-archived compaction history (pass
         ``active_only=True`` for sessions that may carry archived rows). True when the write lands
@@ -506,7 +507,8 @@ class SessionTranscriptMixin:
                 # avoids.
                 db.replace_messages(
                     session_id, messages, active_only=active_only,
-                    reject_active_turn_lease=reject_active_turn_lease)
+                    reject_active_turn_lease=reject_active_turn_lease,
+                    expected_active_ids=expected_active_ids)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
                 return False
@@ -536,7 +538,7 @@ class SessionTranscriptMixin:
         except Exception as e:
             raise TranscriptReadError(session_id) from e
 
-    def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
+    def load_transcript(self, session_id: str, *, include_row_ids: bool = False) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript (state.db is canonical). Reads follow the
         same routing writes use — the in-memory reroute map, then the durable compression tip —
         otherwise the transcript "vanishes" while every message sits under the child."""
@@ -550,7 +552,7 @@ class SessionTranscriptMixin:
         try:
             # repair_alternation: this feeds LIVE REPLAY; heal a durable user;user wedge once here.
             return self._db_for_session_id(session_id).get_messages_as_conversation(
-                session_id, repair_alternation=True)
+                session_id, repair_alternation=True, include_row_ids=include_row_ids)
         except Exception as e:
             # Empty history is valid data; a failed canonical read is not — live-replay callers
             # must fail closed, not start from [].

@@ -48,6 +48,7 @@ class ConversationMutationResult:
     message_ids: tuple[int, ...] = ()
     canonical_messages: tuple[dict[str, Any], ...] = ()
     tool_call_count_delta: int = 0
+    details: Any = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,10 @@ class ConversationStore(ABC):
     def latest_message_preview(self, conversation_id: str) -> str:
         raise NotImplementedError
 
+    def active_message_ids(self, conversation_id: str) -> list[int]:
+        """Stable ids of the current live transcript in canonical order."""
+        raise NotImplementedError
+
     # Phase 3: optimistic revision/CAS mutation contract.
     def get_revision(self, conversation_id: str) -> ConversationRevision:
         raise NotImplementedError
@@ -169,19 +174,52 @@ class ConversationStore(ABC):
         """Append atomically and return canonical row identities/content for the input batch."""
         raise NotImplementedError
 
-    def update_conversation(self, conversation_id: str, changes, *, expected_revision: ConversationRevision):
+    def update_conversation(
+        self, conversation_id: str, changes, *, expected_revision: ConversationRevision,
+        include_lineage: bool = False,
+    ):
+        raise NotImplementedError
+
+    def set_conversation_title(
+        self, conversation_id: str, title, *, source: str,
+        expected_revision: ConversationRevision,
+    ):
+        """Apply Hermes title sanitization/precedence/uniqueness semantics atomically."""
+        raise NotImplementedError
+
+    def set_conversation_title_source(
+        self, conversation_id: str, source: str, *, expected_revision: ConversationRevision,
+    ):
+        raise NotImplementedError
+
+    def set_latest_matching_message_display(
+        self, conversation_id: str, *, role: str, content: str, display_kind: str,
+        display_metadata, expected_revision: ConversationRevision,
+    ):
+        raise NotImplementedError
+
+    def set_message_reaction(
+        self, conversation_id: str, message_id: int, emoji, *, author: str,
+        expected_revision: ConversationRevision,
+    ):
+        raise NotImplementedError
+
+    def get_message_reactions(self, conversation_id: str, message_id: int):
         raise NotImplementedError
 
     def replace_messages(
         self, conversation_id: str, messages, *, expected_revision: ConversationRevision,
-        active_only: bool = False, archive_dropped: bool = False,
+        expected_active_ids, active_only: bool = False, archive_dropped: bool = False,
     ):
+        """Replace only if both the revision and observed live message ids still match."""
         raise NotImplementedError
 
     def rewind_to_message(
         self, conversation_id: str, message_id: int, *, expected_revision: ConversationRevision,
+        expected_active_ids, expected_target_content=None,
         preserve_compaction_handoff: bool = False,
     ):
+        """Rewind only the transcript snapshot represented by ``expected_active_ids``."""
         raise NotImplementedError
 
     def publish_compaction(

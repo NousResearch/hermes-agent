@@ -605,8 +605,17 @@ class A2AAdapter(BasePlatformAdapter):
                     profile, "SELECT id FROM sessions WHERE source = 'a2a' AND started_at >= ? ORDER BY started_at DESC LIMIT 1",
                     (start - 2.0,), "A2A: could not find latest forwarded session")):
                 self._profile_sessions[key] = session_id
-                _state_db(profile, "UPDATE sessions SET title = ? WHERE id = ?", (session_title, session_id),
-                          "A2A: could not title forwarded session", commit=True)
+                try:
+                    renamed = subprocess.run(
+                        ["hermes", "sessions", "rename", session_id, session_title],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        timeout=min(timeout, 30), env=env, check=False, stdin=subprocess.DEVNULL)
+                    if renamed.returncode != 0:
+                        logger.debug(
+                            "A2A: could not title forwarded session %s: %s", session_id,
+                            (renamed.stderr or renamed.stdout or "").strip())
+                except Exception:
+                    logger.debug("A2A: could not title forwarded session", exc_info=True)
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,

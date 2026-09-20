@@ -389,7 +389,8 @@ class GatewaySessionCommandsMixin:
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         try:
-            history = await self.async_session_store.load_transcript(session_entry.session_id)
+            history = await self.async_session_store.load_transcript(
+                session_entry.session_id, include_row_ids=True)
         except TranscriptReadError:
             return HISTORY_UNREADABLE
         last_user_idx = next((i for i in range(len(history) - 1, -1, -1)
@@ -421,7 +422,11 @@ class GatewaySessionCommandsMixin:
             last_user_msg = rewind_result["target_text"]
         # active_only preserves the active=0/compacted=1 archive left by in-place compaction.
         elif not await self.async_session_store.rewrite_transcript(
-            session_entry.session_id, truncated, active_only=True, reject_active_turn_lease=True):
+            session_entry.session_id, truncated, active_only=True, reject_active_turn_lease=True,
+            expected_active_ids=[
+                int(message["_row_id"]) for message in history
+                if isinstance(message.get("_row_id"), int)
+            ]):
             return "Retry failed; transcript was not changed."
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         return await self._handle_message(MessageEvent(
@@ -620,7 +625,8 @@ class GatewaySessionCommandsMixin:
         archive; an unchanged id without in-place means rotation FAILED."""
         new_session_id = tmp_agent.session_id
         if new_session_id != session_entry.session_id:
-            if not await self.async_session_store.rewrite_transcript(new_session_id, compressed):
+            if not await self.async_session_store.rewrite_transcript(
+                    new_session_id, compressed, expected_active_ids=[]):
                 raise RuntimeError(
                     f"failed to persist compressed transcript for session {new_session_id}")
             session_entry.session_id = new_session_id

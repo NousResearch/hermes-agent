@@ -76,6 +76,26 @@ class SessionTitlesMixin:
         is_user = source == self.TITLE_SOURCE_USER
         new_rank = self._title_rank(source) if not is_user else None
 
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            result = self._conversation_store.set_conversation_title(
+                session_id, title, source=source,
+                expected_revision=self.conversation_revision(session_id))
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store title mutation must return ConversationMutationResult")
+            if result.affected_count <= 0:
+                return False
+            try:
+                self._write_sql(
+                    "UPDATE sessions SET title = ?, title_source = ? WHERE id = ?",
+                    (title, source if title else None, session_id))
+            except Exception:
+                logger.warning(
+                    "Canonical title mutation committed but local shadow update failed for %s",
+                    session_id, exc_info=True)
+            return True
+
         def _do(conn):
             current = conn.execute(
                 "SELECT title, title_source, hidden FROM sessions WHERE id = ?", (session_id,),
@@ -158,6 +178,24 @@ class SessionTitlesMixin:
         compression rotation keeps the original's authority)."""
         if source not in self._TITLE_SOURCE_RANK:
             raise ValueError(f"invalid title source: {source!r}")
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            result = self._conversation_store.set_conversation_title_source(
+                session_id, source, expected_revision=self.conversation_revision(session_id))
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store title-source mutation must return ConversationMutationResult")
+            if result.affected_count <= 0:
+                return False
+            try:
+                self._write_sql(
+                    "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL",
+                    (source, session_id))
+            except Exception:
+                logger.warning(
+                    "Canonical title-source mutation committed but local shadow update failed for %s",
+                    session_id, exc_info=True)
+            return True
         return self._write_rowcount(
             "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
         ) > 0

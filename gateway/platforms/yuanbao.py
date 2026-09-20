@@ -525,9 +525,15 @@ class RecallGuardMiddleware(InboundMiddleware):
     @classmethod
     def _redact(cls, adapter, store, sid: str, transcript: list, entry: dict, ok_msg: str, fail_msg: str, *ok_args) -> None:
         """Blank *entry* in place and persist *transcript* (warns, never raises)."""
+        expected_ids = [
+            int(message["_row_id"]) for message in transcript
+            if isinstance(message.get("_row_id"), int)
+        ]
         entry["content"] = cls._REDACTED
         try:
-            store.rewrite_transcript(sid, transcript, active_only=True)
+            if not store.rewrite_transcript(
+                    sid, transcript, active_only=True, expected_active_ids=expected_ids):
+                raise RuntimeError("canonical transcript changed before recall redaction")
             logger.info(ok_msg, adapter.name, *ok_args)
         except Exception as exc:
             logger.warning(fail_msg, adapter.name, exc)
@@ -600,7 +606,7 @@ class RecallGuardMiddleware(InboundMiddleware):
             for _ in range(30):
                 await asyncio.sleep(0.5)
                 try:
-                    transcript = store.load_transcript(sid)
+                    transcript = store.load_transcript(sid, include_row_ids=True)
                 except TranscriptReadError as exc:
                     # No readable rows means nothing to redact; polling on
                     # would just re-log the same failure (#100788).
@@ -638,7 +644,7 @@ class RecallGuardMiddleware(InboundMiddleware):
             # incoming dict's ``message_id`` into it, ``load_transcript`` returns rows with ``message_id``
             # set for any message that was observed with one — Branch A1 (exact id match) is the canonical
             # path again.
-            transcript = store.load_transcript(sid)
+            transcript = store.load_transcript(sid, include_row_ids=True)
         except TranscriptReadError as exc:
             # Not an empty transcript — the rows are unreadable, so recall has
             # nothing to match against (#100788).

@@ -470,6 +470,16 @@ class SessionMessagesMixin:
         producer provenance survives without classifying by content at render time."""
         if not session_id or not content or not display_kind:
             return False
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            result = self._conversation_store.set_latest_matching_message_display(
+                session_id, role=role, content=content, display_kind=display_kind,
+                display_metadata=display_metadata,
+                expected_revision=self.conversation_revision(session_id))
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store display mutation must return ConversationMutationResult")
+            return result.affected_count > 0
         def _do(conn):
             row = conn.execute("SELECT id FROM messages WHERE session_id = ? AND role = ? "
                 "AND content = ? AND active = 1 ORDER BY id DESC LIMIT 1",
@@ -493,6 +503,19 @@ class SessionMessagesMixin:
         ``None`` for a row outside the session's visible resume lineage (see ``_reaction_row_query``)."""
         if not session_id or message_row_id is None:
             return None
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            result = self._conversation_store.set_message_reaction(
+                session_id, int(message_row_id), emoji, author=author,
+                expected_revision=self.conversation_revision(session_id))
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store reaction mutation must return ConversationMutationResult")
+            if result.details is None:
+                return None
+            if not isinstance(result.details, list):
+                raise ConversationStoreError("conversation store reaction result must be a list or None")
+            return result.details
         sql, params = self._reaction_row_query(session_id, message_row_id)
         def _do(conn):
             row = conn.execute(sql, params).fetchone()
@@ -516,6 +539,10 @@ class SessionMessagesMixin:
         """Reaction list persisted on one message row (never ``None``)."""
         if not session_id or message_row_id is None:
             return []
+        if self._conversation_store is not None:
+            reactions = self._conversation_store.get_message_reactions(
+                session_id, int(message_row_id))
+            return [reaction for reaction in reactions if isinstance(reaction, dict)] if isinstance(reactions, list) else []
         row = self._read_one(*self._reaction_row_query(session_id, message_row_id))
         return self._reaction_list(self._decode_display_metadata(row[0])) if row is not None else []
 
@@ -653,7 +680,8 @@ class SessionMessagesMixin:
         return rewritten
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
-        archive_dropped: bool = False, reject_active_turn_lease: bool = False) -> None:
+        archive_dropped: bool = False, reject_active_turn_lease: bool = False,
+        expected_active_ids: Optional[List[int]] = None) -> None:
         """Atomically replace a session's messages (/retry, /undo, /compress). DESTRUCTIVE by default (rows
         DELETEd, leave FTS). ``active_only`` spares soft-archived rows (needed with in-place compaction).
         ``archive_dropped`` SOFT-archives live rows rewind-style: what rewind/edit/regenerate must use, since
@@ -673,6 +701,56 @@ class SessionMessagesMixin:
         of the dropped turns differs.
         """
         from hermes_state_errors import CompressionSessionClosedError
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            if expected_active_ids is None:
+                raise ConversationStoreError(
+                    "external replace_messages requires the active message ids observed by the caller")
+
+            def _guard(conn):
+                if reject_active_turn_lease:
+                    self._check_transcript_write_guards(
+                        conn, session_id, None, reject_active_turn_lease=True,
+                        reject_active_compression_lock=True)
+                elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
+                    raise CompressionSessionClosedError(session_id)
+            self._execute_write(_guard, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+            revision = self.conversation_revision(session_id)
+            result = self._conversation_store.replace_messages(
+                session_id, [dict(message) for message in messages],
+                expected_revision=revision, expected_active_ids=tuple(expected_active_ids),
+                active_only=active_only, archive_dropped=archive_dropped)
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store replace_messages() must return ConversationMutationResult")
+            if len(result.message_ids) != len(messages):
+                raise ConversationStoreError(
+                    "conversation store replacement must identify every resulting live message")
+            canonical = result.canonical_messages
+            if canonical and len(canonical) != len(messages):
+                raise ConversationStoreError(
+                    "conversation store returned a mismatched replacement batch")
+            for index, message in enumerate(messages):
+                row_id = result.message_ids[index]
+                if not isinstance(row_id, int):
+                    raise ConversationStoreError("conversation store message ids must be integers")
+                message["_row_id"] = row_id
+                if canonical and canonical[index].get("content") != message.get("content"):
+                    message["_canonical_content"] = canonical[index].get("content")
+
+            try:
+                tool_calls = sum(_tool_calls_count(_parse_tool_calls(message.get("tool_calls"))) for message in messages)
+                self._execute_write(
+                    lambda conn: conn.execute(
+                        f"{_SET_COUNTERS_SQL} WHERE id = ?", (len(messages), tool_calls, session_id)),
+                    patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
+            except Exception:
+                logger.warning(
+                    "Canonical conversation replacement committed but local counters failed for %s",
+                    session_id, exc_info=True)
+            return
+
         def _do(conn):
             if reject_active_turn_lease:
                 self._check_transcript_write_guards(
@@ -1439,7 +1517,9 @@ class SessionMessagesMixin:
     # /rewind slash command + issue #21910
     # =========================================================================
     def get_active_message_ids(self, session_id: str) -> List[int]:
-        """Ordered physical active ids for rewind CAS checks (includes legacy harness rows projections omit)."""
+        """Ordered canonical active ids for transcript mutation CAS checks."""
+        if self._conversation_store is not None:
+            return [int(row_id) for row_id in self._conversation_store.active_message_ids(session_id)]
         return [int(row[0]) for row in self._read_all(_ACTIVE_IDS_SQL, (session_id,))]
 
     @staticmethod
@@ -1477,6 +1557,59 @@ class SessionMessagesMixin:
         ``expected_active_ids`` / ``expected_target_content`` pin the active set and canonical live payload
         in-txn before any mutation (presentation-only metadata changes don't invalidate a rewind). A live turn
         lease refuses; expired/dead holders are reclaimed. ``rewind_count`` always increments."""
+        if self._conversation_store is not None:
+            from conversation_store import ConversationMutationResult, ConversationStoreError
+            if expected_active_ids is None:
+                raise ConversationStoreError(
+                    "external rewind requires the active message ids observed by the caller")
+
+            self._execute_write(
+                lambda conn: self._check_transcript_write_guards(
+                    conn, session_id, None, reject_active_turn_lease=True,
+                    reject_active_compression_lock=True),
+                patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+            revision = self.conversation_revision(session_id)
+            result = self._conversation_store.rewind_to_message(
+                session_id, target_message_id, expected_revision=revision,
+                expected_active_ids=tuple(expected_active_ids),
+                expected_target_content=expected_target_content,
+                preserve_compaction_handoff=preserve_compaction_handoff)
+            if not isinstance(result, ConversationMutationResult):
+                raise ConversationStoreError(
+                    "conversation store rewind_to_message() must return ConversationMutationResult")
+            details = result.details if isinstance(result.details, dict) else {}
+            target_message = details.get("target_message")
+            if not isinstance(target_message, dict):
+                raise ConversationStoreError("conversation store rewind result is missing target_message")
+            output = {
+                "rewound_count": int(result.affected_count),
+                "target_message": dict(target_message),
+                "new_head_id": details.get("new_head_id"),
+            }
+            if preserve_compaction_handoff:
+                replacement_id = details.get("replacement_message_id")
+                if not isinstance(replacement_id, int):
+                    raise ConversationStoreError(
+                        "conversation store rewind did not return replacement_message_id")
+                output["replacement_message_id"] = replacement_id
+            try:
+                message_count = details.get("message_count")
+                tool_call_count = details.get("tool_call_count")
+                def _shadow(conn):
+                    conn.execute(
+                        "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?",
+                        (session_id,))
+                    if isinstance(message_count, int) and isinstance(tool_call_count, int):
+                        conn.execute(
+                            f"{_SET_COUNTERS_SQL} WHERE id = ?",
+                            (message_count, tool_call_count, session_id))
+                self._execute_write(_shadow, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
+            except Exception:
+                logger.warning(
+                    "Canonical conversation rewind committed but local shadow update failed for %s",
+                    session_id, exc_info=True)
+            return output
+
         def _do(conn):
             self._check_transcript_write_guards(
                 conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)

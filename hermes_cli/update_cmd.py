@@ -913,28 +913,37 @@ def _apply_parked_branch_guard(
 
     By branch contents + updates.parked_branch_strategy: fully merged -> switch back;
     unmerged -> "switch" (default; loud "kept" notice) or "update_in_place" (merge origin/<target>
-    INTO the branch, checkout never moves; --switch-branch overrides once); dirty/unverifiable ->
-    touch nothing, warn, ``sys.exit(1)`` with the code update SKIPPED (also when the target is
-    missing). Returns ``(parked_branch_switched, in_place_update, switch_block_reason)``.
+    INTO the branch, checkout never moves; --switch-branch overrides once); disabled/unverifiable --
+    or a dirty tree that is not being updated in place -- -> touch nothing, warn, ``sys.exit(1)``
+    with the code update SKIPPED (also when the target is missing).
+
+    A dirty tree only makes a branch SWITCH unsafe (uncommitted work would ride an autostash across
+    branches), which is what the refusal exists for. An in-place update never moves the checkout and
+    the caller autostashes the tree first, so refusing there stranded a maintained branch on stale
+    code whenever any path read dirty -- a blob committed with CRLF against a ``text eol=lf``
+    .gitattributes entry does that permanently, with no local edit behind it (#114999).
+    Returns ``(parked_branch_switched, in_place_update, switch_block_reason)``.
     """
     if current_branch == branch or current_branch == "HEAD":
         return False, False, None
     switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
         git_cmd, _m().PROJECT_ROOT, current_branch, branch)
-    if not switch_safe:
+    _in_place_configured = False
+    with _best_effort('Could not read updates.parked_branch_strategy: %s'):
+        _in_place_configured = (
+            _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
+    dirty_in_place = (
+        switch_block_reason == "dirty" and _in_place_configured and not switch_branch)
+    if not switch_safe and not dirty_in_place:
         _m()._print_parked_branch_skip_warning(
             git_cmd, _m().PROJECT_ROOT, current_branch, branch, switch_block_reason)
         print()
         print(f"⚠ Update finished — code update SKIPPED{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         sys.exit(1)
-    if not switch_block_reason.startswith("unmerged:"):
+    if switch_safe and not switch_block_reason.startswith("unmerged:"):
         print(f"  ⚠ Checkout was parked on '{current_branch}' (fully merged) — switching back to {branch}...")
         return True, False, switch_block_reason
-    _in_place_configured = False
-    with _best_effort('Could not read updates.parked_branch_strategy: %s'):
-        _in_place_configured = (
-            _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
     if not _in_place_configured or switch_branch:
         _m()._print_parked_branch_kept_notice(
             current_branch, branch, switch_block_reason.split(":", 1)[1])
@@ -946,6 +955,8 @@ def _apply_parked_branch_guard(
     print(
         f"  ℹ On branch '{current_branch}' — updating it in place from "
         f"origin/{branch} (no branch switch; local commits preserved).")
+    if dirty_in_place:
+        print("  ℹ The working tree has uncommitted changes — they are autostashed before the merge.")
     return False, True, switch_block_reason
 
 

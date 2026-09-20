@@ -399,6 +399,99 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     assert "feature work" in _git(repo_pair, "log", "--oneline").stdout
 
 
+def test_dirty_parked_branch_still_updates_in_place_when_configured(
+    repo_pair, monkeypatch, capsys
+):
+    """A dirty tree must not block an IN-PLACE update (#114999).
+
+    Live incident: a catalog YAML was committed with CRLF although
+    .gitattributes declares ``*.yaml text eol=lf``, so ``git status`` reported
+    that one path modified in every checkout, forever, with nobody editing it.
+    On a maintained branch (updates.parked_branch_strategy: update_in_place)
+    that was enough to make every ``hermes update`` print CODE UPDATE SKIPPED
+    and exit 1: the branch never advanced past the blob's commit.
+
+    Dirty is only unsafe for a branch SWITCH, where uncommitted work rides the
+    autostash across branches. The in-place path never moves the checkout and
+    autostashes the tree first, so the update must proceed — with the caller's
+    stash as the whole exposure, never a silent drop of the edit.
+    """
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"parked_branch_strategy": "update_in_place"}},
+    )
+    (repo_pair / "a.txt").write_text("local edit\n")
+    _patch_update_flow(monkeypatch, repo_pair)
+
+    class _StopFlow(Exception):
+        pass
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_abort_dependency_sync_if_self_locked",
+        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
+    )
+    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
+
+    with pytest.raises(_StopFlow):
+        hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "updating it in place" in out
+    assert "uncommitted changes" in out
+    assert "CODE UPDATE SKIPPED" not in out
+    # The checkout never moved...
+    assert (
+        _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "old-feature"
+    )
+    # ...origin/main's code still arrived...
+    assert (repo_pair / "b.txt").exists()
+    # ...and the uncommitted edit was autostashed, not dropped.
+    stashed = _git(repo_pair, "stash", "list").stdout.strip()
+    assert (repo_pair / "a.txt").read_text() == "local edit\n" or stashed != ""
+
+
+def test_dirty_parked_branch_still_skips_when_switch_branch_is_requested(
+    repo_pair, monkeypatch, capsys
+):
+    """--switch-branch on a dirty parked branch keeps the skip.
+
+    The in-place exemption exists because no branch switch happens. Asking for
+    one (the flag) puts the unsafe half back, so the guard must still refuse and
+    leave the branch and the uncommitted work untouched.
+    """
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"parked_branch_strategy": "update_in_place"}},
+    )
+    (repo_pair / "a.txt").write_text("local edit\n")
+    _patch_update_flow(monkeypatch, repo_pair)
+    args = SimpleNamespace(
+        branch=None, yes=False, force=False, force_venv=False, switch_branch=True,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(args)
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "CODE UPDATE SKIPPED" in out
+    assert "updating it in place" not in out
+    assert (
+        _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "old-feature"
+    )
+    assert (repo_pair / "a.txt").read_text() == "local edit\n"
+    assert _git(repo_pair, "stash", "list").stdout.strip() == ""
+
+
 def test_switch_branch_flag_overrides_in_place_strategy(
     repo_pair, monkeypatch, capsys
 ):

@@ -17280,7 +17280,7 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
     throw new Error('savePastedText: missing text')
   }
 
-  return writeComposerPaste(app.getPath('userData'), text)
+  return writeComposerPaste(HERMES_HOME, text)
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {

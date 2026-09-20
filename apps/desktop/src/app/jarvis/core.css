@@ -1,0 +1,289 @@
+.jarvis-core {
+  --jarvis-cyan: #00e7ff;
+  --jarvis-green: #7cff1e;
+  --jarvis-violet: #7c5cff;
+  --jarvis-core-size: 244px;
+  --jarvis-audio-level: 0;
+  --jarvis-audio-scale-max: 1;
+  --jarvis-audio-scale-min: 1;
+  --jarvis-breathe-scale-max: 1.08;
+  --jarvis-breathe-scale-min: 0.96;
+  --jarvis-counter-scale-max: 1.02;
+  --jarvis-counter-scale-min: 0.88;
+  --jarvis-current-opacity: 0.32;
+  --jarvis-energy-scale: 1;
+  --jarvis-halo-opacity: 0.34;
+  --jarvis-liquid-opacity: 0.58;
+  --jarvis-liquid-shift: 3px;
+  --jarvis-liquid-shift-crest: -1px;
+  --jarvis-state-size: 13.42px;
+  --jarvis-task-signal: 0;
+  contain: layout paint;
+  transform: translateZ(0);
+  display: grid;
+  inline-size: min(100%, var(--jarvis-core-size));
+  block-size: var(--jarvis-core-size);
+  min-inline-size: 0;
+  place-items: center;
+  color: var(--theme-foreground, #f5f7fa);
+  isolation: isolate;
+}
+
+.jarvis-core__sr {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.jarvis-core__stage {
+  position: relative;
+  display: grid;
+  inline-size: 100%;
+  block-size: 100%;
+  place-items: center;
+  border-radius: 999px;
+}
+
+.jarvis-core__stage::before {
+  position: absolute;
+  inset: 12%;
+  border: 1px solid color-mix(in srgb, var(--jarvis-cyan) 34%, transparent);
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 35% 26%, rgb(255 255 255 / 0.22), transparent 28%),
+    linear-gradient(145deg, rgb(255 255 255 / 0.08), rgb(0 231 255 / 0.05) 44%, rgb(0 0 0 / 0.12));
+  box-shadow:
+    inset 0 1px 14px rgb(255 255 255 / 0.16),
+    inset 0 -26px 48px rgb(0 0 0 / 0.42),
+    0 24px 70px rgb(0 0 0 / 0.58);
+  backdrop-filter: blur(18px) saturate(1.25);
+  content: '';
+}
+
+.jarvis-core__halo {
+  position: absolute;
+  border-radius: inherit;
+  filter: blur(24px);
+  opacity: var(--jarvis-halo-opacity);
+  transform: scale(var(--jarvis-energy-scale));
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.jarvis-core__halo--cyan {
+  inset: 19%;
+  background: radial-gradient(circle, rgb(0 231 255 / 0.72), transparent 64%);
+  animation: jarvis-core-breathe 5.8s ease-in-out infinite;
+}
+
+.jarvis-core__halo--green {
+  inset: 27%;
+  background: radial-gradient(circle, rgb(124 255 30 / 0.54), transparent 66%);
+  animation: jarvis-core-counter 7.4s ease-in-out infinite;
+  mix-blend-mode: screen;
+}
+
+.jarvis-core__orb {
+  position: relative;
+  z-index: 1;
+  inline-size: 84%;
+  max-inline-size: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 28px 40px rgb(0 0 0 / 0.54));
+}
+
+.jarvis-core__glass {
+  stroke: rgb(217 251 255 / 0.58);
+  stroke-width: 1.1;
+}
+
+.jarvis-core__liquid {
+  opacity: var(--jarvis-liquid-opacity);
+  transform: translateY(var(--jarvis-liquid-shift));
+  transform-origin: 100px 110px;
+  animation: jarvis-core-liquid 8s ease-in-out infinite;
+}
+
+.jarvis-core__current {
+  stroke: rgb(245 247 250 / 0.46);
+  stroke-linecap: round;
+  stroke-width: 1.3;
+  opacity: var(--jarvis-current-opacity);
+  stroke-dasharray: 28 18;
+  animation: jarvis-core-current 7s linear infinite;
+}
+
+.jarvis-core__inner-ring,
+.jarvis-core__outer-ring {
+  fill: none;
+  transform-origin: 100px 100px;
+}
+
+.jarvis-core__inner-ring {
+  stroke: rgb(124 255 30 / 0.58);
+  stroke-dasharray: 12 12;
+  stroke-width: 0.9;
+  animation: jarvis-core-spin 10s linear infinite;
+}
+
+.jarvis-core__outer-ring {
+  stroke: rgb(0 231 255 / 0.48);
+  stroke-dasharray: 2 9;
+  stroke-linecap: round;
+  stroke-width: 1.4;
+  animation: jarvis-core-spin 18s linear infinite reverse;
+}
+
+.jarvis-core__shine {
+  stroke: rgb(255 255 255 / 0.68);
+  stroke-linecap: round;
+  stroke-width: 4;
+  opacity: 0.42;
+}
+
+.jarvis-core__state {
+  position: absolute;
+  z-index: 2;
+  display: block;
+  inline-size: var(--jarvis-state-size);
+  block-size: var(--jarvis-state-size);
+  border: 1px solid rgb(5 5 5 / 0.72);
+  box-shadow: 0 0 18px currentColor;
+}
+
+.jarvis-core__state--voice {
+  inset-block-end: 18%;
+  inset-inline-start: 24%;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.jarvis-core__state--task {
+  inset-block-start: 22%;
+  inset-inline-end: 23%;
+  border-radius: 3px;
+  background:
+    linear-gradient(90deg, rgb(5 5 5 / 0.34) 36%, transparent 36% 64%, rgb(5 5 5 / 0.34) 64%),
+    currentColor;
+  transform: rotate(45deg);
+}
+
+.jarvis-core[data-voice='idle'] .jarvis-core__state--voice {
+  color: #9299a5;
+}
+
+.jarvis-core[data-voice='listening'] .jarvis-core__state--voice {
+  color: var(--jarvis-cyan);
+  animation: jarvis-core-audio 900ms ease-in-out infinite;
+}
+
+.jarvis-core[data-voice='speaking'] .jarvis-core__state--voice {
+  color: var(--jarvis-green);
+  animation: jarvis-core-audio 620ms ease-in-out infinite;
+}
+
+.jarvis-core[data-voice='error'] .jarvis-core__state--voice,
+.jarvis-core[data-task='failed'] .jarvis-core__state--task {
+  color: #ff4d6d;
+}
+
+.jarvis-core[data-task='idle'] .jarvis-core__state--task,
+.jarvis-core[data-task='cancelled'] .jarvis-core__state--task {
+  color: #6b7280;
+}
+
+.jarvis-core[data-task='planning'] .jarvis-core__state--task {
+  color: #a99aff;
+}
+
+.jarvis-core[data-task='running'] .jarvis-core__state--task {
+  color: var(--jarvis-cyan);
+}
+
+.jarvis-core[data-task='approval'] .jarvis-core__state--task {
+  color: #f6e05e;
+}
+
+.jarvis-core[data-task='cancelling'] .jarvis-core__state--task {
+  color: #ff9f43;
+}
+
+.jarvis-core[data-task='verified'] .jarvis-core__state--task {
+  color: var(--jarvis-green);
+}
+
+.jarvis-core[data-task='running'] .jarvis-core__current,
+.jarvis-core[data-task='cancelling'] .jarvis-core__current {
+  animation-duration: 3.8s;
+}
+
+@keyframes jarvis-core-breathe {
+  0%,
+  100% {
+    transform: scale(var(--jarvis-breathe-scale-min));
+  }
+  50% {
+    transform: scale(var(--jarvis-breathe-scale-max));
+  }
+}
+
+@keyframes jarvis-core-counter {
+  0%,
+  100% {
+    transform: scale(var(--jarvis-counter-scale-min)) translate3d(-2%, 1%, 0);
+  }
+  50% {
+    transform: scale(var(--jarvis-counter-scale-max)) translate3d(3%, -2%, 0);
+  }
+}
+
+@keyframes jarvis-core-liquid {
+  0%,
+  100% {
+    transform: translate3d(-2px, var(--jarvis-liquid-shift), 0) scaleX(1);
+  }
+  50% {
+    transform: translate3d(3px, var(--jarvis-liquid-shift-crest), 0) scaleX(1.03);
+  }
+}
+
+@keyframes jarvis-core-current {
+  to {
+    stroke-dashoffset: -92;
+  }
+}
+
+@keyframes jarvis-core-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes jarvis-core-audio {
+  0%,
+  100% {
+    transform: scale(var(--jarvis-audio-scale-min));
+  }
+  50% {
+    transform: scale(var(--jarvis-audio-scale-max));
+  }
+}
+
+@media (max-width: 420px) {
+  .jarvis-core {
+    inline-size: min(100%, 72vw, var(--jarvis-core-size));
+    block-size: min(72vw, var(--jarvis-core-size));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-core * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

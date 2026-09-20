@@ -18,6 +18,7 @@
  * re-derived. `nous-alt` is first-party — do not re-derive it from GitHub.
  */
 
+import { aiEvolutionJarvisTheme } from './ai-evolution-jarvis'
 import type { DesktopTheme, DesktopThemeTypography } from './types'
 
 // Color-emoji fonts to append to every stack as a last resort. None of the UI
@@ -856,7 +857,8 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   ember: emberTheme,
   mono: monoTheme,
   slate: slateTheme,
-  cyberpunk: cyberpunkTheme
+  cyberpunk: cyberpunkTheme,
+  'ai-evolution-jarvis': aiEvolutionJarvisTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)

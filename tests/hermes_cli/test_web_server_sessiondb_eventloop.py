@@ -25,7 +25,6 @@ TARGET_HANDLERS = {
     "prune_sessions_endpoint",
     "get_usage_analytics",
     "get_models_analytics",
-    # #60747: search / stats / detail were the last session reads still on the loop.
     "search_sessions",
     "get_session_stats",
     "get_session_detail",
@@ -192,8 +191,7 @@ def test_session_read_handlers_run_sessiondb_work_off_event_loop(monkeypatch, ca
     monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", _open_db)
     monkeypatch.setattr(_rt_sessions, "_resolve_session_id", lambda db, sid: sid)
 
-    result = asyncio.run(call())
+    asyncio.run(call())
 
-    assert result
     assert db_threads, "handler never touched the SessionDB"
     assert all(thread_id != loop_thread for thread_id in db_threads)

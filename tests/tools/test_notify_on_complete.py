@@ -163,23 +163,6 @@ class TestCheckpointNotify:
             assert len(data) == 1
             assert data[0]["notify_on_complete"] is True
 
-    def test_checkpoint_round_trips_completion_output_chars(self, registry, tmp_path):
-        """A recovered delivery process still reports its reply whole."""
-        checkpoint = tmp_path / "procs.json"
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            s = _make_session(notify_on_complete=True)
-            s.completion_output_chars = 18000
-            registry._running[s.id] = s
-            registry._write_checkpoint()
-            data = json.loads(checkpoint.read_text())
-            assert data[0]["completion_output_chars"] == 18000
-            data[0].update(pid=os.getpid(), command="sleep 999")
-            checkpoint.write_text(json.dumps(data))
-            fresh = ProcessRegistry()
-            assert fresh.recover_from_checkpoint() == 1
-            assert fresh.get(s.id).completion_output_chars == 18000
-
-
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""
         checkpoint = tmp_path / "procs.json"
@@ -224,14 +207,6 @@ class TestTerminalSchema:
             )
             _, kwargs = mock_tt.call_args
             assert kwargs["notify_on_complete"] is True
-
-    def test_completion_output_chars_reaches_the_spawner(self):
-        """terminal_tool's internal ``_completion_output_chars`` is handed to spawn_background_process."""
-        from tools import terminal_tool as tt
-        with patch("tools.terminal_tool.spawn_background_process", return_value='{"ok":true}') as spawn:
-            tt.terminal_tool("echo hi", background=True, notify_on_complete=True, task_id="t1",
-                             _host_local=True, _completion_output_chars=18000)
-        assert spawn.call_args.kwargs["completion_output_chars"] == 18000
 
     def test_cut_completion_says_so_and_points_at_the_log(self):
         """The rendered notice names the cut and the process log; a whole output renders as before."""

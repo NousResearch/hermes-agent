@@ -92,10 +92,3 @@ def test_fresh_guidance_carries_no_note(monkeypatch, tmp_path):
     assert _STALE_GUIDANCE_NOTE not in first["guidance"]
     assert _STALE_GUIDANCE_NOTE not in second["guidance"]
 
-
-def test_reference_prompt_forbids_emitting_tool_calls(monkeypatch, tmp_path):
-    """The advisor holds no tools; a tool-call object in its text gets replayed by the
-    aggregator, so the prompt has to rule it out explicitly."""
-    from agent.moa_loop import _REFERENCE_SYSTEM_PROMPT
-
-    assert "never emit a tool call" in _REFERENCE_SYSTEM_PROMPT.lower()

@@ -1,6 +1,6 @@
 name: covision
 repo: https://github.com/Covision-Consultants/covision-agent-plugin
-sha: 077ad3f391bb4697547bd087e71f972c52e49d10
+sha: 077ad3fa8366a8f66be82243fd69c27c2746b1bf
 description: >-
   Read-only Covision meeting, assigned-task, and published-knowledge tools through
   the Covision Streamable HTTP MCP service, plus a workflow skill. Requires a

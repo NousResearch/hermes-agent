@@ -147,6 +147,74 @@ class TestResolveContextCompressionTimeouts:
         assert resolve_context_compression_timeouts({}) == (900.0, 900.0)
         assert resolve_context_compression_timeouts({"context_timeout_seconds": 0}) == (0.0, 600.0)
 
+    def test_fast_route_short_timeout_is_idle_budget_not_total_ceiling(self, monkeypatch):
+        """A healthy fast summary may stream beyond one 30s request window.
+
+        Its configured timeout remains the silence budget, while the absolute
+        ceiling gets a bounded progress allowance. Otherwise output observed at
+        30s is discarded by the total ceiling at exactly 30s.
+        """
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 30.0)
+        monkeypatch.setattr(
+            aux,
+            "_get_auxiliary_task_config",
+            lambda task: {
+                "provider": "cliproxyapi",
+                "model": "light-latest",
+                "reasoning_effort": "none",
+                "timeout": 30,
+            },
+        )
+        assert resolve_context_compression_timeouts(
+            {
+                "context_timeout_seconds": 30,
+                "context_total_ceiling_seconds": 30,
+            }
+        ) == (30.0, 120.0)
+
+    def test_uncertified_short_route_keeps_explicit_total_ceiling(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 30.0)
+        monkeypatch.setattr(
+            aux,
+            "_get_auxiliary_task_config",
+            lambda task: {
+                "provider": "cliproxyapi",
+                "model": "medium-latest",
+                "timeout": 30,
+            },
+        )
+        assert resolve_context_compression_timeouts(
+            {
+                "context_timeout_seconds": 30,
+                "context_total_ceiling_seconds": 30,
+            }
+        ) == (30.0, 30.0)
+
+    def test_fast_route_progress_allowance_never_exceeds_normal_ceiling(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 300.0)
+        monkeypatch.setattr(
+            aux,
+            "_get_auxiliary_task_config",
+            lambda task: {
+                "provider": "cliproxyapi",
+                "model": "light-latest",
+                "reasoning_effort": "none",
+                "timeout": 300,
+            },
+        )
+        assert resolve_context_compression_timeouts(
+            {
+                "context_timeout_seconds": 300,
+                "context_total_ceiling_seconds": 300,
+            }
+        ) == (300.0, 600.0)
+
     def test_zero_idle_disables_wrapper(self):
         idle, ceiling = resolve_context_compression_timeouts(
             {"context_timeout_seconds": 0}
@@ -289,6 +357,52 @@ class TestRunCompressContextWithProgressTimeout:
         assert result_msgs == compressed
         assert result_prompt == "ok-prompt"
         assert "fence" in fence_holder
+
+    def test_progress_past_one_idle_window_succeeds_with_fast_route_ceiling(self, monkeypatch):
+        """Regression for output observed at 30s being discarded by a 30s total ceiling."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 0.5)
+        monkeypatch.setattr(
+            aux,
+            "_get_auxiliary_task_config",
+            lambda task: {
+                "provider": "cliproxyapi",
+                "model": "light-latest",
+                "reasoning_effort": "none",
+                "timeout": 0.5,
+            },
+        )
+        idle, ceiling = resolve_context_compression_timeouts(
+            {
+                "context_timeout_seconds": 0.5,
+                "context_total_ceiling_seconds": 0.5,
+            }
+        )
+        assert (idle, ceiling) == (0.5, 2.0)
+
+        original = [{"role": "user", "content": "a"}]
+        compressed = [{"role": "user", "content": "summarized"}]
+
+        def worker(fence: CompressionCommitFence):
+            # Finish after the old total ceiling but before the bounded progress allowance.
+            for _ in range(4):
+                time.sleep(0.15)
+                fence.touch_progress()
+            if not fence.begin_commit():
+                return (original, "aborted")
+            try:
+                return (compressed, "ok-prompt")
+            finally:
+                fence.finish_commit()
+
+        assert run_compress_context_with_progress_timeout(
+            worker=worker,
+            messages=original,
+            system_prompt_fallback="fallback",
+            idle_timeout_seconds=idle,
+            total_ceiling_seconds=ceiling,
+        ) == (compressed, "ok-prompt")
 
     def test_commit_started_before_timeout_returns_worker_result(self):
         original = [{"role": "user", "content": "a"}]

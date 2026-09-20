@@ -2172,7 +2172,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
-        room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[Dict[str, Any]] = None, tools_disabled: bool = False) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
@@ -2235,6 +2235,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "gateway_session_key": gateway_session_key}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
+        if tools_disabled:
+            agent_kwargs["tools_disabled"] = True
         agent = AIAgent(**agent_kwargs)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
@@ -3781,7 +3783,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
+        tools_disabled: bool = False) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3818,7 +3821,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         reasoning_callback=reasoning_callback, status_callback=status_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
-                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
+                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
+                        tools_disabled=tools_disabled)
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if active_run_id:

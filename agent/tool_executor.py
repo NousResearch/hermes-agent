@@ -681,6 +681,8 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
+    if getattr(agent, "tools_disabled", False) is True:
+        scope_block = "Tools are disabled for this request."
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"

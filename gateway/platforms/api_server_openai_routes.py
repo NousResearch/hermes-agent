@@ -23,6 +23,18 @@ except ImportError:  # pragma: no cover - mirrors api_server's optional import
 # Logger parity with the origin module (moved log records keep their name).
 logger = logging.getLogger("gateway.platforms.api_server")
 
+def _request_tools_disabled(body: Dict[str, Any]) -> bool:
+    """Only explicit ``none`` restricts this request; omission keeps platform tools."""
+    choice = body.get("tool_choice", "auto")
+    if isinstance(choice, str) and choice in {"none", "auto", "required"}:
+        return choice == "none"
+    if isinstance(choice, dict) and choice.get("type") == "function":
+        function = choice.get("function", choice)
+        if isinstance(function, dict) and isinstance(function.get("name"), str) and function["name"].strip():
+            return False  # Preserve the existing server-managed behavior for named choices.
+    raise ValueError("Invalid 'tool_choice': use 'none', 'auto', 'required', or a named function")
+
+
 async def _iter_stream_items(stream_q, agent_task, response):
     """Yield agent stream items until EOS, writing SSE keepalives while idle.
 
@@ -582,6 +594,10 @@ class OpenAICompatRoutesMixin:
             return _error_response("Invalid JSON in request body", 400)
         from gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
+        try:
+            tools_disabled = _request_tools_disabled(body)
+        except ValueError as exc:
+            return _invalid_request(str(exc))
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return _invalid_request("Missing or invalid 'messages' field")
@@ -663,7 +679,7 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
-            relay_metadata=relay_metadata,
+            relay_metadata=relay_metadata, tools_disabled=tools_disabled,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
             # and the client can resume the session by sending it again). A fingerprint-derived
@@ -962,6 +978,10 @@ class OpenAICompatRoutesMixin:
             return _invalid_request("Invalid JSON in request body")
         from gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
+        try:
+            tools_disabled = _request_tools_disabled(body)
+        except ValueError as exc:
+            return _invalid_request(str(exc))
         raw_input = body.get("input")
         if raw_input is None:
             return _error_response("Missing 'input' field", 400)
@@ -1046,7 +1066,8 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route, relay_metadata=relay_metadata)
+            **agent_overrides, route=route, relay_metadata=relay_metadata,
+            tools_disabled=tools_disabled)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -1084,7 +1105,7 @@ class OpenAICompatRoutesMixin:
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
-            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
+            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools", "tool_choice"],
             route="responses",
         )
         if err is not None:

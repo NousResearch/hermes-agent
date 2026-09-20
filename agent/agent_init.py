@@ -1048,6 +1048,11 @@ def _init_fallback_chain(agent, fallback_model):
 
 
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
+    if getattr(agent, "tools_disabled", False) is True:
+        agent.tools = []
+        agent.valid_tool_names = set()
+        agent._kanban_worker_guidance = ""
+        return
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
     try:
@@ -2282,12 +2287,14 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
+    tools_disabled: bool = False,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
     Non-obvious parameters:
       max_iterations: default unlimited (sys.maxsize); the budget is shared with subagents.
       requested_provider: provider identity before runtime canonicalization.
+      tools_disabled: deny tool exposure and dispatch for this agent, including snapshot restores.
       cwd: logical session workspace, available to memory providers during construction;
         None or empty leaves the runtime cwd resolver unpinned.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
@@ -2300,6 +2307,11 @@ def init_agent(
     """
     _install_safe_stdio()
 
+    agent.tools_disabled = tools_disabled
+    if tools_disabled:
+        # Keep provider/context-engine tool injection off too. This is not a profile setting.
+        enabled_toolsets = []
+        skip_background_review = True
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])

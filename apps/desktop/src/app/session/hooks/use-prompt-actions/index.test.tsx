@@ -14,6 +14,7 @@ import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
+  $activeSessionId,
   $busy,
   $connection,
   $currentCwd,
@@ -22,6 +23,7 @@ import {
   $sessions,
   $terminalBackend,
   $turnStartedAt,
+  setActiveSessionId,
   setCurrentUsage,
   setMessages,
   setSessions
@@ -2302,6 +2304,93 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-session-b')).toBe('rt-session-b-live')
     // …and it did so BEFORE the retried attach went out, in both places the dispatcher reads.
     expect(bindingAtRetry).toEqual({ central: true, map: 'rt-session-b-live' })
+  })
+
+  it('a delayed recovery does not retarget the foreground once the user has moved to another chat', async () => {
+    // The foreground judgement is made when the recovery lands, not when the
+    // submit started: A was on screen when its image send began, session.resume(A)
+    // took a while, and the user opened B meanwhile. The recovered runtime for A
+    // must be bound to A — and both active-session holders must stay on B.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-session-a-dead' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-session-a' }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([
+        ['stored-session-a', 'rt-session-a-dead'],
+        ['stored-session-b', 'rt-session-b']
+      ])
+    }
+
+    setActiveSessionId('rt-session-a-dead')
+
+    let releaseResume: (() => void) | null = null
+
+    const resumeStarted = new Promise<void>(resolve => {
+      releaseResume = resolve
+    })
+
+    let resumeGate: Promise<void> = Promise.resolve()
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      const sessionId = String(params?.session_id ?? '')
+
+      if (method === 'session.resume') {
+        releaseResume?.()
+        await resumeGate
+
+        return { session_id: 'rt-session-a-live' } as never
+      }
+
+      if (method === 'image.attach') {
+        if (sessionId === 'rt-session-a-dead') {
+          throw new Error('4007 session not found')
+        }
+
+        return { attached: true, path: '/tmp/shot.png' } as never
+      }
+
+      return {} as never
+    })
+
+    let releaseGate: (() => void) | null = null
+    resumeGate = new Promise<void>(resolve => {
+      releaseGate = resolve
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId="rt-session-a-dead"
+        activeSessionIdRef={activeSessionIdRef}
+        getRuntimeIdForStoredSession={storedId => runtimeIdByStoredSessionIdRef.current.get(storedId) ?? null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId="stored-session-a"
+      />
+    )
+
+    const pending = handle!.submitText('from A, with a screenshot', {
+      attachments: [{ id: 'att-1', kind: 'image', label: 'shot.png', path: '/tmp/shot.png' } as never],
+      sessionId: 'rt-session-a-dead',
+      storedSessionId: 'stored-session-a'
+    })
+
+    // session.resume(A) is in flight; the user opens B.
+    await resumeStarted
+    selectedStoredSessionIdRef.current = 'stored-session-b'
+    activeSessionIdRef.current = 'rt-session-b'
+    setActiveSessionId('rt-session-b')
+    releaseGate!()
+    await pending
+
+    // A's recovery is recorded for A…
+    expect(runtimeIdByStoredSessionIdRef.current.get('stored-session-a')).toBe('rt-session-a-live')
+    // …and neither holder of the foreground was pulled back to A.
+    expect(activeSessionIdRef.current).toBe('rt-session-b')
+    expect($activeSessionId.get()).toBe('rt-session-b')
   })
 
   it('a fromQueue drain rebinds to the centrally recorded runtime when its explicit id is stale', async () => {

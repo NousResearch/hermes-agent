@@ -352,7 +352,6 @@ export function usePromptActions({
       // session the text belongs to — not stage the files on, and then submit
       // into, whichever chat is selected now (#46194, the attachments edition).
       const storedSessionId = options.storedSessionId ?? selectedStoredSessionIdRef.current
-      const targetIsForeground = storedSessionId === selectedStoredSessionIdRef.current
       const remote = isSessionRemote(storedSessionId ?? sessionId)
       let liveSessionId = sessionId
       const synced: ComposerAttachment[] = []
@@ -366,8 +365,11 @@ export function usePromptActions({
         }
 
         // Only a foreground send may retarget the foreground: a background
-        // drain that recovers its own session must not steal the view.
-        if (targetIsForeground) {
+        // drain that recovers its own session must not steal the view. Judged
+        // NOW, not at submit: session.resume can take long enough for the user
+        // to leave this chat, and the drift guard that then aborts the submit
+        // does not put the view back where they went.
+        if (storedSessionId === selectedStoredSessionIdRef.current) {
           activeSessionIdRef.current = recoveredId
           setActiveSessionId(recoveredId)
         }

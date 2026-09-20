@@ -1005,6 +1005,22 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return tool_error(str(e))
 
 
+def _search_permission_skip(path: str, exc: BaseException) -> str | None:
+    """Structured skip for EPERM/EACCES so the model does not retry a traceback."""
+    import errno as _errno
+
+    if isinstance(exc, PermissionError) or (
+        isinstance(exc, OSError) and getattr(exc, "errno", None) in (_errno.EPERM, _errno.EACCES)
+    ):
+        return json.dumps({
+            "success": False,
+            "skipped": True,
+            "error": f"Permission denied: {path}",
+            "path": path,
+        }, ensure_ascii=False)
+    return None
+
+
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
@@ -1090,6 +1106,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
+        skip = _search_permission_skip(path if isinstance(path, str) else str(path), e)
+        if skip is not None:
+            return skip
         return tool_error(str(e))
 
 

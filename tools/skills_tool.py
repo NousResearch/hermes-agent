@@ -31,6 +31,30 @@ from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
 
+# Bare skill_view of a novel SKILL.md dumps the whole file into context.
+# Above this size, return an outline and require file_path for the body.
+SKILL_VIEW_MAX_CHARS = 24_000
+
+
+def _skill_md_outline(content: str) -> str:
+    """Frontmatter plus markdown headings — not the body paragraphs."""
+    keep: list[str] = []
+    in_frontmatter = False
+    for i, line in enumerate(content.splitlines()):
+        stripped = line.strip()
+        if i == 0 and stripped == "---":
+            in_frontmatter = True
+            keep.append(line)
+            continue
+        if in_frontmatter:
+            keep.append(line)
+            if stripped == "---":
+                in_frontmatter = False
+            continue
+        if stripped.startswith("#"):
+            keep.append(line)
+    return "\n".join(keep).rstrip() + "\n"
+
 # Per-session discovery cache: {cache_key: (signature, timestamp, skills_list)}. Signature =
 # per-dir max mtime of the dir and its immediate children (add/remove inside a category does
 # NOT bump the root mtime) + the disabled set (config-only change, no mtime) + platform; the
@@ -629,13 +653,27 @@ def skill_view(
                 org_provenance, header = _org_provenance_header(skill_dir, active_skills_dir)
             except Exception:
                 logger.debug("Could not resolve org provenance for %s", skill_name, exc_info=True)
+        body = header + rendered_content
+        oversized = not file_path and len(body) > SKILL_VIEW_MAX_CHARS
+        if oversized:
+            body = header + _skill_md_outline(rendered_content)
+            outline_hint = (
+                f"SKILL.md exceeds {SKILL_VIEW_MAX_CHARS} characters; this is an outline. "
+                "Reload a section with skill_view(name, file_path='references/…')"
+            )
+        else:
+            outline_hint = None
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
-            "tags": tags, "related_skills": related_skills, "content": header + rendered_content,
+            "tags": tags, "related_skills": related_skills, "content": body,
             "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
             "org_provenance": org_provenance,
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
+            "usage_hint": outline_hint or (
+                "To view linked files, call skill_view(name, file_path) where file_path is e.g. "
+                "'references/api.md' or 'assets/config.yaml'" if linked_files else None
+            ),
+            "truncated": True if oversized else None,
             **readiness,
             # Internal: absolute source path for the repeat-view dedup fingerprint.
             "_source_path": str(skill_md),

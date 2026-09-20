@@ -89,7 +89,8 @@ _STORE_ACTIONS = {
 
 
 def _batch_op_line(op: Dict[str, Any]) -> str:
-    op = op or {}
+    if not isinstance(op, dict):
+        return f"- invalid-op: {op!r}"
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
         return f"- remove: {old}"
@@ -187,6 +188,8 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+        if any(not isinstance(op, dict) for op in operations):
+            return tool_error("each operations item must be an object {action, content?, old_text?}.", success=False)
         denied = _background_delete_gate(action, operations, target)
         if denied is not None:
             return denied
@@ -248,6 +251,8 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve)."""
+    if not isinstance(payload, dict):
+        return {"success": False, "error": "Staged memory payload must be an object, not a string."}
     action, target = payload.get("action"), payload.get("target", "memory")
     target_error = _memory_target_error(store, target)
     if target_error is not None:

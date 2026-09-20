@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tools.memory_tool import (
     MemoryStore,
+    apply_memory_pending,
     memory_tool,
     _scan_memory_content,
 )
@@ -930,3 +931,20 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestStringPayloadsFailClosed:
+    def test_apply_memory_pending_string_payload_no_attributeerror(self, store):
+        result = apply_memory_pending("not-a-dict", store)
+        assert result["success"] is False
+        assert "object" in result["error"].lower() or "string" in result["error"].lower()
+
+    def test_operations_string_items_no_attributeerror(self, store):
+        raw = memory_tool(
+            action="batch",
+            operations=[{"action": "add", "content": "ok"}, "oops"],
+            store=store,
+        )
+        result = json.loads(raw)
+        assert result.get("success") is False
+        assert "operations item" in result.get("error", "")

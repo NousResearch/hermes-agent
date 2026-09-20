@@ -815,6 +815,7 @@ _RENAMED_TASK_COLUMNS = (
 # column existed.
 _LATER_TASK_COLUMNS = (
     ("max_runtime_seconds", "max_runtime_seconds INTEGER"),
+    ("max_turns", "max_turns INTEGER"),
     ("last_heartbeat_at", "last_heartbeat_at INTEGER"),
     ("current_run_id", "current_run_id INTEGER"),
     ("workflow_template_id", "workflow_template_id TEXT"),

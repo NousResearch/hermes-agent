@@ -6,7 +6,9 @@ credentials}.py``; import them from there."""
 
 import logging
 import math
+import os
 import re
+import shutil
 import subprocess
 from collections.abc import Iterable
 from contextlib import suppress
@@ -231,15 +233,25 @@ _CLAUDE_CODE_PREFIXES = (
 )
 
 
-def _claude_code_candidates() -> List[str]:
-    """Executable paths to try, PATH hit first, deduped and filtered to files that exist."""
-    import os.path
-    import shutil
+_CLAUDE_CODE_NAMES = ("claude", "claude-code")
 
+
+def _claude_code_candidates() -> List[str]:
+    """Executable paths to try, deduped and filtered to files that exist.
+
+    Two passes: every PATH hit first (what the user's shell would run), then the
+    well-known install prefixes. A single nested loop would probe a stale prefix
+    ``claude`` before a current PATH ``claude-code``.
+    """
     seen: Dict[str, None] = {}
-    for name in ("claude", "claude-code"):
-        for cmd in (shutil.which(name), *(f"{p}/{name}" for p in _CLAUDE_CODE_PREFIXES)):
-            if cmd and os.path.isfile(path := os.path.expanduser(cmd)):
+    for name in _CLAUDE_CODE_NAMES:
+        hit = shutil.which(name)
+        if hit and os.path.isfile(hit):
+            seen.setdefault(hit)
+    for prefix in _CLAUDE_CODE_PREFIXES:
+        for name in _CLAUDE_CODE_NAMES:
+            path = os.path.join(os.path.expanduser(prefix), name)
+            if os.path.isfile(path):
                 seen.setdefault(path)
     return list(seen)
 

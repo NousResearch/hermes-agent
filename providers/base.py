@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, TypedDict
 
 if TYPE_CHECKING:
     from agent.account_usage import AccountUsageSnapshot
@@ -22,6 +22,20 @@ logger = logging.getLogger(__name__)
 
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
+
+
+class ModelDescriptor(TypedDict, total=False):
+    """Explicit picker metadata supplied by a provider profile."""
+
+    display_name: str
+    family_id: str
+    fast: bool
+    reasoning: bool
+    reasoning_control: str
+    can_disable_reasoning: bool
+    reasoning_efforts: list[str]
+    reasoning_budget: dict[str, Any]
+    default_reasoning_effort: str
 
 
 def _profile_user_agent() -> str:
@@ -139,11 +153,13 @@ class ProviderProfile:
 
     # ── Hooks (override in subclass for complex providers) ───
 
-    def describe_models(self, *, model_ids: list[str]) -> dict[str, dict[str, Any]]:
-        """Optional model controls, from cached metadata only (no network/credentials).
+    def describe_models(self, *, model_ids: list[str]) -> dict[str, ModelDescriptor]:
+        """Describe catalog IDs for native pickers; empty preserves legacy behavior.
 
-        Explicit reasoning_efforts constrain selectable levels, including an empty
-        list. Providers must use the same metadata when building requests.
+        This hook must be cheap and must not access credentials or the network. ``family_id``
+        names a real representative in ``model_ids``. An explicit ``reasoning_efforts`` list is
+        authoritative; an empty list means the route has no adjustable effort. Providers must
+        use the same metadata when building requests.
         """
         return {}
 

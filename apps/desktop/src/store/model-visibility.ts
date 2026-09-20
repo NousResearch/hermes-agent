@@ -1,4 +1,4 @@
-import type { ModelOptionProvider } from '@hermes/shared'
+import type { ModelCapabilities, ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
@@ -25,18 +25,26 @@ export const emptyProviderSentinelKey = (provider: string): string =>
 /** Check whether a stored key is a provider-hidden sentinel. */
 export const isProviderSentinel = (key: string): boolean => key.endsWith('::')
 
-/** A model and its optional `…-fast` sibling, collapsed into one logical row.
- *  `id` is the canonical (base) model; `fastId` is the fast variant if present. */
+/** One logical picker row: provider-declared route members, or a legacy base/fast pair. */
 export interface ModelFamily {
   fastId: string | null
   id: string
+  memberIds: string[]
 }
 
 /** Collapse a provider's model list so a base model and its `…-fast` variant
  *  become a single family (one row, one toggle). Order is preserved by the
  *  base model's position. A `…-fast` model with no base stands on its own. */
-export function collapseModelFamilies(models: readonly string[]): ModelFamily[] {
+export function collapseModelFamilies(
+  models: readonly string[],
+  capabilities?: null | Record<string, ModelCapabilities>
+): ModelFamily[] {
   const present = new Set(models)
+
+  const representatives = new Set(
+    models.map(id => capabilities?.[id]?.family_id).filter((id): id is string => Boolean(id && present.has(id)))
+  )
+
   const families: ModelFamily[] = []
   const consumed = new Set<string>()
 
@@ -45,7 +53,23 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
       continue
     }
 
-    if (/-fast$/i.test(model) && present.has(model.replace(/-fast$/i, ''))) {
+    const declaredFamily = capabilities?.[model]?.family_id ?? (representatives.has(model) ? model : undefined)
+
+    if (declaredFamily && present.has(declaredFamily)) {
+      const memberIds = models.filter(id => id === declaredFamily || capabilities?.[id]?.family_id === declaredFamily)
+
+      families.push({ fastId: null, id: declaredFamily, memberIds })
+      memberIds.forEach(id => consumed.add(id))
+
+      continue
+    }
+
+    const legacyBase = model.replace(/-fast$/i, '')
+
+    const baseHasDeclaredFamily =
+      representatives.has(legacyBase) || present.has(capabilities?.[legacyBase]?.family_id ?? '')
+
+    if (legacyBase !== model && present.has(legacyBase) && !baseHasDeclaredFamily) {
       // Represented by its base entry — the base attaches it as `fastId`.
       continue
     }
@@ -56,8 +80,11 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
     }
 
     const fastId = `${model}-fast`
-    const hasFast = present.has(fastId)
-    families.push({ fastId: hasFast ? fastId : null, id: model })
+
+    const hasFast =
+      present.has(fastId) && !representatives.has(fastId) && !present.has(capabilities?.[fastId]?.family_id ?? '')
+
+    families.push({ fastId: hasFast ? fastId : null, id: model, memberIds: hasFast ? [model, fastId] : [model] })
     consumed.add(model)
 
     if (hasFast) {
@@ -118,12 +145,12 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
  *  list. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
  *  expansion rule lives in exactly one place. */
 function expandProviderDefaults(provider: ModelOptionProvider, target: Set<string>): void {
-  const families = collapseModelFamilies(provider.models ?? [])
+  const families = collapseModelFamilies(provider.models ?? [], provider.capabilities)
 
   const featured = provider.featured_models ?? []
 
   const defaults = featured.length
-    ? families.filter(family => featured.includes(family.id))
+    ? families.filter(family => family.memberIds.some(id => featured.includes(id)))
     : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)
 
   for (const family of defaults) {
@@ -148,6 +175,16 @@ export function resolveVisibleKeys(stored: Set<string> | null, providers: readon
   const next = new Set(stored)
 
   for (const provider of providers) {
+    // A saved physical route predating family metadata now means the family row.
+    for (const family of collapseModelFamilies(provider.models ?? [], provider.capabilities)) {
+      const memberKeys = family.memberIds.map(id => modelVisibilityKey(provider.slug, id))
+
+      if (memberKeys.some(key => next.has(key))) {
+        memberKeys.forEach(key => next.delete(key))
+        next.add(modelVisibilityKey(provider.slug, family.id))
+      }
+    }
+
     const providerPrefix = `${provider.slug}::`
 
     const hasStoredProvider = [...stored].some(key => key.startsWith(providerPrefix) && !isProviderSentinel(key))
@@ -234,7 +271,7 @@ export function setProviderVisibility(
   const next = resolveVisibleKeys(stored, providers)
   const sentinel = emptyProviderSentinelKey(providerSlug)
   const provider = providers.find(p => p.slug === providerSlug)
-  const families = collapseModelFamilies(provider?.models ?? [])
+  const families = collapseModelFamilies(provider?.models ?? [], provider?.capabilities)
 
   // Drop every existing entry for this provider (real keys + sentinel); we
   // rebuild its state from scratch below.

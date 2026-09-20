@@ -4,6 +4,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, currentModelCapabilities } from '@/lib/model-options'
+import { collapseModelFamilies } from '@/store/model-visibility'
 
 import { ModelOptionsContent, resolveFastControl } from './model-edit-submenu'
 import { type ModelMenuHostProps, useModelMenuController } from './use-model-menu-controller'
@@ -33,9 +34,14 @@ export function ReasoningMenuPanel(props: ModelMenuHostProps) {
 
   // The catalog's provider row is what gates fast; the live model id (which
   // may be the `-fast` sibling) decides which way the variant toggle points.
-  const providerModels = modelOptions.data?.providers?.find(p => catalogProviderMatches(p, provider))?.models ?? []
+  const providerRow = modelOptions.data?.providers?.find(p => catalogProviderMatches(p, provider))
+  const providerModels = providerRow?.models ?? []
 
-  const row = { isActive: true, model, provider }
+  const family = collapseModelFamilies(providerModels, providerRow?.capabilities).find(item =>
+    item.memberIds.includes(model)
+  )
+
+  const row = { isActive: true, model, presetModel: family?.id ?? model, provider }
 
   return (
     <ModelOptionsContent
@@ -54,10 +60,13 @@ export function ReasoningMenuPanel(props: ModelMenuHostProps) {
       )}
       isActive
       model={model}
+      modelDefaultEffort={caps?.default_reasoning_effort}
       onSelectModel={nextModel => controller.select(nextModel, provider)}
       onSetOptions={patch => controller.setOptions(patch, row)}
       provider={provider}
       reasoning={caps?.reasoning ?? true}
+      reasoningControl={caps?.reasoning_control}
+      reasoningEfforts={caps?.reasoning_efforts}
     />
   )
 }

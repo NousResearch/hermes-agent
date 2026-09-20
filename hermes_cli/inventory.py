@@ -277,29 +277,48 @@ def _reasoning_catalog_reader(slug: str):
     return read
 
 
-def _validate_model_description(value: dict) -> dict:
+def _validate_model_description(value: dict, model_ids: list[str]) -> dict:
+    """Allowlist an optional provider descriptor before it reaches clients."""
     from hermes_constants import VALID_REASONING_EFFORTS
 
-    clean = {key: value[key] for key in ('fast', 'reasoning', 'can_disable_reasoning')
-             if type(value.get(key)) is bool}
-    state = value.get('reasoning_control')
-    if state in ('adjustable', 'default', 'unsupported', 'unknown'):
-        clean['reasoning_control'] = state
-    efforts = value.get('reasoning_efforts')
-    budget = value.get('reasoning_budget')
-    if (isinstance(budget, dict) and type(budget.get('min')) is int
-            and type(budget.get('max')) is int and 1 <= budget['min'] <= budget['max']):
-        clean['reasoning_budget'] = {key: budget[key] for key in ('min', 'max')}
-        if type(budget.get('dynamic')) is bool:
-            clean['reasoning_budget']['dynamic'] = budget['dynamic']
+    clean = {
+        key: value[key]
+        for key in ("fast", "reasoning", "can_disable_reasoning")
+        if type(value.get(key)) is bool
+    }
+    control = value.get("reasoning_control")
+    if control in {"adjustable", "default", "unsupported", "unknown"}:
+        clean["reasoning_control"] = control
+    name = value.get("display_name")
+    if isinstance(name, str) and name.strip():
+        clean["display_name"] = name.strip()
+    family = value.get("family_id")
+    if isinstance(family, str) and family in model_ids:
+        clean["family_id"] = family
+    budget = value.get("reasoning_budget")
+    if (
+        isinstance(budget, dict)
+        and type(budget.get("min")) is int
+        and type(budget.get("max")) is int
+        and 1 <= budget["min"] <= budget["max"]
+    ):
+        clean["reasoning_budget"] = {key: budget[key] for key in ("min", "max")}
+        if type(budget.get("dynamic")) is bool:
+            clean["reasoning_budget"]["dynamic"] = budget["dynamic"]
+    efforts = value.get("reasoning_efforts")
     if isinstance(efforts, list) and all(
-            isinstance(effort, str) and effort in ('none', *VALID_REASONING_EFFORTS)
-            for effort in efforts):
-        clean['reasoning_efforts'] = list(dict.fromkeys(efforts))
+        isinstance(effort, str) and effort in ("none", *VALID_REASONING_EFFORTS)
+        for effort in efforts
+    ):
+        clean["reasoning_efforts"] = list(dict.fromkeys(efforts))
+        default = value.get("default_reasoning_effort")
+        if isinstance(default, str) and default in efforts:
+            clean["default_reasoning_effort"] = default
     return clean
 
 
-def _profile_model_descriptions(slug: str, model_ids: list[str]) -> dict:
+def _profile_model_descriptions(slug: str, model_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Read optional provider-owned picker metadata without making inventory fragile."""
     from providers import get_provider_profile
 
     profile = get_provider_profile(slug)
@@ -308,12 +327,14 @@ def _profile_model_descriptions(slug: str, model_ids: list[str]) -> dict:
     try:
         descriptions = profile.describe_models(model_ids=model_ids)
     except Exception:
-        # Optional metadata must not take down every provider's picker.
         return {}
     if not isinstance(descriptions, dict):
         return {}
-    return {model: _validate_model_description(value)
-            for model, value in descriptions.items() if model in model_ids and isinstance(value, dict)}
+    return {
+        model: _validate_model_description(value, model_ids)
+        for model, value in descriptions.items()
+        if model in model_ids and isinstance(value, dict)
+    }
 
 
 def _apply_capabilities(rows: list[dict]) -> None:
@@ -332,7 +353,6 @@ def _apply_capabilities(rows: list[dict]) -> None:
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
-
         descriptions = _profile_model_descriptions(slug, row.get("models") or [])
 
         for model in row.get("models") or []:
@@ -359,6 +379,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
 
+            # Provider declarations are authoritative for their own route vocabulary. Generic
+            # heuristics remain the fallback when the hook returns no descriptor.
             entry.update(descriptions.get(model, {}))
             caps[model] = entry
 

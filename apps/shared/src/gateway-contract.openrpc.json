@@ -15299,6 +15299,30 @@
             "default": null,
             "title": "Can Disable Reasoning"
           },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Name"
+          },
+          "family_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Family Id"
+          },
           "reasoning_control": {
             "anyOf": [
               {
@@ -15342,6 +15366,18 @@
               }
             ],
             "default": null
+          },
+          "default_reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Reasoning Effort"
           }
         },
         "required": [

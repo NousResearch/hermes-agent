@@ -76,7 +76,11 @@ export function ModelVisibilityDialog({
   const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
+    !q ||
+    foldIncludes(
+      `${model} ${provider.name} ${provider.slug} ${provider.capabilities?.[model]?.display_name ?? displayModelName(model)}`,
+      q
+    )
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -104,13 +108,15 @@ export function ModelVisibilityDialog({
             </div>
           ) : (
             providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+              const models = collapseModelFamilies(provider.models ?? [], provider.capabilities).filter(family =>
+                matches(provider, family.id)
+              )
 
               if (models.length === 0) {
                 return null
               }
 
-              const allFamilies = collapseModelFamilies(provider.models ?? [])
+              const allFamilies = collapseModelFamilies(provider.models ?? [], provider.capabilities)
 
               const onCount = allFamilies.filter(family =>
                 visible.has(modelVisibilityKey(provider.slug, family.id))
@@ -144,7 +150,12 @@ export function ModelVisibilityDialog({
                   </div>
                   {!collapsed &&
                     models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
+                      const declaredName = provider.capabilities?.[family.id]?.display_name
+
+                      const { name, tag } = declaredName
+                        ? { name: declaredName, tag: '' }
+                        : modelDisplayParts(family.id)
+
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (

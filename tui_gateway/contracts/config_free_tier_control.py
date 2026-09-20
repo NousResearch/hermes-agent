@@ -248,9 +248,12 @@ class ModelCapabilities(Result):
     fast: bool
     reasoning: bool
     can_disable_reasoning: bool | None = None
-    reasoning_control: Literal['adjustable', 'default', 'unsupported', 'unknown'] | None = None
+    display_name: str | None = None
+    family_id: str | None = None
+    reasoning_control: Literal["adjustable", "default", "unsupported", "unknown"] | None = None
     reasoning_efforts: list[str] | None = None
     reasoning_budget: ReasoningBudget | None = None
+    default_reasoning_effort: str | None = None
 
 
 class ModelOptionProvider(OpenModel):

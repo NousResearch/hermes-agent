@@ -65,11 +65,12 @@ interface ModelEditSubmenuProps {
   disabled?: boolean
   reasoningControl?: 'adjustable' | 'default' | 'unsupported' | 'unknown'
   /** Whether this model can turn thinking off. False on reasoning-mandatory
-   *  routes, whose upstream rejects a disable — the toggle is hidden rather
-   *  than offered as a control that silently does nothing. */
+   *  routes, whose upstream rejects a disable — the toggle stays visible but
+   *  disabled so the fixed state is explicit. */
   canDisableReasoning?: boolean
   reasoningEfforts?: string[]
   reasoningBudget?: { min: number; max: number; dynamic?: boolean }
+  modelDefaultEffort?: string
   /** The profile's configured default effort — what an unset row inherits.
    *  Passed in (not read from a store) so this submenu stays pure. */
   defaultEffort: string
@@ -112,11 +113,12 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
 }
 
 export function ModelOptionsContent({
-  disabled,
+  disabled = false,
   reasoningControl,
   canDisableReasoning,
   reasoningEfforts,
   reasoningBudget,
+  modelDefaultEffort,
   defaultEffort,
   effort,
   effortWire,
@@ -133,7 +135,8 @@ export function ModelOptionsContent({
     reasoning_control: reasoningControl,
     reasoning,
     reasoning_efforts: reasoningEfforts,
-    reasoning_budget: reasoningBudget
+    reasoning_budget: reasoningBudget,
+    default_reasoning_effort: modelDefaultEffort
   }
 
   const resolved = resolveModelReasoningEffort(effort, defaultEffort, capabilities)
@@ -141,18 +144,28 @@ export function ModelOptionsContent({
   const clamp = reasoningEffortClamp(effortValue, effortWire)
   const thinkingOn = reasoningControl === 'unsupported' ? false : resolved !== 'none'
   const levels = reasoning ? (reasoningEfforts ?? REASONING_EFFORTS).filter(isReasoningEffort) : []
+  const declaredReasoning = reasoningControl != null || reasoningEfforts != null || reasoningBudget != null
 
   const canToggleThinking =
     reasoning && canDisableReasoning !== false && (reasoningEfforts === undefined || reasoningEfforts.includes('none'))
 
   const showThinkingToggle = reasoningControl === 'unknown' ? false : canToggleThinking || Boolean(reasoningControl)
 
+  const thinkingDisabled =
+    disabled ||
+    !reasoning ||
+    reasoningControl === 'unsupported' ||
+    canDisableReasoning === false ||
+    (reasoningEfforts != null && !reasoningEfforts.includes('none'))
+
   const enabledEffort =
-    effortValue ||
-    resolveModelReasoningEffort('', defaultEffort === 'none' ? '' : defaultEffort, {
-      ...capabilities,
-      reasoning_efforts: reasoningEfforts?.filter(value => value !== 'none')
-    })
+    reasoningEfforts == null
+      ? effortValue ||
+        resolveModelReasoningEffort('', defaultEffort === 'none' ? '' : defaultEffort, {
+          ...capabilities,
+          reasoning_efforts: reasoningEfforts?.filter(value => value !== 'none')
+        })
+      : (modelDefaultEffort ?? 'auto')
 
   const setFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
@@ -175,31 +188,34 @@ export function ModelOptionsContent({
 
   const hasFast = fastControl.kind !== 'none'
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on
-  return !reasoningControl && !reasoningBudget && !hasFast && !levels.length && !showThinkingToggle ? (
-    <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
-  ) : (
+
+  return (
     <>
       <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
-      {showThinkingToggle && !reasoningBudget ? (
+      {(reasoning || declaredReasoning) && showThinkingToggle && !reasoningBudget ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.thinking}
           <Switch
+            aria-label={copy.thinking}
             checked={thinkingOn}
             className="ml-auto"
-            disabled={disabled || !canToggleThinking}
-            onCheckedChange={checked =>
-              onSetOptions({ effort: checked ? (reasoningEfforts === undefined ? enabledEffort : 'auto') : 'none' })
-            }
+            disabled={thinkingDisabled}
+            onCheckedChange={checked => onSetOptions({ effort: checked ? enabledEffort : 'none' })}
             size="xs"
           />
         </DropdownMenuItem>
       ) : null}
-      {hasFast ? (
-        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-          {copy.fast}
-          <Switch checked={fastOn} className="ml-auto" disabled={disabled} onCheckedChange={setFast} size="xs" />
-        </DropdownMenuItem>
-      ) : null}
+      <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
+        {copy.fast}
+        <Switch
+          aria-label={copy.fast}
+          checked={fastOn}
+          className="ml-auto"
+          disabled={disabled || !hasFast}
+          onCheckedChange={setFast}
+          size="xs"
+        />
+      </DropdownMenuItem>
       {levels.length > 0 || reasoningBudget || reasoningControl === 'unknown' ? (
         <>
           <DropdownMenuSeparator className="mx-0" />

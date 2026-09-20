@@ -741,9 +741,12 @@ export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
+  display_name?: string | null
+  family_id?: string | null
   reasoning_control?: 'adjustable' | 'default' | 'unsupported' | 'unknown' | null
   reasoning_efforts?: string[] | null
   reasoning_budget?: ReasoningBudget | null
+  default_reasoning_effort?: string | null
 }
 export interface ReasoningBudget {
   min: number

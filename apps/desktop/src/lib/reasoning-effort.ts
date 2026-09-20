@@ -17,6 +17,38 @@ const SHORT_LABELS: Record<string, string> = {
   ultra: 'Ultra'
 }
 
+/** Resolve a row's displayed value without inventing a level outside its provider contract.
+ * Empty legacy values still inherit Hermes' default; an explicit descriptor instead resolves
+ * empty to `auto`, which means the provider-selected route default. */
+export function resolveModelReasoningEffort(
+  effort: string,
+  inherited: string = '',
+  capabilities?: Partial<
+    Pick<ModelCapabilities, 'reasoning' | 'reasoning_control' | 'reasoning_efforts' | 'default_reasoning_effort'>
+  >
+): string {
+  if (capabilities?.reasoning === false || capabilities?.reasoning_control === 'unsupported') {
+    return ''
+  }
+
+  const value = normalize(effort || inherited)
+  const allowed = capabilities?.reasoning_efforts
+
+  if (value === 'auto') {
+    return value
+  }
+
+  if (allowed == null) {
+    return value === 'none' ? value : resolveReasoningEffort(value)
+  }
+
+  if (!value) {
+    return 'auto'
+  }
+
+  return allowed.includes(value) ? value : ''
+}
+
 /**
  * A pick the route does not send verbatim: `ultra` is a Hermes-internal step
  * that every route clamps to its strongest level (`max` on OpenAI-compatible wires), and the

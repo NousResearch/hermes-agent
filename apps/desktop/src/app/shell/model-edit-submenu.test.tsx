@@ -24,17 +24,18 @@ afterEach(() => {
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.
 function renderSubmenu(opts: {
-  reasoningControl?: 'adjustable' | 'default' | 'unsupported' | 'unknown'
   canDisableReasoning?: boolean
-  reasoningEfforts?: string[]
   reasoningBudget?: { min: number; max: number; dynamic?: boolean }
   defaultEffort?: string
   effort?: string
   fastControl: FastControl
   isActive?: boolean
+  modelDefaultEffort?: string
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   reasoning: boolean
+  reasoningControl?: 'adjustable' | 'default' | 'unsupported' | 'unknown'
+  reasoningEfforts?: string[]
 }) {
   return render(
     <DropdownMenu open>
@@ -48,6 +49,7 @@ function renderSubmenu(opts: {
             fastControl={opts.fastControl}
             isActive={opts.isActive ?? true}
             model="m1"
+            modelDefaultEffort={opts.modelDefaultEffort}
             onSelectModel={opts.onSelectModel ?? vi.fn()}
             onSetOptions={opts.onSetOptions}
             provider="p1"
@@ -155,7 +157,7 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     const onSetOptions = vi.fn()
     renderSubmenu({ fastControl: { kind: 'param', on: true }, onSetOptions, reasoning: false })
 
-    fireEvent.click(screen.getByRole('switch'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast' }))
 
     expect(onSetOptions).toHaveBeenCalledWith({ fast: false })
   })
@@ -165,7 +167,7 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     renderSubmenu({ fastControl: { kind: 'none' }, onSetOptions, reasoning: true })
 
     // Thinking starts on (medium); toggling it off reports 'none'.
-    fireEvent.click(screen.getByRole('switch'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Thinking' }))
 
     expect(onSetOptions).toHaveBeenCalledWith({ effort: 'none' })
   })
@@ -180,7 +182,7 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
       reasoning: true
     })
 
-    fireEvent.click(screen.getByRole('switch'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Thinking' }))
 
     expect(onSetOptions).toHaveBeenCalledWith({ effort: 'high' })
   })
@@ -197,7 +199,7 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
       reasoning: false
     })
 
-    fireEvent.click(screen.getByRole('switch'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast' }))
 
     // Inactive rows stay preference-only — no model switch.
     expect(onSetOptions).toHaveBeenCalledWith({ fast: true })
@@ -215,9 +217,60 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
       reasoning: false
     })
 
-    fireEvent.click(screen.getByRole('switch'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast' }))
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
+  })
+
+  it('offers only the provider-declared effort levels and locks mandatory thinking', () => {
+    renderSubmenu({
+      canDisableReasoning: false,
+      effort: 'low',
+      fastControl: { kind: 'none' },
+      modelDefaultEffort: 'low',
+      onSetOptions: vi.fn(),
+      reasoning: true,
+      reasoningControl: 'adjustable',
+      reasoningEfforts: ['low', 'high']
+    })
+
+    const thinking = screen.getByRole('switch', { name: 'Thinking' })
+    const fast = screen.getByRole('switch', { name: 'Fast' })
+
+    expect(thinking.getAttribute('aria-checked')).toBe('true')
+    expect(thinking.hasAttribute('disabled')).toBe(true)
+    expect(fast.hasAttribute('disabled')).toBe(true)
+    expect(screen.getAllByRole('menuitemradio').map(item => item.textContent)).toEqual(['Low', 'High'])
+    expect(screen.queryByRole('menuitemradio', { name: 'Medium' })).toBeNull()
+  })
+
+  it('shows fixed reasoning as on and unsupported reasoning as off, both disabled', () => {
+    const fixed = renderSubmenu({
+      canDisableReasoning: false,
+      effort: 'auto',
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true,
+      reasoningControl: 'default',
+      reasoningEfforts: []
+    })
+
+    expect(screen.getByRole('switch', { name: 'Thinking' }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByRole('switch', { name: 'Thinking' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.queryByRole('menuitemradio')).toBeNull()
+    fixed.unmount()
+
+    renderSubmenu({
+      canDisableReasoning: false,
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: false,
+      reasoningControl: 'unsupported',
+      reasoningEfforts: []
+    })
+
+    expect(screen.getByRole('switch', { name: 'Thinking' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: 'Thinking' }).hasAttribute('disabled')).toBe(true)
   })
 })
 

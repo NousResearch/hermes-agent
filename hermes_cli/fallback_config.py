@@ -15,8 +15,8 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     Mirrors the custom-provider convention (``api_key_env`` accepted as alias); None when neither
     yields a value so ``resolve_runtime_provider`` falls through to standard credential resolution.
     ``key_env`` goes through ``agent.secret_scope.get_secret``, not raw ``os.getenv``: in a
-    multiplexed gateway a bare env read ignores the active profile's scope and can return another
-    profile's credential.
+    multiplexed gateway a bare env read ignores the active profile'"'"s scope and can return another
+    profile'"'"s credential.
     """
     if not isinstance(entry, dict):
         return None
@@ -35,14 +35,14 @@ def effective_runtime_provider(
     """Provider identity to persist/display for a resolved fallback entry.
 
     ``resolve_runtime_provider`` returns the bare billing class ``"custom"``
-    for every named ``providers:`` / ``custom_providers:`` entry; the entry's
+    for every named ``providers:`` / ``custom_providers:`` entry; the entry'"'"s
     configured id only survives in ``requested_provider``. Fallback resolvers
     that persist ``runtime["provider"]`` as the agent identity therefore label
     sessions/billing rows ``custom`` instead of the configured provider name —
     while the manual ``/model`` switch path correctly persists the named id
     (#98739). Same class as the delegation fix in ``tools/delegate_tool.py``.
 
-    Returns the entry's requested identity when the resolved provider is the
+    Returns the entry'"'"s requested identity when the resolved provider is the
     bare ``custom`` class; a genuinely ad-hoc endpoint (requested provider IS
     ``custom``) keeps the bare class unchanged.
     """

@@ -298,7 +298,10 @@ def _apply_model_switch(
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     return {
-        "value": result.new_model, "warning": result.warning_message or "",
+        "value": result.new_model,
+        "warning": "\n\n".join(w for w in (
+            getattr(result, "provider_switch_warning", ""), result.warning_message
+        ) if w),
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session")}
 

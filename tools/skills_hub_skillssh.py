@@ -11,6 +11,11 @@ from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json, _get_text, _memo_json, hub,
 )
 
+
+def _is_http_url(identifier: str) -> bool:
+    return isinstance(identifier, str) and identifier.strip().lower().startswith(("http://", "https://"))
+
+
 logger = logging.getLogger("tools.skills_hub")
 
 
@@ -94,6 +99,8 @@ class SkillsShSource(SkillSource):
         return results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        if _is_http_url(identifier):
+            return None  # a pasted GitHub URL belongs to GitHubSource (which pins the URL's ref)
         canonical = self._normalize_identifier(identifier)
         detail = self._fetch_detail_page(canonical)
 
@@ -111,6 +118,8 @@ class SkillsShSource(SkillSource):
         return _relabel(self._discover_identifier(canonical, detail=detail))
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        if _is_http_url(identifier):
+            return None
         canonical = self._normalize_identifier(identifier)
         detail = self._fetch_detail_page(canonical)
         meta = self._resolve_github_meta(canonical, detail=detail)

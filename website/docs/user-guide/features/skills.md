@@ -990,9 +990,11 @@ Users can also install a single skill from any public GitHub repo without adding
 
 ```bash
 hermes skills install owner/repo/skills/my-workflow
+# The folder URL from your browser works too, and pins the branch, tag or commit it names:
+hermes skills install https://github.com/owner/repo/tree/main/skills/my-workflow
 ```
 
-Useful when you want to share one skill without asking the user to subscribe to your whole registry.
+Useful when you want to share one skill without asking the user to subscribe to your whole registry. A URL naming a non-default branch installs from that branch; the lock file records the canonical `owner/repo/path` identifier either way.
 
 #### Trust levels for taps
 

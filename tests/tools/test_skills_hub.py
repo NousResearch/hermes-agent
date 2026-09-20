@@ -823,6 +823,42 @@ class TestUnifiedSearchDedup:
 # ---------------------------------------------------------------------------
 
 
+class TestGithubBrowserUrlIdentifiers:
+    """A pasted GitHub folder URL installs like the canonical ``owner/repo/path`` identifier."""
+
+    def test_parse_accepts_tree_and_blob_urls_and_keeps_canonical_form(self):
+        from tools.skills_hub_github import parse_github_identifier
+        assert parse_github_identifier("https://github.com/o/r/tree/main/skills/foo") == ("o/r", "skills/foo", "main")
+        assert parse_github_identifier("github.com/o/r/blob/dev/skills/foo/SKILL.md?plain=1") == ("o/r", "skills/foo", "dev")
+        assert parse_github_identifier("o/r/skills/foo") == ("o/r", "skills/foo", None)
+        # No skill directory to install: repo root / bare ref / a non-GitHub URL / too short.
+        for bad in ("https://github.com/o/r", "https://github.com/o/r/tree/main", "https://example.com/x/SKILL.md", "o/r"):
+            assert parse_github_identifier(bad) is None, bad
+
+    def test_fetch_from_tree_url_pins_the_named_ref_and_canonicalizes_identifier(self):
+        md = "---\nname: foo\ndescription: d\n---\n# foo\n"
+        src = GitHubSource(auth=GitHubAuth())
+        seen = []
+
+        def fake_json(url, **kwargs):
+            seen.append(url)
+            if url.endswith("/git/trees/dev"):
+                return {"sha": "devtreesha", "tree": [{"path": "skills/foo/SKILL.md", "type": "blob", "mode": "100644"}]}
+            return {"default_branch": "main"}
+
+        with patch.object(src, "_github_json", side_effect=fake_json), \
+             patch.object(src, "_fetch_file_content", return_value=md) as fetch_md:
+            bundle = src.fetch("https://github.com/o/r/tree/dev/skills/foo")
+        assert bundle is not None
+        assert bundle.identifier == "o/r/skills/foo"  # lock file / update / trust key on the canonical form
+        assert bundle.metadata["source_revision"] == "devtreesha"
+        assert fetch_md.call_args.kwargs.get("ref") == "devtreesha"
+        assert not any(url.endswith("/repos/o/r") for url in seen)  # the URL's ref replaces the default-branch lookup
+        # skills.sh never owns a URL identifier, so it must not spend network calls on one.
+        with patch("tools.skills_hub_skillssh._get_text", side_effect=AssertionError("network")):
+            assert SkillsShSource(auth=GitHubAuth()).fetch("https://github.com/o/r/tree/dev/skills/foo") is None
+
+
 class TestGithubProviderLabeling:
 
     def test_inspect_stamps_provider_in_extra(self):

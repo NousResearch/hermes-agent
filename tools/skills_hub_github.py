@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -161,6 +162,51 @@ def _split_repo_id(identifier: str) -> Optional[Tuple[str, str]]:
     return (f"{parts[0]}/{parts[1]}", parts[2]) if len(parts) >= 3 else None
 
 
+# The folder URL a browser shows for a skill directory: ``github.com/<o>/<r>/tree/<ref>/<path>`` (or the
+# ``blob`` form when the user copied the SKILL.md page). A ref containing ``/`` is ambiguous in these
+# URLs, so only its first segment is taken as the ref.
+_GITHUB_BROWSER_URL_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?"
+    r"(?:/(?:tree|blob)/(?P<ref>[^/\s]+)(?:/(?P<path>[^\s?#]*))?)?/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def parse_github_identifier(identifier: str) -> Optional[Tuple[str, str, Optional[str]]]:
+    """``(owner/repo, skill_path, ref)`` for a canonical ``owner/repo/path`` identifier OR a pasted GitHub
+    browser URL. Canonical identifiers carry no ref (``None``); a URL pins the ref it names so a skill
+    on a branch other than the default installs from that branch. A trailing ``SKILL.md`` (blob URL)
+    is dropped so the identifier names the skill directory. None when no skill path can be found."""
+    if not isinstance(identifier, str):
+        return None
+    ident = identifier.strip()
+    match = _GITHUB_BROWSER_URL_RE.match(ident)
+    if match is None:
+        if ident.lower().startswith(("http://", "https://")):
+            return None
+        split = _split_repo_id(ident)
+        return (split[0], split[1], None) if split else None
+    path = (match.group("path") or "").strip("/")
+    if path.endswith("SKILL.md"):
+        path = path[: -len("SKILL.md")].rstrip("/")
+    if not path:
+        return None
+    return f"{match.group('owner')}/{match.group('repo')}", path, match.group("ref")
+
+
+def canonical_github_identifier(identifier: str) -> str:
+    """``owner/repo/path`` for any form ``parse_github_identifier`` accepts (the URL form is a user
+    convenience; the lock file, trust lookup and ``skills update`` all key on the canonical form)."""
+    parsed = parse_github_identifier(identifier)
+    return identifier if parsed is None else f"{parsed[0]}/{parsed[1]}"
+
+
+def _tree_key(repo: str, ref: Optional[str]) -> str:
+    """Tree-cache key: the bare repo for the default branch (what existing callers key on), ``repo@ref``
+    when a URL pinned another ref."""
+    return f"{repo}@{ref}" if ref else repo
+
+
 def _skip_bundle_file(rel_path: str) -> bool:
     """Dotfiles, bytecode and __pycache__ never ship in a bundle."""
     base = rel_path.rsplit("/", 1)[-1]
@@ -256,15 +302,16 @@ class GitHubSource(SkillSource):
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """Download a skill; identifier format: "owner/repo/path/to/skill-dir"."""
-        if (split := _split_repo_id(identifier)) is None:
+        if (parsed := parse_github_identifier(identifier)) is None:
             return None
-        repo, skill_path = split
+        repo, skill_path, ref = parsed
+        identifier = f"{repo}/{skill_path}"
         skill_dir = skill_path.rstrip("/")
         # Resolve the tree FIRST so every byte fetch — SKILL.md included — is pinned to the
         # same revision; an unpinned /contents fetch floats to HEAD and can serve bytes newer
         # than the tree the paths were validated against (TOCTOU). Idempotent + cached.
-        tree = self._get_repo_tree(repo)
-        pinned_ref = self._tree_revisions.get(repo)
+        tree = self._get_repo_tree(repo, ref)
+        pinned_ref = self._tree_revisions.get(_tree_key(repo, ref)) or ref
         skill_md = self._fetch_file_content(repo, f"{skill_dir}/SKILL.md", ref=pinned_ref)
         if skill_md is None:
             return None
@@ -335,10 +382,11 @@ class GitHubSource(SkillSource):
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Fetch just the SKILL.md metadata for preview."""
-        if (split := _split_repo_id(identifier)) is None:
+        if (parsed := parse_github_identifier(identifier)) is None:
             return None
-        repo, skill_path = split[0], split[1].rstrip("/")
-        content = self._fetch_file_content(repo, f"{skill_path}/SKILL.md")
+        repo, skill_path, ref = parsed[0], parsed[1].rstrip("/"), parsed[2]
+        identifier = f"{repo}/{skill_path}"
+        content = self._fetch_file_content(repo, f"{skill_path}/SKILL.md", **({"ref": ref} if ref else {}))
         if not content:
             return None
         fm = _parse_frontmatter(content)
@@ -383,18 +431,23 @@ class GitHubSource(SkillSource):
         _cache_metas(cache_key, skills)
         return skills
 
-    def _get_repo_tree(self, repo: str) -> Optional[Tuple[str, List[dict]]]:
-        """Cached ``(default_branch, tree_entries)`` for a repo, or None. One install may need the tree
+    def _get_repo_tree(self, repo: str, ref: Optional[str] = None) -> Optional[Tuple[str, List[dict]]]:
+        """Cached ``(branch, tree_entries)`` for a repo, or None. ``ref`` (from a pasted browser URL)
+        selects that branch/tag/commit instead of the default branch. One install may need the tree
         several times; caching saves the ``GET /repos/{repo}`` + ``GET .../git/trees/{branch}`` pair each
         time (~12 of the 60/hr unauthenticated budget before)."""
-        if repo in self._tree_cache:
-            return self._tree_cache[repo]
-        repo_data = self._github_json(f"{_API}/{repo}")
-        if repo_data is None:
-            return None
-        default_branch = repo_data.get("default_branch", "main")
+        key = _tree_key(repo, ref)
+        if key in self._tree_cache:
+            return self._tree_cache[key]
+        if ref:
+            default_branch = ref
+        else:
+            repo_data = self._github_json(f"{_API}/{repo}")
+            if repo_data is None:
+                return None
+            default_branch = repo_data.get("default_branch", "main")
         tree_data = self._github_json(
-            f"{_API}/{repo}/git/trees/{default_branch}", params={"recursive": "1"}, timeout=30.0,
+            f"{_API}/{repo}/git/trees/{quote(default_branch, safe='')}", params={"recursive": "1"}, timeout=30.0,
         )
         if tree_data is None:
             return None
@@ -402,8 +455,8 @@ class GitHubSource(SkillSource):
             logger.debug("Git tree truncated for %s, cannot cache", repo)
             return None
         if isinstance(tree_data.get("sha"), str) and tree_data["sha"]:
-            self._tree_revisions[repo] = tree_data["sha"]
-        self._tree_cache[repo] = tree = (default_branch, tree_data.get("tree", []))
+            self._tree_revisions[key] = tree_data["sha"]
+        self._tree_cache[key] = tree = (default_branch, tree_data.get("tree", []))
         return tree
 
     def _github_json(self, url: str, **kwargs) -> Optional[dict]:

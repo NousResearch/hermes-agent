@@ -62,7 +62,8 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # (#117009).
 _RESPAWN_BLOCKER_RE = re.compile(
     r"\b(quota|rate[\s_\-]?limit|429|403|"
-    r"auth|authenticat(?:e|ed|ion)|authoriz(?:e|ed|ation)|authz|"
+    r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
+    r"authoris(?:e|ed|ation)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
     r"invalid[\s_]api[\s_]key)\b",

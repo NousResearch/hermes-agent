@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { prefersReducedMotion } from '@/hooks/use-media-query'
+import { $remoteDisplayReason } from '@/store/remote-display'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { flipSurface } from './flip'
@@ -34,7 +35,8 @@ export async function toggleBackworkspace(): Promise<void> {
   try {
     await flipSurface(root, () => $backworkspaceOpen.set(opening), {
       direction: opening ? 1 : -1,
-      reducedMotion: prefersReducedMotion()
+      reducedMotion: prefersReducedMotion(),
+      softwareComposited: $remoteDisplayReason.get() !== null
     })
   } finally {
     flipping = false

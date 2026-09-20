@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 
 import { translateNow } from '@/i18n'
 import { notify } from '@/store/notifications'
+import { loadRemoteDisplayReason } from '@/store/remote-display'
 
 // GPU acceleration is disabled under remote display (RDP/VNC/etc) to avoid
 // flicker. Surfaces once per launch as a persistent toast through the shared
@@ -9,7 +10,9 @@ import { notify } from '@/store/notifications'
 // exact fixed coordinates, which could overlap a real toast.
 export function RemoteDisplayBanner() {
   useEffect(() => {
-    void window.hermesDesktop?.getRemoteDisplayReason?.().then(reason => {
+    // Also the one place that asks: the answer is fixed for the launch, and
+    // the flip reads it to decide whether it can afford to blur.
+    void loadRemoteDisplayReason().then(reason => {
       if (reason) {
         notify({
           durationMs: 0,

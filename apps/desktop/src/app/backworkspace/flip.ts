@@ -23,6 +23,16 @@ export interface FlipOptions {
   /** 1 turns the right edge away (front → back), -1 turns it back. */
   direction: -1 | 1
   reducedMotion: boolean
+  /**
+   * Chromium is drawing on the CPU, so the blur is not free.
+   *
+   * Measured on this window at 1440×900: on a GPU the blur adds about 1 ms to a
+   * 16.7 ms frame and nothing runs long, while on the CPU the same turn drops
+   * from 41 frames to 19, its mean frame goes 17 → 36 ms and its worst reaches
+   * 100 ms. The app turns hardware acceleration off by itself on a remote
+   * display, so this is every SSH, VNC and RDP user, not a corner.
+   */
+  softwareComposited: boolean
 }
 
 function turn(degrees: number, scale: number, blur: number): Keyframe {
@@ -32,22 +42,22 @@ function turn(degrees: number, scale: number, blur: number): Keyframe {
   }
 }
 
-function flipFrames({ direction, reducedMotion }: FlipOptions): { enter: Keyframe[]; exit: Keyframe[] } {
+function flipFrames({ direction, reducedMotion, softwareComposited }: FlipOptions): {
+  enter: Keyframe[]
+  exit: Keyframe[]
+} {
   if (reducedMotion) {
     return { enter: [{ opacity: 0 }, { opacity: 1 }], exit: [{ opacity: 1 }, { opacity: 0 }] }
   }
 
+  // The turn keeps its shape without the blur; it is the one part that has to
+  // go when the frames have to be drawn by hand.
+  const edge = softwareComposited ? 0 : EDGE_BLUR_PX
+  const mid = softwareComposited ? 0 : MID_BLUR_PX
+
   return {
-    enter: [
-      turn(-90 * direction, EDGE_SCALE, EDGE_BLUR_PX),
-      turn(-MID_TURN_DEG * direction, MID_SCALE, MID_BLUR_PX),
-      turn(0, 1, 0)
-    ],
-    exit: [
-      turn(0, 1, 0),
-      turn(MID_TURN_DEG * direction, MID_SCALE, MID_BLUR_PX),
-      turn(90 * direction, EDGE_SCALE, EDGE_BLUR_PX)
-    ]
+    enter: [turn(-90 * direction, EDGE_SCALE, edge), turn(-MID_TURN_DEG * direction, MID_SCALE, mid), turn(0, 1, 0)],
+    exit: [turn(0, 1, 0), turn(MID_TURN_DEG * direction, MID_SCALE, mid), turn(90 * direction, EDGE_SCALE, edge)]
   }
 }
 

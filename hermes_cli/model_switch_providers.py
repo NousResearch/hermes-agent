@@ -937,6 +937,14 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+        if not has_creds and cp_config is not None and cp_config.auth_type == "external_process":
+            # Subprocess-backed providers own their auth; the binary resolving is the credential
+            # evidence for listing (same gate as the copilot-acp overlay row and hermes auth status).
+            try:
+                from hermes_cli.auth import get_external_process_provider_status
+                has_creds = bool(get_external_process_provider_status(cp.slug).get("configured"))
+            except Exception as exc:
+                logger.debug("External-process check failed for %s: %s", cp.slug, exc)
         if not has_creds:
             continue
         if _is_aws_sdk(cp_config):

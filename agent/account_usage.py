@@ -635,11 +635,38 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
 }
 
 
+# Wall-clock bound on a plugin profile's ``fetch_account_usage`` hook. The built-in fetchers above carry
+# their own httpx timeouts; a plugin hook is arbitrary code, and the gateway/TUI ``/usage`` paths await
+# this function with no deadline of their own (only the CLI wraps it in a 10 s future), so the bound
+# lives here where every surface shares it.
+PLUGIN_USAGE_HOOK_DEADLINE_S = 10.0
+
+
+def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """Run the profile hook on a daemon thread; past the deadline (or on any exception) → None."""
+    import contextvars
+    import threading
+    result: list = []
+    context = contextvars.copy_context()  # the hook may read profile-scoped secrets
+    worker = threading.Thread(
+        target=lambda: result.append(
+            context.run(profile.fetch_account_usage, base_url=base_url, api_key=api_key)),
+        name="plugin-account-usage", daemon=True)
+    worker.start()
+    worker.join(PLUGIN_USAGE_HOOK_DEADLINE_S)
+    return result[0] if result else None
+
+
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
     try:
-        return fetcher(base_url, api_key) if fetcher else None
+        if fetcher:
+            return fetcher(base_url, api_key)
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(str(provider or "").strip().lower())
+        return _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
         return None

@@ -434,9 +434,20 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
 @method("gateway.capabilities")
 def _(rid, params: dict) -> dict:
     """What THIS BUILD enforces (a client withholds unless advertised), sourced from the enforcing
-    module, never config: a believed-but-absent capability is worse."""
-    from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
-    return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)})
+    module, never config: a believed-but-absent capability is worse.
+
+    ``allow_session_takeover`` is the exception that proves the rule: it is operator policy, and a
+    client that does not know takeover is enabled would keep hiding a composer the server would now
+    accept — so the effective value is advertised alongside the build-level guarantee.
+    """
+    from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT, resolve_session_takeover
+    takeover = resolve_session_takeover(_load_cfg())
+    return _ok(rid, {
+        # Exclusivity still holds under takeover (one owner at a time); what changes is
+        # whether a NEW surface is refused or becomes that owner.
+        "per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT),
+        "allow_session_takeover": bool(takeover),
+    })
 
 
 @method("client.capabilities")

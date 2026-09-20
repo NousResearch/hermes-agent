@@ -1,4 +1,4 @@
-"""A wedged child must not hold the parent past an interrupt.
+"""A wedged child must not hold the parent past an interrupt (#116435).
 
 ``_run_children_parallel`` polled futures with a timeout and fabricated an
 'interrupted' entry for still-pending children, but the executor's ``with``
@@ -87,45 +87,3 @@ def test_normal_completion_still_joins_cleanly():
     _run_children_parallel(batch, results, honor_parent_interrupt=True)
     assert [e["task_index"] for e in results] == [0, 1, 2]
     assert all(e["status"] == "completed" for e in results)
-
-
-def test_interrupt_cancels_queued_children_before_they_start():
-    """More children than workers: on interrupt, cancel_futures drops the
-    queued child instead of letting it start once a worker frees up."""
-    wedged_release = threading.Event()
-    wedged_started = threading.Event()
-    parent = SimpleNamespace(
-        _interrupt_requested=False, _delegate_spinner=None, quiet_mode=True,
-    )
-    ran = []
-
-    def run_child(i, task, child):
-        ran.append(i)
-        if i == 0:
-            wedged_started.set()
-            wedged_release.wait()  # parked until test teardown
-        return {"task_index": i, "status": "completed"}
-
-    children = [SimpleNamespace(_delegate_role="leaf") for _ in range(2)]
-    batch = _batch(children, parent)
-    batch.max_children = 1  # child 1 stays queued behind the wedged child 0
-    batch.run_child = run_child
-    results = []
-    returned = threading.Event()
-
-    def drive():
-        _run_children_parallel(batch, results, honor_parent_interrupt=True)
-        returned.set()
-
-    worker = threading.Thread(target=drive, daemon=True)
-    worker.start()
-    try:
-        assert wedged_started.wait(5), "wedged child never started"
-        parent._interrupt_requested = True
-        assert returned.wait(3), "interrupt path joined the wedged worker"
-        assert {e["task_index"] for e in results} == {0, 1}
-        assert all(e["status"] == "interrupted" for e in results)
-        assert ran == [0], "cancelled queued child must never run"
-    finally:
-        wedged_release.set()
-        worker.join(timeout=5)

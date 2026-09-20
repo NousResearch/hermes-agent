@@ -91,6 +91,34 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+def _pre_delivery_decision(agent, final_response, messages) -> Optional[Dict[str, str]]:
+    """Run the retry-capable final-response gate before persistence or delivery."""
+    try:
+        from hermes_cli.lifecycle import has_hook
+        from hermes_cli.plugins import get_pre_delivery_decision
+
+        if not has_hook("pre_delivery"):
+            return None
+        original_prompt = next((
+            str(item.get("content") or "") for item in reversed(messages)
+            if isinstance(item, dict) and item.get("role") == "user"
+            and not any(str(key).startswith("_") and value for key, value in item.items())
+        ), "")
+        return get_pre_delivery_decision(
+            session_id=getattr(agent, "session_id", None) or "",
+            task_id=getattr(agent, "_current_task_id", None) or "",
+            turn_id=getattr(agent, "_current_turn_id", None) or "",
+            platform=getattr(agent, "platform", "") or "",
+            model=getattr(agent, "model", "") or "",
+            attempt=getattr(agent, "_pre_delivery_nudges", 0),
+            original_prompt=original_prompt, final_response=final_response or "",
+            conversation_history=list(messages),
+        )
+    except Exception:
+        logger.warning("pre_delivery hook failed open", exc_info=True)
+        return None
+
+
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919)."""
@@ -126,6 +154,37 @@ def apply_stop_gates(
                 final_response or ""
             ),
         )
+
+    _delivery = _pre_delivery_decision(agent, final_response, messages)
+    if _delivery and _delivery["action"] == "RESET":
+        attempt = getattr(agent, "_pre_delivery_nudges", 0) + 1
+        agent._pre_delivery_nudges = attempt
+        if attempt <= 3:
+            final_msg["finish_reason"] = "pre_delivery_retry"
+            final_msg["_pre_delivery_synthetic"] = True
+            append_message(messages, final_msg)
+            append_message(messages, {
+                "role": "user",
+                "content": _delivery.get("message") or (
+                    "The pre-delivery gate rejected that response. Correct it while preserving "
+                    "the original user prompt."
+                ),
+                "_pre_delivery_synthetic": True,
+            })
+            agent._session_messages = messages
+            return StopGateVerdict(
+                continue_turn=True, final_response=None,
+                pending_verification_response=None,
+                pending_verification_response_previewed=False,
+            )
+        _delivery = {
+            "action": "EXHAUSTED",
+            "message": "The response was withheld after three failed correction attempts.",
+        }
+    if _delivery and _delivery["action"] == "EXHAUSTED":
+        final_response = _delivery.get("message") or "The response was withheld by a pre-delivery gate."
+        final_msg["content"] = final_response
+        final_msg["finish_reason"] = "pre_delivery_exhausted"
 
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:

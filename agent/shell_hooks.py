@@ -423,12 +423,24 @@ def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _parse_pre_delivery(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    action = str(data.get("action") or "").strip().upper()
+    if action not in {"PASS", "AMBIGUOUS", "NUDGE", "RESET", "EXHAUSTED"}:
+        return None
+    message = data.get("message")
+    return {"action": action, "message": message.strip() if isinstance(message, str) else ""}
+
+
 def _parse_context(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     context = data.get("context")
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call,
+    "pre_verify": _parse_pre_verify,
+    "pre_delivery": _parse_pre_delivery,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:

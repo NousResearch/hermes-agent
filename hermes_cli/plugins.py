@@ -115,7 +115,9 @@ VALID_HOOKS: Set[str] = {
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
-    "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
+    # pre_delivery: retry-capable final-response gate. Return action PASS,
+    # AMBIGUOUS, NUDGE, RESET, or EXHAUSTED with an optional message.
+    "pre_verify", "pre_delivery", "pre_api_request", "post_api_request", "api_request_error",
     # transform_api_error_classification: once per failed API call BEFORE
     # agent/error_classifier.classify_api_error(). Kwargs: provider, model, status_code, error_type,
     # error_code, error_message, error_body, error, approx_tokens, context_length, num_messages.
@@ -1930,6 +1932,28 @@ def get_pre_verify_continue_message(
         message = result.get("message") or result.get("reason")
         if action in ("continue", "block") and isinstance(message, str) and message.strip():
             return message.strip()
+    return None
+
+
+def get_pre_delivery_decision(
+    *, session_id: str = "", task_id: str = "", turn_id: str = "", platform: str = "",
+    model: str = "", attempt: int = 0, original_prompt: str = "", final_response: str = "",
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, str]]:
+    """Return the first valid retry-capable final-response decision."""
+    results = invoke_hook(
+        "pre_delivery", session_id=session_id, task_id=task_id, turn_id=turn_id,
+        platform=platform, model=model, attempt=attempt, original_prompt=original_prompt,
+        final_response=final_response, conversation_history=list(conversation_history or []),
+    )
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or "").strip().upper()
+        if action not in {"PASS", "AMBIGUOUS", "NUDGE", "RESET", "EXHAUSTED"}:
+            continue
+        message = result.get("message")
+        return {"action": action, "message": message.strip() if isinstance(message, str) else ""}
     return None
 
 

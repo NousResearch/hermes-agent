@@ -399,6 +399,72 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     assert "Nightly docs" in out
 
 
+def test_cron_list_reports_hidden_disabled_jobs(monkeypatch, capsys):
+    paused = [
+        {
+            "id": "job-1",
+            "name": "Nightly docs",
+            "schedule_display": "every day",
+            "state": "paused",
+            "enabled": False,
+            "deliver": ["local"],
+        },
+        {
+            "id": "job-2",
+            "name": "Weekly sweep",
+            "schedule_display": "every week",
+            "state": "paused",
+            "enabled": False,
+            "deliver": ["local"],
+        },
+    ]
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs", lambda include_disabled=False: paused if include_disabled else []
+    )
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "No active scheduled jobs" in out
+    assert "2 disabled or paused" in out
+    assert "--all" in out
+    assert "No scheduled jobs.\nCreate one" not in out
+
+
+def test_cron_list_all_shows_disabled_jobs(monkeypatch, capsys):
+    paused = [
+        {
+            "id": "job-1",
+            "name": "Nightly docs",
+            "schedule_display": "every day",
+            "state": "paused",
+            "enabled": False,
+            "deliver": ["local"],
+        }
+    ]
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs", lambda include_disabled=False: paused if include_disabled else []
+    )
+    monkeypatch.setattr("hermes_cli.cron._warn_if_gateway_not_running", lambda: None)
+
+    cron_cli.cron_list(show_all=True)
+
+    out = capsys.readouterr().out
+    assert "Nightly docs" in out
+    assert "[paused]" in out
+    assert "No active scheduled jobs" not in out
+
+
+def test_cron_list_with_no_jobs_at_all_keeps_empty_message(monkeypatch, capsys):
+    monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: [])
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "No scheduled jobs." in out
+    assert "disabled or paused" not in out
+
+
 def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
     calls = []
     monkeypatch.setattr("cron.scheduler.tick", lambda verbose=False: calls.append(verbose))

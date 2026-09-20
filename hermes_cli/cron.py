@@ -171,8 +171,14 @@ def cron_list(show_all: bool = False):
     jobs = list_jobs(include_disabled=show_all)
 
     if not jobs:
-        print(color("No scheduled jobs.\nCreate one with 'hermes cron create ...' "
-                    "or the /cron command in chat.", Colors.DIM))
+        # An all-disabled fleet must not read as "nothing is set up here" (#117434):
+        hidden = 0 if show_all else len(list_jobs(include_disabled=True))
+        if hidden:
+            print(color(f"No active scheduled jobs — {hidden} disabled or paused job(s) are hidden. "
+                        "Pass --all to list them.", Colors.DIM))
+        else:
+            print(color("No scheduled jobs.\nCreate one with 'hermes cron create ...' "
+                        "or the /cron command in chat.", Colors.DIM))
         return
 
     _print_banner("Scheduled Jobs")

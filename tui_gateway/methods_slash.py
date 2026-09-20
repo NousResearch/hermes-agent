@@ -44,7 +44,12 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     runtime_token = _current_runtime_session_record.set(session)
     try:
         from agent.review_engine import format_dispatch_note, start_review
-        result = start_review(agent, snapshot, arg or "")
+        # slash.exec is off-turn (RPC pool). start_review → resolve_runtime_provider
+        # reads HERMES_CODEX_BASE_URL via get_secret; under multiplex that raises
+        # UnscopedSecretError unless the same runtime scope a turn binds is here
+        # (#117544; same wrap as _compress_live_with_feedback / #116611).
+        with _session_profile_runtime_scope(session):
+            result = start_review(agent, snapshot, arg or "")
     except ValueError as exc:
         return str(exc)
     except Exception as exc:

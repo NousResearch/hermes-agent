@@ -14927,6 +14927,28 @@ function createWindow() {
           repairHint: 'hermes desktop --force-build',
           reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
         })
+      },
+      // #116472: the OS/Chromium can SIGKILL a renderer while the window is live (memory
+      // reclaim, an external kill). Hermes never does this itself and never reloads it
+      // (a killed-after-close window must not pop back up), so without this the window sat
+      // silent with only a desktop.log line. Surface the reason + a recovery button instead.
+      onRendererTerminated: details => {
+        // An intentional quit/handoff also tears the renderer down; never pop a
+        // recovery page for it (its window may still be alive when this fires).
+        if (isQuittingForHandoff || backendShutdown.hasStarted() || mainWindow.isDestroyed()) {
+          return
+        }
+
+        const reason = details?.reason ? String(details.reason) : 'unknown'
+        const exit = details?.exitCode === undefined ? '' : `, exit code ${String(details.exitCode)}`
+        rememberLog(`[renderer:main] renderer terminated while live (reason=${reason}${exit}); surfacing recovery page`)
+        void loadRendererLoadErrorPage(mainWindow, {
+          title: 'Hermes desktop UI was terminated',
+          errorDescription:
+            `The desktop UI process was terminated unexpectedly (reason: ${reason}${exit}). ` +
+            'Your sessions and the background gateway are unaffected — reload to continue.',
+          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
+        })
       }
     },
     reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,

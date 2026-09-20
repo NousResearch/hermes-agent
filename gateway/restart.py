@@ -105,9 +105,15 @@ def read_launchd_exit_timeout_s(
     label = label or launchd_service_label(environ)
     if not label:
         return None
+    if uid is None:
+        # launchd is macOS-only; Windows has no os.getuid, so resolve it via getattr.
+        _getuid = getattr(os, "getuid", None)
+        if _getuid is None:
+            return None
+        uid = _getuid()
     try:
-        resolved_uid = os.getuid() if uid is None else int(uid)
-    except (AttributeError, TypeError, ValueError):
+        resolved_uid = int(uid)
+    except (TypeError, ValueError):
         return None
     domain = "system" if resolved_uid == 0 else f"gui/{resolved_uid}"
     try:

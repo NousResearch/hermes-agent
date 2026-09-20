@@ -1696,6 +1696,8 @@ Event names must be one of the [plugin hook events](#plugin-hooks); typos produc
 
 On Windows, a `command` that starts with an existing script file — the `~/.hermes/agent-hooks/x.sh` shape the examples below use — is spawned through that file's own interpreter (Git Bash for `.sh`/`.bash`, the running Hermes Python for `.py`), because `CreateProcess` has no shebang support and rejects a bare script with `WinError 193`. Every other command, and every POSIX platform, passes `argv` straight to `Popen`, where the kernel already honours the shebang.
 
+A routed `.py` hook therefore runs under the same interpreter the agent itself runs on, not the one a `conda activate` or `py -3.12` selection would give you. To use a different Python, name it in the command (`command: "py -3.12 hooks/lint.py"`) — routing applies only when the first token is the script itself.
+
 ### JSON wire protocol
 
 Each time the event fires, Hermes spawns a subprocess for every matching hook (matcher permitting), pipes a JSON payload to **stdin**, and reads **stdout** back as JSON.

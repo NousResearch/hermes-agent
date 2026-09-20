@@ -169,9 +169,25 @@ def test_legacy_marker_discharges_on_live_fleet_evidence_without_receipt(monkeyp
     assert target.read_bytes() == receipt_before
 
 
+@pytest.mark.parametrize("live,pending", [([CURRENT], False), ([dict(CURRENT, state="stale", code_sha="old")], True), ([], True)], ids=["fleet-current", "fleet-stale", "fleet-empty"])
+def test_inventory_less_marker_settles_after_out_of_band_pull(monkeypatch, capsys, live, pending):
+    """An inventory-less marker left behind by an old update survives every later out-of-band
+    ``git pull`` (#115638): nothing rewrites it, and its ``expected_sha`` is never HEAD again.
+    It records no owed set, so a fleet that is current on the checkout is the whole of the
+    evidence the warning can be about — a stale or absent fleet still keeps it.
+    """
+    seed(monkeypatch, {}, "old", live)
+    marker = fleet._fleet_restart_pending_marker_path()
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert ("hermes gateway restart" in capsys.readouterr().err) is pending
+    assert fleet._pending_fleet_restart_needed() is pending
+    assert marker.exists() is pending
+
+
 # Explicit `inventory=null` records no obligation either, so it settles on live-fleet
-# evidence like a missing line (#115638); the variants below stay fail-closed.
-@pytest.mark.parametrize("inventory", [{}, [], {"version": 2, "runtimes": [GATEWAY]}, {"version": 1, "runtimes": []}, {"version": 1, "runtimes": [GATEWAY, dict(MANUAL, detail={})]}, {"version": 1, "runtimes": [None]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": "unknown"}]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": []}]}])
+# evidence like a missing line (#115638), and an explicit empty inventory owes nothing
+# (#115311); the variants below stay fail-closed.
+@pytest.mark.parametrize("inventory", [{}, [], {"version": 2, "runtimes": [GATEWAY]}, {"version": 1, "runtimes": [GATEWAY, dict(MANUAL, detail={})]}, {"version": 1, "runtimes": [None]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": "unknown"}]}, {"version": 1, "runtimes": [{"kind": "gateway", "profile": []}]}])
 def test_unverified_marker_inventory_stays_pending(monkeypatch, inventory):
     seed(monkeypatch, {"outcome": "success", "plan": {"runtimes": [GATEWAY]}}, "new", [CURRENT])
     marker = fleet._fleet_restart_pending_marker_path()

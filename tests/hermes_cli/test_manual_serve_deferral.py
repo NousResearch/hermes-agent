@@ -117,7 +117,7 @@ def test_stamped_manual_only_history_has_no_gateway_obligation(monkeypatch, caps
 
 
 @pytest.mark.parametrize("manual_first", [True, False])
-@pytest.mark.parametrize("unsupported", [{"kind": "serve", "supervisor": "desktop"}, {"kind": "gateway", "profile": "unknown"}, None])
+@pytest.mark.parametrize("unsupported", [{"kind": "serve"}, {"kind": "gateway", "profile": "unknown"}, None])
 def test_historical_retention_is_independent_of_plan_order(monkeypatch, capsys, manual_first, unsupported):
     manual = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": 1000.0}))
     rows = [manual, unsupported] if manual_first else [unsupported, manual]

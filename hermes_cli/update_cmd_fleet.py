@@ -150,10 +150,13 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     )
 
 
+_SUPERVISED_SERVE_BACKENDS = frozenset({"manual-serve", "desktop", "systemd", "launchd", "windows-service", "service"})
+
+
 def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tuple[str, str]] | None:
     """Pure coverage classification after manual retention of this receipt snapshot.
 
-    Empty means this receipt owes no gateways, not that an independent marker owes none. Unknown identities and failed manual transfers make coverage unverified.
+    Empty means this receipt owes no gateways, not that an independent marker owes none. Unknown identities, unclassified serve backends and failed manual transfers make coverage unverified.
     """
     plan = receipt.get("plan") or {}
     entries: list[tuple[object, str | None]] = [(entry, None) for entry in plan.get("runtimes") or []]
@@ -167,7 +170,13 @@ def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tup
             continue
         kind = entry.get("kind", default_kind)
         profile = entry.get("profile")
-        if kind in ("serve", "dashboard") and entry.get("supervisor") == "manual-serve" and entry not in pending_manual:
+        # A serve/dashboard row is outside the gateway matrix's evidence, not evidence against the
+        # gateways it does cover: a supervised backend (desktop, systemd, launchd) is its
+        # supervisor's to restart, and a manual-serve row outside the retention list is the serve
+        # obligation mechanism's — a host running a dashboard carries such a row in every receipt,
+        # and a blanket veto made the gateway warning permanently undischargeable there (#115090).
+        # Only an unclassified backend or a failed manual transfer still makes coverage unverified.
+        if kind in ("serve", "dashboard") and entry.get("supervisor") in _SUPERVISED_SERVE_BACKENDS and entry not in pending_manual:
             continue
         if kind != "gateway" or not profile or profile == "unknown":
             unverified = True

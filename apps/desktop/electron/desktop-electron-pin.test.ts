@@ -36,6 +36,7 @@ const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
 // An exact semver: digits.digits.digits with an optional prerelease/build tag,
 // but NO range operators (^ ~ > < = * x || spaces || -range).
 const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
+const MIN_SAFE_ELECTRON = [41, 10, 3] as const
 
 function desktopPkg(): Record<string, unknown> {
   assert.ok(fs.existsSync(DESKTOP_PKG), `missing ${DESKTOP_PKG}`)
@@ -64,6 +65,19 @@ test('electron dependency is exactly pinned', () => {
     `electron must be pinned to an exact version, got "${spec}". ` +
       'A range (^/~) lets npm ci resolve a newer Electron whose postinstall ' +
       'may differ from the one the build was validated against.'
+  )
+})
+
+test('electron pin includes the current security fixes', () => {
+  const spec = electronSpec(desktopPkg())
+  const version = spec.split(/[+-]/, 1)[0].split('.').map(Number)
+  const isSafe = version.some((part, index) =>
+    part !== MIN_SAFE_ELECTRON[index] && part > MIN_SAFE_ELECTRON[index]
+  ) || version.every((part, index) => part === MIN_SAFE_ELECTRON[index])
+
+  assert.ok(
+    isSafe,
+    `electron ${spec} predates the fixed 41.10.3 security release`
   )
 })
 

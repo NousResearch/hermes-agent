@@ -1265,16 +1265,31 @@ export interface ComputerUseStatus {
 }
 
 export interface SessionSearchResult {
+  /** Part of the payload the search endpoint already returns for enriched
+   *  hits: true when the matched session lives in the archive. */
+  archived?: boolean
+  /** Part of the payload the search endpoint already returns: epoch seconds of
+   *  the matched session's last activity. */
+  last_active?: number | null
   /** Lineage root of the matched conversation. Stable across compression and
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null
   model: string | null
+  /** Part of the payload the search endpoint already returns: the session's
+   *  stored preview line, null when it has none. */
+  preview?: string | null
   role: string | null
   /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string
   session_started: number | null
+  /** Part of the payload the search endpoint already returns: epoch seconds
+   *  the matched session started (the compression tip's own start). */
+  started_at?: number | null
   snippet: string
   source: string | null
+  /** Part of the payload the search endpoint already returns: the session's
+   *  stored title, null when it never had one. */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {

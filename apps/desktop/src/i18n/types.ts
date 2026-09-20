@@ -1799,6 +1799,7 @@ export interface Translations {
     refresh: string
     refreshing: string
     noResults: string
+    searching: string
     pinSession: string
     unpinSession: string
     exportSession: string

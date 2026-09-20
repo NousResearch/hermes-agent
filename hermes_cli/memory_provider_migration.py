@@ -6,7 +6,7 @@ name, config section (``memory.<name>``), data directory and tool names, so the 
 
 * ``hermes update`` — for every profile home that shares the venv (primary; runs where the venv was
   just rebuilt anyway).
-* agent init — when the configured provider cannot be found at all, once per process (Desktop
+* agent init — when the configured provider cannot be found at all, once per home/provider per process (Desktop
   users update through the app and never run ``hermes update`` by hand).
 
 Both install the catalog entry at its reviewed pin through the normal plugin install path (kill
@@ -17,18 +17,53 @@ the user gets the exact one-liner instead of silently running without memory.
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from threading import Lock
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-_attempted: set[str] = set()
+_attempted: set[tuple[str, str]] = set()
+_attempted_lock = Lock()
+
+
+@contextmanager
+def _migration_scope(home: Path):
+    """Bind ``home``'s config, secrets and terminal policy; keep the caller's own scope for its own home."""
+    from agent.secret_scope import current_secret_scope, serves_routed_profile
+    from hermes_constants import hermes_home_key
+    from tools.terminal_scope import get_terminal_scope
+
+    same_home = hermes_home_key(home) == hermes_home_key()
+    secrets = current_secret_scope() if same_home else None
+    # Unscoped single-profile startup already resolved config from the launch environment.
+    if same_home and secrets is None and not serves_routed_profile():
+        yield
+    elif secrets is not None and get_terminal_scope() is not None:
+        yield
+    else:
+        # Not gateway.run's scope helper: importing it boots the gateway's process env (dotenv included).
+        from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.terminal_scope import install_and_reset_profile_terminal_scope
+
+        with ExitStack() as stack:
+            stack.callback(reset_hermes_home_override, set_hermes_home_override(home))
+            if secrets is None:
+                hydrate_profile_secret_sources(home)
+                secrets = build_profile_secret_scope(home)
+            stack.callback(reset_secret_scope, set_secret_scope(secrets))
+            stack.enter_context(install_and_reset_profile_terminal_scope(home))
+            yield
 
 
 def configured_provider(home: Path) -> str:
     """``memory.provider`` of *home*'s effective config, or ``""``."""
     from hermes_cli.plugin_python_deps import _read_home_config
-    memory = _read_home_config(home).get("memory") or {}
+    with _migration_scope(home):
+        memory = _read_home_config(home).get("memory") or {}
     return str(memory.get("provider") or "").strip()
 
 
@@ -37,12 +72,8 @@ def provider_present(name: str, home: Path) -> bool:
     plugins, entry point). The lookup reads the active home, so it is bound explicitly: the update
     hook walks several profile homes from one process."""
     from plugins.memory import find_provider_dir
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    token = set_hermes_home_override(home)
-    try:
+    with _migration_scope(home):
         return find_provider_dir(name) is not None
-    finally:
-        reset_hermes_home_override(token)
 
 
 def catalog_source(name: str) -> Optional[str]:
@@ -82,12 +113,8 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
 def _install_into(home: Path) -> Callable[[str], dict]:
     def _install(name: str) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        token = set_hermes_home_override(home)
-        try:
+        with _migration_scope(home):
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name)
-        finally:
-            reset_hermes_home_override(token)
     return _install
 
 
@@ -107,16 +134,25 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
 
 
 def recover_at_startup(name: str) -> bool:
-    """Agent-init hook for a configured provider that resolved nowhere. One attempt per process per
-    name; honours ``security.allow_lazy_installs`` because it installs code. True when installed."""
-    if name in _attempted:
-        return False
-    _attempted.add(name)
+    """One automatic attempt per resolved home/provider per process; explicit installs stay available.
+
+    Honours ``security.allow_lazy_installs`` because it installs code. True when installed.
+    """
+    from hermes_constants import get_hermes_home, hermes_home_key
     from tools.lazy_deps import _allow_lazy_installs
-    if not _allow_lazy_installs():
-        logger.warning("Memory provider '%s' is not installed; security.allow_lazy_installs is off — "
-                       "run `hermes plugins install %s`.", name, name)
-        return False
-    from hermes_constants import get_hermes_home
+
     home = Path(get_hermes_home())
-    return migrate_home(home, install=_install_into(home), say=logger.warning) == name
+    key = (hermes_home_key(home), name)
+    with _attempted_lock:  # Claim before the slow install so a second startup does not wait on it.
+        attempted = key in _attempted
+        _attempted.add(key)
+    if attempted:
+        logger.warning("Memory provider '%s' automatic recovery already attempted for %s; "
+                       "run `hermes plugins install %s` in that profile.", name, home, name)
+        return False
+    with _migration_scope(home):
+        if not _allow_lazy_installs():
+            logger.warning("Memory provider '%s' is not installed; security.allow_lazy_installs is off — "
+                           "run `hermes plugins install %s`.", name, name)
+            return False
+        return migrate_home(home, install=_install_into(home), say=logger.warning) == name

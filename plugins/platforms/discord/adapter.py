@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import struct
 import subprocess
@@ -358,10 +359,17 @@ _DISCORD_GATEWAY_HANDSHAKE_RETRIES = 8
 _DISCORD_GATEWAY_HANDSHAKE_RETRY_CAP_SECS = 20.0
 
 
-def _is_pre_ready_ws_sequence_error(exc: BaseException, ws: Any) -> bool:
-    """discord.py 2.7.x: a failed first `from_client` leaves `Client.ws` as None, then
-    the `aiohttp.ClientError` reconnect branch reads `self.ws.sequence` and crashes."""
-    return isinstance(exc, AttributeError) and "sequence" in str(exc) and ws is None
+def _is_pre_ready_gateway_error(exc: BaseException, ws: Any) -> bool:
+    """discord.py's reconnect branch reads ``self.ws`` before the first ``from_client`` ever
+    assigned it: a gateway 503 before READY leaves it ``None``, so the reconnect raises
+    ``AttributeError`` instead of reconnecting. On the pinned 2.7.1 the attribute read is
+    ``self.ws.sequence``; keying on the ``NoneType`` shape rather than on that name keeps the
+    guard alive if a later release renames it. ``ws is None`` is what makes it narrow."""
+    return (
+        isinstance(exc, AttributeError)
+        and ws is None
+        and "'NoneType' object has no attribute" in str(exc)
+    )
 
 
 async def _connect_with_handshake_retries(
@@ -370,19 +378,31 @@ async def _connect_with_handshake_retries(
     is_closed,
     get_ws,
     label: str,
+    deadline: float | None = None,
 ):
-    """Retry Discord IDENTIFY when the gateway handshake 503s before READY."""
+    """Retry Discord IDENTIFY when the gateway handshake 503s before READY.
+
+    ``deadline`` is a ``time.monotonic()`` stamp, normally the end of the same ready-wait
+    window that cancels this task on expiry. A retry planned past it would be cancelled
+    mid-sleep and would replace a precise handshake error with a generic connect timeout,
+    so the loop gives up first and lets the real failure surface. Without a deadline only
+    the attempt cap applies.
+    """
     attempt = 0
     while True:
         try:
             return await connect()
         except AttributeError as exc:
-            if not _is_pre_ready_ws_sequence_error(exc, get_ws()) or is_closed():
+            if not _is_pre_ready_gateway_error(exc, get_ws()) or is_closed():
                 raise
             attempt += 1
             if attempt >= _DISCORD_GATEWAY_HANDSHAKE_RETRIES:
                 raise
-            delay = min(2 ** attempt, _DISCORD_GATEWAY_HANDSHAKE_RETRY_CAP_SECS)
+            base = min(2 ** attempt, _DISCORD_GATEWAY_HANDSHAKE_RETRY_CAP_SECS)
+            # Half jitter: adapters sharing one outage must not re-IDENTIFY in lockstep.
+            delay = base / 2.0 + random.random() * (base / 2.0)
+            if deadline is not None and time.monotonic() + delay >= deadline:
+                raise
             logger.warning(
                 "[%s] Discord gateway handshake failed before READY; retry %d/%d in %.1fs",
                 label, attempt, _DISCORD_GATEWAY_HANDSHAKE_RETRIES, delay,
@@ -1395,19 +1415,26 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await asyncio.to_thread(self._register_slash_commands)
             self._disconnecting = False
             _orig_connect = getattr(self._client, "connect", None)
+            ready_timeout = _discord_ready_timeout_seconds()
             if callable(_orig_connect):
+                # The retry budget must fit the window that cancels it, so raising
+                # HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT is what buys the later attempts.
+                handshake_deadline = (
+                    None if ready_timeout <= 0 else time.monotonic() + ready_timeout
+                )
+
                 async def _connect(*args, **kwargs):
                     return await _connect_with_handshake_retries(
                         lambda: _orig_connect(*args, **kwargs),
                         is_closed=getattr(self._client, "is_closed", lambda: False),
                         get_ws=lambda: getattr(self._client, "ws", None),
                         label=self.name,
+                        deadline=handshake_deadline,
                     )
 
                 self._client.connect = _connect  # type: ignore[method-assign]
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             self._bot_task.add_done_callback(self._handle_bot_task_done)
-            ready_timeout = _discord_ready_timeout_seconds()
             # Wait for ready, failing fast if the startup task dies first (e.g. SOCKS errors).
             await _wait_for_ready_or_bot_exit(
                 self._ready_event, self._bot_task,

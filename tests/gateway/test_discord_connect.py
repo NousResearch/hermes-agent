@@ -819,3 +819,120 @@ async def test_connect_with_handshake_retries_does_not_mask_other_errors(monkeyp
         await discord_platform._connect_with_handshake_retries(
             connect, is_closed=lambda: False, get_ws=lambda: None, label="Discord",
         )
+
+
+@pytest.mark.asyncio
+async def test_handshake_retries_never_outlive_the_window_that_cancels_them(monkeypatch):
+    """The ready wait cancels this task on expiry, so a retry planned past that deadline is
+    not a retry — it is a sleep that gets killed, hiding the handshake error behind a generic
+    connect timeout. The loop must stop inside the window and let the real error surface."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(discord_platform.time, "monotonic", lambda: clock["now"])
+
+    async def _sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", _sleep)
+    deadline = clock["now"] + 30.0  # HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT default
+    calls = {"n": 0}
+
+    async def connect():
+        calls["n"] += 1
+        raise AttributeError("'NoneType' object has no attribute 'sequence'")
+
+    with pytest.raises(AttributeError, match="sequence"):
+        await discord_platform._connect_with_handshake_retries(
+            connect, is_closed=lambda: False, get_ws=lambda: None,
+            label="Discord", deadline=deadline,
+        )
+    assert clock["now"] < deadline, "gave up after the window it was supposed to fit in"
+    assert 1 < calls["n"] < discord_platform._DISCORD_GATEWAY_HANDSHAKE_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_a_longer_connect_timeout_is_what_buys_the_later_attempts(monkeypatch):
+    """The full attempt budget is reachable only when the window is widened to hold it."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(discord_platform.time, "monotonic", lambda: clock["now"])
+
+    async def _sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", _sleep)
+    calls = {"n": 0}
+
+    async def connect():
+        calls["n"] += 1
+        raise AttributeError("'NoneType' object has no attribute 'sequence'")
+
+    with pytest.raises(AttributeError):
+        await discord_platform._connect_with_handshake_retries(
+            connect, is_closed=lambda: False, get_ws=lambda: None,
+            label="Discord", deadline=clock["now"] + 600.0,
+        )
+    assert calls["n"] == discord_platform._DISCORD_GATEWAY_HANDSHAKE_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_backoff_is_jittered_so_adapters_do_not_reidentify_in_lockstep(monkeypatch):
+    """One outage hits every profile at once; an undithered backoff makes them all IDENTIFY
+    on the same second and re-create the thundering herd the backoff exists to avoid."""
+    delays: list[float] = []
+
+    async def _record(seconds):
+        delays.append(seconds)
+
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", _record)
+    calls = {"n": 0}
+
+    async def connect():
+        calls["n"] += 1
+        if calls["n"] < 4:
+            raise AttributeError("'NoneType' object has no attribute 'sequence'")
+        return "ready"
+
+    seen = set()
+    for _ in range(12):
+        delays.clear()
+        calls["n"] = 0
+        await discord_platform._connect_with_handshake_retries(
+            connect, is_closed=lambda: False, get_ws=lambda: None, label="Discord",
+        )
+        seen.update(delays)
+        for attempt, delay in enumerate(delays, start=1):
+            base = min(2 ** attempt, discord_platform._DISCORD_GATEWAY_HANDSHAKE_RETRY_CAP_SECS)
+            assert base / 2.0 <= delay <= base, "jitter must not cancel the backoff"
+    assert len(seen) > 3, "delays repeat exactly — the backoff is not jittered"
+
+
+@pytest.mark.asyncio
+async def test_the_guard_survives_discord_py_renaming_the_attribute(monkeypatch):
+    """Keying on the attribute name would silently stop retrying on a library rename; the
+    None-shaped read while ``ws`` is None is the actual signature of the bug."""
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", AsyncMock())
+    calls = {"n": 0}
+
+    async def connect():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise AttributeError("'NoneType' object has no attribute 'seq'")
+        return "ready"
+
+    assert await discord_platform._connect_with_handshake_retries(
+        connect, is_closed=lambda: False, get_ws=lambda: None, label="Discord",
+    ) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_a_none_attribute_error_after_the_handshake_is_not_retried(monkeypatch):
+    """``ws`` being live means the handshake completed: the same exception shape is then a
+    real bug somewhere else and must not be swallowed by a reconnect loop."""
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", AsyncMock())
+
+    async def connect():
+        raise AttributeError("'NoneType' object has no attribute 'sequence'")
+
+    with pytest.raises(AttributeError):
+        await discord_platform._connect_with_handshake_retries(
+            connect, is_closed=lambda: False, get_ws=lambda: object(), label="Discord",
+        )

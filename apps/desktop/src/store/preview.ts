@@ -59,8 +59,16 @@ export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 
 
 export interface PreviewTab {
   id: RightRailTabId
+  /** User-facing page zoom for Browser tabs. The guest compensates for host
+   *  UI scale so this remains Chromium actual-size percent. */
+  pageZoomPercent?: number
   target: PreviewTarget
 }
+
+export const DEFAULT_BROWSER_PAGE_ZOOM_PERCENT = 100
+export const MIN_BROWSER_PAGE_ZOOM_PERCENT = 25
+export const MAX_BROWSER_PAGE_ZOOM_PERCENT = 500
+export const BROWSER_PAGE_ZOOM_STEP = 10
 
 const TABS_STORAGE_KEY = 'hermes.desktop.previewTabs.v2'
 /** Superseded by the tab list above; cleared so it can't leak forever. */
@@ -120,11 +128,29 @@ function isPdfFileTarget(target: PreviewTarget): boolean {
 export function decodePreviewTabs(raw: string): PreviewTab[] {
   const parsed = JSON.parse(raw) as unknown
 
-  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
-    isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
-      ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
-      : tab
+  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab => {
+    const migrated =
+      isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
+        ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
+        : tab
+
+    return migrated.target.kind === 'url'
+      ? { ...migrated, pageZoomPercent: decodeBrowserPageZoomPercent(tab.pageZoomPercent) }
+      : migrated
+  })
+}
+
+function isBrowserPageZoomPercent(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= MIN_BROWSER_PAGE_ZOOM_PERCENT &&
+    value <= MAX_BROWSER_PAGE_ZOOM_PERCENT
   )
+}
+
+function decodeBrowserPageZoomPercent(value: unknown): number {
+  return isBrowserPageZoomPercent(value) ? value : DEFAULT_BROWSER_PAGE_ZOOM_PERCENT
 }
 
 export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
@@ -248,6 +274,21 @@ export function commitBrowserTabLocation(tabId: string, url: string, title?: str
   )
 }
 
+export function setBrowserTabPageZoom(tabId: string, percent: number) {
+  if (!tabId || !isBrowserPageZoomPercent(percent)) {
+    return
+  }
+
+  const tabs = $previewTabs.get()
+  const tab = tabs.find(item => item.id === tabId)
+
+  if (!tab || tab.target.kind !== 'url' || tab.pageZoomPercent === percent) {
+    return
+  }
+
+  $previewTabs.set(tabs.map(item => (item.id === tabId ? { ...item, pageZoomPercent: percent } : item)))
+}
+
 /** Pull one tab from storage into this renderer's atom. A sibling window
  *  (the pop-out) may have committed a newer URL that we never saw. */
 export function adoptPersistedBrowserTab(tabId: string) {
@@ -269,6 +310,7 @@ export function adoptPersistedBrowserTab(tabId: string) {
     }
 
     commitBrowserTabLocation(tabId, persisted.target.url, persisted.target.label)
+    setBrowserTabPageZoom(tabId, decodeBrowserPageZoomPercent(persisted.pageZoomPercent))
   } catch {
     // Storage can throw; the in-memory tab stays as it was.
   }
@@ -387,7 +429,14 @@ export function openPreview(target: PreviewTarget, source: PreviewRecordSource =
   const current = $previewTabs.get()
   const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
   const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: resolved }
+
+  const tab: PreviewTab = {
+    id,
+    ...(resolved.kind === 'url'
+      ? { pageZoomPercent: current[index]?.pageZoomPercent ?? DEFAULT_BROWSER_PAGE_ZOOM_PERCENT }
+      : {}),
+    target: resolved
+  }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)
@@ -410,7 +459,10 @@ export function openBrowserTab() {
 export function newBrowserTab() {
   const id = mintBrowserTabId()
 
-  $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
+  $previewTabs.set([
+    ...$previewTabs.get(),
+    { id, pageZoomPercent: DEFAULT_BROWSER_PAGE_ZOOM_PERCENT, target: blankPage() }
+  ])
   selectRightRailTab(id)
 }
 

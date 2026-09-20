@@ -30,12 +30,6 @@ MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
-# Same-host start-time readings can drift by ~1 s between the claim-time and recovery-time reads
-# (macOS ``kern.boottime`` adjustment, #117505). Both fingerprint scales are ×100 (Linux /proc
-# ticks, psutil centiseconds), so 200 means 2 s on either platform — a recycled PID is essentially
-# never that close to the original's start time, and a live misread is still bounded by the
-# stale-claim sweep above.
-_OWNER_START_TIME_DRIFT_TOLERANCE = 200
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -144,7 +138,10 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     current = _process_start_time(pid)
     if current is None:
         return True  # cannot compare -> cannot prove death; a misread must not rewrite state
-    return abs(current - started_at) <= _OWNER_START_TIME_DRIFT_TOLERANCE
+    # Drifted same-host readings (#117505) are not proof of death; a live misread is still
+    # bounded by the stale-claim sweep below.
+    from gateway.status import start_time_fingerprints_match
+    return start_time_fingerprints_match(started_at, current)
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:

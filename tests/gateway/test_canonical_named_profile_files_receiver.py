@@ -662,6 +662,20 @@ async def test_unserve_retires_exact_named_run_before_store_close_and_replays(
     )
     assert replay == dict(accepted, replayed=True)
     assert calls == 1
+    retained = client._receipt(dispatch.task_id, dispatch.execution_generation)
+    assert retained is not None
+    for _ in range(2):
+        recovered = await asyncio.to_thread(client._poll_receipt, retained, grant=invitation['grant'])
+        assert recovered['run_id'] == run_id
+    fresh_store = case.adapter._run_receipt_stores[run_id]
+    assert fresh_store is not old_store
+    assert Path(fresh_store._db_path).resolve() == receipt_path.resolve()
+    case.adapter._set_run_status(run_id, 'cancelled', error='persisted through recovered named owner')
+    with sqlite3.connect(receipt_path) as connection:
+        recovered_status = json.loads(connection.execute(
+            'SELECT status_json FROM run_idempotency WHERE run_id=?', (run_id,)
+        ).fetchone()[0])
+    assert recovered_status['error'] == 'persisted through recovered named owner'
     assert replacement.db._conn.execute(
         "SELECT count(*) FROM session_admissions WHERE principal_id='api'"
     ).fetchone()[0] == 1

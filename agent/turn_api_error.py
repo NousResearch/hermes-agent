@@ -201,7 +201,8 @@ def handle_api_error(
 
     _ue = settle_unrecovered_error(
         agent, api_error=api_error, classified=classified, _retry=_retry, status_code=status_code,
-        error_msg=error_msg, is_context_length_error=is_context_length_error,
+        error_msg=error_msg, error_context=error_context,
+        is_context_length_error=is_context_length_error,
         is_rate_limited=is_rate_limited, _is_zai_coding_overload=_is_zai_coding_overload,
         _provider=_provider, _base=_base, _model=_model, messages=messages,
         api_messages=api_messages, api_kwargs=api_kwargs, active_system_prompt=active_system_prompt,
@@ -254,7 +255,7 @@ def settle_unrecovered_error(
     is_context_length_error: Any, is_rate_limited: Any, _is_zai_coding_overload: Any,
     _provider: Any, _base: Any, _model: Any, messages: Any, api_messages: Any, api_kwargs: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: Any, retry_count: Any,
-    max_retries: Any, compression_attempts: Any, api_call_count: Any,
+    max_retries: Any, compression_attempts: Any, api_call_count: Any, error_context: Any = None,
 ) -> UnrecoveredErrorVerdict:
     """Decide the fate of an API error that every recovery chain declined: local validation /
     non-retryable client errors (Copilot stale-credential self-heal first, then fallback, then a
@@ -327,7 +328,8 @@ def settle_unrecovered_error(
             if agent._has_pending_fallback():
                 _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
                 agent._buffer_status(f"⚠️ {_label} — trying fallback...")
-            if agent._try_activate_fallback():
+            reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
                 # re-runs the pre-API preflight against the fallback's context window.
                 active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
@@ -356,7 +358,8 @@ def settle_unrecovered_error(
             return _verdict("continue")
         if agent._has_pending_fallback():
             agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-        if agent._try_activate_fallback():
+        reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+        if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)

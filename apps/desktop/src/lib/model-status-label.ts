@@ -52,6 +52,10 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 function prettifyBase(base: string): string {
+  if (/^deepseek-flash$/i.test(base)) {
+    return 'DeepSeek V4.1 Flash'
+  }
+
   if (/^claude-/i.test(base)) {
     return titleCase(base.replace(/^claude-/i, '').replace(/-/g, ' '))
   }

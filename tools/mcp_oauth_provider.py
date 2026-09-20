@@ -9,6 +9,7 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -78,7 +79,9 @@ class HermesProviderMixin:
       ``token_endpoint_auth_method``; the SDK then treats the client as public and the token
       endpoint rejects the exchange (looping the browser page) — coerce ``client_secret_post``.
     - ``token_user_agent`` (``oauth.user_agent``) is stamped onto token-endpoint requests only
-      (some authorization servers/WAFs reject httpx's default).
+      (some authorization servers/WAFs reject httpx's default); unset falls back to the shared
+      ``Hermes-Agent/<version>`` default, since a header-less token POST is 403'd by WAF-fronted
+      authorization servers (#115329).
     - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs."""
 
     _hermes_logger: logging.Logger = logger
@@ -148,11 +151,16 @@ class HermesProviderMixin:
         return type(response)(204, request=response.request)
 
     def _prepare_token_request(self, request):
-        """Stamp the configured User-Agent onto a token/refresh request."""
+        """Stamp a token/refresh request's User-Agent: the configured ``oauth.user_agent`` when set,
+        else the shared ``Hermes-Agent/<version>`` default. These requests are built by hand — the
+        SDK's ``_exchange_token_authorization_code``/``_refresh_token`` and ``tools.mcp_oauth_device``
+        — and travel through ``client.send()``, which never merges the client's default headers, so
+        without a stamp the POST leaves with NO ``User-Agent`` at all and a WAF-fronted authorization
+        server answers 403 (#115329)."""
         ua = getattr(self, "_hermes_token_user_agent", None)  # tests build via __new__
         if ua:
             request.headers["User-Agent"] = ua
-        return request
+        return stamp_default_user_agent(request)
 
     def _coerce_client_secret_post(self) -> None:
         """Same rule as ``HermesTokenStorage._coerce_secret_auth_method``, applied to the
@@ -369,10 +377,16 @@ class HermesProviderMixin:
         await self.context.storage.set_tokens(token_response)
 
     async def _handle_token_response(self, response):
-        """Accept any 2xx token response; never echo the body into errors."""
+        """Accept any 2xx token response; a 2xx body (it carries the tokens) never reaches an error.
+
+        A non-2xx body carries no tokens and is the only clue to WHY the exchange failed — a WAF's
+        HTML "Request blocked" page vs the issuer's ``invalid_grant`` JSON (#115329) — so a short,
+        tag-stripped, redacted excerpt rides along with the status."""
         from mcp.client.auth.oauth2 import OAuthTokenError
         if not (200 <= response.status_code < 300):
-            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+            from tools.mcp_tool_common import _sanitize_error
+            excerpt = " ".join(re.sub(r"<[^>]+>", " ", response.text).split())[:200]
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code}): {_sanitize_error(excerpt)}".rstrip(": "))
         from httpx import HTTPError
         from mcp.client.auth.utils import handle_token_response_scopes
         try:

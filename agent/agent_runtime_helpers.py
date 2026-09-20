@@ -3122,11 +3122,21 @@ def trailing_continue_intent(text: str) -> bool:
 # stalled model whose turn would otherwise report "complete" with zero tool calls (#111761).
 # Tail-only and anchored on the last sentence, so reasoning that merely mentions a plan before
 # stating its answer ("...Let me check. The answer is 42.") still promotes.
+# Thai (unsegmented script, so no \b after the trigger, unlike the English group) shares the same
+# tail shape: a first-person future-action marker immediately followed by more Thai text, often
+# preceded by an em/en dash rather than sentence punctuation (#116495). Trigger glosses, in
+# pattern order: "I will give you" / "I will", "next I('ll)" + one of {start,try,check,fix,send,
+# do,look}, "please let me" + one of {start,try,check,fix,send,do,look}, "I('ll)" + one of
+# {start,try,check,fix,send,do,look,run,fire}.
 _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
-    r"(?:^|[.!?:\u3002\uff01\uff1f\n]\s*|\u2026\s*)"
+    r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n]\s*|\u2026\s*)"
     r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
-    r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b)"
-    r"[^.!?\n\u3002\uff01\uff1f]{0,160}[.:\u2026]?\s*$",
+    r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b"
+    r"|\u0e08\u0e30\u0e43\u0e2b\u0e49\u0e1c\u0e21|\u0e1c\u0e21\u0e08\u0e30"
+    r"|\u0e15\u0e48\u0e2d\u0e44\u0e1b(?:\u0e08\u0e30|\u0e1c\u0e21\u0e08\u0e30)"
+    r"|\u0e02\u0e2d(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39)"
+    r"|\u0e08\u0e30(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39|\u0e23\u0e31\u0e19|\u0e22\u0e34\u0e07))"
+    r"[^.!?\n\u3002\uff01\uff1f]{0,160}(?:[.:\u2026]+)?\s*$",
     re.IGNORECASE,
 )
 

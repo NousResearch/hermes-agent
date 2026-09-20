@@ -142,11 +142,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_handlers = _install_signal_forwarders(proc)
     try:
         _copy_stderr_with_timestamps(proc.stderr, log_path)
-    finally:
         proc.stderr.close()
+        # Keep forwarding until the child has actually exited: a signal that lands between
+        # its stderr EOF and wait() would otherwise kill the wrapper with the default action.
+        returncode = proc.wait()
+    finally:
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
-    returncode = proc.wait()
     return _child_returncode_for_supervisor(args.command, returncode)
 
 

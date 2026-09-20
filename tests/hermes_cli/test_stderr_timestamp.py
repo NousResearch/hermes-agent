@@ -215,7 +215,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
 
 
 
-@pytest.mark.macos_only
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 def test_wrapper_forwards_sigusr1_restart_request_to_child(tmp_path):
     """Regression for #101426: launchd owns the wrapper's PID, so ``hermes update`` sends its
     drain-aware SIGUSR1 to the wrapper. It must reach the gateway child and the wrapper must
@@ -239,6 +239,7 @@ def test_wrapper_forwards_sigusr1_restart_request_to_child(tmp_path):
         [sys.executable, "-m", "hermes_cli.stderr_timestamp", "--error-log", str(log_path), "--",
          sys.executable, "-c", child],
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     try:
         deadline = time.monotonic() + 10
@@ -248,8 +249,12 @@ def test_wrapper_forwards_sigusr1_restart_request_to_child(tmp_path):
         os.kill(wrapper.pid, signal.SIGUSR1)
         rc = wrapper.wait(timeout=10)
     finally:
-        if wrapper.poll() is None:
-            wrapper.kill()
+        # Kill the whole session: on a red run the wrapper dies of the signal and the child
+        # would otherwise keep sleeping.
+        try:
+            os.killpg(wrapper.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
     assert rc == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert "restart requested" in log_path.read_text(encoding="utf-8")

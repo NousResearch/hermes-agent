@@ -206,6 +206,24 @@ async def test_already_signed_in_starts_no_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_terminal_nous_session_can_start_reauthentication(monkeypatch):
+    runner = _runner(monkeypatch)
+    monkeypatch.setattr(anon_auth, "current_nous_state", lambda: {
+        "auth_method": "oauth_device_code",
+        "last_auth_error": {"code": "invalid_grant", "relogin_required": True},
+    })
+    flow = MagicMock(return_value=iter([anon_auth.TimedOut()]))
+    monkeypatch.setattr(anon_auth, "run_sign_in", flow)
+
+    assert await runner._handle_login_command(_event()) == anon_auth.UPGRADE_START
+    await _finish_tasks(runner)
+
+    flow.assert_called_once()
+    runner._deliver_platform_notice.assert_awaited_once_with(
+        _event().source, anon_auth.TimedOut().copy)
+
+
+@pytest.mark.asyncio
 async def test_a_non_admin_is_refused_when_gating_is_on(monkeypatch):
     runner = _runner(monkeypatch, extra={"allow_admin_from": ["operator"]})
     flow = MagicMock()

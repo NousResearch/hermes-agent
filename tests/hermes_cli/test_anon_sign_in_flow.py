@@ -237,6 +237,30 @@ def test_already_signed_in_short_circuits_before_any_network(portal):
     assert portal.calls == []
 
 
+def test_terminal_account_state_gets_a_direct_reauthentication_grant(portal):
+    from hermes_cli.auth import _load_auth_store, _save_auth_store, _save_provider_state
+    store = _load_auth_store()
+    _save_provider_state(store, "nous", {
+        "auth_method": "oauth_device_code",
+        "portal_base_url": PORTAL,
+        "last_auth_error": {
+            "code": "invalid_grant", "reason": "runtime_access_refresh_failure",
+            "relogin_required": True,
+        },
+    })
+    _save_auth_store(store)
+
+    states = _drain()
+
+    assert [state.kind for state in states] == ["code", "waiting", "completed"]
+    assert states[0].code == portal.user_code
+    paths = [path for _, path in portal.calls]
+    assert paths == ["/api/oauth/device/code", "/api/oauth/token"]
+    refreshed = _load_auth_store()["providers"]["nous"]
+    assert refreshed["refresh_token"]
+    assert "last_auth_error" not in refreshed
+
+
 def test_free_tier_off_yields_unavailable(portal, monkeypatch):
     monkeypatch.setattr(anon_auth, "guest_enabled", lambda: False)
     portal.calls.clear()
@@ -488,7 +512,8 @@ def test_the_scope_is_entered_for_the_preconditions_and_the_persist_but_never_ar
     for first, second in (pairs[0:2], pairs[2:4]):
         assert not (first[1] <= wait_start and wait_end <= second[1])
         # and never held across a yield, which would hand the scope to the consumer's thread
-        assert not any(first[1] <= at <= second[1] for at in yields)
+        # Equal timestamps are possible on coarse monotonic clocks after the scope has exited.
+        assert not any(first[1] < at < second[1] for at in yields)
 
 
 def test_wait_for_promotion_without_a_cancel_hook_is_unchanged(portal):

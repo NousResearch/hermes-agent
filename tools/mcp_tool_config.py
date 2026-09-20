@@ -134,19 +134,31 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
 
 
 def _which_with_config_pathext(command: str, path_arg, env: dict):
-    """``shutil.which`` retried under the config env's PATHEXT (Windows only; ``which`` uses the PARENT's)."""
+    """Resolve *command* under the config env's PATHEXT (Windows only; ``shutil.which`` uses the PARENT's).
+
+    The extension walk mirrors ``which`` itself (existing-suffix short-circuit, configured
+    extensions in order) but reads nothing from and writes nothing to ``os.environ``: swapping
+    the parent's PATHEXT around a ``which`` call would publish this server's per-profile value
+    to every other thread for the duration, and a ``finally``-restore cannot undo that window."""
     cfg_pathext = next((v for k, v in env.items() if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
     if not cfg_pathext or cfg_pathext == os.environ.get("PATHEXT"):
         return None
-    saved = os.environ.get("PATHEXT")
-    try:
-        os.environ["PATHEXT"] = cfg_pathext
-        return shutil.which(command, path=path_arg)
-    finally:
-        if saved is None:
-            os.environ.pop("PATHEXT", None)
-        else:
-            os.environ["PATHEXT"] = saved
+    exts = [ext for ext in cfg_pathext.split(";") if ext]  # PATHEXT is Windows-defined: ";"-separated even when resolved off-Windows
+    candidates = [command + ext for ext in exts]
+    if not candidates or any(command.lower().endswith(ext.lower()) for ext in exts):
+        candidates = [command]
+    directories = str(path_arg or "").split(os.pathsep)
+    if sys.platform == "win32" and os.curdir not in directories:
+        directories.insert(0, os.curdir)  # Windows resolves from the cwd first
+    for raw in directories:
+        directory = raw or os.curdir  # POSIX: an empty PATH component means the cwd
+        if not os.path.isdir(directory):
+            continue
+        for candidate in candidates:
+            resolved = os.path.join(directory, candidate)
+            if os.path.isfile(resolved) and os.access(resolved, os.F_OK | os.X_OK):
+                return resolved
+    return None
 
 
 def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
@@ -166,12 +178,19 @@ def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
 
 
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
-    """Resolve a stdio command against the exact subprocess env (bare ``npx``/``npm``/``node`` under a filtered PATH)."""
+    """Resolve a stdio command against the exact subprocess env (bare ``npx``/``npm``/``node`` under a filtered PATH).
+
+    A ``PATH`` lookup only runs when the child env actually carries one: ``shutil.which`` with
+    ``path=None`` silently falls back to the PARENT's ``os.environ["PATH"]``, letting a command
+    "resolve" against an env the child will never be spawned with. An absent child PATH is a
+    miss; an explicitly empty one keeps its cwd-only meaning (same distinction the child's
+    ``execvp`` will see). Bare ``npx``/``npm``/``node`` still fall through to the explicit
+    well-known Node directories, everything else stays as-written for an honest spawn failure."""
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
     if os.sep not in resolved_command:
         path_arg = resolved_env.get("PATH")
-        which_hit = shutil.which(resolved_command, path=path_arg)
+        which_hit = shutil.which(resolved_command, path=path_arg) if path_arg is not None else None
         if which_hit is None and sys.platform == "win32" and resolved_env:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
         if which_hit:

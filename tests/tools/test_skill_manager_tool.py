@@ -294,6 +294,40 @@ word word
 
 
 
+    def test_patch_content_with_supporting_file_path_rewrites_that_file(self, tmp_path):
+        """patch + content + a supporting file_path is a full rewrite of THAT file.
+
+        Before: the file_path was ignored, so the script body was run through the
+        SKILL.md frontmatter validator (and, had it passed, would have replaced SKILL.md).
+        """
+        script = "#!/usr/bin/env python3\nprint('validator v2')\n"
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            raw = skill_manage(action="patch", name="my-skill", content=script,
+                               file_path="scripts/validate.py")
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert (tmp_path / "my-skill" / "scripts" / "validate.py").read_text() == script
+        assert (tmp_path / "my-skill" / "SKILL.md").read_text() == VALID_SKILL_CONTENT
+
+    @pytest.mark.parametrize("file_path", [None, "SKILL.md", "./SKILL.md", "skill.md",
+                                           "my-skill/SKILL.md", "foo/SKILL.md"])
+    def test_patch_content_aimed_at_skill_md_rewrites_skill_md_only(self, tmp_path, file_path):
+        """Every spelling of the main file (and any basename SKILL.md) is the SKILL.md rewrite:
+        it goes through the frontmatter validator and never plants a second SKILL.md."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            kwargs = {"file_path": file_path} if file_path else {}
+            ok = json.loads(skill_manage(action="patch", name="my-skill",
+                                         content=VALID_SKILL_CONTENT_2, **kwargs))
+            bad = json.loads(skill_manage(action="patch", name="my-skill",
+                                          content="print('x')\n", **kwargs))
+        assert ok["success"] is True, (file_path, ok)
+        assert bad["success"] is False and "frontmatter" in bad["error"].lower()
+        skill_dir = tmp_path / "my-skill"
+        assert [p for p in skill_dir.rglob("*") if p.name.lower() == "skill.md"] == [skill_dir / "SKILL.md"]
+        assert not (skill_dir / "foo").exists()
+
     def test_patch_supporting_file_symlink_escape_blocked(self, tmp_path):
         outside_file = tmp_path / "outside.txt"
         outside_file.write_text("old text here")

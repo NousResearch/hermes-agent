@@ -189,6 +189,38 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
+def test_skill_gist_reports_full_rewrite_shape():
+    from tools import write_approval as wa
+    assert wa.skill_gist("patch", "demo", content="x" * 2048, file_path="scripts/validate.py") == (
+        "rewrite scripts/validate.py in 'demo' (3 KB)")
+    assert wa.skill_gist("patch", "demo", content="x" * 10) == "rewrite SKILL.md in 'demo' (10 chars)"
+    assert wa.skill_gist("patch", "demo", old_string="a\nb", new_string="c") == (
+        "patch 'demo' SKILL.md (+1/-2 lines)")
+
+
+def test_skill_pending_diff_shows_full_rewrite_content(hermes_home, tmp_path, monkeypatch):
+    from tools import write_approval as wa
+    skills = tmp_path / "skills"
+    (skills / "diff-demo" / "scripts").mkdir(parents=True)
+    (skills / "diff-demo" / "SKILL.md").write_text("---\nname: diff-demo\ndescription: d\n---\n# v1\n",
+                                                  encoding="utf-8")
+    (skills / "diff-demo" / "scripts" / "validate.py").write_text("print('old')\n", encoding="utf-8")
+    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills)
+    monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skills])
+
+    text = wa.skill_pending_diff({"payload": {"action": "patch", "name": "diff-demo",
+                                              "content": "print('new')\n", "file_path": "scripts/validate.py"}})
+    assert "-print('old')" in text and "+print('new')" in text
+    # Full SKILL.md rewrite (no file_path) diffs against SKILL.md, not "" vs "".
+    text = wa.skill_pending_diff({"payload": {"action": "patch", "name": "diff-demo",
+                                              "content": "---\nname: diff-demo\ndescription: d\n---\n# v2\n"}})
+    assert "-# v1" in text and "+# v2" in text
+    # Missing supporting file: the staged body renders as an all-added diff.
+    text = wa.skill_pending_diff({"payload": {"action": "patch", "name": "diff-demo",
+                                              "content": "x = 1\n", "file_path": "scripts/new.py"}})
+    assert "+x = 1" in text and "no textual change" not in text
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

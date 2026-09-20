@@ -334,6 +334,21 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     return None
 
 
+def _is_supporting_file_path(file_path: Optional[str]) -> bool:
+    """True when ``file_path`` names a supporting file rather than the skill's SKILL.md.
+
+    Empty/None and every spelling of the main file that ``_validate_file_path`` accepts
+    (``SKILL.md``, ``./SKILL.md``, ``skill.md``, ``<skill>/SKILL.md``) mean SKILL.md. A path
+    whose basename is SKILL.md never counts as a supporting file, so ``foo/SKILL.md`` cannot
+    plant a second SKILL.md inside the skill."""
+    if not file_path:
+        return False
+    parts = [p for p in str(file_path).strip().replace("\\", "/").split("/") if p and p != "."]
+    if not parts or parts[-1].lower() == "skill.md":
+        return False
+    return True
+
+
 def _resolve_supporting_file(skill_dir: Path, file_path: str):
     """Validate ``file_path`` and resolve it inside ``skill_dir``
     -> ``(target, None)`` | ``(None, error_dict)``."""
@@ -690,10 +705,15 @@ def _maybe_debounced_sync_push(skill_name: str) -> None:
 
 def _act_patch(a):
     """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
-    tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
+    tool and the helper give the same guidance); content alone = full rewrite (the old 'edit').
+    A full rewrite that names a supporting ``file_path`` replaces THAT file (write_file's path),
+    never SKILL.md — otherwise a script body would be run through the frontmatter validator
+    and, on the bare rewrite path, overwrite the skill's main file."""
     if a["content"] and (a["old_string"] or a["new_string"] is not None):
         return tool_error(_PATCH_EITHER_OR, success=False)
     if a["content"]:
+        if _is_supporting_file_path(a["file_path"]):
+            return _write_file(a["name"], a["file_path"], a["content"])
         return _edit_skill(a["name"], a["content"])
     return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"], a["replace_all"])
 

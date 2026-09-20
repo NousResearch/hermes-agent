@@ -101,6 +101,31 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertFalse(r["success"])
         self.assertIn("capped", r["error"])
 
+    def test_full_rewrite_patch_with_supporting_file_path_targets_that_file(self):
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+        r = self._call("probe", [
+            {"action": "patch", "content": "print('v2')\n", "file_path": "scripts/r.py"},
+        ])
+        self.assertTrue(r["success"], r)
+        base = os.path.join(self.home, "skills", "probe")
+        with open(os.path.join(base, "scripts", "r.py"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "print('v2')\n")
+        with open(os.path.join(base, "SKILL.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), SK.format(n="probe"))
+        # The clobber guard keys the rewrite on the supporting file, not on SKILL.md:
+        # rewriting scripts/r.py after write_file on it is rejected, after references/a.md is fine.
+        r = self._call("probe", [
+            {"action": "write_file", "file_path": "scripts/r.py", "file_content": "a"},
+            {"action": "patch", "content": "b", "file_path": "scripts/r.py"},
+        ])
+        self.assertFalse(r["success"])
+        self.assertIn("scripts/r.py", r["error"])
+        r = self._call("probe", [
+            {"action": "write_file", "file_path": "references/a.md", "file_content": "a"},
+            {"action": "patch", "content": "b", "file_path": "scripts/r.py"},
+        ])
+        self.assertTrue(r["success"], r)
+
     def test_intra_batch_conflict_guard(self):
         """Same-file double writes and post-edit full rewrites are always
         a confused plan under last-wins sequencing — rejected BEFORE any

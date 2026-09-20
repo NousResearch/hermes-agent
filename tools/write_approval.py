@@ -228,6 +228,11 @@ def skill_gist(action: str, name: str, *, content: str = "", file_path: str = ""
         size = f"{len(content) // 1024 + 1} KB" if len(content) >= 1024 else f"{len(content)} chars"
         return f"{'create' if action == 'create' else 'rewrite'} '{name}'{f' — {desc}' if desc else ''} ({size})"
     if action == "patch":
+        if content and not old_string and not new_string:
+            # Full-content rewrite shape (SKILL.md or a supporting file): "+0/-0 lines" would
+            # hide the fact that the whole file is replaced.
+            size = f"{len(content) // 1024 + 1} KB" if len(content) >= 1024 else f"{len(content)} chars"
+            return f"rewrite {file_path or 'SKILL.md'} in '{name}' ({size})"
         removed = old_string.count("\n") + 1 if old_string else 0
         added = new_string.count("\n") + 1 if new_string else 0
         return f"patch '{name}' {file_path or 'SKILL.md'} (+{added}/-{removed} lines)"
@@ -275,7 +280,11 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
 
     if action == "patch":
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
-        new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
+        if payload.get("content") and not old_s and not new_s:
+            # Full-content rewrite shape: diff the staged body against the file, not "" vs "".
+            new = payload["content"]
+        else:
+            new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
     else:
         new = payload.get("content" if action == "edit" else "file_content") or ""
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),

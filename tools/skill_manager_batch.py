@@ -110,13 +110,16 @@ def _validate_batch_ops(operations, default_name, tool_error):
     # Clobber guard: a DESTRUCTIVE op (create/write_file/remove_file/full rewrite) on
     # a file an earlier op touched would SILENTLY discard its work — reject it.
     # Additive patches are always legal. Paths are normalized against spelling variants.
+    from tools.skill_manager_tool import _is_supporting_file_path
     touched_files = set()
     for i, op in enumerate(operations):
         act, nm = op["action"], names[i]
-        # create and full-rewrite patch (content) always hit SKILL.md.
+        # create always hits SKILL.md; a full-rewrite patch (content) hits SKILL.md unless it
+        # names a supporting file_path (then it rewrites that file, like write_file).
         full_rewrite = act == "patch" and bool(op.get("content"))
         fp = (op.get("file_path") or "").strip()
-        target = ("SKILL.md" if (act == "create" or full_rewrite or not fp)
+        target = ("SKILL.md" if (act == "create" or not fp
+                                 or (full_rewrite and not _is_supporting_file_path(fp)))
                   else posixpath.normpath(fp.lstrip("/")))
         key = (nm, target)
         if (act in ("create", "write_file", "remove_file") or full_rewrite) and key in touched_files:

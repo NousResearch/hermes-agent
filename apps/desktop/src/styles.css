@@ -1899,11 +1899,7 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* ── Composer fill — ONE var painted by the surface AND anything docked to it
    (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
-   `background: var(--composer-fill)`, so every state matches by construction.
-   The :has() rule is last on purpose: while a completion drawer is open it
-   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
-   translucent glass can never match across the two layers because they sample
-   different backdrops. */
+   `background: var(--composer-fill)`, so every state matches by construction. */
 :root {
   /* Fallback for drawers outside the main composer (e.g. edit-message). */
   --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));

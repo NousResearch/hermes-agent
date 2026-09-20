@@ -6,6 +6,11 @@
 
 **Pillars**: reliability work outranks customer-experience work; every roadmap item cites reproducible codebase signals; acceptance is proven by cited evidence, never claimed
 
+## Fleet context
+
+- dependents (changes here affect): (host), dashboard, hermes-infra, hermes-stewardship-dashboard, jarvis, magic-hermes
+- graph: evidence-derived (imports/refs/deploy surfaces); advisory
+
 ## Open items
 
 ### Add test coverage for 21 untested module(s)

@@ -1260,6 +1260,16 @@ export const en: Translations = {
       appliesTo: 'Applies to',
       editsProfile: profile => `Changes on this page apply to the “${profile}” profile.`
     },
+    sectionSync: {
+      action: 'Sync section',
+      description: 'Copy this section’s settings to other profiles.',
+      selectAll: 'All profiles',
+      apply: 'Apply to selected profiles',
+      cancel: 'Cancel',
+      saved: count => `Synced to ${count} profiles.`,
+      failed: 'Could not sync this section.',
+      noTargets: 'Select at least one profile.'
+    },
     mcp: {
       loading: 'Loading MCP servers...',
       failedLoad: 'MCP config failed to load',

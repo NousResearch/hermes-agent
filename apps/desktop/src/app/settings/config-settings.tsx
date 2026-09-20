@@ -25,7 +25,7 @@ import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsRequestProfile, $settingsScopeProfile } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -50,6 +50,7 @@ import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { SectionSync } from './section-sync'
 
 export function ConfigSettings({
   activeSectionId,
@@ -62,6 +63,7 @@ export function ConfigSettings({
   // when the target profile changes — the same guarantee useOnProfileSwitch
   // provides for app-wide switches, without hand-clearing each piece.
   const scopeProfile = useStore($settingsRequestProfile)
+  const selectedProfile = useStore($settingsScopeProfile)
 
   return (
     <ConfigSettingsInner
@@ -71,6 +73,7 @@ export function ConfigSettings({
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
       scopeProfile={scopeProfile}
+      selectedProfile={selectedProfile}
     />
   )
 }
@@ -87,8 +90,9 @@ function ConfigSettingsInner({
   onConfigSaved,
   onMainModelChanged,
   importInputRef,
+  selectedProfile,
   scopeProfile
-}: ConfigSettingsProps & { scopeProfile: string | undefined }) {
+}: ConfigSettingsProps & { scopeProfile: string | undefined; selectedProfile: string }) {
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
@@ -385,6 +389,7 @@ function ConfigSettingsInner({
       {/* Which profile's config.yaml this page edits — shared across every
           config-backed settings page (and hidden for single-profile users). */}
       <SettingsProfileScope className="mb-5" />
+      <SectionSync fields={fields.map(([key]) => key)} profile={selectedProfile} source={config} />
       {activeSectionId === 'model' && (
         <div className="mb-6">
           <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />

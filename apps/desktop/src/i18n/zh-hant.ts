@@ -1135,6 +1135,16 @@ export const zhHant = defineLocale({
       appliesTo: '套用至',
       editsProfile: profile => `此頁面的變更將套用至「${profile}」設定檔。`
     },
+    sectionSync: {
+      action: '同步區段',
+      description: '將此區段的設定複製到其他設定檔。',
+      selectAll: '所有設定檔',
+      apply: '套用到所選設定檔',
+      cancel: '取消',
+      saved: count => `已同步到 ${count} 個設定檔。`,
+      failed: '無法同步此區段。',
+      noTargets: '請至少選擇一個設定檔。'
+    },
     mcp: {
       loading: '正在載入 MCP 伺服器...',
       failedLoad: 'MCP 設定載入失敗',

@@ -1465,6 +1465,16 @@ export const zh = defineLocale({
       appliesTo: '应用于',
       editsProfile: profile => `此页面的更改将应用于“${profile}”配置文件。`
     },
+    sectionSync: {
+      action: '同步分区',
+      description: '将此分区的设置复制到其他配置文件。',
+      selectAll: '所有配置文件',
+      apply: '应用到所选配置文件',
+      cancel: '取消',
+      saved: count => `已同步到 ${count} 个配置文件。`,
+      failed: '无法同步此分区。',
+      noTargets: '请至少选择一个配置文件。'
+    },
     mcp: {
       loading: '正在加载 MCP 服务器...',
       failedLoad: 'MCP 配置加载失败',

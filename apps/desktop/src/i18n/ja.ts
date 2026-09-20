@@ -1107,6 +1107,16 @@ export const ja = defineLocale({
       appliesTo: '適用対象',
       editsProfile: profile => `このページの変更は「${profile}」プロファイルに適用されます。`
     },
+    sectionSync: {
+      action: 'セクションを同期',
+      description: 'このセクションの設定を他のプロファイルにコピーします。',
+      selectAll: 'すべてのプロファイル',
+      apply: '選択したプロファイルに適用',
+      cancel: 'キャンセル',
+      saved: count => `${count} 個のプロファイルに同期しました。`,
+      failed: 'このセクションを同期できませんでした。',
+      noTargets: '少なくとも 1 つのプロファイルを選択してください。'
+    },
     mcp: {
       loading: 'MCP サーバーを読み込み中...',
       failedLoad: 'MCP 設定の読み込みに失敗しました',

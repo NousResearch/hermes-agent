@@ -190,6 +190,10 @@ Under local WSLg, Hermes launches with `--ozone-platform=wayland` to avoid the X
 
 When `hermes gui` runs inside WSL2 with `/dev/dxg` present and Mesa's `d3d12_dri.so` installed, the launcher sets `GALLIUM_DRIVER=d3d12` for Electron so rendering uses the Windows GPU instead of the llvmpipe software rasterizer; an explicit `GALLIUM_DRIVER`, `MESA_LOADER_DRIVER_OVERRIDE`, `LIBGL_ALWAYS_SOFTWARE`, or `LIBGL_DRIVERS_PATH` in your environment is left untouched (for example `GALLIUM_DRIVER=llvmpipe hermes gui` keeps software rendering).
 
+### Back workspace
+
+**⌘/Ctrl+Shift+E** (or the note button in the titlebar) turns the whole window over like a card onto a blank page to write on — no titlebar, no buttons, just a markdown file and a caret. Type `@` to call the window's own agent or any Bot without leaving the page; the reply is written in beneath your question as a quote. Paste pictures, and answer an agent's approval from the page itself. Each profile has its own page, under that profile's Hermes home. See [Back Workspace](./back-workspace.md).
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
@@ -729,6 +733,7 @@ time. Grants are stable from then on. If a permission gets stuck, reset it with
 
 ## See also
 
+- [Back Workspace](./back-workspace.md) — the note page on the back of the window
 - [CLI Guide](./cli.md) — the terminal interface
 - [TUI](./tui.md) — the modern terminal UI used by `hermes --tui` and the dashboard chat tab
 - [Web Dashboard](./features/web-dashboard.md) — browser admin panel with an embedded chat tab

@@ -242,17 +242,36 @@ def _mcp_config_reconciler(runner=None):
             logger.info("MCP servers reconciled with config (%s): removed=%s added=%s",
                         label, result["removed"], result["added"])
 
-    def _tick() -> None:
-        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
-        config = getattr(runner, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
-            _reconcile_current("default")
-            return
-        for profile_name, profile_home in _multiplex_profile_homes(config):
-            with _profile_runtime_scope(Path(profile_home)):
-                _reconcile_current(str(profile_name))
+    return lambda: _for_each_served_profile(runner, _reconcile_current)
 
-    return _tick
+
+def _for_each_served_profile(runner, body) -> None:
+    """Run ``body(profile_label)`` once per served profile, inside that profile's runtime scope.
+
+    Housekeeping runs on a bare thread with no turn on the stack, so nothing binds a profile for it:
+    ``get_hermes_home()`` and ``get_secret()`` see the LAUNCH profile's values, and under
+    ``gateway.multiplex_profiles`` a fail-closed credential read logs ``no profile secret scope on a
+    multiplexed call`` on every tick (the skills-sync pulls resolved Nous credentials this way, four
+    WARNINGs per hourly tick per chore). A single-profile gateway runs ``body`` once, unscoped:
+    there the process env IS the profile's own value — unless a hosted room already flipped the
+    process-wide guard (#112878), in which case the launch profile's OWN scope is bound, as
+    ``run_turn.py::_standalone_launch_scope`` does for turns."""
+    from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False):
+        from gateway.run_turn import GatewayTurnMixin
+        with GatewayTurnMixin._standalone_launch_scope():
+            body("default")
+        return
+    for profile_name, profile_home in _multiplex_profile_homes(config):
+        with _profile_runtime_scope(Path(profile_home)):
+            body(str(profile_name))
+
+
+def profile_scoped_chore(runner, chore):
+    """Wrap a zero-arg housekeeping chore that reads the profile's home, config or credentials so it
+    runs once per served profile under that profile's scope (see ``_for_each_served_profile``)."""
+    return lambda: _for_each_served_profile(runner, lambda _label: chore())
 
 
 def migrate_profile_identity_verb(runner):

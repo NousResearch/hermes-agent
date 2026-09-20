@@ -189,3 +189,13 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
     fleet._warn_pending_fleet_restart_on_startup()
     assert "900" not in capsys.readouterr().err
+
+
+def test_launchd_serve_row_never_pessimize_gateway_coverage():
+    """#116503: a launchd-owned serve/dashboard row is the post-update dashboard cleanup pass's
+    to kickstart, so it must not make the receipt's gateway coverage unverified (owed=None keeps
+    ``fleet_restart_pending`` armed with nothing gateway-side left to restart)."""
+    launchd = asdict(RuntimeRecord(
+        kind="serve", profile="work", pid=900, supervisor="launchd", restart_via="launchd", detail={}))
+    receipt = {"plan": {"runtimes": [{"kind": "gateway", "profile": "default"}, launchd]}, "fleet": []}
+    assert fleet._receipt_owed_gateways(receipt, []) == {("gateway", "default")}

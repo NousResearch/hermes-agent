@@ -358,10 +358,11 @@ class LSPClient:
                 # ``shutdown`` has already given the protocol a grace period.  Hard-kill
                 # the tree while its ancestry is still observable: waiting for the launcher
                 # after SIGTERM can let an ignoring descendant become reparented and escape.
-                # Windows maps this to taskkill /T /F.
+                # Windows maps this to a synchronous taskkill /T /F (up to 15s), so the
+                # kill runs off the event loop.
                 from agent.deadline import kill_process_tree
 
-                if not kill_process_tree(proc.pid):
+                if not await asyncio.to_thread(kill_process_tree, proc.pid):
                     proc.kill()
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)

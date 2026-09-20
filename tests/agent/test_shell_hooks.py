@@ -207,7 +207,7 @@ class TestCallbackSubprocess:
         script = _write_script(
             tmp_path, "log.sh",
             f"#!/usr/bin/env bash\n"
-            f"echo \"$(cat -)\" >> {calls}\n"
+            f"echo \"$(cat -)\" >> {calls.as_posix()}\n"
             f"printf '{{}}\\n'\n",
         )
         spec = shell_hooks.ShellHookSpec(
@@ -227,7 +227,7 @@ class TestCallbackSubprocess:
         capture = tmp_path / "payload.json"
         script = _write_script(
             tmp_path, "capture.sh",
-            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+            f"#!/usr/bin/env bash\ncat - > {capture.as_posix()}\nprintf '{{}}\\n'\n",
         )
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command=str(script),
@@ -771,3 +771,19 @@ class TestRoutedProfileEnv:
         assert seen["home"] == str(routed)
         assert seen["key"] == ""
         assert "profile" in payload
+
+
+class TestWindowsScriptRouting:
+    def test_bare_shell_script_uses_bash_on_windows(self, tmp_path, monkeypatch):
+        script = _write_script(tmp_path, "hook.sh", "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+        bash = str(tmp_path / "bash.exe")
+        monkeypatch.setattr("tools.environments.local._find_bash", lambda: bash)
+
+        argv = shell_hooks._resolve_script_argv([str(script)], is_windows=True)
+
+        assert argv == [bash, str(script)]
+
+    def test_non_windows_script_argv_is_unchanged(self, tmp_path):
+        script = _write_script(tmp_path, "hook.sh", "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+
+        assert shell_hooks._resolve_script_argv([str(script)], is_windows=False) == [str(script)]

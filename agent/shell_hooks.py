@@ -285,6 +285,22 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
 _POPEN_ERRORS = ((FileNotFoundError, "command not found"), (PermissionError, "command not executable"))
 
 
+def _resolve_script_argv(argv: List[str], *, is_windows: bool = IS_WINDOWS) -> List[str]:
+    """Route bare shell-script paths through bash on Windows.
+
+    POSIX executes a script path through its shebang, while Windows' ``CreateProcess``
+    accepts only native executables.  Keep explicit interpreter invocations and all
+    non-shell commands unchanged so this helper only fills the native-Windows gap.
+    """
+    if not is_windows or not argv:
+        return argv
+    script = Path(argv[0]).expanduser()
+    if script.is_file() and script.suffix.lower() in {".sh", ".bash"}:
+        from tools.environments.local import _find_bash
+        return [_find_bash(), *argv]
+    return argv
+
+
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     """The single subprocess site: run ``spec.command`` with ``stdin_json`` on stdin. Same result keys for every outcome."""
     result: Dict[str, Any] = {"returncode": None, "stdout": "", "stderr": "", "timed_out": False, "elapsed_seconds": 0.0, "error": None}
@@ -295,8 +311,9 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
 
     try:
         argv = split_command_line(os.path.expanduser(spec.command))
-    except ValueError as exc:
-        return failed(f"command {spec.command!r} cannot be parsed: {exc}")
+        argv = _resolve_script_argv(argv)
+    except (RuntimeError, ValueError) as exc:
+        return failed(f"command {spec.command!r} cannot be run: {exc}")
     if not argv:
         return failed("empty command")
     t0 = time.monotonic()

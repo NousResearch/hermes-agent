@@ -1051,7 +1051,16 @@ class TestCliIntegration:
         args = argparse.Namespace(mcp_action="serve", verbose=True)
         from hermes_cli.mcp_config import mcp_command
         mcp_command(args)
-        mock_run.assert_called_once_with(verbose=True)
+        mock_run.assert_called_once_with(
+            verbose=True,
+            transport="stdio",
+            host="127.0.0.1",
+            port=8000,
+            path="/mcp",
+            token_env="HERMES_MCP_SERVER_TOKEN",
+            allowed_hosts=None,
+            public_url=None,
+        )
 
 
 # ---------------------------------------------------------------------------

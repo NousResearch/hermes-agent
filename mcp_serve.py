@@ -1,14 +1,16 @@
 """
 Hermes MCP Server — expose messaging conversations as MCP tools (`hermes mcp serve`).
 
-A stdio MCP server letting any MCP client (Claude Code, Cursor, Codex, ...) list
+A stdio or Streamable HTTP MCP server letting any MCP client (Claude Code, Cursor, Codex, ...) list
 conversations, read history, send messages, poll live events, and manage approvals.
 Matches OpenClaw's 9-tool channel bridge surface plus the Hermes-specific
-channels_list. Client config: {"mcpServers": {"hermes": {"command": "hermes", "args": ["mcp", "serve"]}}}
+channels_list. Stdio client config:
+{"mcpServers": {"hermes": {"command": "hermes", "args": ["mcp", "serve"]}}}
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -689,36 +691,123 @@ _TOOL_NAMES = (
 )
 
 
-def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer":
+def _http_auth(token: str, resource_url: str):
+    """Build the SDK's static bearer-token verifier and resource-server settings."""
+    from mcp.server.auth.provider import AccessToken
+    from mcp.server.auth.settings import AuthSettings
+
+    class _StaticTokenVerifier:
+        async def verify_token(self, candidate: str):
+            if not hmac.compare_digest(candidate, token):
+                return None
+            return AccessToken(token=candidate, client_id="hermes-mcp-client", scopes=[])
+
+    return _StaticTokenVerifier(), AuthSettings(
+        issuer_url=resource_url,
+        resource_server_url=resource_url,
+        required_scopes=[],
+    )
+
+
+def create_mcp_server(
+    event_bridge: Optional[EventBridge] = None,
+    *,
+    bearer_token: Optional[str] = None,
+    resource_url: Optional[str] = None,
+) -> "MCPServer":
     """Create and return the Hermes MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(f"MCP server requires the 'mcp' package. Install with: {sys.executable} -m pip install 'mcp'")
+    auth_kwargs = {}
+    if bearer_token:
+        verifier, auth = _http_auth(bearer_token, resource_url or "http://localhost:8000/mcp")
+        auth_kwargs = {"token_verifier": verifier, "auth": auth}
     mcp = MCPServer("hermes", instructions=(
         "Hermes Agent messaging bridge. Use these tools to interact with "
         "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
         "Matrix, and other connected platforms."
-    ))
+    ), **auth_kwargs)
     handlers = _ToolHandlers(event_bridge or EventBridge())
     for name in _TOOL_NAMES:
         mcp.tool()(getattr(handlers, name))
     return mcp
 
 
-def run_mcp_server(verbose: bool = False) -> None:
-    """Start the Hermes MCP server on stdio."""
+def _is_loopback_host(host: str) -> bool:
+    return host.lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+def run_mcp_server(
+    verbose: bool = False,
+    *,
+    transport: str = "stdio",
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    path: str = "/mcp",
+    token_env: str = "HERMES_MCP_SERVER_TOKEN",
+    allowed_hosts: Optional[List[str]] = None,
+    public_url: Optional[str] = None,
+) -> None:
+    """Start the Hermes MCP server over stdio or Streamable HTTP."""
     if not _MCP_SERVER_AVAILABLE:
         print("Error: MCP server requires the 'mcp' package.\n"
               f"Install with: {sys.executable} -m pip install 'mcp'", file=sys.stderr)
         sys.exit(1)
+    if transport not in {"stdio", "http"}:
+        print(f"Error: unsupported MCP transport: {transport}", file=sys.stderr)
+        sys.exit(2)
+    if not path.startswith("/"):
+        print("Error: MCP HTTP path must start with '/'", file=sys.stderr)
+        sys.exit(2)
+
+    bearer_token = os.environ.get(token_env, "") if transport == "http" and token_env else ""
+    remote_http = transport == "http" and not _is_loopback_host(host)
+    if remote_http and not bearer_token:
+        print(
+            "Error: "
+            f"Remote MCP HTTP requires a bearer token in {token_env}; "
+            "bind to a loopback host for unauthenticated local use",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if remote_http and not allowed_hosts:
+        print(
+            "Error: remote MCP HTTP requires at least one --allowed-host value "
+            "for DNS-rebinding protection",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, stream=sys.stderr)
     bridge = EventBridge()
     bridge.start()
-    server = create_mcp_server(event_bridge=bridge)
+    resource_url = public_url or f"http://{'localhost' if host in {'0.0.0.0', '::'} else host}:{port}{path}"
+    server = create_mcp_server(
+        event_bridge=bridge,
+        bearer_token=bearer_token or None,
+        resource_url=resource_url,
+    )
     import asyncio
 
     async def _run():
         try:
-            await server.run_stdio_async()
+            if transport == "stdio":
+                await server.run_stdio_async()
+                return
+            security = None
+            if remote_http:
+                from mcp.server.transport_security import TransportSecuritySettings
+                security = TransportSecuritySettings(
+                    enable_dns_rebinding_protection=True,
+                    allowed_hosts=allowed_hosts or [],
+                    allowed_origins=[],
+                )
+            await server.run_streamable_http_async(
+                host=host,
+                port=port,
+                streamable_http_path=path,
+                transport_security=security,
+            )
         finally:
             bridge.stop()
 

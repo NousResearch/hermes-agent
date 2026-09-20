@@ -866,7 +866,15 @@ In addition to connecting **to** MCP servers, Hermes can also **be** an MCP serv
 hermes mcp serve
 ```
 
-This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle.
+This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle. To accept remote clients, use Streamable HTTP instead:
+
+```bash
+export HERMES_MCP_SERVER_TOKEN="<a-long-random-secret>"
+hermes mcp serve --transport http --host 0.0.0.0 --port 8000 \
+  --allowed-host mcp.example.com:* --public-url https://mcp.example.com/mcp
+```
+
+Remote HTTP binds fail closed unless a bearer token and at least one allowed `Host` value are configured. Put TLS in front of the listener before sending the token across an untrusted network. Clients connect to the public URL and send the configured secret as an Authorization bearer credential. Loopback HTTP (`--transport http` with the default host) may run without authentication for local-only clients.
 
 ### MCP client configuration
 
@@ -934,6 +942,7 @@ The event queue is in-memory and starts when the bridge connects. Older messages
 ```bash
 hermes mcp serve              # Normal mode
 hermes mcp serve --verbose    # Debug logging on stderr
+hermes mcp serve --transport http  # Local Streamable HTTP on 127.0.0.1:8000/mcp
 ```
 
 ### How it works
@@ -944,7 +953,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ### Current limits
 
-- The embedded `hermes mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Hermes, which already speaks both stdio and HTTP (`url` + `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP servers](#http-servers) above).
+- Streamable HTTP uses one static bearer token per server process. Terminate TLS at a trusted reverse proxy for traffic outside a trusted local network.
 - Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
 - No `claude/channel` push notification protocol yet
 - Text-only sends (no media/attachment sending through `messages_send`)

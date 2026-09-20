@@ -22,6 +22,20 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "serve", help="Run Hermes as an MCP server (expose conversations to other agents)")
     mcp_serve_p.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging on stderr")
+    mcp_serve_p.add_argument(
+        "--transport", choices=("stdio", "http"), default="stdio",
+        help="MCP transport (default: stdio)")
+    mcp_serve_p.add_argument("--host", default="127.0.0.1", help="HTTP bind host")
+    mcp_serve_p.add_argument("--port", type=int, default=8000, help="HTTP bind port")
+    mcp_serve_p.add_argument("--path", default="/mcp", help="Streamable HTTP endpoint path")
+    mcp_serve_p.add_argument(
+        "--token-env", default="HERMES_MCP_SERVER_TOKEN",
+        help="Environment variable containing the HTTP bearer token")
+    mcp_serve_p.add_argument(
+        "--allowed-host", action="append", dest="allowed_hosts",
+        help="Allowed HTTP Host value (repeatable; required for non-loopback binds)")
+    mcp_serve_p.add_argument(
+        "--public-url", help="Public MCP URL advertised in protected-resource metadata")
     add_accept_hooks_flag(mcp_serve_p)
 
     mcp_add_p = mcp_sub.add_parser("add", help="Add an MCP server (discovery-first install)")

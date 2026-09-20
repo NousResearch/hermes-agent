@@ -1519,7 +1519,7 @@ Manage MCP (Model Context Protocol) server configurations and run Hermes as an M
 | *(none)* or `picker` | Interactive catalog picker — browse Nous-approved MCPs and install/enable/disable. |
 | `catalog` | List Nous-approved MCPs (plain text, scriptable). |
 | `install <name>` | Install a catalog entry (e.g. `hermes mcp install n8n`). |
-| `serve [-v\|--verbose]` | Run Hermes as an MCP server — expose conversations to other agents. |
+| `serve [-v\|--verbose] [--transport stdio\|http] [--host HOST] [--port PORT] [--path PATH] [--token-env NAME] [--allowed-host HOST] [--public-url URL]` | Run Hermes as an MCP server. Stdio remains the default; remote HTTP requires a bearer token and an allowed Host value. |
 | `add <name> [--url URL] [--command CMD] [--auth oauth\|header] [--args ...]` | Add a custom MCP server with automatic tool discovery. `--args` passes the remaining argv to the stdio command, so put it last. |
 | `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
 | `list` (alias: `ls`) | List configured MCP servers. |

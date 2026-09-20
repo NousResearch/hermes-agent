@@ -2505,6 +2505,9 @@ OPTIONAL_ENV_VARS = {
         "integration phase (not needed once the gate is removed)",
         "Nous free-tier shared secret (leave empty unless given one)", password=True,
         category="provider", advanced=True),
+    "HERMES_MCP_SERVER_TOKEN": _tool(
+        "Bearer token required when hermes mcp serve binds HTTP beyond loopback",
+        "Hermes MCP server bearer token", None, tools=[]),
     "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
         category="provider", advanced=True),

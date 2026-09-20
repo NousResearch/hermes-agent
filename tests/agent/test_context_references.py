@@ -643,6 +643,7 @@ async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_n
         context_length=100_000,
     )
 
-    assert "PASTED-BODY-MARKER" in result.expanded
-    assert "LOOKALIKE-SECRET" not in result.expanded
-    assert "outside the allowed workspace" in result.expanded
+    assert result.expanded
+    assert "PASTED-BODY-MARKER" in result.message
+    assert "LOOKALIKE-SECRET" not in result.message
+    assert "outside the allowed workspace" in "\n".join(result.warnings)

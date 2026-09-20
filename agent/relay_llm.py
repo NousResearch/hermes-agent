@@ -287,7 +287,8 @@ class ManagedLlmStream(Iterator[Any]):
         # Only auxiliary calls report model/provider on their logical scope.
         auxiliary = str((metadata or {}).get("call_role") or "").startswith("auxiliary:")
         self._logical_model_name, self._logical_provider_name = (model_name, name) if auxiliary else (None, None)
-        self._on_chunk, self._chunk_adapter, self._accept_chunk = on_chunk, chunk_adapter or _namespace, accept_chunk
+        self._on_chunk = self._observe_stream_metadata(on_chunk, metadata)
+        self._chunk_adapter, self._accept_chunk = chunk_adapter or _namespace, accept_chunk
         self._stream_factory, self._on_stream_created, self._finalizer = stream_factory, on_stream_created, finalizer
         self._completed_response_predicate = completed_response_predicate
         self._raw_chunks: list[tuple[Any, Any]] = []
@@ -298,6 +299,23 @@ class ManagedLlmStream(Iterator[Any]):
             return
         self._logical = attempt.logical
         self._start_managed(attempt)
+
+    def _observe_stream_metadata(self, callback, metadata):
+        """Preserve stream metadata that the provider's final snapshot can omit."""
+        if not callable(callback) or _api_mode(metadata) != "anthropic_messages":
+            return callback
+
+        def observe(chunk):
+            if isinstance(chunk, dict):
+                delta = chunk.get("delta")
+            else:
+                delta = getattr(chunk, "delta", None)
+            details = delta.get("stop_details") if isinstance(delta, dict) else getattr(delta, "stop_details", None)
+            if details is not None:
+                self.output_modified = True
+            callback(chunk)
+
+        return observe
 
     def _start_unmanaged(self, request: dict[str, Any]) -> None:
         raw_stream = self._stream_factory(request)

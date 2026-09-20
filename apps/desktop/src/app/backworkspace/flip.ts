@@ -1,4 +1,21 @@
-const FLIP_HALF_MS = 170
+// A card turned over by hand rather than a pane sliding out of the way: slow
+// enough that the eye follows one object going over, with the surface losing
+// focus as it swings edge-on the way anything does when it turns that fast.
+const FLIP_HALF_MS = 420
+// Near enough that the receding edge genuinely shortens while the near edge
+// comes forward — the turn has a far side instead of being a flat rotation.
+const PERSPECTIVE_PX = 1100
+const EDGE_SCALE = 0.92
+// Reached edge-on, where the surface is nearly invisible anyway. It rises late
+// because that is where the angular speed is: an even ramp reads as the page
+// going out of focus rather than as something moving.
+const EDGE_BLUR_PX = 20
+// Where the middle keyframe sits, as a fraction of the way over. Without it the
+// browser interpolates the blur linearly against an eased rotation, and the
+// softening arrives well before the movement that is supposed to cause it.
+const MID_TURN_DEG = 52
+const MID_SCALE = 1 - (1 - EDGE_SCALE) * 0.55
+const MID_BLUR_PX = EDGE_BLUR_PX * 0.28
 const EASE_OUT_OF_VIEW = 'cubic-bezier(0.55, 0, 0.85, 0.35)'
 const EASE_INTO_VIEW = 'cubic-bezier(0.15, 0.65, 0.45, 1)'
 
@@ -8,8 +25,11 @@ export interface FlipOptions {
   reducedMotion: boolean
 }
 
-function turn(degrees: number, scale: number): Keyframe {
-  return { transform: `perspective(2400px) rotateY(${degrees}deg) scale(${scale})` }
+function turn(degrees: number, scale: number, blur: number): Keyframe {
+  return {
+    filter: `blur(${blur}px)`,
+    transform: `perspective(${PERSPECTIVE_PX}px) rotateY(${degrees}deg) scale(${scale})`
+  }
 }
 
 function flipFrames({ direction, reducedMotion }: FlipOptions): { enter: Keyframe[]; exit: Keyframe[] } {
@@ -18,8 +38,16 @@ function flipFrames({ direction, reducedMotion }: FlipOptions): { enter: Keyfram
   }
 
   return {
-    enter: [turn(-90 * direction, 0.94), turn(0, 1)],
-    exit: [turn(0, 1), turn(90 * direction, 0.94)]
+    enter: [
+      turn(-90 * direction, EDGE_SCALE, EDGE_BLUR_PX),
+      turn(-MID_TURN_DEG * direction, MID_SCALE, MID_BLUR_PX),
+      turn(0, 1, 0)
+    ],
+    exit: [
+      turn(0, 1, 0),
+      turn(MID_TURN_DEG * direction, MID_SCALE, MID_BLUR_PX),
+      turn(90 * direction, EDGE_SCALE, EDGE_BLUR_PX)
+    ]
   }
 }
 

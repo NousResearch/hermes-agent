@@ -122,19 +122,19 @@ export function CapabilitiesView({
   const pending = gated && !(skills && toolsets)
 
   const loadGate = !pending ? null : skillsFailed || toolsetsFailed ? (
-      <PanelEmpty
-        action={
-          <Button onClick={() => void refreshCapabilities()} size="sm">
-            {t.skills.refresh}
-          </Button>
-        }
-        description={skillsError instanceof Error ? skillsError.message : undefined}
-        icon="error"
-        title={t.skills.skillsLoadFailed}
-      />
-    ) : (
-      <PageLoader label={t.skills.loading} />
-    )
+    <PanelEmpty
+      action={
+        <Button onClick={() => void refreshCapabilities()} size="sm">
+          {t.skills.refresh}
+        </Button>
+      }
+      description={skillsError instanceof Error ? skillsError.message : undefined}
+      icon="error"
+      title={t.skills.skillsLoadFailed}
+    />
+  ) : (
+    <PageLoader label={t.skills.loading} />
+  )
 
   // One entry per tab. Each is keyed on the scope so switching profile or
   // connection is a fresh tab — never one profile's selection, open editor or
@@ -200,7 +200,11 @@ export function CapabilitiesView({
             {loadGate ?? tabContent[mode]()}
           </div>
           {hubMounted && (
-            <EmbeddedHubPicker hidden={mode !== 'skills'} installedNames={installedSkillNames} profile={scope.profile} />
+            <EmbeddedHubPicker
+              hidden={mode !== 'skills'}
+              installedNames={installedSkillNames}
+              profile={scope.profile}
+            />
           )}
         </div>
       </div>

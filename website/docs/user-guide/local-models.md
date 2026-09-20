@@ -50,6 +50,24 @@ build spilled to system RAM simply can't run that model.
 Models that don't fit stay visible with the reason, so you always know
 what a hardware upgrade would unlock.
 
+## AMD and Intel GPUs
+
+Automatic runtime selection recognizes PCI display adapters on Windows and Linux;
+AMD and Intel use Vulkan without requiring `vulkaninfo` or a Vulkan SDK.
+After installation, Hermes queries the selected llama.cpp build for its actual
+devices. A discrete GPU is preferred over an integrated GPU, and that same device
+is pinned in the model preset. Discrete VRAM and integrated/shared system memory
+are budgeted separately; installing both CPU and Vulkan builds does not combine
+their memory budgets. A missing engine or failed accelerator probe does not grant
+system RAM as VRAM: the catalog reports that GPU capacity is not known. Quickstart
+installs the selected engine first, then chooses the model build using the detected
+capacity, even if a different backend is already installed.
+
+The catalog uses device capacity with a reserve, not a guarantee that all of that
+memory is currently available. Other applications and driver memory budgets can
+still cause paging or reduce inference speed. Custom/static llama.cpp builds that
+do not ship the GGML backend libraries can be used as external servers instead.
+
 ## How memory management works
 
 Local models live or die by memory placement, so Hermes manages it

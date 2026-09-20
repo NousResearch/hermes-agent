@@ -27,12 +27,12 @@ class TestMatrixMaxMessageLength:
     def test_default_limit_is_16000(self):
         adapter = _make_adapter()
         assert adapter.max_message_length == 16000
-        assert adapter._split_threshold == 15900
+        assert adapter._SPLIT_THRESHOLD == 15900
 
     def test_extra_override(self):
         adapter = _make_adapter(max_message_length=12000)
         assert adapter.max_message_length == 12000
-        assert adapter._split_threshold == 11900
+        assert adapter._SPLIT_THRESHOLD == 11900
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "20000")

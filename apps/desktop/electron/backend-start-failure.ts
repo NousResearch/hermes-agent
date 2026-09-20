@@ -138,3 +138,35 @@ export function shouldLatchHostKeyChangedFailure(context: RemoteBootRetryContext
 export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): boolean {
   return context.attemptedRemote && !context.isReauth && context.isHostKeyChanged !== true
 }
+
+export interface BootProgressUpdateLike {
+  /** The failure text an error update carries; absent/null on progress updates. */
+  error?: unknown
+}
+
+/**
+ * Whether a boot-progress update must be dropped because a CONFIRMED remote
+ * reauth rejection is latched.
+ *
+ * `latchedMessage` is the message of the latched reauth failure (null when
+ * nothing is latched). While it is set, the recovery overlay with its Sign in
+ * button is the only correct surface until the user signs in, and any update
+ * that is not a re-emit of that same failure would lift it: a `running: true`
+ * phase or a cleared error from an attempt that was already in flight when the
+ * latch closed, or an unrelated failure from a sibling caller (which would
+ * also swap the retryable verdict back to true and re-arm the renderer's
+ * boot-retry loop — the flicker of #95701). Re-emits of the latched failure
+ * pass so the non-retryable verdict is never lost. Every recovery path
+ * (reset, repair, apply-config, confirmed sign-in) clears the latch BEFORE it
+ * re-drives boot, so this never holds a legitimate restart.
+ */
+export function shouldHoldBootProgressForReauth(
+  latchedMessage: string | null | undefined,
+  update: BootProgressUpdateLike
+): boolean {
+  if (!latchedMessage) {
+    return false
+  }
+
+  return update.error !== latchedMessage
+}

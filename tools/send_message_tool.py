@@ -60,6 +60,97 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+_TOKEN_UNSET = object()
+
+
+def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
+                            native_token=_TOKEN_UNSET) -> str | None:
+    """Relay egress-authorization guard (P5a); None when the send may proceed.
+
+    Thin delegate to ``gateway.relay.egress`` so the tool keeps working in
+    environments where the gateway package can't be imported.
+
+    THE TWO FAILURES ARE NOT THE SAME, and conflating them disabled the
+    boundary. A missing gateway module means there is no relay egress to
+    authorize, so proceeding is correct. A fault INSIDE the guard means
+    authorization did not happen — and returning None there means "authorized",
+    so a single runtime bug in the guard silently switched the whole P5(a)
+    boundary off. Review found this by making the guard raise and watching the
+    send go through.
+
+    So: the import is tolerated, the CALL is not. A guard that cannot answer
+    refuses, which is the only safe polarity for an authorization check.
+    """
+    try:
+        from gateway.relay.egress import authorize_relay_target
+    except ImportError as exc:
+        # ABSENCE ONLY, and absence means the gateway relay module ITSELF is
+        # missing — `exc.name` says which module was not found. An ImportError
+        # naming a NESTED dependency is a broken installation, i.e. a fault,
+        # and returning None here means "authorized". Review probed exactly
+        # that (`ImportError.name = "gateway.relay.dependency"`) and got an
+        # authorized verdict, so `except ImportError` alone was still fail-open.
+        # ABSENCE has one shape and it is checkable: a genuinely missing module
+        # raises ModuleNotFoundError with `.name` set to the module that was not
+        # found (verified: `import gateway.relay.x` -> ModuleNotFoundError,
+        # name="gateway.relay.x"). So a plain ImportError, or a nameless one, is
+        # an unattributable FAULT — never proof that there is no relay here.
+        # I previously admitted the nameless case to protect the CLI/cron path;
+        # that reasoning was wrong, because that path does not produce one.
+        _missing = getattr(exc, "name", None)
+        if not isinstance(exc, ModuleNotFoundError) or _missing not in (
+            "gateway",
+            "gateway.relay",
+            "gateway.relay.egress",
+        ):
+            logger.exception(
+                "relay egress module failed to import for %s — refusing the send",
+                platform_name,
+            )
+            return (
+                f"Refusing to send to relay target '{platform_name}': the egress "
+                "authorization module could not be loaded, so this destination "
+                "could not be verified."
+            )
+        logger.debug("relay target authorization unavailable", exc_info=True)
+        return None
+    except Exception:  # noqa: BLE001 - the module is THERE and broke; FAIL CLOSED
+        logger.exception(
+            "relay egress module failed to import for %s — refusing the send",
+            platform_name,
+        )
+        return (
+            f"Refusing to send to relay target '{platform_name}': the egress "
+            "authorization module could not be loaded, so this destination "
+            "could not be verified."
+        )
+
+    try:
+        # ONE SNAPSHOT. `native_token` is the token from the SAME pconfig the
+        # dispatch below will actually send with. Letting the guard reload
+        # config independently allowed a transition where authorization saw a
+        # connector-only setup (exemption granted) while dispatch still held a
+        # native token and sent the unattested handle itself.
+        if native_token is _TOKEN_UNSET:
+            # A caller that forgets the snapshot must NOT silently look like
+            # "no native token", which would grant the @handle exemption.
+            return authorize_relay_target(platform_name, chat_id, thread_id)
+        return authorize_relay_target(
+            platform_name, chat_id, thread_id, native_token=native_token
+        )
+    except Exception:  # noqa: BLE001 - the guard faulted; FAIL CLOSED
+        logger.exception(
+            "relay target authorization FAILED for %s — refusing the send",
+            platform_name,
+        )
+        return (
+            f"Refusing to send to relay target '{platform_name}': the egress "
+            "authorization check failed, so this destination could not be "
+            "verified. This is a bug — the send was blocked rather than "
+            "allowed through unchecked."
+        )
+
+
 def _handle_react(args, remove=False):
     """Attach (``remove=True``: retract) an emoji reaction via the live gateway adapter; no
     standalone fallback because reacting needs the adapter's live message-id state."""
@@ -83,6 +174,16 @@ def _handle_react(args, remove=False):
         except Exception:
             return tool_error(f"No chat specified and no home channel set for {platform_name}. "
                               f"Use '{platform_name}:chat_id'.")
+    # P5(a): same egress-authorization floor as the send path — a reaction is
+    # an outbound act against a named destination, so an unattested relay
+    # target must be refused here too, not just on `send`.
+    # The react path has no pconfig snapshot of its own; it dispatches through
+    # the LIVE adapter below, never through a native token, so the guard does
+    # its own credential probe here.
+    _relay_denial = _authorize_relay_target(platform_name, chat_id, _thread_id)
+    if _relay_denial:
+        return tool_error(_relay_denial)
+
     _, adapter = _live_adapter(platform)
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
@@ -102,6 +203,15 @@ def _handle_send(args):
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
+    # Lone surrogates reach the outbound body via surrogateescape-decoded argv
+    # (`hermes send` MESSAGE) and crash the UTF-8 marshal inside platform SDK
+    # request bodies (feishu/lark, #113799). Every send_message caller (model tool
+    # call, `hermes send`, dashboard console) enters here, so scrub once before the
+    # media extraction, the session mirror and the platform sender see the text.
+    # Model output delivered by the gateway/cron is already scrubbed upstream
+    # (``agent/turn_finalizer.py::finalize_turn``, ``gateway/run.py``).
+    from agent.message_sanitization import _sanitize_surrogates
+    message = _sanitize_surrogates(message)
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
@@ -136,10 +246,29 @@ def _handle_send(args):
         chat_id, resolve_err = _slack_dm_chat_id(pconfig, chat_id)
         if resolve_err:
             return json.dumps(resolve_err)
+    # POSITION IS LOAD-BEARING — this must stay BELOW Slack user→DM resolution.
+    # `_parse_target_ref` emits internal pseudo-ids (`user_name:ben`,
+    # `user:U...`) that no provenance can ever contain, because provenances
+    # record RESOLVED conversation ids. Authorizing above the resolver compared
+    # a handle against a set of `D...` ids and refused every Slack DM — a fix
+    # that caused the outage it was meant to prevent. Pinned by
+    # test_slack_user_targets_resolve_then_authorize; moving this call back up
+    # turns those cases red.
+    # thread_id is part of the DESTINATION: on Discord the thread is the literal
+    # REST target, so an attested parent must not vouch for an arbitrary thread.
+    _relay_denial = _authorize_relay_target(platform_name, chat_id, thread_id,
+                                            native_token=getattr(pconfig, "token", None))
+    if _relay_denial:
+        return tool_error(_relay_denial)
+
     try:
         from model_tools import _run_async
-        # Only custom plugin handlers receive the complete typed request.
+        # Only custom plugin handlers receive the complete typed request. ``mentions`` is a WhatsApp-only
+        # contract (the CLI rejects it elsewhere); other platforms' standalone senders don't accept the kwarg.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        mentions = args.get("mentions")
+        if mentions and platform_name == "whatsapp":
+            handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
@@ -179,9 +308,76 @@ def _resolve_platform_config(platform_name, config):
     if not pconfig or not pconfig.enabled:
         pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
     if pconfig is None:
-        return None, None, None, (f"Platform '{platform_name}' is not configured. Set up credentials in "
-                                  "~/.hermes/config.yaml or environment variables.")
+        return None, None, None, _not_configured_error(platform_name, platform, entry)
     return platform, pconfig, entry, None
+
+
+def _not_configured_error(platform_name, platform, entry):
+    """Name the resolved home and what each credential source held, so the user edits the file this
+    process actually read (a hardcoded ``~/.hermes`` does not exist on a Windows or profile home)."""
+    from agent.secret_scope import load_env_file
+    from gateway.config import _getenv
+    from gateway.config_env import _ENV_ENABLE_CREDENTIALS
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    env_names = list(_ENV_ENABLE_CREDENTIALS.get(platform) or (entry.required_env if entry else ()))
+    names = "/".join(env_names) or "credentials"
+    env_path, config_path = home / ".env", home / "config.yaml"
+    dotenv_keys = load_env_file(env_path)
+    dotenv_state = (f"{names} present" if any(n in dotenv_keys for n in env_names) else f"no {names}") \
+        if env_path.exists() else "missing"
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        user_config = load_user_config_effective(config_path) or {}
+        block = user_config.get("platforms", {}).get(platform_name)
+    except Exception:
+        user_config, block = {}, None
+    if not config_path.exists():
+        config_state = "missing"
+    elif not isinstance(block, dict):
+        config_state = f"no platforms.{platform_name} block"
+    elif block.get("enabled") is False:
+        config_state = f"platforms.{platform_name}.enabled: false"
+    else:
+        config_state = f"platforms.{platform_name} has no token"
+    env_state = f"{names} set" if any(_getenv(n) for n in env_names) else f"{names} unset"
+    msg = (f"Platform '{platform_name}' is not configured. Looked in: {env_path} ({dotenv_state}), "
+           f"{config_path} ({config_state}), environment ({env_state}), "
+           f"external secret sources ({_secret_sources_state(user_config)}).")
+    # The gateway can hold a token only in its own process environment; a fresh CLI cannot see it. A
+    # gateway started from the default root (the reporter's shell had HERMES_HOME=<root>/profiles/<p>)
+    # never reads this profile's .env at all.
+    try:
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        from hermes_constants import get_default_hermes_root, hermes_home_key
+        root = get_default_hermes_root()
+        gateways = [(home, read_runtime_status())]
+        if hermes_home_key(root) != hermes_home_key(home):
+            gateways.append((root, read_runtime_status(root / "gateway_state.json")))
+        for gw_home, record in gateways:
+            state = ((record or {}).get("platforms") or {}).get(platform_name, {}).get("state")
+            if state != "connected" or "present" in dotenv_state or not runtime_status_pid_is_live(record):
+                continue
+            msg += f" A gateway (pid {record.get('pid')}) running from {gw_home} has {platform_name} connected"
+            msg += (f", so its credentials live only in that process's environment; add {names} to {env_path}."
+                    if gw_home is home else
+                    f"; this shell is scoped to profile home {home} whose .env has no {names}.")
+    except Exception:
+        pass
+    return msg
+
+
+def _secret_sources_state(user_config):
+    """``name: enabled|disabled`` for every registered secret source with a ``secrets.<name>`` section,
+    or ``none configured``; names only, never values."""
+    try:
+        from agent.secret_sources.registry import list_sources
+        secrets_cfg = user_config.get("secrets") if isinstance(user_config.get("secrets"), dict) else {}
+        states = [f"{s.name}: {'enabled' if s.is_enabled(secrets_cfg[s.name]) else 'disabled'}"
+                  for s in list_sources() if isinstance(secrets_cfg.get(s.name), dict)]
+    except Exception:
+        states = []
+    return ", ".join(states) or "none configured"
 
 
 def _home_chat_id(config, platform, platform_name):
@@ -189,7 +385,9 @@ def _home_chat_id(config, platform, platform_name):
     home = config.get_home_channel(platform)
     if home:
         return home.chat_id, None
-    wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip() if platform_name == "weixin" else ""
+    # Home channel is a per-profile target like the token beside it: a raw environ read would post a
+    # multiplexed secondary's message into the default profile's Weixin chat.
+    wx_home = (get_secret("WEIXIN_HOME_CHANNEL", "") or "").strip() if platform_name == "weixin" else ""
     if wx_home:
         return wx_home, None
     home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(platform_name, f"{platform_name.upper()}_HOME_CHANNEL")
@@ -419,22 +617,29 @@ _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "fei
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document):
+                                  max_len, force_document, mentions=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
-    rides as the media caption."""
+    rides as the media caption. WhatsApp re-pings recipients on every message that carries
+    ``mentions``, so only the first payload of a logical send gets them."""
     label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
     sender, err = _plugin_standalone_sender(platform_name, label=label, discover=discover)
     if err:
         return err
     extra = {"force_document": force_document} if pass_force else {}
+    first_only = {"mentions": mentions} if mentions else {}
     if captionable:
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
         if caption is not None:
             return await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
-                                caption=caption, **extra)
-    return await _send_chunks(chunks, lambda chunk, is_last: sender(
-        pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if is_last else empty_media, **extra))
+                                caption=caption, **extra, **first_only)
+
+    def send_one(chunk, is_last):
+        kwargs = {**extra, **first_only}
+        first_only.clear()
+        return sender(pconfig, chat_id, chunk, thread_id=thread_id,
+                      media_files=media_files if is_last else empty_media, **kwargs)
+    return await _send_chunks(chunks, send_one)
 
 
 def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
@@ -469,7 +674,8 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
+                            force_document=False, mentions=None, args=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -486,9 +692,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
-    if platform_name == "discord" or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA):
+    if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
+            or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
-                                             thread_id=thread_id, max_len=max_len, force_document=force_document)
+                                             thread_id=thread_id, max_len=max_len, force_document=force_document,
+                                             mentions=mentions)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
@@ -558,7 +766,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:~/.hermes/cache/scratch/report.pdf') in the message — the platform will deliver it as a native media attachment."
             },
             "emoji": {
                 "type": "string",

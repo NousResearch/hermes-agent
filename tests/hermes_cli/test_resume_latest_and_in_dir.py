@@ -229,3 +229,51 @@ def test_in_dir_expands_user_home(main_mod, launched, monkeypatch, tmp_path):
         assert os.getcwd() == str((home / "proj").resolve())
     finally:
         os.chdir(start)
+
+
+# ---------------------------------------------------------------------------
+# --in must win over an inherited TERMINAL_CWD (#106220)
+# ---------------------------------------------------------------------------
+
+
+def test_in_dir_replaces_inherited_terminal_cwd(main_mod, monkeypatch, tmp_path):
+    """A parent Hermes surface, the shell or .env can export TERMINAL_CWD before
+    the CLI starts. Every cwd consumer prefers that variable over the process
+    cwd, so a bare chdir left the Codex app-server thread, the terminal tool and
+    context-file discovery in the inherited directory."""
+    import os
+    from pathlib import Path
+
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    inherited = tmp_path / "inherited"
+    target = tmp_path / "target"
+    inherited.mkdir()
+    target.mkdir()
+    monkeypatch.chdir(inherited)
+    monkeypatch.setenv("TERMINAL_CWD", str(inherited))
+
+    args = _args(in_dir=str(target))
+    main_mod._apply_in_dir(args)
+
+    assert Path.cwd().resolve() == target.resolve()
+    assert Path(os.environ["TERMINAL_CWD"]).resolve() == target.resolve()
+    assert resolve_agent_cwd().resolve() == target.resolve()
+    assert args.no_restore_cwd is True
+
+
+def test_in_dir_leaves_unset_terminal_cwd_unset(main_mod, monkeypatch, tmp_path):
+    """Without an inherited value the backends already derive from the process
+    cwd (local exports os.getcwd() at cli import, docker mounts it, the TUI
+    child inherits the chdir). Pre-seeding a host path here would leak it into
+    ssh/container backends that must keep their own default."""
+    import os
+
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    main_mod._apply_in_dir(_args(in_dir=str(target)))
+
+    assert "TERMINAL_CWD" not in os.environ

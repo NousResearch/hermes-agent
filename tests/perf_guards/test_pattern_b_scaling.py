@@ -127,7 +127,7 @@ class TestListSessionsRichQueryBound:
         """Rows from ``list_sessions_rich`` plus the writer-conn statement count.
 
         Uses the house trace-callback idiom (``statements.append`` — see
-        tests/test_hermes_state.py) so failures can dump the captured SQL.
+        tests/hermes_state/test_hermes_state.py) so failures can dump the captured SQL.
         """
         statements: list[str] = []
         db._conn.set_trace_callback(statements.append)

@@ -1,6 +1,8 @@
 """Tests for the hermes_cli models module."""
 
 import json
+import pytest
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from unittest.mock import patch, MagicMock
@@ -142,7 +144,7 @@ class TestDetectProviderForModel:
         with patch(
             "hermes_cli.models.fetch_openrouter_models",
             side_effect=AssertionError("network lookup should not run"),
-        ):
+        ), patch("hermes_cli.models_detect.provider_has_credentials", return_value=True):
             result = detect_provider_for_model("sonnet", "auto")
         assert result is not None
         assert result[0] == "anthropic"
@@ -1519,3 +1521,101 @@ class TestLocalOllamaModelDiscovery:
 
         assert result.success is True
         assert result.api_key == "no-key-required"
+
+
+class TestOpenRouterCatalogDiskCache:
+    """A cold process must serve the curated OpenRouter picker list from disk within the TTL and
+    fall through to the live fetch when the snapshot is expired or corrupt."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        yield
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+
+    @staticmethod
+    def _install_network(monkeypatch, calls):
+        payload = {"data": [{"id": "a/one", "supported_parameters": ["tools"],
+                             "pricing": {"prompt": "0", "completion": "0"}}]}
+
+        def fake_index(url, timeout, opener):
+            calls.append(url)
+            return payload["data"], {m["id"]: m for m in payload["data"]}
+
+        monkeypatch.setattr(_models_mod, "_fetch_live_catalog_index", fake_index)
+        monkeypatch.setattr("hermes_cli.model_catalog.get_curated_openrouter_models",
+                            lambda: [("a/one", "")])
+
+    def test_fresh_snapshot_serves_cold_process_without_network(self, monkeypatch, tmp_path):
+        calls = []
+        self._install_network(monkeypatch, calls)
+        first = fetch_openrouter_models()
+        assert calls and _models_mod._openrouter_catalog_disk_path().is_file()
+
+        _models_mod._openrouter_catalog_cache = None  # simulate a fresh process
+        calls.clear()
+        assert fetch_openrouter_models() == first
+        assert calls == []
+
+    def test_expired_or_corrupt_snapshot_falls_through_to_fetch(self, monkeypatch, tmp_path):
+        calls = []
+        self._install_network(monkeypatch, calls)
+        path = _models_mod._openrouter_catalog_disk_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        stale = time.time() - _models_mod._openrouter_catalog_disk_ttl() - 1
+        path.write_text(json.dumps({"fetched_at": stale, "curated": [["old/model", ""]]}))
+        assert fetch_openrouter_models() == [("a/one", "free")]
+        assert len(calls) == 1
+
+        _models_mod._openrouter_catalog_cache = None
+        path.write_text("{not json")
+        assert fetch_openrouter_models() == [("a/one", "free")]
+        assert len(calls) == 2
+
+
+class TestAzureFoundryPickerCatalog:
+    """``/model azure-foundry`` lists the resource's live ``/models`` ids (#27989).
+
+    Deployments are per-resource and the plugin profile ships ``base_url=""``, so the generic
+    profile fetch never fires; the picker used to fall through to the static ``[]``.
+    """
+
+    def test_provider_model_ids_probes_the_configured_resource(self, monkeypatch):
+        seen = {}
+
+        def fake_runtime(*, requested_provider, model_cfg, **_):
+            return {"base_url": "https://r.openai.azure.com/openai/v1/", "api_key": "k"}
+
+        def fake_probe(base_url, credential, **_):
+            seen.update(base_url=base_url, credential=credential)
+            return True, ["gpt-5.4", "kimi-k2.6"]
+
+        monkeypatch.setattr("hermes_cli.runtime_provider._resolve_azure_foundry_runtime", fake_runtime)
+        monkeypatch.setattr("hermes_cli.azure_detect._probe_openai_models", fake_probe)
+        assert _models_mod.provider_model_ids("azure-foundry", force_refresh=True) == ["gpt-5.4", "kimi-k2.6"]
+        assert seen == {"base_url": "https://r.openai.azure.com/openai/v1", "credential": "k"}
+
+    def test_probe_miss_or_resolver_error_keeps_the_empty_static_catalog(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.azure_detect._probe_openai_models", lambda *a, **k: (False, []))
+        monkeypatch.setattr("hermes_cli.runtime_provider._resolve_azure_foundry_runtime",
+                            lambda **_: {"base_url": "https://r.services.ai.azure.com/anthropic", "api_key": "k"})
+        assert _models_mod.provider_model_ids("azure-foundry", force_refresh=True) == []
+
+        def raising(**_):
+            raise RuntimeError("Azure Foundry requires a base URL")
+
+        monkeypatch.setattr("hermes_cli.runtime_provider._resolve_azure_foundry_runtime", raising)
+        assert _models_mod.provider_model_ids("azure-foundry", force_refresh=True) == []
+
+    def test_disk_cache_fingerprint_tracks_the_configured_resource(self, monkeypatch):
+        """The wizard writes only ``model.base_url``; switching resource with the same key must not
+        serve the previous resource's catalog for the TTL window (same rule as openai's effective_base)."""
+        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_BASE_URL", raising=False)
+        monkeypatch.setattr(_models_mod, "_get_model_config_dict",
+                            lambda: {"provider": "azure-foundry", "base_url": "https://a.openai.azure.com/openai/v1"})
+        fp_a = _models_mod._credential_fingerprint("azure-foundry")
+        monkeypatch.setattr(_models_mod, "_get_model_config_dict",
+                            lambda: {"provider": "azure-foundry", "base_url": "https://b.openai.azure.com/openai/v1"})
+        assert _models_mod._credential_fingerprint("azure-foundry") != fp_a

@@ -52,7 +52,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from gateway.platforms.base import SessionSource
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +631,44 @@ class TestVoiceChannelCommands:
         assert event.message_type == MessageType.VOICE
         assert event.source.chat_id == "123"
         assert event.source.chat_type == "channel"
+
+    @pytest.mark.asyncio
+    async def test_input_reroutes_speaker_without_changing_transport_owner(self, runner, monkeypatch):
+        from gateway.config import Platform
+        from gateway.profile_routing import parse_profile_routes
+
+        runner.config = SimpleNamespace(
+            multiplex_profiles=True,
+            profile_routes=parse_profile_routes([
+                {"name": "second", "platform": "discord", "bot_profile": "team-bot",
+                 "user_id": "222", "profile": "second"},
+            ]),
+        )
+        monkeypatch.setattr(
+            "gateway.run._multiplex_profile_homes",
+            lambda _config: [("team-bot", None), ("first", None), ("second", None)],
+        )
+        mock_adapter = AsyncMock()
+        mock_adapter._owner_profile = "team-bot"
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {111: SessionSource(
+            platform=Platform.DISCORD, chat_id="123", chat_type="channel",
+            user_id="111", profile="first",
+        ).to_dict()}
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters = {}
+        runner._profile_adapters = {
+            "team-bot": {Platform.DISCORD: mock_adapter},
+            "second": {},
+        }
+
+        await runner._handle_voice_channel_input(111, 222, "Hello from VC", adapter=mock_adapter)
+
+        source = mock_adapter.handle_message.call_args[0][0].source
+        assert (source.user_id, source.profile) == ("222", "second")
+        assert runner._transport_owner(source) == (mock_adapter, "team-bot")
 
     @pytest.mark.asyncio
     async def test_input_resolves_channel_prompt(self, runner):
@@ -1755,7 +1794,8 @@ class TestVoiceTTSPlayback:
 
     def _call_should_reply(self, runner, voice_mode, msg_type, response="Hello",
                            agent_msgs=None, already_sent=False):
-        from gateway.platforms.base import MessageEvent, SessionSource
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent
         from gateway.config import Platform
         runner._voice_mode["discord:ch1"] = voice_mode
         source = SessionSource(
@@ -1771,20 +1811,20 @@ class TestVoiceTTSPlayback:
 
     def test_voice_input_runner_skips(self):
         """Streaming OFF + voice input: runner skips — base adapter handles."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is False
 
     def test_text_input_voice_all_runner_fires(self):
         """Streaming OFF + text input + voice_mode=all: runner generates TTS."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.TEXT, already_sent=False) is True
 
 
     def test_error_response_no_tts(self):
         """Error response: no TTS regardless of voice_mode."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.TEXT, response="Error: boom") is False
 
@@ -1794,7 +1834,7 @@ class TestVoiceTTSPlayback:
 
     def test_streaming_on_agent_tts_dedup(self):
         """Streaming ON + agent called TTS: runner skips (dedup still works)."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         runner = self._make_runner()
         agent_msgs = [{"role": "assistant", "tool_calls": [
             {"id": "1", "type": "function", "function": {"name": "text_to_speech", "arguments": "{}"}}

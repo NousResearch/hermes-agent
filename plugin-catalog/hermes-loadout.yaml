@@ -1,0 +1,18 @@
+name: hermes-loadout
+repo: https://github.com/qwertyuiop97/hermes-loadout
+sha: e31ad580756a6481d38fac0b18ddc3fd0239d124
+description: >-
+  Desktop pane to manage skills and MCP connections across agent apps: save
+  named loadouts, review changes, apply them, and undo the latest managed
+  operation. Agent half is inert (no tools or hooks).
+  Disclosure — MCP sync copies your Hermes mcp_servers env/header secrets into ~/.codex/config.toml and claude_desktop_config.json (with 0600 backups).
+maintainer: qwertyuiop97
+tier: community
+category: desktop
+docs_url: https://github.com/qwertyuiop97/hermes-loadout#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

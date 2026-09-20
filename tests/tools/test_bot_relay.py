@@ -124,6 +124,23 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert bot_relay.claim_pending_envelopes(root) == []
 
 
+def test_claim_skips_non_dict_envelope(root):
+    """A parseable-but-non-object outbox file must not reach the Desktop consumer or
+    crash the claim sweep; the claim stays claimed so it is not re-queued."""
+    bot_relay.write_remote_roster(root, _rows())
+    roster = bot_relay.read_remote_roster(root)
+    target = bot_relay.resolve_remote_target("researcher", roster)
+    env = bot_relay.enqueue_envelope(
+        root, target=target, message="hi", sender_profile="work", sender_handle="work"
+    )
+    base = bot_relay.relay_root(root)
+    bad = base / bot_relay.OUTBOX_DIR / f"{'9' * 32}.json"
+    bad.write_text('"not an envelope"', encoding="utf-8")
+    claimed = bot_relay.claim_pending_envelopes(root)
+    assert [e["id"] for e in claimed] == [env["id"]]
+    assert not bad.exists() and (base / bot_relay.CLAIMED_DIR / bad.name).exists()
+
+
 def test_write_reply_validates_envelope_id(root):
     with pytest.raises(ValueError):
         bot_relay.write_reply(root, "../../etc/passwd", reply="x")
@@ -152,6 +169,30 @@ def test_waiter_command_quotes_and_targets_reply_file(root):
     cmd = bot_relay.waiter_command(root, env)
     assert ("b" * 32) in cmd and "-c" in cmd
     assert "rm -rf" not in cmd  # sanity: single quoted -c payload
+
+
+def test_waiter_outlives_the_desktop_deliver_deadline():
+    """The Desktop posts its timeout reply when RELAY_DELIVER_TIMEOUT_MS passes. A waiter that gave
+    up first left that reply, and any turn finishing after minute 15, in a file nobody read (#93911).
+    relay-deliver-budget.test.ts pins the TS constants against these Python ones."""
+    desktop_budget_s = (
+        bot_relay.TURN_WAIT_SECONDS_FALLBACK
+        + bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS * bot_relay.TURN_MAX_ATTEMPTS
+        + bot_relay.DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
+    )
+    assert bot_relay.DESKTOP_DELIVER_TIMEOUT_SECONDS == desktop_budget_s
+    assert bot_relay.REPLY_WAIT_SECONDS > desktop_budget_s
+
+
+def test_waiter_give_up_message_states_the_real_budget(root):
+    import shlex
+
+    env = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+    parts = shlex.split(bot_relay.waiter_command(root, env))
+    code = parts[parts.index("-c") + 1]
+    assert f"deadline = time.time() + {bot_relay.REPLY_WAIT_SECONDS}\n" in code
+    assert f"within {bot_relay.REPLY_WAIT_SECONDS}s" in code
+    assert "within 900s" not in code
 
 
 def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
@@ -307,15 +348,15 @@ def test_relay_route_queues_envelope_and_spawns_waiter(tmp_path, monkeypatch):
 
     spawned = {}
 
-    def _fake_spawn(command, label, *, task_id, agent):
+    def _fake_spawn(command, label, *, task_id, agent, **_):
         spawned["command"] = command
         spawned["label"] = label
-        return json.dumps({"status": "sent", "to": label})
+        return json.dumps({"status": "queued", "to": label})
 
     monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", _fake_spawn)
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))
-    assert out.get("status") == "sent"
+    assert out.get("status") == "queued"
     assert "Hermes Cloud" in spawned["label"]
     # envelope landed in the outbox with attribution prefixed
     pending = bot_relay.claim_pending_envelopes(home)
@@ -335,14 +376,14 @@ def test_relay_route_ambiguous_target_errors_with_forms(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(
         "tools.bot_mode_dm._spawn_delivery",
-        lambda *a, **k: json.dumps({"status": "sent"}),
+        lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="scout", message="hi", agent=agent))
     assert "scout@cloud-1" in out.get("error", "") and "scout@ssh-vps" in out["error"]
     # connection-qualified form goes through
     out2 = json.loads(message_agent_tool(target="scout@ssh-vps", message="hi", agent=agent))
-    assert out2.get("status") == "sent"
+    assert out2.get("status") == "queued"
 
 
 def test_unknown_target_error_mentions_connected_machines(tmp_path):
@@ -504,6 +545,33 @@ def test_drain_expires_old_envelope_with_queued_expired_reply(root):
     assert not reply["reply"]
 
 
+def test_the_outbox_is_claimed_oldest_first(root):
+    """Two DMs from one sender to one agent must arrive in the order they were sent. The Desktop
+    delivers each target's claimed envelopes in the order this list gives them, one turn at a
+    time, so the claim IS the delivery order — and sorting by filename ordered them by
+    ``uuid4().hex``. The names here are forced into the reverse of the send order to pin that
+    deterministically, which random ids reproduce half the time."""
+    first = bot_relay.enqueue_envelope(
+        root, target=_target(), message="do this first",
+        sender_profile="default", sender_handle="hermes",
+    )
+    second = bot_relay.enqueue_envelope(
+        root, target=_target(), message="then this",
+        sender_profile="default", sender_handle="hermes",
+    )
+    outbox = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR
+    now = _time2.time()
+    for env, name, sent_at in ((first, "f" * 32, now - 2), (second, "0" * 32, now - 1)):
+        path = outbox / f"{name}.json"
+        (outbox / f"{env['id']}.json").rename(path)
+        _os2.utime(path, (sent_at, sent_at))
+
+    claimed = bot_relay.claim_pending_envelopes(root)
+
+    assert [e["id"] for e in claimed] == [first["id"], second["id"]]
+    assert [e["message"] for e in claimed] == ["do this first", "then this"]
+
+
 def test_drain_delivers_fresh_envelope_under_ttl(root):
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="on time",
@@ -552,7 +620,7 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(
         "tools.bot_mode_dm._spawn_delivery",
-        lambda *a, **k: json.dumps({"status": "sent"}),
+        lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))
@@ -560,3 +628,49 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     assert "offline" in out.get("error", "")
     # fail-fast means no envelope was queued
     assert bot_relay.claim_pending_envelopes(home) == []
+
+
+# ── delivery turn author (HERMES_TURN_AUTHOR on the recipient turn) ──────────
+
+
+def test_delivery_turn_author_from_envelope_sender_fields():
+    author = bot_relay.delivery_turn_author("ops", "ops-bot")
+    assert author == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+    # The display name falls back to the profile; the id never comes from the handle.
+    assert bot_relay.delivery_turn_author("ops", "") == {"id": "bot:ops", "name": "ops", "is_bot": True}
+    assert bot_relay.delivery_turn_author("", "ops-bot") is None
+    assert bot_relay.delivery_turn_author(None, None) is None
+
+
+def test_delivery_turn_author_qualifies_a_remote_sender_by_its_connection():
+    """A relayed DM always crosses gateways, so the sender's connection id is part of the author id, ``local``
+    included; the recipient's own ``ops`` is the only bare ``bot:ops``."""
+    remote = bot_relay.delivery_turn_author("ops", "ops-bot", "cloud-1")
+    assert remote == {"id": "bot:cloud-1/ops", "name": "ops-bot", "is_bot": True}
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "local") == {"id": "bot:local/ops", "name": "ops-bot", "is_bot": True}
+    # An older Desktop that sends no connection id still yields an author.
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "") == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+
+
+def test_delivery_env_carries_only_the_given_author(monkeypatch):
+    """The dispatcher's own HERMES_TURN_AUTHOR never reaches the child: dropped without an author, replaced with one."""
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
+    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-A")
+    monkeypatch.setenv("HERMES_UI_SESSION_ID", "ui-A")
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-A")
+    monkeypatch.setenv("HERMES_SESSION_PROFILE", "profile-A")
+    # A session-* knob, not identity: stripping it would break the child's watcher tuning.
+    monkeypatch.setenv("HERMES_SESSION_STALL_TIMEOUT", "97")
+
+    assert TURN_AUTHOR_ENV not in bot_relay.delivery_env(None)
+    env = bot_relay.delivery_env(bot_relay.delivery_turn_author("ops", "ops"))
+    assert json.loads(env[TURN_AUTHOR_ENV]) == {"id": "bot:ops", "name": "ops", "is_bot": True}
+    assert env["HERMES_RELAY_TEST_MARKER"] == "kept"
+    assert "HERMES_SESSION_KEY" not in env
+    assert "HERMES_UI_SESSION_ID" not in env
+    assert "HERMES_SESSION_ID" not in env
+    assert "HERMES_SESSION_PROFILE" not in env
+    assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"

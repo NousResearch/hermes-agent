@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -108,7 +108,8 @@ class TestRunBackgroundTask:
         # Should have sent an error message
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
-        assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
+        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
+        assert "couldn't start" in content and "/login" in content
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
@@ -259,7 +260,7 @@ class TestHandleBtwCommand:
         runner._reply_anchor_for_event = MagicMock(return_value=None)
         runner._thread_metadata_for_source = MagicMock(return_value=None)
         mock_adapter = AsyncMock()
-        runner._adapter_for_source = MagicMock(return_value=mock_adapter)
+        runner._delivery_adapter_for = MagicMock(return_value=mock_adapter)
 
         event = _make_event(text="/btw which file was that?")
 

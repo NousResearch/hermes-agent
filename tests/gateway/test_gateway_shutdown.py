@@ -6,7 +6,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -96,7 +96,7 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     ):
         await runner.stop()
 
-    running_agent.interrupt.assert_called_once_with("Gateway shutting down")
+    running_agent.interrupt.assert_called_once_with("Gateway shutting down", tool_reason="gateway shutdown")
     disconnect_mock.assert_awaited_once()
     shutdown_cached_clients.assert_called_once()
     assert runner.adapters == {}
@@ -243,7 +243,7 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     assert len(adapter.sent_calls) == 1
     chat_id, message, metadata = adapter.sent_calls[0]
     assert chat_id == source.chat_id
-    assert "Gateway restarting" in message
+    assert "Hermes is restarting" in message
     assert metadata["telegram_reply_to_message_id"] == "restart-command"
 
 

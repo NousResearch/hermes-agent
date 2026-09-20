@@ -5,9 +5,9 @@ import { PaneTab, PaneTabLabel } from './pane-tab'
 
 afterEach(cleanup)
 
-/** The tab shell's own classes (the label's grandparent), split for set diffs. */
+/** The tab shell's own classes, independent of its label's internal layout. */
 const classesOf = (label: string): string[] =>
-  screen.getByText(label).parentElement!.parentElement!.className.split(/\s+/).filter(Boolean)
+  screen.getByText(label).closest('[data-slot="pane-tab"]')!.className.split(/\s+/).filter(Boolean)
 
 describe('PaneTab close gestures', () => {
   it('middle-click closes — pointer events only, no auxclick', () => {

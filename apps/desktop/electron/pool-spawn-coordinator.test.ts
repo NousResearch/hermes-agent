@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  BackgroundSlotRetryBackoff,
   LocalBackendSlotWaitTimeoutError,
   LocalBackendSpawnCoordinator,
   releaseLocalBackendSlotAfterExit
@@ -23,6 +24,20 @@ const deferred = () => {
 }
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
+
+test('background slot failures back off per profile and clear after a later success', () => {
+  const retries = new BackgroundSlotRetryBackoff({ baseDelayMs: 1_000, maxDelayMs: 8_000 })
+
+  assert.equal(retries.canAttempt('over-cap', 0), true)
+  assert.equal(retries.recordFailure('over-cap', 0), 1_000)
+  assert.equal(retries.canAttempt('over-cap', 999), false)
+  assert.equal(retries.canAttempt('over-cap', 1_000), true)
+  assert.equal(retries.recordFailure('over-cap', 1_000), 2_000)
+  assert.equal(retries.canAttempt('other-profile', 1_001), true)
+
+  retries.clear('over-cap')
+  assert.equal(retries.canAttempt('over-cap', 1_001), true)
+})
 
 test('100 concurrent local requests never hold more than the configured slots', async () => {
   const limit = 12
@@ -114,7 +129,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
   const limit = 12
   const coordinator = new LocalBackendSpawnCoordinator(limit)
   const livePids = new Set<number>()
-  const seenPids = new Set<number>()
+  let completedChildren = 0
   let maxLive = 0
 
   await Promise.all(
@@ -128,7 +143,6 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
 
         assert.ok(child.pid)
         livePids.add(child.pid)
-        seenPids.add(child.pid)
         maxLive = Math.max(maxLive, livePids.size)
 
         await new Promise<void>((resolve, reject) => {
@@ -142,6 +156,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
           })
         })
 
+        completedChildren += 1
         livePids.delete(child.pid)
       } finally {
         release()
@@ -149,7 +164,9 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
     })
   )
 
-  assert.equal(seenPids.size, 100)
+  // Windows may recycle a PID after a short-lived child exits; completion
+  // count, not PID uniqueness, is the invariant this concurrency test owns.
+  assert.equal(completedChildren, 100)
   assert.equal(maxLive, limit)
   assert.equal(livePids.size, 0)
   assert.equal(coordinator.activeCount, 0)

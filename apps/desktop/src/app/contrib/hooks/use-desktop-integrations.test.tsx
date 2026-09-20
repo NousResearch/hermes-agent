@@ -1,12 +1,16 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { _resetLegacyDiscardForTests } from '@/store/session'
+import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../../../test/session-info'
+import { sessionRoute } from '../../routes'
 
 import { useDesktopIntegrations } from './use-desktop-integrations'
 
@@ -162,6 +166,19 @@ describe('useDesktopIntegrations', () => {
 
       // sessionRoute('remembered-session') = '/remembered-session'
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+
+    it('announces the restored session so the pre-session draft follows the cold-start navigation', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      // Typed on the fresh chat while the backend was still coming up.
+      stashSessionDraft(null, 'typed while booting', [])
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+      // The composer's scope swap may only carry the draft when the restore announced this key.
+      expect(adoptNewSessionDraft('remembered-session')).toBe(true)
+      expect(takeSessionDraft('remembered-session').text).toBe('typed while booting')
     })
 
     it('waits for sessions before validating a remembered session route', () => {
@@ -415,15 +432,15 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('route-scoped restoration', () => {
-    it('restores a non-session route like /skills', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/skills')
+    it('restores a non-session route like /capabilities', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
 
       const sessions = [session({ id: 'some-session', profile: 'default' })]
 
       render({ profileReady: true, sessions })
 
       // /skills is not a session route — no ownership validation needed.
-      expect(navigate).toHaveBeenCalledWith('/skills', { replace: true })
+      expect(navigate).toHaveBeenCalledWith('/capabilities', { replace: true })
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {
@@ -565,6 +582,69 @@ describe('useDesktopIntegrations', () => {
       deepLink?.({ kind: 'mcp', name: 'install', params: { name: 'context7' } })
       expect(requestMcpInstallFromDeepLink).toHaveBeenCalledWith({ name: 'context7' })
       expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('notification click -> focus-session id translation', () => {
+    function withFocusSession(): (sessionId: string) => void {
+      let handler: ((sessionId: string) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onFocusSession: (cb: (sessionId: string) => void) => {
+          handler = cb
+
+          return () => undefined
+        }
+      } as unknown as Window['hermesDesktop']
+
+      return sessionId => handler?.(sessionId)
+    }
+
+    function renderWithRuntimeMap(map: Map<string, string>) {
+      return renderHook(
+        ({ sessions }: { sessions: readonly SessionInfo[] }) =>
+          useDesktopIntegrations({
+            activeProfile: 'default',
+            chatOpen: false,
+            hasPreview: false,
+            locationPathname: '/',
+            navigate,
+            profileReady: true,
+            refreshSessions: vi.fn(),
+            resumeExhaustedSessionId: null,
+            resumeLastSession: false,
+            routedSessionId: null,
+            runtimeIdByStoredSessionId: { current: map },
+            sessions
+          }),
+        { initialProps: { sessions: [] as readonly SessionInfo[] } }
+      )
+    }
+
+    it('translates a runtime id via the window map before navigating', () => {
+      const fire = withFocusSession()
+
+      renderWithRuntimeMap(new Map([['stored-abc', 'runtime-123']]))
+      fire('runtime-123')
+
+      // 'stack' intent spends the unoccupied main draft → in-place navigate.
+      expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-abc'))
+    })
+
+    it('falls back to the durable per-runtime state mirror when the window map has no binding', () => {
+      const fire = withFocusSession()
+      const { unmount } = renderWithRuntimeMap(new Map())
+
+      // Simulate a main-pane runtime whose ensureSessionState binding lives in
+      // the shared store mirror, not this window's map (window reload /
+      // pop-out window / gateway respawn).
+      publishSessionState('runtime-999', createClientSessionState('stored-xyz'))
+      fire('runtime-999')
+
+      expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-xyz'))
+
+      unmount()
+      dropSessionState('runtime-999')
     })
   })
 })

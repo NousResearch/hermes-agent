@@ -21,6 +21,15 @@ from gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
 
 
+class AdmittingHandler(AsyncMock):
+    """Fake transport whose successful insertion issues the production receipt."""
+
+    async def _execute_mock_call(self, event, *args, **kwargs):
+        result = await super()._execute_mock_call(event, *args, **kwargs)
+        event._gateway_accepted = True
+        return result
+
+
 @pytest.fixture(autouse=True)
 def isolated_registry(tmp_path, monkeypatch):
     """Any current/future durable compatibility path must stay in tmp state."""
@@ -104,7 +113,7 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     isolated.put(dict(_async_event()))
     isolated.put(dict(_async_event()))
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=2)
 
@@ -113,7 +122,7 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     adapter.handle_message.assert_awaited_once()
 
 
-def test_unroutable_async_event_is_not_requeued_forever(
+def test_unroutable_async_event_remains_retryable(
     monkeypatch, isolated_registry,
 ):
     isolated = queue.Queue()
@@ -122,14 +131,14 @@ def test_unroutable_async_event_is_not_requeued_forever(
     event["session_key"] = "20260711_unparseable_ui_session"
     isolated.put(event)
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=2)
 
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
     adapter.handle_message.assert_not_awaited()
-    assert isolated.empty()
+    assert not isolated.empty()
 
 
 def test_concurrent_claims_share_the_same_narrow_delivery_seam():
@@ -141,7 +150,7 @@ def test_concurrent_claims_share_the_same_narrow_delivery_seam():
         entered.set()
         await release.wait()
 
-    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_blocked_injection))
+    adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=_blocked_injection))
     runner = _runner(adapter)
     event = _async_event()
     text = "completion"
@@ -166,7 +175,7 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
     isolated.put(_async_event())
 
     adapter = SimpleNamespace(
-        handle_message=AsyncMock(side_effect=[RuntimeError("temporary"), None])
+        handle_message=AdmittingHandler(side_effect=[RuntimeError("temporary"), None])
     )
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=3)
@@ -227,7 +236,7 @@ def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch)
     assert result["output"] == "important terminal output\n"
     assert registry.is_completion_consumed(session.id)
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
 
     async def _instant_sleep(*_a, **_kw):
@@ -297,7 +306,7 @@ def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypat
     monkeypatch.setattr(pr_module, "process_registry", registry)
     monkeypatch.setattr(redact_module, "_REDACT_ENABLED", True)
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
 
     async def _instant_sleep(*_a, **_kw):
@@ -348,7 +357,7 @@ def test_concurrent_process_watchers_coalesce_one_session_completion_turn(monkey
         })
     monkeypatch.setattr(pr_module, "process_registry", registry)
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
 
     async def _exercise():
@@ -379,7 +388,7 @@ def test_completion_arriving_during_batch_delivery_schedules_next_flush():
             first_delivery_entered.set()
             await release_first_delivery.wait()
 
-    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_deliver))
+    adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=_deliver))
     runner = _runner(adapter)
 
     async def _exercise():
@@ -402,7 +411,7 @@ def test_completion_arriving_during_batch_delivery_schedules_next_flush():
 
 
 def test_completion_batches_do_not_cross_conversation_routes():
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
 
     first = _completion_event(started_at=1.0, session_id="proc_route_a")
@@ -429,7 +438,7 @@ def test_failed_coalesced_delivery_retries_all_entries():
         if attempts == 1:
             raise RuntimeError("temporary adapter failure")
 
-    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_deliver))
+    adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=_deliver))
     runner = _runner(adapter)
     events = [
         _completion_event(started_at=float(index), session_id=f"proc_retry_{index}")
@@ -451,7 +460,7 @@ def test_failed_coalesced_delivery_retries_all_entries():
 
 
 def test_coalesced_success_records_every_completion_identity():
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     events = [
         _completion_event(started_at=float(index), session_id=f"proc_ledger_{index}")
@@ -543,7 +552,7 @@ def test_coalesced_format_redacts_before_truncating_output(monkeypatch):
 
 
 def test_duplicate_primary_does_not_discard_fresh_batch_sibling():
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     duplicate = _completion_event(started_at=1.0, session_id="proc_duplicate")
     fresh = _completion_event(started_at=2.0, session_id="proc_fresh")
@@ -563,7 +572,7 @@ def test_duplicate_primary_does_not_discard_fresh_batch_sibling():
 
 
 def test_batch_format_failure_resolves_waiters_for_retry(monkeypatch):
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     monkeypatch.setattr(
         runner,
@@ -587,7 +596,7 @@ def test_batch_format_failure_resolves_waiters_for_retry(monkeypatch):
 
 
 def test_shutdown_cancels_batch_during_window_and_settles_waiter_for_retry():
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     sleep_entered = asyncio.Event()
     release_sleep = asyncio.Event()
@@ -629,7 +638,7 @@ def test_shutdown_cancels_blocked_batch_delivery_and_keeps_it_retryable():
         delivery_entered.set()
         await asyncio.Event().wait()
 
-    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_blocked_delivery))
+    adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=_blocked_delivery))
     runner = _runner(adapter)
     runner._completion_notification_batch_window = 0
     event = _completion_event(started_at=1.0, session_id="proc_cancel_delivery")
@@ -655,7 +664,7 @@ def test_shutdown_cancels_blocked_batch_delivery_and_keeps_it_retryable():
 
 
 def test_completion_enqueue_stays_retryable_after_shutdown_starts():
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
 
     async def _exercise():
@@ -672,7 +681,7 @@ def test_completion_enqueue_stays_retryable_after_shutdown_starts():
 
 
 def test_successful_batch_releases_all_lifecycle_task_references():
-    adapter = SimpleNamespace(handle_message=AsyncMock(return_value=None))
+    adapter = SimpleNamespace(handle_message=AdmittingHandler(return_value=None))
     runner = _runner(adapter)
     runner._completion_notification_batch_window = 0
 
@@ -697,7 +706,7 @@ def test_shutdown_cancels_overlapping_flushes_for_same_route():
         delivery_entered.set()
         await asyncio.Event().wait()
 
-    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_blocked_delivery))
+    adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=_blocked_delivery))
     runner = _runner(adapter)
     runner._completion_notification_batch_window = 0
     first_event = _completion_event(started_at=1.0, session_id="proc_old_flush")
@@ -764,7 +773,7 @@ def test_same_tick_async_batch_coalesces_into_one_turn_and_acks_all_rows(
         _persist_pending_completion(event)
         isolated.put(dict(event))
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=2)
 
@@ -792,7 +801,7 @@ def test_same_tick_async_events_for_different_sessions_do_not_coalesce(
         "deleg_route_b", session_key="agent:main:telegram:dm:99999:678",
     ))
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=2)
 
@@ -813,7 +822,7 @@ def test_single_async_event_latency_and_text_are_unchanged(
     monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
     isolated.put(_distinct_async_event("deleg_single"))
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=2)
 
@@ -839,7 +848,7 @@ def test_failed_coalesced_async_batch_releases_claims_and_retries(
         isolated.put(dict(event))
 
     adapter = SimpleNamespace(
-        handle_message=AsyncMock(side_effect=[RuntimeError("temporary"), None])
+        handle_message=AdmittingHandler(side_effect=[RuntimeError("temporary"), None])
     )
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=3)
@@ -872,7 +881,7 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
         events[1]["delegation_id"], "other-consumer:claim",
     )
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=2)
 
@@ -884,3 +893,100 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     assert "Result for deleg_owned_1" not in delivered.text
     row = async_delegation.get_durable_delegation(events[1]["delegation_id"])
     assert row["delivery_state"] == "pending"
+
+
+@pytest.mark.parametrize("unavailable", ["raw_adapter", "transport", "owner_db", "api_db"])
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavailable, batch_size):
+    """Unavailable owners/transports cannot consume any sibling's durable attempts."""
+    from hermes_state import SessionDB
+    from tools import async_delegation
+
+    events = [_async_event(f"deleg_unavailable_{i}") for i in range(batch_size)]
+    raw = unavailable in {"raw_adapter", "api_db"}
+    for event in events:
+        if raw:
+            event["session_key"] = "opaque-client-session"
+        if unavailable == "owner_db":
+            event["parent_session_id"] = "parent-session"
+        _persist_pending_completion(event)
+
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    api = SimpleNamespace(supports_async_delivery=False, _ensure_session_db=lambda: None)
+    for _restart in range(10):
+        runner = _runner(adapter)
+        runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
+        if unavailable == "owner_db":
+            runner.adapters = {Platform.TELEGRAM: adapter}
+        assert asyncio.run(runner._deliver_async_delegation_group(events)) is False
+        for event in events:
+            row = async_delegation.get_durable_delegation(event["delegation_id"])
+            assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
+
+    runner = _runner(adapter)
+    db = SessionDB(tmp_path / "owner.db")
+    try:
+        if raw:
+            db.create_session("opaque-client-session", "api_server")
+            api._ensure_session_db = lambda: db
+            runner.adapters = {Platform.API_SERVER: api}
+        if unavailable == "owner_db":
+            runner._session_db = SimpleNamespace(get_session=AsyncMock(return_value={"ended_at": None}))
+        assert asyncio.run(runner._deliver_async_delegation_group(events)) is True
+        for event in events:
+            row = async_delegation.get_durable_delegation(event["delegation_id"])
+            assert (row["delivery_state"], row["delivery_attempts"]) == ("delivered", 1)
+        if raw:
+            rows = db.get_messages("opaque-client-session")
+            assert len(rows) == 1
+            assert rows[0]["display_kind"] == "async_delegation_complete"
+            adapter.handle_message.assert_not_awaited()
+        else:
+            adapter.handle_message.assert_awaited_once()
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_completion_profile_transport_never_falls_back(monkeypatch, isolated_registry, available):
+    primary = SimpleNamespace(handle_message=AdmittingHandler(), send=AsyncMock())
+    secondary = SimpleNamespace(handle_message=AdmittingHandler(), send=AsyncMock())
+    runner = _runner(primary)
+    runner._profile_adapters = {"research": {Platform.TELEGRAM: secondary}} if available else {}
+    evt = dict(_completion_event(started_at=1), session_key="agent:research:telegram:dm:12345")
+    result = asyncio.run(runner._inject_watch_notification("private result", evt))
+    assert result is available
+    asyncio.run(runner._send_watcher_message("telegram", "12345", None, "raw result", evt))
+    primary.send.assert_not_awaited()
+    assert secondary.send.await_count == int(available)
+    primary.handle_message.assert_not_awaited()
+    assert secondary.handle_message.await_count == int(available)
+    if available:
+        assert secondary.handle_message.await_args.args[0].source.profile == "research"
+
+
+@pytest.mark.parametrize("event_type", ["watch_match", "watch_disabled"])
+@pytest.mark.parametrize("mode", ["concise", "off"])
+def test_idle_watch_drain_respects_notify_mode(monkeypatch, isolated_registry, event_type, mode):
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner = _runner(adapter)
+    runner._load_background_notifications_mode = lambda: mode
+    evt = dict(_completion_event(started_at=1), type=event_type,
+               pattern="READY", output="READY", message="Watch patterns disabled")
+    isolated_registry.completion_queue.put(evt)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+    assert adapter.handle_message.await_count == (0 if mode == "off" else 1)
+    assert isolated_registry.completion_queue.empty()
+
+
+def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
+    adapter = SimpleNamespace(handle_message=AdmittingHandler(side_effect=[RuntimeError("offline"), None]))
+    runner = _runner(adapter)
+    runner._load_background_notifications_mode = lambda: "concise"
+    evt = dict(_completion_event(started_at=1), type="watch_match", pattern="READY", output="READY")
+    isolated_registry.completion_queue.put(evt)
+    _stop_after_sleeps(monkeypatch, runner, count=3)
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+    assert adapter.handle_message.await_count == 2
+    assert isolated_registry.completion_queue.empty()

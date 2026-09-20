@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
+    _OFFICIAL_DOCS_PRICING,
     CanonicalUsage,
     format_cost_label,
     estimate_usage_cost,
@@ -9,6 +10,30 @@ from agent.usage_pricing import (
     resolve_billing_route,
 )
 from decimal import Decimal
+
+
+def test_astra_whole_request_price_tier_includes_cache_writes():
+    below = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=10_000, cache_write_tokens=10_000),
+        provider="openai",
+    )
+    above = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000, cache_read_tokens=100_000, cache_write_tokens=100_001),
+        provider="openai",
+    )
+
+    # Whole-request tier: crossing 272K prompt tokens re-prices every component of the request,
+    # including cache writes, at the *_above rates — so the cost ratio exceeds the token ratio.
+    entry = _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")]
+    assert above.amount_usd == (
+        Decimal(100_000) * entry.input_cost_per_million_above
+        + Decimal(10_000) * entry.output_cost_per_million_above
+        + Decimal(100_000) * entry.cache_read_cost_per_million_above
+        + Decimal(100_001) * entry.cache_write_cost_per_million_above
+    ) / Decimal(1_000_000)
+    assert below.amount_usd < above.amount_usd
 
 
 
@@ -98,11 +123,12 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     )
 
     assert entry is not None
-    assert entry.input_cost_per_million is not None
-    assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 0.435
-    assert float(entry.output_cost_per_million) == 0.87
-    assert float(entry.cache_read_cost_per_million) == 0.003625
+    assert entry.source == "official_docs_snapshot"
+    # Pro is the premium tier: every rate must sit above the Flash row's.
+    flash = get_pricing_entry("deepseek-flash", provider="deepseek")
+    assert entry.input_cost_per_million > flash.input_cost_per_million
+    assert entry.output_cost_per_million > flash.output_cost_per_million
+    assert entry.cache_read_cost_per_million > flash.cache_read_cost_per_million
 
 
 def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
@@ -149,14 +175,13 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
 
 
 
-def test_deepseek_deprecated_aliases_price_as_v4_flash():
-    """Invariant: deepseek-chat / deepseek-reasoner are deprecated aliases for
-    deepseek-v4-flash's non-thinking / thinking modes (deprecation 2026-07-24)
-    — they must bill at identical rates to the flash entry, or sessions on the
-    legacy names over/under-report cost."""
-    flash = get_pricing_entry("deepseek-v4-flash", provider="deepseek")
+def test_deepseek_deprecated_aliases_price_as_flash():
+    """Invariant: deepseek-v4-flash / deepseek-chat / deepseek-reasoner are retired aliases
+    served by the current Flash model — they must bill at identical rates to the
+    ``deepseek-flash`` entry, or sessions on the legacy names over/under-report cost."""
+    flash = get_pricing_entry("deepseek-flash", provider="deepseek")
     assert flash is not None
-    for alias in ("deepseek-chat", "deepseek-reasoner"):
+    for alias in ("deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"):
         entry = get_pricing_entry(alias, provider="deepseek")
         assert entry is not None, alias
         assert entry.input_cost_per_million == flash.input_cost_per_million, alias

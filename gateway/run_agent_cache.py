@@ -9,12 +9,15 @@ import logging
 import threading
 import time
 from contextlib import nullcontext, suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
+from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import cfg_get
+from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -43,34 +46,6 @@ class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
     @classmethod
-    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime; all-None when unavailable."""
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-            path = resolve_config_path()
-            try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = None
-            memo_key = (str(path), mtime_ns)
-            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-            hcfg = HonchoClientConfig.from_global_config(config_path=path)
-            aliases = hcfg.user_peer_aliases or {}
-            values = {
-                "honcho.peer_name": hcfg.peer_name,
-                "honcho.ai_peer": hcfg.ai_peer,
-                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
-                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
-                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
-            }
-            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
-            return dict(values)
-        except Exception:
-            return dict.fromkeys(cls._HONCHO_CACHE_BUSTING_KEYS)
-
-    @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
         """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. Missing keys /
         non-dict sections yield None (still enters the signature). Includes the live tool registry
@@ -89,12 +64,32 @@ class GatewayAgentCacheMixin:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
-        # Honcho identity-mapping keys live in honcho.json, not user_config; only read that file
-        # when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        honcho = isinstance(provider, str) and provider.lower() == "honcho"
-        out.update(cls._extract_honcho_cache_busting_config() if honcho else dict.fromkeys(cls._HONCHO_CACHE_BUSTING_KEYS))
+        for key, value in cls._memory_provider_identity_signature(cfg_get(cfg, "memory", "provider")).items():
+            out[f"memory.{key}"] = value
         return out
+
+    # Kept for the process lifetime: loading a provider imports its plugin module, and this runs on every inbound message.
+    _MEMORY_IDENTITY_PROVIDER_MEMO: dict[str, Any] = {}
+
+    @classmethod
+    def _memory_provider_identity_signature(cls, provider_name: Any) -> dict[str, Any]:
+        """The active memory provider's ``identity_signature()``. ``{}`` when there is no provider,
+        it fails to load, or the hook raises."""
+        if not isinstance(provider_name, str) or not provider_name.strip():
+            return {}
+        name = provider_name.strip()
+        try:
+            instance = cls._MEMORY_IDENTITY_PROVIDER_MEMO.get(name)
+            if instance is None:
+                from plugins.memory import load_memory_provider
+                instance = load_memory_provider(name, register_skills=False)
+                if instance is None:
+                    return {}
+                cls._MEMORY_IDENTITY_PROVIDER_MEMO[name] = instance
+            signature = instance.identity_signature()
+            return dict(signature) if isinstance(signature, dict) else {}
+        except Exception:
+            return {}
 
     @staticmethod
     def _agent_config_signature(
@@ -167,13 +162,20 @@ class GatewayAgentCacheMixin:
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
             # falls back to env resolution and layers model/provider.
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model") or None)
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
                     override[k] = runtime.get(k)
                 override["request_overrides"] = dict(runtime.get("request_overrides") or {})
                 override["capabilities"] = dict(runtime.get("capabilities") or {})
-                if not override.get("base_url"):
+                if not override.get("base_url") or provider.strip().lower() in LLAMACPP_ALIASES:
+                    # The managed llama.cpp supervisor owns its live port; a persisted loopback URL from a
+                    # boot that fell back to an ephemeral port would strand the session on a dead endpoint.
                     override["base_url"] = runtime.get("base_url")
+                from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+                if opencode_provider_family(provider) is not None and override.get("base_url"):
+                    # api_mode was just re-derived from the target model; a relay URL persisted by an older
+                    # build for another wire (/v1-stripped) or the other family is healed to match (#96066).
+                    override["base_url"] = normalize_opencode_base_url(provider, override.get("api_mode"), override["base_url"])
             except Exception:
                 logger.debug(
                     "Credential re-resolution failed for persisted override "
@@ -216,6 +218,16 @@ class GatewayAgentCacheMixin:
         override = self._session_model_override(session_key)
         return {"had_override": override is not None, "override": dict(override) if override is not None else None}
 
+    def _claim_one_turn_restore(self, session_key: str, snapshot: Optional[dict] = None) -> None:
+        """Arm the one-shot restore snapshot for ``/model --once`` / ``/moa``. A repeated one-shot
+        command before the turn runs keeps the EARLIEST snapshot: the later command's snapshot is
+        the first temporary model, not the user's standing override. Pass *snapshot* when the
+        caller captured the pre-switch state earlier (``/model --once`` applies its override before
+        arming); omit it to snapshot now."""
+        conv = self._session_state(session_key).conversation
+        if not conv.one_turn_restore:
+            conv.one_turn_restore = dict(snapshot) if snapshot is not None else self._snapshot_session_model_override(session_key)
+
     def _restore_session_model_override(self, session_key: str, snapshot: dict) -> None:
         """Restore the session override captured before a one-turn switch."""
         if not session_key:
@@ -226,10 +238,16 @@ class GatewayAgentCacheMixin:
             state.conversation.model_override = None
         self._evict_cached_agent(session_key)
 
-    def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
-        """Return True if *agent_model* matches an active /model session override."""
+    def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
+        """True when *agent* running a model other than *config_model* is deliberate: a /model session
+        override names that model, or the Nous gateway moved the session off the ``nous/welcome``
+        alias that *config_model* still carries (``anon_auth.apply_model_switch``)."""
         override = self._session_model_override(session_key)
-        return override is not None and override.get("model") == agent_model
+        if override is not None and override.get("model") == agent.model:
+            return True
+        # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
+        # ordinary drift and still evicts.
+        return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
 
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None
@@ -257,13 +275,43 @@ class GatewayAgentCacheMixin:
         self._persist_active_agents()
         return True
 
+    def _drop_turn_slot(self, session_key: str, *, run_generation: Optional[int] = None) -> None:
+        """Release the running-agent slot and evict the cached instance (/stop, eviction, reaper).
+        ``_interrupt_requested`` is cleared only by the turn finalizer, so on a hung/still-draining
+        run the flag would survive and silently kill the session's NEXT message (interrupted=True,
+        api_calls=0, empty response); the next message rebuilds from history while the old agent
+        keeps its flag so a hung drain still dies (#44212). With ``run_generation`` (the post-bump
+        value ``_interrupt_running_turn`` returns), the release is generation-guarded: an async
+        path awaits between bump and release, so a successor claiming the slot in that window must
+        not have its sentinel/lease wiped by the displaced path's tail. Then sweep lease tokens
+        from generations OLDER than the current one: a hung evicted turn's finalizer may never run,
+        and each such generation would otherwise pin its token (and its ``_SessionLease``) forever.
+        Identity-checked + idempotent, so a live successor's token is never affected."""
+        self._release_running_agent_state(session_key, run_generation=run_generation)
+        self._evict_cached_agent(session_key)
+        state = self._peek_session_state(session_key)
+        registry = getattr(self, "_turn_leases", None)
+        if state is None or registry is None:
+            return
+        current = int(state.persistent.run_generation or 0)
+        tokens = state.turn.lease_tokens
+        for gen in [g for g in tokens if int(g) < current]:
+            token = tokens.pop(gen)
+            try:
+                registry.release(token)
+            except Exception:
+                logger.debug("Failed to release displaced turn lease gen %s for %s", gen, session_key,
+                             exc_info=True)
+
     def _held_turn_lease(self, session_key: str, run_generation: int):
-        """Return ``(registry, turn)`` when ``session_key`` holds a lease token for ``run_generation``, else None."""
+        """Return ``(registry, lease_tokens)`` when ``session_key`` holds a lease token for
+        ``run_generation``, else None. Callers ``get``/``pop`` the token from the map themselves."""
         registry = getattr(self, "_turn_leases", None)
         state = self._peek_session_state(session_key) if session_key and registry is not None else None
-        if state is None or state.turn.lease_token is None or state.turn.lease_generation != run_generation:
+        tokens = state.turn.lease_tokens if state is not None else None
+        if tokens is None or run_generation not in tokens:
             return None
-        return registry, state.turn
+        return registry, tokens
 
     def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
         """Release the turn lease acquired by (``session_key``, ``run_generation``). Keyed by (routing
@@ -272,8 +320,8 @@ class GatewayAgentCacheMixin:
         held = self._held_turn_lease(session_key, run_generation)
         if held is None:
             return False
-        registry, turn = held
-        token, turn.lease_token, turn.lease_generation = turn.lease_token, None, None
+        registry, tokens = held
+        token = tokens.pop(run_generation)
         try:
             return registry.release(token)
         except Exception:
@@ -287,15 +335,15 @@ class GatewayAgentCacheMixin:
         held = self._held_turn_lease(session_key, run_generation) if new_session_id else None
         if held is None:
             return False
-        registry, turn = held
+        registry, tokens = held
         try:
-            return registry.rebind(turn.lease_token, new_session_id)
+            return registry.rebind(tokens[run_generation], new_session_id)
         except Exception:
             logger.debug("Failed to rebind turn lease", exc_info=True)
             return False
 
     def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
-        """THE single conversation-boundary funnel (/new, /resume, auto-reset, expiry finalization,
+        """THE single conversation-boundary funnel (/new, /resume, suspension replacement,
         compression-exhausted reset). New conversation-scoped dicts go in _CONVERSATION_SCOPED_STATE
         so every boundary picks them up. Turn-scoped state (_running_agents/_ts, slot leases, turn-
         lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
@@ -357,19 +405,26 @@ class GatewayAgentCacheMixin:
         return persistent.run_generation
 
     def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
-        """Invalidate any in-flight run token for ``session_key``."""
+        """Invalidate any in-flight run token for ``session_key``.
+
+        Settles a pending one-shot model override first: the displaced turn's finalizer is
+        generation-guarded and would otherwise leave ``/moa`` / ``/model --once`` in force."""
+        self._restore_pending_one_turn_model_override(session_key)
         generation = self._begin_session_run_generation(session_key)
         if reason:
             logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)
         return generation
 
+    def _current_session_run_generation(self, session_key: str) -> int:
+        """Current run generation for ``session_key`` (0 when the key tracks no run)."""
+        state = self._peek_session_state(session_key)
+        return int(state.persistent.run_generation) if state is not None else 0
+
     def _is_session_run_current(self, session_key: str, generation: int) -> bool:
         """Return True when ``generation`` is still current for ``session_key``."""
         if not session_key:
             return True
-        state = self._peek_session_state(session_key)
-        current = state.persistent.run_generation if state is not None else 0
-        return int(current) == int(generation)
+        return self._current_session_run_generation(session_key) == int(generation)
 
     def _bind_adapter_run_generation(self, adapter: Any, session_key: str, generation: int | None) -> None:
         """Bind a gateway run generation to the adapter's active-session event."""
@@ -380,19 +435,24 @@ class GatewayAgentCacheMixin:
             if interrupt_event is not None:
                 interrupt_event._hermes_run_generation = int(generation)
 
-    async def _interrupt_and_clear_session(
-        self, session_key: str, source: SessionSource, *, interrupt_reason: str,
-        invalidation_reason: str, release_running_state: bool = True,
-    ) -> None:
-        """Interrupt the current run and clear queued session state consistently."""
+    def _interrupt_running_turn(
+        self, session_key: str, *, interrupt_reason: str, invalidation_reason: str, tool_reason: str | None = None,
+    ) -> int:
+        """Sync core shared by /stop, /new and eviction: request a hard interrupt on the in-flight
+        agent, invalidate its run generation, and reap the tool processes that turn spawned.
+        ``tool_reason`` names a system issuer (eviction); ``None`` keeps the user attribution of /stop and /new.
+        Returns the post-bump generation."""
+        from contextvars import copy_context
         from gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
-        if not session_key:
-            return
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
         _process_task_id, _process_baseline = "", None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            request_hard_interrupt(running_agent, interrupt_reason)
+            # A raising interrupt implementation must not leave the slot unroutable: the generation
+            # bump and release below are the cleanup that matters.
+            with _log_suppressed(logging.WARNING, "Failed to interrupt running agent for %s; continuing",
+                                 session_key, exc_info=True):
+                request_hard_interrupt(running_agent, interrupt_reason, tool_reason=tool_reason)
             _process_task_id = getattr(running_agent, "_gateway_turn_process_task_id", "")
             _process_baseline = getattr(running_agent, "_gateway_turn_process_baseline", None)
         # Bump the generation BEFORE scheduling the reap thread and capture the post-bump value:
@@ -402,8 +462,8 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         if _process_task_id and _process_baseline is not None:
             threading.Thread(
-                target=_reap_gateway_turn_processes,
-                args=(_process_task_id, _process_baseline),
+                target=copy_context().run,
+                args=(_reap_gateway_turn_processes, _process_task_id, _process_baseline),
                 kwargs={
                     "source": "gateway_turn_interrupt",
                     "is_still_current": lambda: self._is_session_run_current(session_key, _generation_at_interrupt),
@@ -411,7 +471,46 @@ class GatewayAgentCacheMixin:
                 name=f"gateway-turn-reaper-{_process_task_id[:12]}",
                 daemon=True,
             ).start()
-        adapter = self._adapter_for_source(source)
+        return _generation_at_interrupt
+
+    async def _interrupt_and_clear_session(
+        self, session_key: str, source: SessionSource, *, interrupt_reason: str,
+        invalidation_reason: str, release_running_state: bool = True,
+    ) -> None:
+        """Interrupt the current run and clear queued session state consistently."""
+        if not session_key:
+            return
+        state = self._peek_session_state(session_key)
+        running_agent = state.turn.agent if state else None
+        _generation_at_interrupt = self._interrupt_running_turn(
+            session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
+        )
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        # The turn's hard interrupt reaches only its in-turn children; background delegations were
+        # detached at dispatch and would otherwise run to completion and wake the session later.
+        # Each interrupted unit still returns as a completion (status=interrupted, partial output).
+        from tools.async_delegation import interrupt_for_session
+        interrupt_for_session(
+            session_key=session_key, reason=invalidation_reason,
+            parent_session_id=str(getattr(running_agent, "session_id", "") or ""))
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result
+            # the loop will never consume) learn the turn is gone. Fires for /stop and the /new
+            # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays
+            # silent. Dispatch failures are swallowed so a misbehaving plugin cannot break an interrupt.
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+                _invoke_hook(
+                    "agent_loop_stopped",
+                    session_key=session_key,
+                    platform=source.platform.value if source.platform else "",
+                    reason=interrupt_reason,
+                    invalidation_reason=invalidation_reason,
+                )
+            except Exception:
+                logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+        adapter = self._delivery_adapter_for(source)
         interrupt_session_activity = getattr(type(adapter), "interrupt_session_activity", None)
         if adapter and callable(interrupt_session_activity):
             metadata = self._thread_metadata_for_source(source)
@@ -420,17 +519,29 @@ class GatewayAgentCacheMixin:
             else:
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+            # Discard a stale human follow-up (the slot held only user text when /stop started doing
+            # this, 59575d6a917) — but an internal wake (async-delegation completion, notify+wake)
+            # shares the slot now and was claim-settled on admission, so dropping it loses it for
+            # good and the session idles until the next user message (#114456). Leave it parked for
+            # the adapter's post-command drain; a wake queued behind a discarded human head is
+            # promoted out of the overflow FIFO for the same reason. Whether a wake may still run
+            # against a session /new just closed is decided where it is processed
+            # (_resolve_async_delegation_session fails closed), not here.
+            parked = adapter.get_pending_message(session_key)
+            wake = parked if getattr(parked, "internal", False) else None
+            if wake is None:
+                overflow = self._overflow_queue(session_key) or []
+                wake = next((e for e in overflow if getattr(e, "internal", False)), None)
+                if wake is not None:
+                    overflow.remove(wake)
+            if wake is not None:
+                adapter._pending_messages[session_key] = wake
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:
-            self._release_running_agent_state(session_key)
-            # Evict the cached agent: ``_interrupt_requested`` is only cleared by the turn finalizer,
-            # so on a hung/still-draining run the flag survives and silently kills the session's NEXT
-            # message (interrupted=True, api_calls=0, empty response). Like /new and /model, the next
-            # message rebuilds from history; the old agent keeps its flag so a hung drain still dies.
-            # See #44212.
-            self._evict_cached_agent(session_key)
+            # Guarded release: a message that arrived during the awaits above may already run as
+            # the successor generation — the displaced /stop tail must not wipe its slot.
+            self._drop_turn_slot(session_key, run_generation=_generation_at_interrupt)
 
     async def _refresh_agent_cache_message_count(self, session_key: str, session_id: Optional[str]) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn — the coherence guard
@@ -599,49 +710,65 @@ class GatewayAgentCacheMixin:
             return
         self._spawn_release_thread(
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
+            session_key=session_key,
         )
 
-    def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool) -> None:
+    def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool,
+                              session_key: Optional[str] = None) -> None:
         """Run a release on a daemon thread. ``inline_fallback`` runs it inline (best-effort) when no
-        thread can start (interpreter shutdown); otherwise a spawn failure propagates, as on main."""
+        thread can start (interpreter shutdown); otherwise a spawn failure propagates, as on main.
+        The thread runs inside the owning profile's scope (see ``_run_release_in_profile_scope``)."""
+        import contextvars
+        ctx = contextvars.copy_context()
         try:
-            threading.Thread(target=target, args=args, daemon=True, name=name).start()
+            threading.Thread(target=ctx.run, args=(self._run_release_in_profile_scope, target, args, session_key),
+                             daemon=True, name=name).start()
         except Exception:
             if not inline_fallback:
                 raise
             with suppress(Exception):
-                target(*args)
+                ctx.run(self._run_release_in_profile_scope, target, args, session_key)
 
-    def _finalizable_unexpired_session_entry(self, key: str):
-        """Session-store entry for ``key`` when the expiry watcher will still finalize it; None when
-        missing, not finalizable (``mode == "none"``) or already expired (the watcher handles those)."""
-        _store = getattr(self, "session_store", None)
-        if _store is None:
-            return None
-        try:
-            _store._ensure_loaded()
-            entry = _store._entries.get(key)
-        except Exception:
-            return None
-        ok = entry is not None and _store.is_session_finalizable(entry) and not _store._is_session_expired(entry)
-        return entry if ok else None
+    def _run_release_in_profile_scope(self, target, args: tuple, session_key: Optional[str]) -> None:
+        """Call ``target(*args)`` under the profile that OWNS ``session_key``.
+
+        Threads start with an EMPTY context, so a bare thread would commit end-of-session memory
+        (provider ``on_session_end`` reads credentials/home at call time) under the launch profile.
+        And the LRU-cap eviction runs inside the REQUESTING turn, whose agent may belong to another
+        profile — so "some scope is present" is not enough either. The owner comes from the session
+        key: a named profile's home, else the DEFAULT profile (``agent:main:`` keys), which is the
+        root Hermes dir even when the gateway was launched under a named profile. Its scope is
+        entered unless the current one already is the owner's."""
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        scope = nullcontext()
+        if is_multiplex_active():
+            from gateway.run import _profile_runtime_scope
+            from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+            owner = None
+            store = getattr(self, "session_store", None)
+            if session_key and store is not None:
+                try:
+                    owner = store._profile_home_for_key(session_key)
+                except Exception:
+                    logger.warning("Could not resolve the owning profile for %s; releasing under the default profile",
+                                   session_key, exc_info=True)
+            owner_home = Path(owner) if owner else get_default_hermes_root()
+            if current_secret_scope() is None or hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home):
+                scope = _profile_runtime_scope(owner_home)
+        with scope:
+            target(*args)
 
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
-        """Fire on_session_end extraction before soft-evicting a live agent: the expiry watcher only
-        finalizes what it finds in ``_agent_cache``, so an LRU soft-evict first would hide the
-        transcript from memory providers. Commit via ``commit_memory_session`` (no teardown), only for
-        finalizable, not-yet-expired sessions. Best-effort."""
+        """Commit the live transcript to memory providers before resource-only eviction."""
         # No external memory provider (``_memory_manager`` None) — nothing to commit.
         if agent is None or not hasattr(agent, "commit_memory_session") or getattr(agent, "_memory_manager", None) is None:
             return
         try:
-            if self._finalizable_unexpired_session_entry(key) is None:
-                return
             messages = getattr(agent, "_session_messages", None)
             agent.commit_memory_session(messages if isinstance(messages, list) else None)
             logger.debug(
                 "Committed on_session_end extraction before soft-evicting "
-                "finalizable session=%s (cache pressure, pre-expiry)", key,
+                "session=%s (resource eviction)", key,
             )
         except Exception as _e:
             logger.debug("Pre-evict memory commit failed for %s: %s", key, _e)
@@ -711,10 +838,9 @@ class GatewayAgentCacheMixin:
         from the persisted session next turn). Never touched: agents mid-turn, the most recently
         used sessions, and transcripts not yet on disk.
 
-        A gateway serving many chats therefore holds every warm transcript indefinitely: agents that took a
-        turn within the TTL are never idle-swept, and the sweep additionally defers finalizable sessions
-        until they expire. RSS climbs until the cgroup throttles and SIGTERM can no longer flush inside
-        systemd's stop timeout (#80764).
+        A gateway serving many chats can hold every warm transcript for the TTL window.
+        Pressure eviction bounds that heap before the cgroup throttles and SIGTERM can
+        no longer flush inside systemd's stop timeout (#80764).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.agent_cache_pressure import (
@@ -785,7 +911,8 @@ class GatewayAgentCacheMixin:
         while plan:
             key, agent = plan.pop(0)  # FIFO — evict LRU-first order preserved
             try:
-                self._commit_then_release_soft(agent, key)
+                # Pressure sweeps run from the unscoped housekeeping watcher: enter each owner's scope.
+                self._run_release_in_profile_scope(self._commit_then_release_soft, (agent, key), key)
             except Exception as _e:
                 logger.debug("Pressure release failed for %s: %s", key, _e)
             del agent
@@ -825,7 +952,8 @@ class GatewayAgentCacheMixin:
             if agent is not None:
                 # Commit end-of-session memory, then soft-release, both on the daemon thread so the
                 # (possibly network-bound) provider call never blocks the held cache lock.
-                self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}", inline_fallback=False)
+                self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}",
+                                           inline_fallback=False, session_key=key)
 
     def _sweep_idle_cached_agents(self) -> int:
         """Evict cached agents idle past the idle TTL (lock acquired internally; cleanup on daemon
@@ -846,17 +974,11 @@ class GatewayAgentCacheMixin:
                 last_activity = getattr(agent, "_last_activity_ts", None)
                 if last_activity is None or (now - last_activity) <= idle_ttl:
                     continue
-                # Not yet expired in the store (daily-reset fires hours after the last message): keep
-                # the agent so the expiry watcher can call on_session_end() with the live transcript.
-                # Only defer when the watcher will EVER finalize it — for mode == "none" deferring pins
-                # the agent for the gateway's lifetime (the leak this sweep relieves); those soft-evict
-                # WITHOUT on_session_end, correctly.
-                if self._finalizable_unexpired_session_entry(key) is not None:
-                    continue
                 to_evict.append((key, agent))
             for key, _ in to_evict:
                 _cache.pop(key, None)
         for key, agent in to_evict:
             logger.info("Agent cache idle-TTL evict: session=%s (idle=%.0fs)", key, now - getattr(agent, "_last_activity_ts", now))
-            self._spawn_release_thread(self._release_evicted_agent_soft, (agent,), f"agent-cache-idle-{key[:24]}", inline_fallback=False)
+            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-idle-{key[:24]}",
+                                       inline_fallback=False, session_key=key)
         return len(to_evict)

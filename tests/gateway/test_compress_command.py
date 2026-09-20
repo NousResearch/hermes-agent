@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -105,11 +105,15 @@ async def test_compress_command_works_when_auto_compaction_disabled():
 
 
 @pytest.mark.asyncio
-async def test_compress_command_surfaces_aux_model_failure_even_when_recovered():
+@pytest.mark.parametrize("warning_notifications", [True, False])
+async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(tmp_path, monkeypatch, warning_notifications):
     """When the user's configured ``auxiliary.compression.model`` errors out
     but compression recovers by retrying on the main model, /compress must
     STILL inform the user.  Silent recovery hides broken config the user
     needs to fix."""
+    import gateway.run as gateway_run
+    (tmp_path / "config.yaml").write_text(f"display: {{warning_notifications: {str(warning_notifications).lower()}}}")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     history = _make_history()
     # Compressed transcript — normal successful compression, no placeholder.
     compressed = [
@@ -261,6 +265,37 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
     # Stable gateway session key preserved, identical to a normal gateway turn.
     assert kwargs.get("gateway_session_key") == runner._session_key_for_source(_make_source())
     assert kwargs["gateway_session_key"]
+
+
+@pytest.mark.asyncio
+async def test_compress_command_agent_receives_configured_reasoning():
+    """#85153 class: the throwaway /compress agent is an ``AIAgent()`` built from gateway config, so
+    ``agent.reasoning_effort: none`` must reach it like a normal gateway turn — otherwise the transport
+    applies its default effort (a 400 on non-reasoning models)."""
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compression_skipped_due_to_lock = False
+
+    with (
+        patch("gateway.run._load_gateway_config", return_value={"agent": {"reasoning_effort": "none"}}),
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="gpt-4o-mini"),
+        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        await runner._handle_compress_command(_make_event())
+
+    assert mock_agent.call_count == 1
+    _, kwargs = mock_agent.call_args
+    assert kwargs["reasoning_config"] == {"enabled": False}
 
 
 @pytest.mark.asyncio

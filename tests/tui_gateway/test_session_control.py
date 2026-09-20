@@ -39,12 +39,11 @@ def server(hermes_home, monkeypatch):
         mod = importlib.import_module("tui_gateway.server")
     monkeypatch.setattr(mod, "_hermes_home", hermes_home)
     monkeypatch.setattr(mod, "_cfg_cache", None)
-    monkeypatch.setattr(mod, "_cfg_mtime", None)
+    monkeypatch.setattr(mod, "_cfg_sig", None)
     monkeypatch.setattr(mod, "_cfg_path", None)
     yield mod
     mod._sessions.clear()
-    mod._pending.clear()
-    mod._answers.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 @pytest.fixture()
@@ -188,7 +187,6 @@ class TestStructuredRead:
                 attempts=1,
                 last_exit_code=1,
                 last_output_tail="private output must stay private",
-                last_failed_fingerprint="secret-fingerprint",
             )],
         )
 
@@ -205,7 +203,7 @@ class TestStructuredRead:
         }]
         serialized = json.dumps(goal)
         for forbidden in (
-            "last_output_tail", "last_failed_fingerprint", "private output", "secret-fingerprint",
+            "last_output_tail", "private output",
             "route", "session_id", "credential", "api_key",
         ):
             assert forbidden not in serialized
@@ -304,13 +302,12 @@ class TestManagerOnlyMutations:
             action = "subgoal.add" if "text" in args else "subgoal.remove"
             assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == 4004
 
-    def test_goal_unwait_clears_the_real_barrier_without_dispatch(self, server, session, monkeypatch):
+    def test_goal_unwait_clears_the_real_barrier_through_shared_command(self, server, session):
         from hermes_cli.goals import GoalManager
 
         sid, key, _ = session
         _save_goal(key)
         GoalManager(key).wait_for_seconds(60, reason="backoff")
-        _forbid_dispatch(server, monkeypatch)
 
         response = _call(server, "session.control", session_id=sid, action="goal.unwait")
         assert response["result"]["dispatch"]["output"] == "▶ Wait barrier cleared — goal loop resumes."
@@ -431,7 +428,7 @@ class TestUpdatePublication:
         emitted = self._capture(server, monkeypatch)
 
         class _InlineThread:
-            def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+            def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
                 self._t, self._a, self._k = target, args, kwargs or {}
 
             def start(self):

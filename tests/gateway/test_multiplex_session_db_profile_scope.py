@@ -33,7 +33,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig
-from gateway.platforms.base import MessageEvent, Platform, SessionSource
+from gateway.platforms.base import Platform, SessionSource
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionStore
 from hermes_constants import (
     get_hermes_home,
@@ -56,6 +57,7 @@ def multiplex_homes(tmp_path, monkeypatch):
     profile = root / "profiles" / "fitness"
     root.mkdir(parents=True)
     profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     # The suite-wide fixture in conftest re-points ``hermes_state.DEFAULT_DB_PATH``
@@ -156,7 +158,7 @@ def test_primary_handler_rejected_route_falls_back_and_marks_sentinel(multiplex_
     runner.config = GatewayConfig(multiplex_profiles=True)
     route_calls = []
 
-    def rejecting_route(source):
+    def rejecting_route(source, adapter_profile=None):
         route_calls.append(source.chat_id)
         raise ProfileRouteRejected("unserved profile")
 
@@ -474,14 +476,14 @@ def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
 # ---------------------------------------------------------------------------
 
 
-def _expiry_finalized_flag(db_path: Path, session_id: str):
-    """Read one session's expiry_finalized flag, or None when the row is absent."""
+def _session_end_reason(db_path: Path, session_id: str):
+    """Read the durable explicit boundary from the owning profile database."""
     if not db_path.exists():
         return None
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
-            "SELECT expiry_finalized FROM sessions WHERE id = ?", (session_id,)
+            "SELECT end_reason FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
         return None if row is None else row[0]
     except sqlite3.OperationalError:
@@ -528,17 +530,8 @@ def test_scoped_inbound_turn_lands_in_profile_store(multiplex_homes):
     assert _session_ids(root / "state.db") == set()
 
 
-def test_unscoped_background_finalize_reaches_the_key_owner_store(multiplex_homes):
-    """Background work carries no scope but owns every profile's keys.
-
-    ``_session_expiry_watcher`` walks the process-wide ``_entries`` dict and
-    finalizes expired sessions without entering ``_profile_runtime_scope``, so
-    resolving from the ambient home wrote the flag to the ROOT store while the
-    row lives under ``profiles/<name>/``.  Two copies of one session then drift
-    apart until the #54878 guard drops a live conversation.
-
-    Fails before this change with ``expiry_finalized`` still 0 on the profile row.
-    """
+def test_unscoped_explicit_reset_reaches_the_key_owner_store(multiplex_homes):
+    """Explicit lifecycle work follows the routing key, not the ambient scope."""
     root, profile = multiplex_homes
     store = _multiplex_store(root)
 
@@ -548,10 +541,12 @@ def test_unscoped_background_finalize_reaches_the_key_owner_store(multiplex_home
     finally:
         reset_hermes_home_override(token)
 
-    # No scope installed — exactly how the watcher calls this.
-    store.set_expiry_finalized(entry)
+    # No ambient profile scope: the key must still own both sides of the reset.
+    replacement = store.reset_session(entry.session_key)
 
-    assert _expiry_finalized_flag(profile / "state.db", entry.session_id) == 1
+    assert replacement.session_id != entry.session_id
+    assert _session_end_reason(profile / "state.db", entry.session_id) == "session_reset"
+    assert _session_ids(profile / "state.db") == {entry.session_id, replacement.session_id}
     assert _session_ids(root / "state.db") == set()
 
 
@@ -624,6 +619,9 @@ def test_profile_home_is_not_memoized_before_the_profile_exists(multiplex_homes)
     assert store._profile_home_for_key(key) is None
 
     (root / "profiles" / "latecomer").mkdir(parents=True)
+    # A bare dir is still not a profile; the bridge publishes identity files (create_profile).
+    assert store._profile_home_for_key(key) is None
+    (root / "profiles" / "latecomer" / "config.yaml").write_text("{}\n", encoding="utf-8")
 
     assert store._profile_home_for_key(key) == root / "profiles" / "latecomer"
 
@@ -648,6 +646,7 @@ def test_named_owner_without_a_home_never_falls_back_to_root(multiplex_homes):
     # Once the bridge provisions it, the same key owns a real store.
     home = root / "profiles" / "latecomer"
     home.mkdir(parents=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     db = store._db_for_key(key)
     assert db is not None
     db.create_session("20260829_120000_abcdef01", "telegram")
@@ -779,3 +778,51 @@ def test_crash_marker_from_a_secondary_profile_survives_restart(multiplex_homes)
     assert recovered.resume_pending is True
     assert recovered.resume_reason == "restart_interrupted"
     assert recovered.active_turn_token is None
+
+
+def test_default_namespace_rows_stay_in_launch_store_under_secondary_scope(multiplex_homes):
+    """``agent:main`` rows belong to the launch home even while a secondary profile's scope is
+    active. A scoped background tick (async-delegation drain, cron mirror) that touches a
+    default-profile chat used to persist it into the secondary's ``state.db`` — the
+    ``profile_name='<A>'`` row inside B's store from #102157."""
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+
+    scope = set_hermes_home_override(str(profile))
+    try:
+        db = store._db_for_key("agent:main:telegram:dm:1")
+    finally:
+        reset_hermes_home_override(scope)
+
+    assert Path(db.db_path) == root / "state.db"
+
+
+def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
+    """``main`` is a valid profile name, but ``agent:main`` is the default profile's namespace: a
+    profile literally named ``main`` produced byte-identical keys to the default and, once default
+    keys were pinned to the launch store, its scoped sessions were written into the ROOT
+    ``state.db``. Its namespace must differ from the default's and resolve back to ``profiles/main``."""
+    from gateway.run import _parse_session_key
+    from gateway.session import build_session_key
+
+    root, _profile = multiplex_homes
+    main_home = root / "profiles" / "main"
+    main_home.mkdir(parents=True)
+    (main_home / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
+    store = _multiplex_store(root)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="555", user_id="u1", profile="main")
+
+    main_key = build_session_key(source, profile="main")
+    default_key = build_session_key(source, profile=None)
+    assert main_key != default_key
+    assert store._profile_from_session_key(main_key) == "main"
+    assert store._profile_from_session_key(default_key) == "default"
+    assert _parse_session_key(main_key)["profile"] == "main"
+    assert "profile" not in _parse_session_key(default_key)
+
+    scope = set_hermes_home_override(str(main_home))
+    try:
+        assert Path(store._db_for_key(main_key).db_path) == main_home / "state.db"
+        assert Path(store._db_for_key(default_key).db_path) == root / "state.db"
+    finally:
+        reset_hermes_home_override(scope)

@@ -1,5 +1,7 @@
 """Regression tests for Desktop-owned ``hermes serve`` lifecycle tracking."""
 
+import pytest
+
 from hermes_cli.web_server_lifecycle import (
     _is_serve_orphaned,
     _parent_start_marker_mismatch_is_conclusive,
@@ -175,3 +177,45 @@ def test_parent_watchdog_warns_when_disarmed_by_unusable_marker(monkeypatch, cap
 class _NoThread:
     def start(self):
         raise AssertionError("watchdog thread must not start")
+
+
+def test_parent_watchdog_degrades_to_pid_liveness_when_marker_probe_raises_oserror():
+    """#80204: a probe failure must fall through to ``pid_exists`` instead of pinning the
+    watchdog to "not orphaned" forever on a dead Desktop parent."""
+    def broken_marker_probe(pid: int) -> str:
+        raise OSError(f"ps could not inspect PID {pid}: process table temporarily unavailable")
+
+    marker = "ps:Thu Aug 20 22:33:11 2026"
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: False,
+                              process_start_marker=broken_marker_probe) is True
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: True,
+                              process_start_marker=broken_marker_probe) is False
+
+    def lookup_error_probe(pid: int) -> str:
+        raise ProcessLookupError(pid)
+
+    # ProcessLookupError is conclusive on its own, whatever a recycled-pid liveness check says.
+    assert _is_serve_orphaned(4242, marker, pid_exists=lambda _pid: True,
+                              process_start_marker=lookup_error_probe) is True
+
+
+@pytest.mark.macos_only
+def test_ps_marker_probe_classifies_missing_process_vs_other_ps_failures(monkeypatch):
+    """The darwin ``ps`` probe raises ``ProcessLookupError`` only for an explicit missing-process
+    message; any other unknown failure stays a plain ``OSError`` so the watchdog degrades instead
+    of killing a healthy backend."""
+    import subprocess
+
+    from hermes_cli import web_server_lifecycle
+
+    def fake_run(stderr):
+        return lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=2, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run("ps: 4242: No such process"))
+    with pytest.raises(ProcessLookupError):
+        web_server_lifecycle._process_start_marker(4242)
+
+    monkeypatch.setattr(subprocess, "run", fake_run("ps: temporary process table failure"))
+    with pytest.raises(OSError) as excinfo:
+        web_server_lifecycle._process_start_marker(4242)
+    assert not isinstance(excinfo.value, ProcessLookupError)

@@ -13,10 +13,10 @@ import pytest
 
 
 class TestRunReferenceSlotMaxTokens:
-    """_run_reference should prefer slot-level max_tokens over preset-level."""
+    """Legacy slot settings cannot override internal advisor task budgets."""
 
-    def test_slot_max_tokens_overrides_preset_level(self):
-        """When slot has max_tokens, it overrides the preset-level cap."""
+    def test_legacy_slot_max_tokens_cannot_override_internal_budget(self):
+        """An explicit internal caller budget wins over a stale user setting."""
         from agent.moa_loop import _run_reference
 
         captured_kwargs: dict = {}
@@ -35,7 +35,7 @@ class TestRunReferenceSlotMaxTokens:
              patch("agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt, **kwargs: msgs):
             _run_reference(slot, [{"role": "user", "content": "hi"}], max_tokens=2000)
 
-        assert captured_kwargs.get("max_tokens") == 600
+        assert captured_kwargs.get("max_tokens") == 2000
 
     def test_slot_max_tokens_absent_falls_back_to_preset(self):
         """When slot has no max_tokens, the preset-level cap is used."""

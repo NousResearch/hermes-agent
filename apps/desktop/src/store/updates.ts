@@ -684,16 +684,13 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 
     if (!result?.handedOff) {
       if (result?.ok) {
-        // Updated, but couldn't relaunch in place (AppImage / dev run). Dismiss
-        // the overlay and let the user know the new version loads next launch
-        // rather than stranding them on an un-closeable spinner.
+        // AgnesCode GUI permanent fix: an in-place (non-handoff) update rebuilt
+        // the bundle but the running renderer still serves the old one. Re-exec
+        // the app so the new bundle loads; keep the toast as a fallback when the
+        // bridge is unavailable.
         setUpdateOverlayOpen(false)
         resetUpdateApplyState()
-
-        if (result.updateAvailable === false) {
-          return result
-        }
-
+        void relaunchIfBundleStaleAfterInPlaceUpdate()
         notify({
           durationMs: 8000,
           id: UPDATE_TOAST_ID,
@@ -729,6 +726,44 @@ const BACKEND_ACTION_POLL_MS = 1500
 const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
+/**
+ * AgnesCode GUI permanent fix: ask main to re-exec Hermes.exe so a freshly
+ * rebuilt renderer bundle actually loads. Returns true when the relaunch was
+ * requested; false when the bridge is missing (non-desktop run) or main
+ * declined (e.g. a detached updater hand-off already owns the relaunch).
+ */
+function requestDesktopRelaunch(): Promise<boolean> {
+  const relaunch = window.hermesDesktop?.updates?.relaunchAfterUpdate
+
+  if (typeof relaunch !== 'function') {
+    return Promise.resolve(false)
+  }
+
+  return relaunch()
+    .then(result => !!result?.ok)
+    .catch(() => false)
+}
+
+/** After an in-place update that rebuilt the bundle, re-exec the app when the
+ *  running renderer is provably behind the updated tree (bundle skew). Scoped
+ *  to a LOCAL backend — a remote backend lives on another machine, so its
+ *  update must never relaunch this GUI. */
+async function relaunchIfBundleStaleAfterInPlaceUpdate(): Promise<void> {
+  if (isRemoteMode()) {
+    return
+  }
+
+  try {
+    const version = await window.hermesDesktop?.getVersion?.()
+
+    if (version?.bundleOutOfSync) {
+      await requestDesktopRelaunch()
+    }
+  } catch {
+    // Best-effort: never let a relaunch probe break the apply result.
+  }
+}
+
 function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
@@ -747,6 +782,12 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
     // affordance in remote mode targets the backend, so nothing ever told
     // them the app itself was stale). Nudge with a one-click client update.
     void maybeNudgeClientAfterBackendUpdate()
+
+    // AgnesCode GUI permanent fix: a LOCAL backend update just rebuilt the
+    // desktop bundle, but this app stayed alive (the in-app suicide-guard
+    // refuses to taskkill its own parent) so the renderer still serves the
+    // OLD bundle. Re-exec the app when the bundle is now provably behind.
+    void relaunchIfBundleStaleAfterInPlaceUpdate()
 
     return { ok: true, message: 'Backend update applied.' }
   }

@@ -1637,6 +1637,20 @@ try {
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
+        # === PERMANENT FIX (2026-09-15, m3): runtime-file verification.
+        # Catches the v0.21.2 ICU-crash class (R6): partial win-unpacked trees
+        # that pass desktop_update_verify (which only checks ASAR integrity) but
+        # lack icudtl.dat / resources.pak / locales/*.pak and segfault on first
+        # launch. update_cmd_selfheal.verify_runtime_files() schedules the
+        # repack template + Telegrams the user on failure (never silent).
+        $selfhealCode = "from hermes_cli.update_cmd_selfheal import verify_runtime_files; verify_runtime_files()"
+        $selfheal = Invoke-HermesStep $pythonExe @("-c", $selfhealCode) "selfheal-verify"
+        if ($selfheal.Code -ne 0) {
+            $finalCode = 9
+            $finalMsg = "Post-update runtime verification FAILED. The Desktop bundle is missing critical files (icudtl.dat / resources.pak / locales / app.asar / unpacked assets). A repack has been scheduled in 5 minutes; if it does not recover, run `hermes debug share` in a terminal."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
     }
 
     # Desktop stopped every locally running profile gateway before handing off

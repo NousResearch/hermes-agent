@@ -3303,10 +3303,241 @@ async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStat
     }
   }
 
-  // Checkout install: dispatch through the strategy layer — one mechanism,
-  // one stamp, no direct body path. The flow lives in updater/checkout.ts;
-  // this is the only production door to the checkout arms.
-  return resolveCheckoutUpdateStrategy().check(opts)
+  const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+
+  const [currentSha, dirtyStr, currentBranch, originUrl] = await Promise.all([
+    git(['rev-parse', 'HEAD']),
+    git(['status', '--porcelain']),
+    git(['rev-parse', '--abbrev-ref', 'HEAD']),
+    getOriginUrl(updateRoot)
+  ])
+
+  const cached = readUpdateCheckCache()
+  const now = Date.now()
+
+  if (!force && cacheIsFresh(cached, { branch, currentSha, now })) {
+    return { ...cached.status, dirty: dirtyStr.length > 0, currentBranch }
+  }
+
+  branch = await resolveHealedBranch(updateRoot, branch)
+  const slug = githubRepoSlug(originUrl)
+
+  const status = slug
+    ? await checkUpdatesViaApi({ slug, branch, currentSha })
+    : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
+
+  const result = {
+    supported: true,
+    branch,
+    currentBranch,
+    currentSha,
+    dirty: dirtyStr.length > 0,
+    hermesRoot: updateRoot,
+    fetchedAt: now,
+    ...status
+  }
+
+  writeUpdateCheckCache({ fetchedAt: now, currentSha, branch, status: result })
+
+  return result
+}
+
+function readUpdateCheckCache() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CHECK_CACHE_PATH, 'utf8'))
+
+    return parsed && typeof parsed === 'object' && parsed.status ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function writeUpdateCheckCache(entry) {
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CHECK_CACHE_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_UPDATE_CHECK_CACHE_PATH, JSON.stringify(entry))
+  } catch (error) {
+    rememberLog(`[updates] could not persist check cache: ${error?.message || error}`)
+  }
+}
+
+// GitHub origins (official repo AND forks): tip SHA via the commits endpoint,
+// then the compare endpoint only when the tips differ — it yields the exact
+// behind count plus the commit list the overlay renders, replacing both
+// `rev-list --count` and `git log HEAD..origin/<branch>`.
+async function checkUpdatesViaApi({ slug, branch, currentSha }) {
+  let targetSha
+
+  try {
+    targetSha = String(await fetchGitHubApi(branchTipApiUrl(slug, branch), 'application/vnd.github.sha')).trim()
+  } catch (error) {
+    return { error: 'fetch-failed', message: describeUpdateCheckFailure(error) }
+  }
+
+  if (!/^[0-9a-f]{40}$/i.test(targetSha)) {
+    return { error: 'fetch-failed', message: 'GitHub API returned no tip SHA.' }
+  }
+
+  if (targetSha === currentSha) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
+  // "update available, count unknown" — never a fabricated number.
+  const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
+    .then(parseCompare)
+    .catch(() => null)
+
+  // ahead_by === 0 with differing tips: the remote tip is reachable from our
+  // HEAD — a local commit sitting AHEAD, not behind. Flagging that as an update
+  // nudges the user into wiping their work.
+  if (compared?.behind === 0) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  return {
+    behind: compared ? compared.behind : null,
+    updateAvailable: true,
+    targetSha,
+    commits: compared?.commits ?? []
+  }
+}
+
+// Non-GitHub origins: one ls-remote for the tip SHA (still no pack transfer),
+// counting via the local graph only when the tip is already known locally.
+async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
+  const target = await runGit(['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: updateRoot })
+  const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+
+  if (target.code !== 0 || !targetSha) {
+    return { error: 'fetch-failed', message: firstLine(target.stderr) || 'git ls-remote failed.' }
+  }
+
+  if (targetSha === currentSha) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  const known = (await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })).code === 0
+
+  const isAncestor =
+    known && (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'], { cwd: updateRoot })).code === 0
+
+  if (isAncestor) {
+    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  return { behind: null, updateAvailable: true, targetSha, commits: [] }
+}
+
+// GITHUB_TOKEN / GH_TOKEN from the environment, when present, moves the call
+// from the anonymous 60/hour-per-IP budget to the token's 5,000/hour one; the
+// header shape is otherwise unchanged. Read per request, never stored.
+//
+// Credential ladder (github-api-auth.ts): GITHUB_TOKEN / GH_TOKEN from the
+// launch env, then the gh CLI's login, then anonymous. A token GitHub rejects
+// (401: expired, revoked, malformed) must not turn a check that worked
+// anonymously into a hard failure, so the call is retried once without it; the
+// rejection is logged once per source per process, never with the token.
+const warnedRejectedGitHubTokenSources = new Set()
+
+async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  const credential = await resolveGitHubCredential({ env: process.env })
+
+  try {
+    return await fetchGitHubApiOnce(url, accept, credential?.token ?? null)
+  } catch (error) {
+    if (!credential || !githubTokenRejected(error)) {
+      throw error
+    }
+
+    if (credential.source === 'gh-cli') {
+      // The user may re-login to gh; the next check asks it again.
+      forgetGhCliToken()
+    }
+
+    if (!warnedRejectedGitHubTokenSources.has(credential.source)) {
+      warnedRejectedGitHubTokenSources.add(credential.source)
+      rememberLog(
+        `[updates] api.github.com rejected ${describeGitHubCredentialSource(credential.source)} (HTTP 401); ` +
+          'retrying the update check anonymously'
+      )
+    }
+
+    return fetchGitHubApiOnce(url, accept, null)
+  }
+}
+
+// GitHub 504s (and 502/503/524) are transient — proxies and edge nodes hit
+// them briefly. Retry with exponential backoff before giving up so a flaky
+// hop doesn't strand the user on a stale install.
+const GITHUB_API_RETRY_STATUSES = new Set([502, 503, 504, 524])
+const GITHUB_API_MAX_ATTEMPTS = 3
+const GITHUB_API_RETRY_BASE_MS = 500
+
+function fetchGitHubApiOnce(url, accept, token, attempt = 0) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      url,
+      {
+        headers: githubApiHeaders(
+          {
+            Accept: accept,
+            // GitHub requires a UA on api.github.com; requests without one 403.
+            'User-Agent': 'hermes-desktop-update-check'
+          },
+          token
+        ),
+        timeout: 10_000
+      },
+      res => {
+        const chunks = []
+        res.on('error', reject)
+        res.on('data', chunk => chunks.push(chunk))
+        res.on('end', () => {
+          // Retry transient upstream failures before falling through to the
+          // user-facing error message; the backoff is short so the overlay
+          // still feels responsive.
+          if (GITHUB_API_RETRY_STATUSES.has(res.statusCode) && attempt < GITHUB_API_MAX_ATTEMPTS) {
+            const delay = GITHUB_API_RETRY_BASE_MS * 2 ** attempt
+            rememberLog(`[updates] api.github.com HTTP ${res.statusCode}; retrying in ${delay}ms (attempt ${attempt + 1}/${GITHUB_API_MAX_ATTEMPTS})`)
+            setTimeout(() => {
+              fetchGitHubApiOnce(url, accept, token, attempt + 1).then(resolve, reject)
+            }, delay)
+            return
+          }
+
+          const body = Buffer.concat(chunks).toString('utf8')
+
+          if ((res.statusCode || 500) >= 400) {
+            reject(
+              Object.assign(new Error(`HTTP ${res.statusCode}`), {
+                statusCode: res.statusCode,
+                ...rateLimitFromHeaders(res.headers),
+                authenticated: Boolean(token)
+              })
+            )
+
+            return
+          }
+
+          if (accept === 'application/vnd.github.sha') {
+            resolve(body)
+
+            return
+          }
+
+          try {
+            resolve(JSON.parse(body))
+          } catch (error) {
+            reject(error)
+          }
+        })
+      }
+    )
+
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
+  })
 }
 
 let updateInFlight = false
@@ -4265,6 +4496,46 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
   return { unlocked: false }
 }
 
+/**
+ * Kill processes that hold the venv open but were NOT spawned by this app
+ * (Hindsight memory daemon, Hermes gateway workers, a user's terminal running
+ * hermes).  Windows-only: the .pyd lock hazard is a Windows phenomenon.
+ * Best-effort: a failed kill must never abort the update -- the re-scan in the
+ * preflight catches anything that survives.
+ */
+async function killExternalVenvHolders(updateRoot) {
+  if (!IS_WINDOWS) return []
+
+  const killedPids = []
+
+  try {
+    const scanOutcome = await scanVenvBlockers(updateRoot)
+
+    if (scanOutcome.kind !== 'blocked' || !scanOutcome.result.processes.length) {
+      return killedPids
+    }
+
+    for (const proc of scanOutcome.result.processes) {
+      try {
+        execFileSync('taskkill', ['/F', '/T', '/PID', String(proc.pid)], {
+          stdio: 'ignore'
+        })
+        killedPids.push(proc.pid)
+        rememberLog(`[updates] killed external venv holder pid=${proc.pid} name=${proc.name}`)
+      } catch (e) {
+        // Best-effort: log and continue; a survivor is caught by the re-scan.
+        rememberLog(`[updates] could not kill venv holder pid=${proc.pid}: ${String(e)}`)
+      }
+    }
+
+    return killedPids
+  } catch (e) {
+    rememberLog(`[updates] killExternalVenvHolders failed: ${String(e)}`)
+
+    return killedPids
+  }
+}
+
 // applyUpdates — hand off to the installer's --update flow, then exit.
 //
 // The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
@@ -4291,7 +4562,257 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
         updateInFlight = false
       }
     }
-  })
+
+    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
+    // spawn the updater. Without this the updater races a still-locked
+    // hermes.exe (held by the backend child / its grandchildren) and the update
+    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
+    const lock = await releaseBackendLockForUpdate(updateRoot)
+
+    if (!lock.unlocked) {
+      // Something OUTSIDE this app holds the venv (a second window, a user
+      // terminal running hermes, an unkillable child). Handing off anyway
+      // guarantees a half-updated venv — abort loudly instead and let the
+      // user close the holder and retry. Restart our own backend so the app
+      // keeps working after the failed attempt.
+      const message =
+        'Update aborted: another process is holding the Hermes install open ' +
+        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
+
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+      startHermes().catch(() => {})
+
+      if (IS_WINDOWS) {
+        // The pre-gate `gateway stop --all` (#70337) took every profile's
+        // gateway down for an update that never happened — bring them back.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+      }
+
+      return { ok: false, error: message }
+    }
+
+    // Preflight: after releasing our own backends, check for remaining
+    // Hermes processes running from this venv.  The updater normally refuses
+    // when it detects a holder, but because the updater is spawned detached
+    // with stdio:ignore, the user never sees that refusal and the update
+    // silently fails.  This preflight detects holders early and gives the
+    // user an actionable error.  Windows-only; the .pyd lock hazard is a
+    // Windows phenomenon.  ALL failures (blocked, missing python, timeout,
+    // malformed output, missing psutil) abort the handoff — never proceed
+    // to the detached updater when the venv state is unknown.
+    if (IS_WINDOWS) {
+      let scanOutcome = await scanVenvBlockers(updateRoot)
+
+      if (scanOutcome.kind === 'blocked' && opts.stopSafeBlockers) {
+        const stopResult = await stopSafeVenvBlockers(updateRoot, scanOutcome.result)
+        rememberLog(
+          `[updates] user-approved blocker cleanup: stopped=${stopResult.stopped.join(',') || 'none'} failed=${stopResult.failed.join(',') || 'none'}`
+        )
+        // Let verified process-tree termination finish unwinding wrapper shells,
+        // then make the scanner — not the stale renderer payload — authoritative.
+        await new Promise(resolve => setTimeout(resolve, 300))
+        scanOutcome = await scanVenvBlockers(updateRoot)
+      }
+
+      // Re-scan before aborting on 'blocked' (#74805). Process-table teardown
+      // is asynchronous on Windows: even after releaseBackendLock's PID-exit
+      // wait, a grandchild the desktop never tracked (or a process an AV /
+      // NTFS filter driver is holding in teardown) can stay enumerable for a
+      // few more seconds and read as a holder. Each scan already costs
+      // seconds (spawns a venv python + psutil sweep), so two retries with a
+      // short dwell give the table time to settle without meaningfully
+      // delaying the abort path when a REAL holder (a user terminal, second
+      // window) is present — that holder is still there on the third scan.
+      for (let attempt = 0; scanOutcome.kind === 'blocked' && attempt < 2; attempt++) {
+        rememberLog(
+          `[updates] venv-blocker scan reported ${scanOutcome.result.processes.length} holder(s); re-scanning after settle (attempt ${attempt + 2}/3)`
+        )
+        await new Promise(resolve => setTimeout(resolve, 1500))
+        scanOutcome = await scanVenvBlockers(updateRoot)
+      }
+
+      // External venv holders (Hindsight memory daemon, Hermes gateway workers,
+      // a user's terminal running hermes) map the venv's .pyd files. Kill them,
+      // give the OS a beat to release the mapped handles, then re-scan. Only
+      // refuse when survivors remain after the retry.
+      if (scanOutcome.kind === 'blocked') {
+        const killed = await killExternalVenvHolders(updateRoot)
+
+        if (killed.length > 0) {
+          await new Promise(resolve => setTimeout(resolve, 800))
+          scanOutcome = await scanVenvBlockers(updateRoot)
+        }
+      }
+
+      if (scanOutcome.kind === 'blocked') {
+        const message = formatBlockerMessage(scanOutcome.result)
+
+        rememberLog(`[updates] venv-blocked: ${scanOutcome.result.processes.length} process(es) hold the install`)
+        emitUpdateProgress({ stage: 'error', message, percent: null })
+        startHermes().catch(() => {})
+        // Restore the gateways the pre-gate stop took down (#70337 drain
+        // semantics): the update aborted, so nothing else will relaunch them.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+
+        return { ok: false, error: 'venv-blocked', message, blockers: scanOutcome.result.processes }
+      }
+
+      if (scanOutcome.kind === 'probe-failure') {
+        const message = formatProbeFailedMessage(scanOutcome.error)
+
+        rememberLog(`[updates] venv-blocker probe failed: ${scanOutcome.error}`)
+        emitUpdateProgress({ stage: 'error', message, percent: null })
+        startHermes().catch(() => {})
+        // Same drain-semantics restore as the venv-blocked abort above.
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+
+        return { ok: false, error: 'venv-probe-failed', message }
+      }
+    }
+
+    // Detached so the updater outlives this process — it needs us GONE before
+    // `hermes update` will run (the venv shim is locked while we live).
+    //
+    // Prefer the repo-owned hand-off script over the staged Tauri binary.
+    // The staged binary is frozen (no self-update path) and historically runs
+    // months-stale updater logic — pre-#67369 cache resolver, pre-#74782
+    // marker adoption — producing failures that were fixed on main long ago
+    // (2026-08-09 incident). scripts/desktop-update/windows.ps1 ships WITH the
+    // checkout, so each `hermes update` refreshes the code that drives the
+    // next one. Checkouts that predate the script fall back to the binary
+    // path unchanged.
+    const scriptHandoff = resolveUpdateScriptHandoff(updateRoot)
+    let child
+
+    if (scriptHandoff) {
+      const updateStartedAt = Math.floor(Date.now() / 1000)
+
+      // A bare detached+hidden powershell spawn silently dies before -File
+      // processing (console-subsystem init failure — see
+      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
+      // script gets its own minimized console and survives our exit. The
+      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
+      // pid — the script claims the update marker itself with its own $PID
+      // as its first action, and a relaunched Desktop parks on that.
+      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
+        '-InstallRoot',
+        updateRoot,
+        '-Branch',
+        branch,
+        '-DesktopPid',
+        String(process.pid),
+        '-RelaunchExe',
+        process.execPath
+      ])
+
+      child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
+        cwd: HERMES_HOME,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
+          PATH: pathWithHermesManagedNode(venvBin)
+        },
+        detached: true,
+        stdio: 'ignore'
+      })
+
+      // Bridge marker: child.pid is the short-lived cmd.exe WRAPPER, not the
+      // script (see wrapHandoffForDetachedConsole). Write it anyway to cover
+      // the first moments of the hand-off — the script's step 0 overwrites it
+      // with its own live $PID, and if the script never starts the wrapper's
+      // dead pid makes the marker read as stale and self-delete (no wedge).
+      // The `hermes update` child adopts the SCRIPT's claim via
+      // update_lock.py's process-ancestry rule; no mtime heuristics needed.
+      if (Number.isInteger(child.pid)) {
+        writeUpdateMarker(HERMES_HOME, child.pid, { startedAt: updateStartedAt })
+      }
+
+      rememberLog(
+        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (branch ${branch}); exiting desktop to release venv shim`
+      )
+    } else {
+      child = spawnUpdaterProcess(updater, updaterArgs, {
+        cwd: HERMES_HOME,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          PATH: pathWithHermesManagedNode(venvBin)
+        },
+        detached: true,
+        stdio: 'ignore'
+      })
+
+      // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
+      // quit dwell. The Tauri updater won't write its own marker for several
+      // seconds (window init + manifest), and during that gap our renderer
+      // can reconnect and spawn a fresh backend that re-locks .pyd files in
+      // the venv. By writing the marker ourselves the renderer's
+      // waitForUpdateToFinish() gate sees a live update and parks instead.
+      // The updater overwrites this with its own PID later; same format.
+      //
+      // SKIPPED for pre-#74782 staged updaters: those have no self-PID
+      // exclusion, so they read this very marker as a foreign live owner and
+      // abort with "Another Hermes update is already running (PID <itself>)" —
+      // an unbreakable loop, because the update that would replace the stale
+      // binary is the one being refused. Losing the anti-respawn hardening is
+      // strictly better than never updating again, and the updater still writes
+      // its own marker moments later.
+      if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
+        writeUpdateMarker(HERMES_HOME, child.pid)
+      } else if (Number.isInteger(child.pid)) {
+        rememberLog(
+          `[updates] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
+        )
+      }
+
+      rememberLog(
+        `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`
+      )
+    }
+
+    // Linger on the "updating — don't reopen" overlay long enough for the user
+    // to actually read it (and to bridge the gap until the updater's own window
+    // appears), THEN quit to release the venv shim. The updater rebuilds and
+    // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
+    // and lured users into the #50238 relaunch loop.)
+    //
+    // The dwell doubles as the hand-off settle window (#66753): watch the
+    // detached child for an async spawn `error` (ENOENT/EACCES) or an early
+    // non-zero/signal exit. On failure, DON'T quit — the user would be left
+    // with no app, no updater, and no evidence. Restart our backend and
+    // surface the error instead. The pre-written marker names the dead child
+    // pid, so readLiveUpdateMarker self-heals it; no cleanup needed.
+    const dwellStartedAt = Date.now()
+    const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+
+    if (!handoffOutcome.ok) {
+      const message = describeUpdaterHandoffFailure(handoffOutcome)
+
+      rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+      startHermes().catch(() => {})
+
+      if (IS_WINDOWS) {
+        // Same drain-semantics restore as the earlier abort paths (#70337).
+        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+      }
+
+      return { ok: false, error: 'updater-spawn-failed', message }
+    }
+
+    isQuittingForHandoff = true
+    setTimeout(
+      () => {
+        app.quit()
+      },
+      Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
+    )
+
+    return { ok: true, handedOff: true, updater }
+  } finally {
+    updateInFlight = false
+  }
 }
 
 async function handOffWindowsBootstrapRecovery(reason) {
@@ -17883,6 +18404,36 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
     message: error?.message || String(error)
   }))
 )
+
+// In-app update relaunch (AgnesCode GUI permanent fix): the in-place update
+// path rebuilds the desktop bundle while this app stays alive (the in-app
+// suicide-guard refuses to taskkill the parent), so the running renderer keeps
+// the OLD bundle in memory and Settings/About keeps showing "build too old".
+// The renderer invokes this once the update finished so we re-exec Hermes.exe
+// and load the new bundle. app.relaunch() re-executes THIS executable (never a
+// taskkill on the parent); the agent backend/gateway/Hindsight are separate
+// processes and survive. Never fires when a detached updater hand-off already
+// owns the relaunch (we'd double-spawn).
+ipcMain.handle('hermes:desktop:relaunch-after-update', async () => {
+  if (isQuittingForHandoff) {
+    rememberLog('[updates] relaunch-after-update ignored: already quitting for hand-off')
+    return { ok: false, reason: 'handoff-in-progress' }
+  }
+
+  rememberLog('[updates] relaunch-after-update: re-execing Hermes.exe to load the new bundle')
+  try {
+    app.relaunch({ args: process.argv.slice(1) })
+  } catch (error) {
+    const message = error?.message || String(error)
+    rememberLog(`[updates] relaunch-after-update failed: ${message}`)
+    return { ok: false, error: message }
+  }
+
+  // Reply to the IPC before tearing the window down.
+  setTimeout(() => app.quit(), 150)
+
+  return { ok: true }
+})
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

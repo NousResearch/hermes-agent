@@ -245,10 +245,28 @@ def check_certificates(should_fix: bool = False, issues: "list | None" = None) -
         _fail_and_issue("TLS default SSL context cannot be constructed", str(e),
                         _python_repair_hint() + "; if TLS still fails, repair Python through the installation owner.", issues)
         return
-    if platform_store:
-        check_ok("TLS platform trust store configured; default SSL context available")
-    else:
-        check_ok("TLS default SSL context available (OpenSSL trust paths)")
+    print("    → Repairing: force-reinstalling certifi...")
+    try:
+        result = subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "certifi"],
+                                capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=300)
+        failure = ("certifi reinstall failed", (result.stderr or result.stdout or "")[-500:]) if result.returncode != 0 else None
+    except Exception as exc:
+        failure = ("certifi repair could not run pip", str(exc))
+    if failure:
+        return _fail_and_issue(*failure, f"Reinstall certifi manually: {pip_cmd}", issues)
+    # Drop cached certifi modules so where() resolves the fresh install without a restart.
+    import importlib
+    for mod_name in [m for m in sys.modules if m == "certifi" or m.startswith("certifi.")]:
+        sys.modules.pop(mod_name, None)
+    importlib.invalidate_caches()
+    try:
+        verify_ca_bundle()
+        check_ok("SSL CA certificate bundle repaired (certifi reinstalled)")
+    except SSLConfigurationError as e:
+        _fail_and_issue("SSL CA certificate bundle still broken after reinstall", str(e),
+                        "certifi reinstall did not restore the CA bundle — check for a custom CA env var "
+                        "(SSL_CERT_FILE/REQUESTS_CA_BUNDLE) pointing at a missing file, or recreate the venv.", issues)
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:

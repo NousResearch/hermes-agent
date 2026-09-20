@@ -614,8 +614,22 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   probeLocalBackend: () => ipcRenderer.invoke('hermes:local-backend:probe'),
   continueBootstrapLocal: () => ipcRenderer.invoke('hermes:bootstrap:continue-local'),
   recycleBackend: profile => ipcRenderer.invoke('hermes:backend:recycle', profile),
-  resetBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:reset'),
-  repairBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:repair'),
+  // PATCH 2026-07-25: disable auto-fire of resetBootstrap / repairBootstrap.
+  // During the renderer retry storm, BootFailureOverlay's Retry button
+  // was being auto-pressed repeatedly, which called these helpers and
+  // tore down the live serve backend in a tight cycle. We can't find the
+  // auto-clicker (it's outside the renderer code), so we neutralize the
+  // IPC bridges here. A future fix should remove this and let `hermes
+  // update` or a manual restart recover.
+  resetBootstrap: () => {
+    if (typeof console !== 'undefined') console.warn('[preload-patch] resetBootstrap disabled to stop renderer retry storm')
+    return Promise.resolve({ ok: false, disabled: true })
+  },
+  repairBootstrap: () => {
+    if (typeof console !== 'undefined') console.warn('[preload-patch] repairBootstrap disabled to stop renderer retry storm')
+    return Promise.resolve({ ok: false, disabled: true })
+  },
+
   cancelBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:cancel'),
   onBootstrapEvent: callback => {
     const listener = (_event, payload) => callback(payload)
@@ -634,6 +648,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   updates: {
     check: opts => ipcRenderer.invoke('hermes:updates:check', opts),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
+    relaunchAfterUpdate: () => ipcRenderer.invoke('hermes:desktop:relaunch-after-update'),
     getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
     onProgress: callback => {

@@ -77,6 +77,10 @@ class AttachmentQuotaError(AttachmentError):
     """A bounded room or gateway quota would be exceeded."""
 
 
+class AttachmentAdmissionError(AttachmentError):
+    """A public upload crossed the room's no-new-work boundary."""
+
+
 class AttachmentIntegrityError(AttachmentError):
     """Canonical blob bytes no longer match their durable metadata."""
 
@@ -510,6 +514,65 @@ class HostedRoomAttachmentStore:
             result["event_id"] = str(row["event_id"])
         return result
 
+    def _prune_rows(
+        self, conn: sqlite3.Connection, *, now: float,
+    ) -> tuple[int, list[str]]:
+        """Prune durable rows inside an already-held immediate transaction."""
+        removed_blob_ids: list[str] = []
+        has_rooms = conn.execute(
+            """SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='hosted_rooms'"""
+        ).fetchone()
+        if has_rooms is not None:
+            conn.execute(
+                """UPDATE hosted_room_attachments
+                      SET state='disbanded',
+                          expires_at=(
+                            SELECT room.disbanded_at + ? FROM hosted_rooms AS room
+                             WHERE room.room_id=hosted_room_attachments.room_id
+                          ),
+                          updated_at=?
+                    WHERE state='committed' AND EXISTS (
+                        SELECT 1 FROM hosted_rooms AS room
+                         WHERE room.room_id=hosted_room_attachments.room_id
+                           AND room.disbanded_at IS NOT NULL
+                    )""",
+                (DISBANDED_GRACE_SECONDS, now),
+            )
+        rows = conn.execute(
+            """SELECT attachment_id, blob_id FROM hosted_room_attachments
+                WHERE expires_at IS NOT NULL AND expires_at <= ?""",
+            (now,),
+        ).fetchall()
+        released = Counter(str(row["blob_id"]) for row in rows)
+        for row in rows:
+            conn.execute(
+                "DELETE FROM hosted_room_attachments WHERE attachment_id=?",
+                (str(row["attachment_id"]),),
+            )
+        for blob_id, count in released.items():
+            blob = conn.execute(
+                "SELECT ref_count FROM hosted_room_attachment_blobs WHERE blob_id=?",
+                (blob_id,),
+            ).fetchone()
+            if blob is None:
+                continue
+            if int(blob["ref_count"]) <= count:
+                removed_blob_ids.append(blob_id)
+            else:
+                conn.execute(
+                    """UPDATE hosted_room_attachment_blobs
+                          SET ref_count=ref_count-?
+                        WHERE blob_id=?""",
+                    (count, blob_id),
+                )
+        if removed_blob_ids:
+            conn.executemany(
+                "DELETE FROM hosted_room_attachment_blobs WHERE blob_id=?",
+                ((blob_id,) for blob_id in removed_blob_ids),
+            )
+        return len(rows), removed_blob_ids
+
     def put(
         self,
         *,
@@ -519,6 +582,36 @@ class HostedRoomAttachmentStore:
         name: Any,
         mime: Any,
         data: bytes,
+    ) -> dict[str, Any]:
+        return self._put(
+            room_id=room_id, upload_id=upload_id, kind=kind,
+            name=name, mime=mime, data=data, public=False)
+
+    def put_public(
+        self,
+        *,
+        room_id: Any,
+        upload_id: Any,
+        kind: Any,
+        name: Any,
+        mime: Any,
+        data: bytes,
+    ) -> dict[str, Any]:
+        """Admit a public upload under the room's serialized closing fence."""
+        return self._put(
+            room_id=room_id, upload_id=upload_id, kind=kind,
+            name=name, mime=mime, data=data, public=True)
+
+    def _put(
+        self,
+        *,
+        room_id: Any,
+        upload_id: Any,
+        kind: Any,
+        name: Any,
+        mime: Any,
+        data: bytes,
+        public: bool,
     ) -> dict[str, Any]:
         room_id = _identifier(room_id, label="room_id")
         upload_id = _identifier(upload_id, label="upload_id")
@@ -535,9 +628,14 @@ class HostedRoomAttachmentStore:
         # Long-lived gateways keep one store instance. Reclaim abandoned
         # uploads before applying quotas so an expired failed send cannot
         # permanently exhaust the room without a process restart.
-        self.prune(now=now)
+        if not public:
+            self.prune(now=now)
 
+        removed_blob_ids: list[str] = []
         with self._lock, self._transaction(immediate=True) as conn:
+            if public:
+                from gateway.hosted_room_route_schema import require_room_work_open
+                require_room_work_open(conn, room_id, error=AttachmentAdmissionError)
             existing = conn.execute(
                 "SELECT * FROM hosted_room_attachments WHERE room_id=? AND upload_id=?",
                 (room_id, upload_id),
@@ -560,6 +658,8 @@ class HostedRoomAttachmentStore:
                 )
                 return self._metadata(existing, idempotent=True)
 
+            if public:
+                _, removed_blob_ids = self._prune_rows(conn, now=now)
             room_totals = conn.execute(
                 """SELECT COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS count
                      FROM hosted_room_attachments
@@ -643,7 +743,12 @@ class HostedRoomAttachmentStore:
             ).fetchone()
             if row is None:  # pragma: no cover - guarded by insert
                 raise RuntimeError("stored attachment could not be reloaded")
-            return self._metadata(row)
+            result = self._metadata(row)
+        for blob_id in removed_blob_ids:
+            self._blob_path(blob_id).unlink(missing_ok=True)
+        if public:
+            self._sweep_orphans()
+        return result
 
     def find_upload(self, *, room_id: Any, upload_id: Any) -> dict[str, Any] | None:
         """Return verified metadata for an idempotent upload retry, if it exists."""
@@ -995,62 +1100,8 @@ class HostedRoomAttachmentStore:
 
     def prune(self, *, now: float | None = None) -> int:
         now = float(self.clock()) if now is None else float(now)
-        removed_blob_ids: list[str] = []
-        removed = 0
         with self._lock, self._transaction(immediate=True) as conn:
-            has_rooms = conn.execute(
-                """SELECT 1 FROM sqlite_master
-                    WHERE type='table' AND name='hosted_rooms'"""
-            ).fetchone()
-            if has_rooms is not None:
-                conn.execute(
-                    """UPDATE hosted_room_attachments
-                          SET state='disbanded',
-                              expires_at=(
-                                SELECT room.disbanded_at + ? FROM hosted_rooms AS room
-                                 WHERE room.room_id=hosted_room_attachments.room_id
-                              ),
-                              updated_at=?
-                        WHERE state='committed' AND EXISTS (
-                            SELECT 1 FROM hosted_rooms AS room
-                             WHERE room.room_id=hosted_room_attachments.room_id
-                               AND room.disbanded_at IS NOT NULL
-                        )""",
-                    (DISBANDED_GRACE_SECONDS, now),
-                )
-            rows = conn.execute(
-                """SELECT attachment_id, blob_id FROM hosted_room_attachments
-                    WHERE expires_at IS NOT NULL AND expires_at <= ?""",
-                (now,),
-            ).fetchall()
-            released = Counter(str(row["blob_id"]) for row in rows)
-            for row in rows:
-                conn.execute(
-                    "DELETE FROM hosted_room_attachments WHERE attachment_id=?",
-                    (str(row["attachment_id"]),),
-                )
-                removed += 1
-            for blob_id, count in released.items():
-                blob = conn.execute(
-                    "SELECT ref_count FROM hosted_room_attachment_blobs WHERE blob_id=?",
-                    (blob_id,),
-                ).fetchone()
-                if blob is None:
-                    continue
-                if int(blob["ref_count"]) <= count:
-                    removed_blob_ids.append(blob_id)
-                else:
-                    conn.execute(
-                        """UPDATE hosted_room_attachment_blobs
-                              SET ref_count=ref_count-?
-                            WHERE blob_id=?""",
-                        (count, blob_id),
-                    )
-            if removed_blob_ids:
-                conn.executemany(
-                    "DELETE FROM hosted_room_attachment_blobs WHERE blob_id=?",
-                    ((blob_id,) for blob_id in removed_blob_ids),
-                )
+            removed, removed_blob_ids = self._prune_rows(conn, now=now)
         for blob_id in removed_blob_ids:
             self._blob_path(blob_id).unlink(missing_ok=True)
         self._sweep_orphans()

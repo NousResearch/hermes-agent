@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import tempfile
 
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
+from gateway.hosted_room_attachments import (
+    AttachmentAdmissionError, HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES,
+)
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -30,9 +32,17 @@ def upload(service, actor, params):
         data = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as exc:
         raise RuntimeStoreError('invalid_params') from exc
-    return HostedRoomAttachmentStore(service.db_path).put(
-        room_id=room_id, upload_id=params.get('upload_id'), kind=params.get('kind'),
-        name=params.get('name'), mime=params.get('mime'), data=data)
+    # Canonical services reuse their initialized store. Compatibility callers
+    # without one may initialize only after principal/room authorization.
+    store = getattr(service, 'attachments', None)
+    if store is None:
+        store = HostedRoomAttachmentStore(service.db_path)
+    try:
+        return store.put_public(
+            room_id=room_id, upload_id=params.get('upload_id'), kind=params.get('kind'),
+            name=params.get('name'), mime=params.get('mime'), data=data)
+    except AttachmentAdmissionError as exc:
+        raise RuntimeStoreError('runtime_coordination_required') from exc
 
 
 def download(service, actor, params):

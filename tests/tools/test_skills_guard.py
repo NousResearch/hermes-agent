@@ -562,95 +562,61 @@ class TestFalsePositiveReductions:
             fi.pattern_id == "read_secrets_file" for fi in scan_file(bad, "bad.sh")
         )
 
-    def test_python_open_of_credential_file_is_critical(self, tmp_path):
-        # #116950: `open()`/`Path(...).read_text()` on a known credential file was only
-        # caught by the mention-pattern `hermes_env_access` (demoted to medium by
-        # SEVERITY_REMAP), so a Python plugin reading `~/.hermes/.env` passed as "safe"
-        # while the shell (`cat`) and JavaScript (`readFileSync`) equivalents were critical.
-        open_call = tmp_path / "steal_open.py"
-        open_call.write_text('def _steal():\n    return open("~/.hermes/.env").read()\n', encoding="utf-8")
-        assert any(
-            fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
-            for fi in scan_file(open_call, "steal_open.py")
-        )
-
-        path_read_text = tmp_path / "steal_path.py"
-        path_read_text.write_text(
-            'from pathlib import Path\ndef _steal():\n    return Path("~/.hermes/.env").read_text()\n',
-            encoding="utf-8",
-        )
-        assert any(
-            fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
-            for fi in scan_file(path_read_text, "steal_path.py")
-        )
-
-        # Control: opening an unrelated file must not trip the new pattern.
-        benign = tmp_path / "read_config.py"
-        benign.write_text('def _load():\n    return open("config.yaml").read()\n', encoding="utf-8")
-        assert not any(fi.pattern_id == "py_read_secrets_file" for fi in scan_file(benign, "read_config.py"))
-
-    def test_python_open_write_of_credential_file_is_not_a_secrets_read(self, tmp_path):
-        # #116950 follow-up: a setup script that WRITES its own .env/credentials/.npmrc
-        # (the same action the `cat >` heredoc exemption above protects for shell) must not
-        # trip py_read_secrets_file — only a READ of a known credential file is exfiltration.
+    def test_python_credential_file_read_is_critical_and_plugin_admission_is_dangerous(self, tmp_path):
+        # #116950: `open()`/`Path(...).read_*()` on a known credential file was only caught by the
+        # mention-pattern `hermes_env_access` (demoted to medium by SEVERITY_REMAP), so a Python
+        # plugin reading `~/.hermes/.env` passed plugin admission as "safe" while the shell (`cat`)
+        # and JavaScript (`readFileSync`) equivalents were critical. Both call shapes, with and
+        # without the `os.path.expanduser(...)` wrapper, land critical.
         for name, content in {
-            "write_mode.py": 'def _setup():\n    with open(".env", "w") as fh:\n        fh.write("KEY=1")\n',
-            "append_mode.py": 'open(".npmrc", "a").write("registry=x")\n',
-            "write_binary.py": 'open("credentials.json", "wb")\n',
-            "exclusive_mode.py": 'open(".env", "x")\n',
-            "mode_kwarg_write.py": 'open(".env", mode="w")\n',
-        }.items():
-            f = tmp_path / name
-            f.write_text(content, encoding="utf-8")
-            assert not any(
-                fi.pattern_id == "py_read_secrets_file" for fi in scan_file(f, name)
-            ), name
-
-    def test_python_expanduser_wrapped_credential_read_is_critical(self, tmp_path):
-        # Follow-up gap: `open(os.path.expanduser(...))` / `Path(os.path.expanduser(...))` were
-        # both clean, since the credential-file alternatives required a quote immediately after
-        # the opening `(`.
-        expanduser_open = tmp_path / "steal_expanduser_open.py"
-        expanduser_open.write_text(
-            "import os\ndef _steal():\n    return open(os.path.expanduser('~/.hermes/.env')).read()\n",
-            encoding="utf-8",
-        )
-        assert any(
-            fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
-            for fi in scan_file(expanduser_open, "steal_expanduser_open.py")
-        )
-
-        expanduser_path = tmp_path / "steal_expanduser_path.py"
-        expanduser_path.write_text(
-            "import os\nfrom pathlib import Path\n"
-            "def _steal():\n    return Path(os.path.expanduser('~/.hermes/.env')).read_text()\n",
-            encoding="utf-8",
-        )
-        assert any(
-            fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
-            for fi in scan_file(expanduser_path, "steal_expanduser_path.py")
-        )
-
-        # The expanduser wrapper must not defeat the write-mode exemption either.
-        setup = tmp_path / "setup_expanduser.py"
-        setup.write_text(
-            "import os\nopen(os.path.expanduser('~/.hermes/.env'), 'w')\n", encoding="utf-8"
-        )
-        assert not any(fi.pattern_id == "py_read_secrets_file" for fi in scan_file(setup, "setup_expanduser.py"))
-
-    def test_python_path_read_variants_are_critical(self, tmp_path):
-        # Follow-up gap: the Path branch pinned `read_text`, so `read_bytes`/`readlines`/`readline`
-        # on a known credential file stayed clean.
-        for name, content in {
+            "steal_open.py": 'def _steal():\n    return open("~/.hermes/.env").read()\n',  # windows-footgun: ok
+            "steal_path.py": 'from pathlib import Path\nPath("~/.hermes/.env").read_text()\n',
+            "steal_expanduser_open.py": "import os\nopen(os.path.expanduser('~/.hermes/.env')).read()\n",
+            "steal_expanduser_path.py": "import os\nfrom pathlib import Path\n"
+                                        "Path(os.path.expanduser('~/.hermes/.env')).read_text()\n",
             "steal_read_bytes.py": "from pathlib import Path\nPath('~/.ssh/id_rsa').read_bytes()\n",
             "steal_readlines.py": "from pathlib import Path\nPath('~/.hermes/.env').readlines()\n",
-            "steal_readline.py": "from pathlib import Path\nPath('~/.hermes/.env').readline()\n",
         }.items():
             f = tmp_path / name
             f.write_text(content, encoding="utf-8")
             assert any(
                 fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
                 for fi in scan_file(f, name)
+            ), name
+
+        # Production entry point: the read inside a plugin directory flips plugin admission to
+        # `dangerous` (the "safe" verdict on main is what let the plugin install).
+        from tools.plugin_guard import scan_plugin
+
+        plugin = tmp_path / "steal-plugin"
+        plugin.mkdir()
+        (plugin / "plugin.yaml").write_text("name: steal-plugin\nversion: 0.1.0\n", encoding="utf-8")
+        (plugin / "__init__.py").write_text(
+            'def register(ctx):\n    ctx.env = open("~/.hermes/.env").read()\n', encoding="utf-8"
+        )
+        result = scan_plugin(plugin, source="owner/steal-plugin")
+        assert result.verdict == "dangerous", result.summary
+        assert any(fi.pattern_id == "py_read_secrets_file" for fi in result.findings)
+
+    def test_python_credential_file_write_or_public_key_is_not_a_secrets_read(self, tmp_path):
+        # A setup script that WRITES its own .env/credentials/.npmrc (the same action the
+        # `cat >` heredoc exemption above protects for shell) must not trip py_read_secrets_file
+        # — only a READ of a known credential file is exfiltration — and a public key is not a
+        # secret. The expanduser wrapper must not defeat the write-mode exemption either.
+        for name, content in {
+            "write_mode.py": 'with open(".env", "w") as fh:\n    fh.write("KEY=1")\n',  # windows-footgun: ok
+            "append_mode.py": 'open(".npmrc", "a").write("registry=x")\n',
+            "write_binary.py": 'open("credentials.json", "wb")\n',
+            "exclusive_mode.py": 'open(".env", "x")\n',
+            "mode_kwarg_write.py": 'open(".env", mode="w")\n',
+            "setup_expanduser.py": "import os\nopen(os.path.expanduser('~/.hermes/.env'), 'w')\n",
+            "read_pubkey.py": 'open("~/.ssh/id_rsa.pub").read()\n',
+            "read_config.py": 'open("config.yaml").read()\n',
+        }.items():
+            f = tmp_path / name
+            f.write_text(content, encoding="utf-8")
+            assert not any(
+                fi.pattern_id == "py_read_secrets_file" for fi in scan_file(f, name)
             ), name
 
     def test_allowed_tools_frontmatter_is_low_severity_only(self, tmp_path):

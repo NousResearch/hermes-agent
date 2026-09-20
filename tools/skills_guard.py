@@ -123,6 +123,15 @@ _NOT_DELEGATE = (
 # same set (the narrower `(ba)?sh` let `curl url | zsh` through while bash/sh were caught).
 _SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)'
 
+# Known credential-file paths as one shared alternation for the JavaScript and Python
+# read-secrets patterns (a private key, .env, credentials, .netrc, .pgpass, .npmrc, .pypirc;
+# a public key is not a secret).
+_CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)'
+# A literal string argument naming one of those files, optionally wrapped in
+# `os.path.expanduser(...)` (Python only).
+_CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
+_PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
+
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
     # env_exfil_* share a loopback exemption: a same-line literal scheme-anchored loopback destination
@@ -152,7 +161,7 @@ THREAT_PATTERNS = [
     # `cat <secrets-file>` reads credentials; `cat >`/`cat >>` WRITES one (setup heredocs) — not exfil.
     (r'cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)',
      "read_secrets_file", "critical", "exfiltration", "reads known secrets file"),
-    (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']',
+    (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*' + _CRED_FILE_LITERAL,
      "js_read_secrets_file", "critical", "exfiltration", "JavaScript reads a known credential file"),
     # Python twin of js_read_secrets_file: `open(...)` on a literal credential path (optionally
     # `os.path.expanduser(...)`-wrapped), or the `Path(...).read_text/_bytes/lines/line(...)` chain
@@ -162,9 +171,9 @@ THREAT_PATTERNS = [
     # exclude a write/append/exclusive mode — a literal 2nd-arg string containing w/a/x, or a
     # `mode=` kwarg with the same, tolerating the expanduser wrapper's own `)` — from the
     # `open(...)` branch; `Path(...).read_*()` has no mode argument, so needs no exclusion.
-    (r'\bopen\s*\(\s*(?:os\.path\.expanduser\s*\(\s*)?["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']\s*\)?'
-     r'(?!\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\'])(?![^\n]*\bmode\s*=\s*["\'][^"\']*[wax])'
-     r'|\bPath\s*\(\s*(?:os\.path\.expanduser\s*\(\s*)?["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']\s*\)?\s*\)\.(?:read_text|read_bytes|readlines|readline)\s*\(',
+    (r'\bopen\s*\(\s*' + _PY_CRED_FILE_ARG
+     + r'(?!\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\'])(?![^\n]*\bmode\s*=\s*["\'][^"\']*[wax])'
+     + r'|\bPath\s*\(\s*' + _PY_CRED_FILE_ARG + r'\s*\)\.(?:read_text|read_bytes|readlines|readline)\s*\(',
      "py_read_secrets_file", "critical", "exfiltration", "Python reads a known credential file"),
     # ── Exfiltration: programmatic env access ──
     (r'printenv|env\s*\|', "dump_all_env", "high", "exfiltration", "dumps all environment variables"),

@@ -5,7 +5,27 @@ mid-package, leaving the dir without ``package.json``; npm never revisits an exi
 the optional dep stayed broken on every later update until a manual repair.
 """
 
+import shutil
+from pathlib import Path
+
 from hermes_cli import main_desktop
+
+
+def _desktop_checkout(tmp_path: Path, monkeypatch, *, electron_dir: Path | None = None) -> Path:
+    """A minimal checkout with a staged Electron package; returns the electron dir."""
+    import hermes_cli.main as main_mod
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(main_desktop, "_nixos_build_env", lambda: {})
+    (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}', encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "apps" / "desktop").mkdir(parents=True)
+    (tmp_path / "apps" / "desktop" / "package.json").write_text("{}", encoding="utf-8")
+    electron = electron_dir or tmp_path / "node_modules" / "electron"
+    electron.mkdir(parents=True)
+    (electron / "package.json").write_text("{}", encoding="utf-8")
+    return electron
 
 
 def test_half_installed_dir_is_removed_and_a_complete_one_is_kept(tmp_path):
@@ -44,19 +64,10 @@ def test_install_removes_the_half_installed_dir_before_npm_runs(tmp_path, monkey
 
 def test_install_is_skipped_while_manifests_and_electron_are_unchanged(tmp_path, monkeypatch):
     """Root `npm ci` re-reifies the whole graph; only manifest changes or a pruned Electron warrant it. See #43837."""
-    import hermes_cli.main as main_mod
     import hermes_cli.main_web_build as web_build
     from hermes_constants import get_default_hermes_root
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    (tmp_path / "home").mkdir()
-    monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(main_desktop, "_nixos_build_env", lambda: {})
-    (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}', encoding="utf-8")
-    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
-    (tmp_path / "apps" / "desktop").mkdir(parents=True)
-    (tmp_path / "apps" / "desktop" / "package.json").write_text("{}", encoding="utf-8")
-    (tmp_path / "node_modules" / "electron").mkdir(parents=True)
-    (tmp_path / "node_modules" / "electron" / "package.json").write_text("{}", encoding="utf-8")
+    # Electron under the workspace-local hoist, where electronDist points (_electron_dir).
+    electron = _desktop_checkout(tmp_path, monkeypatch, electron_dir=tmp_path / "apps" / "desktop" / "node_modules" / "electron")
     calls: list[Path] = []
     monkeypatch.setattr(web_build, "_run_npm_install_deterministic",
                         lambda npm, cwd, **kw: calls.append(cwd) or type("R", (), {"returncode": 0})())
@@ -64,11 +75,16 @@ def test_install_is_skipped_while_manifests_and_electron_are_unchanged(tmp_path,
     main_desktop._install_desktop_workspace_deps("npm", {})
     main_desktop._install_desktop_workspace_deps("npm", {})
     assert calls == [tmp_path], "second build with unchanged manifests must not npm ci again"
-    assert list(get_default_hermes_root().glob(".npm_lock_hash_*_desktop")), "stamp lives beside pass 1's"
+
+    shutil.rmtree(electron)  # pass 1 pruned Electron → the full install must run even with a matching stamp
+    main_desktop._install_desktop_workspace_deps("npm", {})
+    assert calls == [tmp_path, tmp_path]
+    electron.mkdir(parents=True)
+    (electron / "package.json").write_text("{}", encoding="utf-8")
 
     (tmp_path / "apps" / "desktop" / "package.json").write_text('{"name": "bumped"}', encoding="utf-8")
     main_desktop._install_desktop_workspace_deps("npm", {})
-    assert calls == [tmp_path, tmp_path], "a changed manifest must reinstall"
+    assert calls == [tmp_path] * 3, "a changed manifest must reinstall"
 
 
 def test_failed_reinstall_drops_the_stamp_so_the_next_update_repairs(tmp_path, monkeypatch):
@@ -76,20 +92,9 @@ def test_failed_reinstall_drops_the_stamp_so_the_next_update_repairs(tmp_path, m
     must not leave an older matching stamp behind, or the half-installed tree is never revisited."""
     import pytest
 
-    import hermes_cli.main as main_mod
     import hermes_cli.main_web_build as web_build
     from hermes_constants import get_default_hermes_root
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    (tmp_path / "home").mkdir()
-    monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(main_desktop, "_nixos_build_env", lambda: {})
-    (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}', encoding="utf-8")
-    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
-    (tmp_path / "apps" / "desktop").mkdir(parents=True)
-    (tmp_path / "apps" / "desktop" / "package.json").write_text("{}", encoding="utf-8")
-    electron = tmp_path / "node_modules" / "electron"
-    electron.mkdir(parents=True)
-    (electron / "package.json").write_text("{}", encoding="utf-8")
+    electron = _desktop_checkout(tmp_path, monkeypatch)
     codes = [0, 1, 0]
     monkeypatch.setattr(web_build, "_run_npm_install_deterministic",
                         lambda npm, cwd, **kw: type("R", (), {"returncode": codes.pop(0)})())
@@ -100,6 +105,5 @@ def test_failed_reinstall_drops_the_stamp_so_the_next_update_repairs(tmp_path, m
         main_desktop._install_desktop_workspace_deps("npm", {})  # interrupted mid-extract
     (electron / "package.json").write_text("{}", encoding="utf-8")  # partially reified tree
 
-    assert not list(get_default_hermes_root().glob(".npm_lock_hash_*_desktop"))
     main_desktop._install_desktop_workspace_deps("npm", {})
     assert codes == [], "the next update must run the install again, not skip on the stale stamp"

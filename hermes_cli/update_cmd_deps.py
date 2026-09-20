@@ -564,15 +564,15 @@ def _record_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
         logger.debug("Could not write npm lockfile hash cache")
 
 
+# Stamp scope of the full-graph desktop install (pass 1's workspace-scoped stamp has none).
+DESKTOP_NPM_SCOPE = "_desktop"
+
+
 def _desktop_deps_changed(hermes_root: Path) -> bool:
-    """True when the full-graph root ``npm ci`` the desktop build needs must run again: manifests
-    changed since its last success, or Electron is gone (the workspace-scoped pass-1 install prunes
-    it whenever it runs). See #43837."""
-    from hermes_cli.update_cmd import _m
+    """True when the manifests changed since the full-graph desktop ``npm ci`` last succeeded (#43837).
+    The caller also re-installs when Electron is missing: pass 1 prunes it whenever it runs."""
     current = _npm_manifests_digest()
-    if current is None or not (_m().PROJECT_ROOT / "node_modules" / "electron" / "package.json").is_file():
-        return True
-    return not _npm_stamp_matches(hermes_root, current, "_desktop")
+    return current is None or not _npm_stamp_matches(hermes_root, current, DESKTOP_NPM_SCOPE)
 
 
 def _repair_node_deps_on_current_checkout(

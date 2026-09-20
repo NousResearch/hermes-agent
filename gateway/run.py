@@ -4583,11 +4583,13 @@ def _housekeeping_checkpoint_prune() -> None:
 
 
 def _housekeeping_disk_guard() -> None:
-    """Structural guards against the 2026-09-19 incident class (107 GB of abandoned
-    tmp*.db/statedb_ro* copies in the temp root filled the volume; the gateway died
-    unclean and every board hit ``sqlite3.OperationalError: disk I/O error``):
-    pattern-bound sweep of >1 GiB leaked DB copies plus a <5 GiB free-space early
-    warning (ERROR below 1 GiB). Runs every tick so an active leak is bounded by one
+    """Structural guards against the 2026-09-19/2026-09-20 incident class
+    (107 GB, then a 14 GB renamed relapse, of abandoned DB copies in the temp
+    root filled the volume; the gateway died unclean and every board hit
+    ``sqlite3.OperationalError: disk I/O error``): closed-set sweep of >1 GiB
+    stale, handle-free ``*.db``/``*.db-wal``/``*.db-shm`` copies (lsof + mtime
+    grace protect live files) plus a <5 GiB free-space early warning (ERROR
+    below 1 GiB). Runs every tick so an active leak is bounded by one
     housekeeping interval, independent of prompt discipline in any cron run."""
     from gateway.disk_guard import check_free_disk_warning, sweep_abandoned_db_copies
     sweep_abandoned_db_copies()

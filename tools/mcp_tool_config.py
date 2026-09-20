@@ -145,10 +145,14 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     # host running this lookup, so split on the literal separator, not os.pathsep.
     exts = [e.rstrip(".") for e in cfg_pathext.split(";") if e.strip()]
     # Same precedence as shutil.which on Windows: a command already carrying one of the
-    # extensions is looked up as-is; otherwise each extension is appended.
-    if any(command.upper().endswith(e.upper()) for e in exts):
+    # extensions is looked up as-is; otherwise each extension is appended. A "." entry
+    # (extensionless match) rstrips to an empty ext — it must not join this check, since
+    # endswith("") is always true and would pin every command to the as-is branch.
+    if any(e and command.upper().endswith(e.upper()) for e in exts):
         candidates = [command]
     else:
+        # Appending the empty ext probes the bare command itself, matching cmd.exe's
+        # extensionless semantics without ever probing a trailing-dot name.
         candidates = [command + e for e in exts]
     if not path_arg:
         return None  # absent/empty child PATH searches nowhere, never the parent's (#117213)

@@ -92,6 +92,40 @@ class TestWhichWithConfigPathextNeverMutatesParentEnviron:
 
         assert hit == str(cmd_path)
 
+    def test_pathext_dot_entry_still_appends_other_extensions(self, tmp_path, monkeypatch):
+        """A ``.`` PATHEXT entry means "extensionless match", not "every command matches
+        as-is": a bare command must still probe ``command + ext`` for the real extensions."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        cmd_path = _make_executable(bin_dir, "demo.CMD")
+        monkeypatch.setenv("PATHEXT", ".COM;.BAT")
+
+        hit = _which_with_config_pathext("demo", str(bin_dir), {"PATHEXT": ".;.CMD"})
+
+        assert hit == str(cmd_path)
+
+    def test_pathext_dot_entry_matches_the_extensionless_command_itself(self, tmp_path, monkeypatch):
+        """With a ``.`` entry, a bare executable (no extension at all) resolves — the
+        cmd.exe "extensionless match" semantics the rstrip-into-empty-ext emulates."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        bare_path = _make_executable(bin_dir, "demo")
+        monkeypatch.setenv("PATHEXT", ".COM;.BAT")
+
+        hit = _which_with_config_pathext("demo", str(bin_dir), {"PATHEXT": ".;.CMD"})
+
+        assert hit == str(bare_path)
+
+    def test_pathext_dot_entry_never_probes_a_trailing_dot_name(self, tmp_path, monkeypatch):
+        """The ``.`` entry must not degrade to shutil.which's literal-append reading:
+        ``demo.`` (trailing-dot name) is never a candidate — pinning the emulation."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_executable(bin_dir, "demo.")
+        monkeypatch.setenv("PATHEXT", ".COM;.BAT")
+
+        assert _which_with_config_pathext("demo", str(bin_dir), {"PATHEXT": ".;.CMD"}) is None
+
     def test_absent_path_arg_searches_nowhere_even_when_parent_path_has_it(self, tmp_path, monkeypatch):
         """path_arg=None (child env has no PATH) must NOT fall back to the parent's
         ambient PATH — the command stays unresolved even though the parent PATH has it."""

@@ -1,6 +1,6 @@
 name: openrouter-voice
 repo: https://github.com/esketids/hermes-openrouter-voice
-sha: 1139d377987c2e89d5f4baaf5b5c185022e8dce4
+sha: 885ea0b39ff3ee4952c129164711eedb8aac48dc
 description: OpenRouter speech-to-text and text-to-speech providers for Hermes Agent (stt.provider / tts.provider = openrouter).
 maintainer: esketids
 tier: community

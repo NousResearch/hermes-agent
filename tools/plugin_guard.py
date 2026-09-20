@@ -11,6 +11,7 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -96,6 +97,17 @@ DOC_PROSE_DEMOTIONS = {
 # sample-token pattern is demoted; destructive/persistence/exfil findings and the
 # provider-signature patterns (``sk-``, ``AKIA``, ``ghp_`` ...) keep full severity there.
 MAIN_GUARD_DEMOTIONS = {"hardcoded_secret": "high"}
+
+# A ``hardcoded_secret`` whose captured string literal is itself the NAME of an environment
+# variable (``ENV_PASSWORD = "YANDEX_MAIL_APP_PASSWORD"``) is a public identifier the plugin
+# declares in ``requires_env``, prints in errors and documents — not a credential (#116221).
+# Whether the constant is named keyword-last (``ENV_PASSWORD``, trips the pattern) or keyword-first
+# (``TOKEN_ENV``, does not) is not security-relevant, so demote the literal to informational
+# ``low`` regardless of file type. Deliberately narrow: the value must be UPPER_SNAKE with
+# underscore-separated all-caps segments, which real high-entropy secrets never are and neither
+# are the provider-signature keys (``sk-``, ``AKIA...`` with no underscore, ``ghp_`` lowercase),
+# which carry their own critical patterns and are untouched here.
+_ENV_VAR_NAME_RE = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\Z")
 
 # Structural limits — plugins are real codebases, far larger than skills.
 MAX_PLUGIN_FILE_COUNT = 400
@@ -186,8 +198,30 @@ def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) ->
             and f.line in main_guard_lines
         ):
             f.severity = MAIN_GUARD_DEMOTIONS[f.pattern_id]
+        # Value-based, last, and can only lower: a hardcoded_secret whose literal is an
+        # environment-variable NAME is a public identifier, not a credential (#116221). Kept in the
+        # report at ``low`` (informational) so the match stays auditable without blocking install.
+        if f.severity in ("critical", "high", "medium") and _is_env_var_name_secret(f):
+            f.severity = "low"
         out.append(f)
     return out
+
+
+def _hardcoded_secret_literal(match: str) -> str:
+    """The string-literal value captured by the ``hardcoded_secret`` pattern
+    (``keyword [=:] <quote><value><quote>``): the run of literal characters after the opening
+    quote, using the same character class the pattern matches. ``""`` when no quoted run is present.
+    """
+    m = re.search(r"""["']([A-Za-z0-9+/=_-]+)""", match)
+    return m.group(1) if m else ""
+
+
+def _is_env_var_name_secret(finding: Finding) -> bool:
+    """True when a ``hardcoded_secret`` finding's literal is an environment-variable NAME rather
+    than a credential — see ``_ENV_VAR_NAME_RE`` (#116221)."""
+    if finding.pattern_id != "hardcoded_secret":
+        return False
+    return bool(_ENV_VAR_NAME_RE.fullmatch(_hardcoded_secret_literal(finding.match)))
 
 
 def _is_defensive_documentation(finding: Finding, rel_path: str) -> bool:

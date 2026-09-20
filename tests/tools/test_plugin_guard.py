@@ -190,7 +190,7 @@ class TestMaliciousPlugin:
     def test_symlink_escape_is_dangerous(self, tmp_path):
         plugin = _mk_plugin(tmp_path, BASE_FILES)
         outside = tmp_path / "outside-secret.txt"
-        outside.write_text("secret")
+        outside.write_text("secret", encoding="utf-8")
         (plugin / "link.txt").symlink_to(outside)
         result = scan_plugin(plugin)
         assert any(f.pattern_id == "symlink_escape" for f in result.findings)
@@ -313,6 +313,61 @@ class TestRuntimeSelfTestTokens:
                 ("broken.py", "hardcoded_secret")} <= critical
         assert result.verdict == "dangerous"
         assert should_allow_plugin_install(result, force=True)[0] is False
+
+
+class TestEnvVarNameNotSecret:
+    """#116221: a ``hardcoded_secret`` whose literal is the NAME of an environment variable
+    (``ENV_PASSWORD = "YANDEX_MAIL_APP_PASSWORD"``) is a public identifier the plugin declares in
+    ``requires_env`` and documents, not a credential. It is demoted to informational ``low`` so an
+    otherwise-clean provider plugin installs without ``--force`` — but real secrets and provider
+    keys, which are never underscore-separated all-caps, keep their critical severity."""
+
+    def test_env_var_name_literal_in_runtime_code_is_demoted_and_installable(self, tmp_path):
+        files = dict(BASE_FILES)
+        # The exact reported shape: runtime code (not docs, not a main-guard, not a test tree).
+        files["config.py"] = 'ENV_PASSWORD = "YANDEX_MAIL_APP_PASSWORD"\n'
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        finding = next(f for f in result.findings if f.pattern_id == "hardcoded_secret")
+        assert finding.severity == "low"
+        assert result.verdict == "safe"
+        assert should_allow_plugin_install(result)[0] is True
+
+    def test_real_secret_and_provider_key_shapes_stay_critical(self, tmp_path):
+        """The demotion is value-shaped and narrow: an AWS-key literal (all-caps but no
+        underscore) and a mixed-case high-entropy secret both remain an un-overridable
+        ``dangerous``, so the fix cannot be used to smuggle a real credential past the scan."""
+        files = dict(BASE_FILES)
+        files["aws.py"] = 'AWS_SECRET = "AKIAIOSFODNN7EXAMPLE"\n'
+        (tmp_path / "aws").mkdir()
+        result = scan_plugin(_mk_plugin(tmp_path / "aws", files))
+        assert any(
+            f.pattern_id == "hardcoded_secret" and f.severity == "critical" for f in result.findings
+        ), [(f.pattern_id, f.severity) for f in result.findings]
+        assert result.verdict == "dangerous"
+
+        files = dict(BASE_FILES)
+        files["conf.py"] = 'API_KEY = "aB3xk92JqLm05ZtPw81QdRv7"\n'
+        (tmp_path / "mixed").mkdir()
+        result = scan_plugin(_mk_plugin(tmp_path / "mixed", files))
+        finding = next(f for f in result.findings if f.pattern_id == "hardcoded_secret")
+        assert finding.severity == "critical"
+        assert result.verdict == "dangerous"
+
+    def test_env_var_name_detector_edges(self):
+        from tools.plugin_guard import Finding, _is_env_var_name_secret
+
+        def _f(match, pattern_id="hardcoded_secret"):
+            return Finding(pattern_id, "critical", "credential_exposure", "config.py", 13, match, "")
+
+        # Env-var names (underscore-separated all-caps): demoted.
+        assert _is_env_var_name_secret(_f('ENV_PASSWORD = "YANDEX_MAIL_APP_PASSWORD"'))
+        assert _is_env_var_name_secret(_f("API_KEY_ENV = 'OPENAI_API_KEY_FOR_PLUGIN'"))
+        # Not env-var names: AWS key (no underscore), mixed-case secret, dashed provider token.
+        assert not _is_env_var_name_secret(_f('AWS = "AKIAIOSFODNN7EXAMPLE"'))
+        assert not _is_env_var_name_secret(_f('key = "aB3xk92JqLm05ZtPw81QdRv7"'))
+        assert not _is_env_var_name_secret(_f("token = 'sk-abcdefghijklmnopqrstuvwxyz'"))
+        # Only the hardcoded_secret pattern is eligible.
+        assert not _is_env_var_name_secret(_f('X = "SOME_ENV_NAME_VALUE_HERE"', pattern_id="other"))
 
 
 class TestInstallIntegration:

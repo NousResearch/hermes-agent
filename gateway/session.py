@@ -523,6 +523,9 @@ class SessionEntry:
     display_name: Optional[str] = None
     platform: Optional[Platform] = None
     chat_type: str = "dm"
+    # The receiving bot can differ from the profile that owns the session.
+    # Persist it independently of origin so restored sessions keep the same delivery route.
+    transport_profile: Optional[str] = None
     # Small, JSON-serializable per-entry state (e.g. Slack thread watermarks).
     metadata: Dict[str, Any] = field(default_factory=dict)
     # Token tracking
@@ -588,6 +591,8 @@ class SessionEntry:
             "chat_type": self.chat_type, "metadata": self.metadata,
             "cwd": self.cwd, "conversation_worktree": self.conversation_worktree,
         }
+        if self.transport_profile is not None:
+            result["transport_profile"] = self.transport_profile
         result.update((name, getattr(self, name)) for name in self._PLAIN_FIELDS)
         result["last_resume_marked_at"] = _iso(self.last_resume_marked_at)
         result["active_turn_token"] = self.active_turn_token
@@ -632,6 +637,7 @@ class SessionEntry:
             updated_at=datetime.fromisoformat(data["updated_at"]), origin=origin,
             display_name=data.get("display_name"), platform=platform,
             chat_type=data.get("chat_type", "dm"), metadata=dict(data.get("metadata") or {}),
+            transport_profile=data.get("transport_profile") if isinstance(data.get("transport_profile"), str) else None,
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
             model_override=sanitize_model_override(data.get("model_override")), **plain,
@@ -852,7 +858,7 @@ class SessionStore(
         self._transcript_reroutes: Dict[str, str] = {}
         self._dirty_transcripts: Dict[str, List[Dict[str, Any]]] = {}
         self._transcript_append_failures: Dict[str, int] = {}
-        self._fts_rebuild_attempted = False
+        self._fts_rebuild_last_attempt_at: Optional[float] = None
         self._has_active_processes_fn = has_active_processes_fn
         self._conversation_worktree_manager_factory = (
             conversation_worktree_manager_factory or _default_conversation_worktree_manager_factory
@@ -1178,11 +1184,14 @@ class SessionStore(
     ) -> Optional[Dict[str, Any]]:
         """Create a candidate outside the lock and publish it only if the key is still vacant;
         returns ``create_session`` kwargs when the candidate won."""
+        from gateway.session_identity import transport_profile_of
+
         session_id = _new_session_id(now)
         candidate = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=source, display_name=source.chat_name, platform=source.platform,
-            chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
+            chat_type=source.chat_type, transport_profile=transport_profile_of(source),
+            was_auto_reset=decision.reset_reason is not None,
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id,
         )
@@ -1563,6 +1572,7 @@ class SessionStore(
                 origin=old_entry.origin,
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform, chat_type=old_entry.chat_type,
+                transport_profile=old_entry.transport_profile,
                 is_fresh_reset=True,
             )
 
@@ -1608,6 +1618,7 @@ class SessionStore(
         new_entry = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
+            transport_profile=old_entry.transport_profile,
             **fields,
         )
         self._entries[session_key] = new_entry
@@ -1619,7 +1630,7 @@ class SessionStore(
     # restart-resume freshness gate (#85709).
     def switch_session(
         self, session_key: str, target_session_id: str, conversation_kind: str = "interactive",
-        persisted_cwd: Optional[str] = None,
+        persisted_cwd: Optional[str] = None, expected_session_id: Optional[str] = None,
     ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
         reopens the target so resume matches the CLI."""
@@ -1627,13 +1638,15 @@ class SessionStore(
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
                 return None
+            if expected_session_id is not None and old_entry.session_id != expected_session_id:
+                return None
             if old_entry.session_id == target_session_id and persisted_cwd is None:
                 return old_entry
             candidate = SessionEntry(
                 session_key=session_key, session_id=target_session_id,
                 created_at=_now(), updated_at=_now(), origin=old_entry.origin,
                 display_name=old_entry.display_name, platform=old_entry.platform,
-                chat_type=old_entry.chat_type,
+                chat_type=old_entry.chat_type, transport_profile=old_entry.transport_profile,
             )
         new_entry = candidate
         try:
@@ -1684,6 +1697,8 @@ class SessionStore(
                         raise
             if winner is not None:
                 self.reconcile_conversation_root_transition(candidate, winner)
+                if expected_session_id is not None and winner.session_id != expected_session_id:
+                    return None
                 return winner
         except BaseException:
             self.reconcile_conversation_root_transition(candidate, old_entry)

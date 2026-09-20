@@ -76,11 +76,14 @@ def _profile_build_scope(profile_home):
         return
     home_token = set_hermes_home_override(str(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    terminal_token = install_profile_terminal_scope(Path(str(profile_home)))
     try:
         yield
     finally:
-        reset_hermes_home_override(home_token)
+        reset_terminal_scope(terminal_token)
         reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
 
 
 def _make_agent_in_context(sid: str, key: str, **kwargs):
@@ -229,8 +232,7 @@ def _billing_pending_change(result: dict) -> dict:
 
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    copy_fields=(), compensate: bool = False, title_source: str = "user",
-                    user_id: str | None = None) -> None:
+                    copy_fields=(), compensate: bool = False, user_id: str | None = None) -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
@@ -250,7 +252,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         db.append_messages_batch(
             new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
                        **{field: msg.get(field) for field in copy_fields}} for msg in history], chunk_rows=500)
-        db.set_auto_title(new_key, title, source="derived")
+        db.set_session_title(new_key, title)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
@@ -272,7 +274,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
-                            compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
+                            compensate=True, user_id=_session_auth_user_id(record))
             record["pending_title"] = None
             return True
     except Exception:
@@ -744,7 +746,8 @@ def _resume_lazy(ctx: _Resume) -> dict:
         # repair_alternation heals a durable ``user;user`` once here.
         history = ctx.child_history(repair=True)
     except Exception as e:
-        return _err(ctx.rid, 5000, f"resume failed: {e}")
+        from tui_gateway.user_messages import resume_failed_message
+        return _err(ctx.rid, 5000, resume_failed_message(e))
     record = ctx.record(source, cwd, history, lazy=True, todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
@@ -786,7 +789,8 @@ def _resume_cold(ctx: _Resume) -> dict:
     try:
         history, display_history, raw_history = ctx.restore()
     except Exception as e:
-        return _err(ctx.rid, 5000, f"resume failed: {e}")
+        from tui_gateway.user_messages import resume_failed_message
+        return _err(ctx.rid, 5000, resume_failed_message(e))
     overrides = _stored_session_runtime_overrides(ctx.found)
     record = ctx.record(source, cwd, history, overrides, display_history_prefix=ctx.display_prefix(),
                         todo_state=_todo_state_from_history(history))
@@ -859,7 +863,8 @@ def _resume_eager(ctx: _Resume) -> dict:
             else:
                 with contextlib.suppress(Exception):
                     agent.close()
-        return _err(ctx.rid, 5000, f"resume failed: {resume_error}")
+        from tui_gateway.user_messages import resume_failed_message
+        return _err(ctx.rid, 5000, resume_failed_message(resume_error))
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
         started_at=float(session.get("created_at") or time.time()),
@@ -2252,7 +2257,6 @@ def _(rid, params: dict, session: dict) -> dict:
                             cwd=conversation_worktree.get("path") or _session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             copy_fields=_BRANCH_COPY_FIELDS,
-                            title_source="user" if params.get("name") else "derived",
                             user_id=_session_auth_user_id(session))
         except Exception as e:
             if conversation_root_lease is not None:

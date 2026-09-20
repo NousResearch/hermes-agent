@@ -942,6 +942,9 @@ def _job_is_stale_error_recurring(
     """
     if job.get("last_status") != "error":
         return False
+    from cron.quota_hold import hold_active
+    if hold_active(job, now):
+        return False
     if _job_running_in_this_process(str(job.get("id") or "")):
         return False
     # A fresh fire_claim means the job is running in ANOTHER process sharing this
@@ -2053,6 +2056,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
+            from cron.quota_hold import clear_state as clear_quota_hold
+            clear_quota_hold(updated)
             # A schedule-kind transition changes the repeat contract just as it
             # does at creation time. Preserve the completed counter, but derive
             # the default limit unless the caller explicitly supplied repeat.
@@ -2444,6 +2449,7 @@ def mark_job_run(
     *,
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
+    quota_hold_seconds: Optional[float] = None,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2469,6 +2475,12 @@ def mark_job_run(
             from cron.unreachable_retry import clear_state
             clear_state(job)
         _advance_after_run(job, now)
+        if quota_hold_seconds is not None and not success:
+            from cron.quota_hold import plan_hold
+            plan_hold(job, quota_hold_seconds)
+        elif quota_hold_seconds is None:
+            from cron.quota_hold import clear_state
+            clear_state(job)
         job.pop("_model_unreachable", None)
         save_jobs(jobs)
         return True

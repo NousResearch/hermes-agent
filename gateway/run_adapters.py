@@ -1012,16 +1012,56 @@ class GatewayAdapterLifecycleMixin:
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from gateway.config import PLATFORM_TOKEN_ENV_NAMES, _getenv
+        import hashlib
+        import json
+
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
         multiplex = self._multiplex_on()
         profile_map = self._profile_adapters.setdefault(profile_name, {})
+        signatures = getattr(self, "_profile_adapter_signatures", None)
+        if signatures is None:
+            signatures = self._profile_adapter_signatures = {}
+        profile_signatures = signatures.setdefault(profile_name, {})
         connected = 0
+        for platform, adapter in list(profile_map.items()):
+            platform_config = profile_cfg.platforms.get(platform)
+            if platform_config is not None and platform_config.enabled:
+                continue
+            profile_map.pop(platform, None)
+            profile_signatures.pop(platform, None)
+            for claim in (self._adapter_credential_claim(platform, adapter),
+                          self._adapter_listener_claim(platform, adapter)):
+                if claim is not None and claimed.get(claim) == profile_name:
+                    claimed.pop(claim, None)
+            await self._bounded_adapter_teardown(adapter, platform, profile=profile_name)
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
-            # Runtime re-scan of a served profile (config/.env changed): only platforms that are not
-            # already live or queued for reconnect are built — never a second poller on the same bot.
-            if platform in profile_map or platform in (
+            # Fingerprint the platform's own config and credential only. A new Telegram
+            # token must not tear down an already-connected Discord adapter, while a
+            # rotation to Discord's own config/credential must still rebuild it.
+            token_env = PLATFORM_TOKEN_ENV_NAMES.get(platform)
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                payload = {
+                    "config": platform_config.to_dict(),
+                    "credential": _getenv(token_env) if token_env else None,
+                }
+            signature = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            if platform in profile_map:
+                if profile_signatures.get(platform) in (None, signature):
+                    continue
+                previous = profile_map.pop(platform)
+                for claim in (self._adapter_credential_claim(platform, previous),
+                              self._adapter_listener_claim(platform, previous)):
+                    if claim is not None and claimed.get(claim) == profile_name:
+                        claimed.pop(claim, None)
+                await self._bounded_adapter_teardown(previous, platform, profile=profile_name)
+                profile_signatures.pop(platform, None)
+            # Existing reconnect attempts are retained when the platform signature is unchanged.
+            if platform in (
                     (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}):
                 continue
             # No credential in THIS profile's scope: an adapter would fan inbound across every such profile.
@@ -1079,6 +1119,7 @@ class GatewayAdapterLifecycleMixin:
                 self._schedule_secondary_profile_startup_reconnect(profile_name, platform, adapter)
                 continue
             profile_map[platform] = adapter
+            profile_signatures[platform] = signature
             # Restore persisted /voice state for this bot (primary startup and reconnects do too).
             # See #84872.
             self._sync_voice_mode_state_to_adapter(adapter)

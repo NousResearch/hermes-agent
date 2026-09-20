@@ -340,7 +340,9 @@ def test_terminal_or_reclaimed_task_releases_model_capacity(
         ]
 
         if release == "completed":
-            assert kb.complete_task(conn, first, result="done")
+            current_run_id = kb.get_task(conn, first).current_run_id
+            assert current_run_id is not None
+            assert kb.complete_task(conn, first, result="done", expected_run_id=current_run_id)
         else:
             alive = {os.getpid(): True}
 

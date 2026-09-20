@@ -99,9 +99,16 @@ def add_notify_sub(
     # the delivery. A plain 'notify' default would leave those subs with no
     # delivery mechanism at all. Explicit modes still win.
     insert_mode = valid_mode or ("notify+wake" if platform == "api_server" else "notify")
-    metadata_json = _encode_notify_delivery_metadata(delivery_metadata)
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn, allow_nested=allow_nested):
+        metadata = _decode_notify_delivery_metadata(delivery_metadata)
+        if metadata:
+            existing = conn.execute(
+                "SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE, key,
+            ).fetchone()
+            if existing:
+                metadata = {**_decode_notify_delivery_metadata(existing["delivery_metadata"]), **metadata}
+        metadata_json = _encode_notify_delivery_metadata(metadata or None)
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs

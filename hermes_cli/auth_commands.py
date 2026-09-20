@@ -197,6 +197,12 @@ def _qwen_oauth_login(args) -> dict:
     return creds
 
 
+def _codex_oauth_login(args) -> dict:
+    from hermes_cli.auth_codex_browser import codex_oauth_login
+
+    return codex_oauth_login(args)
+
+
 @dataclass(frozen=True)
 class _OAuthAddSpec:
     """Per-provider parameters for the generic ``hermes auth add <provider> --type oauth`` path."""
@@ -221,7 +227,7 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
             "expires_at_ms": creds.get("expires_at_ms"),
             "base_url": _provider_base_url(provider)}),
     "openai-codex": _OAuthAddSpec(
-        login=lambda args: auth_mod._codex_device_code_login(),
+        login=_codex_oauth_login,
         token=lambda creds: creds["tokens"]["access_token"],
         source=SOURCE_MANUAL_DEVICE_CODE,
         fields=lambda creds, provider: {
@@ -391,7 +397,11 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
     # ``manual:*`` entries refresh from their own token pair, so they need no singleton shadow.
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=spec.auth_type, priority=0,
-        source=spec.source, access_token=token, **spec.fields(creds, provider))
+        source=("manual:loopback_pkce" if provider == "openai-codex" and
+                creds.get("source") == "loopback_pkce" else spec.source),
+        access_token=token, **spec.fields(creds, provider))
+    if provider == "openai-codex":
+        _warn_if_duplicate_codex_account(pool, token)
     first_credential = not pool.entries()
     entry = pool.add_entry(entry)
     # The first Codex/xAI credential becomes the active provider (as the old singleton save path
@@ -400,6 +410,31 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
         auth_mod.mark_provider_active_if_unset(provider)
     print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
     return entry
+
+
+def _warn_if_duplicate_codex_account(pool, access_token: str) -> None:
+    """Warn, without blocking, when a new Codex OAuth login duplicates a pooled account."""
+    claims = auth_mod._decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else None
+    account_id = auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None
+    if not isinstance(account_id, str) or not account_id.strip():
+        return
+    email = claims.get("email") if isinstance(claims, dict) else None
+    for index, existing in enumerate(pool.entries(), start=1):
+        existing_claims = auth_mod._decode_jwt_claims(getattr(existing, "access_token", ""))
+        existing_auth = existing_claims.get("https://api.openai.com/auth") if isinstance(existing_claims, dict) else None
+        existing_account_id = (
+            existing_auth.get("chatgpt_account_id") if isinstance(existing_auth, dict) else None)
+        if existing_account_id != account_id:
+            continue
+        email_text = f' ("{email}")' if isinstance(email, str) and email else ""
+        print(
+            f"Warning: this is the same OpenAI account as openai-codex credential #{index}"
+            f"{email_text}. Both credentials share one token family; remove the duplicate with "
+            f"`hermes auth remove openai-codex {index}` if it is not intentional.",
+            file=sys.stderr,
+        )
+        return
 
 
 def _report_priority(provider: str, pool, moved, requested: int, verb: str, prep: str) -> None:
@@ -446,6 +481,8 @@ def _is_free_tier_entry(entry) -> bool:
 
 
 def auth_list_command(args) -> None:
+    from agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
+    external_logins_enabled = adopt_external_logins_enabled()
     provider_filter = _normalize_provider(getattr(args, "provider", "") or "")
     if provider_filter:
         providers = [provider_filter]
@@ -480,6 +517,8 @@ def auth_list_command(args) -> None:
             print(row.rstrip())
         print()
     _print_oauth_heal_notices()
+    if not external_logins_enabled:
+        print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
 
 def _print_oauth_heal_notices() -> None:
@@ -575,7 +614,7 @@ def auth_refresh_command(args) -> None:
         after = next((e for e in pool.entries() if e.id == matched.id), None)
         state = "removed from pool" if after is None else (after.last_status or "unknown")
         raise SystemExit(
-            f"Refresh failed for {provider} credential #{index} ({matched.label}); "
+            f"Could not renew {provider} credential #{index} ({matched.label}); "
             f"status now: {state}.")
     status = refreshed.last_status or "ok"
     if status == "ok":

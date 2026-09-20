@@ -198,9 +198,10 @@ def _model_provenance(model: str) -> dict[str, str]:
     config_path = HOME / "config.yaml"
     if config_path.exists():
         import yaml
+        from hermes_cli.config import read_user_config_raw
 
         try:
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            config = read_user_config_raw(config_path)
         except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
             raise SystemExit(f"unable to read ABEVAL_HOME model config: {config_path}") from exc
     model_config = config.get("model", {}) if isinstance(config, Mapping) else {}

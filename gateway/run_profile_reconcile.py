@@ -115,8 +115,6 @@ class GatewayProfileReconcileMixin:
             for name in removed:
                 await self._unserve_profile(name, known[name])
                 result["removed"].append(name)
-            for name in changed:
-                await self._reset_profile_adapters_for_rescan(name)
             claimed = self._live_resource_claims(active)
             for name in added + changed:
                 # Only acknowledge the configuration observed before connecting;

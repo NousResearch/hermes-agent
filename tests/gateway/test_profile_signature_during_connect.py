@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -42,13 +42,14 @@ async def test_config_saved_during_connect_is_rescanned(tmp_path, monkeypatch, s
     runner._restore_secondary_completion_ledgers = lambda *a: None
     runner._adapter_credential_claim = lambda *a: None
     runner._adapter_listener_claim = lambda *a: None
-    runner._create_adapter = lambda platform, config: SimpleNamespace(platform=platform)
+    runner._create_adapter = lambda platform, config: SimpleNamespace(
+        platform=platform, disconnect=AsyncMock())
     runner._note_served_profiles([("default", home)])
     connected = []
 
     async def connect(adapter, platform):
         connected.append(platform)
-        if platform == Platform.DISCORD:
+        if platform == Platform.DISCORD and "TELEGRAM_BOT_TOKEN" not in secrets.read_text(encoding="utf-8"):
             # Configuration was already read; a second setup operation finishes while
             # the first adapter is awaiting its transport handshake.
             secrets.write_text(

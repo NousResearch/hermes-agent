@@ -337,6 +337,7 @@ class ComputeHost:
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
                 cwd_override=str(frame.get("cwd") or "") or None,
+                auth_user_id=frame.get("auth_user_id"),
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
                 conversation_worktree=frame.get("conversation_worktree"),

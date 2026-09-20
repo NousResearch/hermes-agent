@@ -504,8 +504,11 @@ def test_egress_blocked_fallback_continues_to_later_local_candidate(monkeypatch)
         lambda *args, **kwargs: (local, "local-model", "local"),
     )
     route = _LadderRoute(
-        object(), "compression", "", False, "https://primary.example/v1", "custom",
-        None, "https://primary.example/v1", None, "chat_completions", "primary-model", None, {}, None,
+        client=object(), task="compression", tag="", async_mode=False,
+        base_info="https://primary.example/v1", resolved_provider="custom",
+        resolved_model=None, resolved_base_url="https://primary.example/v1",
+        resolved_api_key=None, resolved_api_mode="chat_completions", final_model="primary-model",
+        main_runtime=None, route_info={},
     )
     ladder = _ladder_provider_fallback(ConnectionError("primary unavailable"), route)
 

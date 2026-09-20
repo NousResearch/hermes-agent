@@ -840,6 +840,10 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
     ok = True
     for rec in secondaries:
         name, home = str(rec["profile"]), Path(str(rec["home"]))
+        from hermes_constants import named_profile_is_deleted
+        if named_profile_is_deleted(home):
+            print(f"  ✓ {name}: deleted profile; skipping gateway restoration")
+            continue
         try:
             services = _recorded_services(rec)
             if services:

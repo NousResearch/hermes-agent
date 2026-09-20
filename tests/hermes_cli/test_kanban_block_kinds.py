@@ -155,11 +155,14 @@ def test_live_home_preserves_external_assignee_lane(kanban_home: Path) -> None:
 @pytest.mark.parametrize("finished_parent", [False, True])
 def test_dependency_without_pending_parent_stays_blocked(kanban_home, finished_parent):
     with kbc.connect_closing() as conn:
-        child = _running_task(conn, title="missing external prerequisite")
         if finished_parent:
             parent = _running_task(conn, title="finished prerequisite")
             kb.complete_task(conn, parent, result="done")
+            child = kb.create_task(conn, title="missing external prerequisite", assignee="worker")
             kb.link_tasks(conn, parent_id=parent, child_id=child)
+            assert kb.claim_task(conn, child, claimer="worker") is not None
+        else:
+            child = _running_task(conn, title="missing external prerequisite")
         assert kb.block_task(conn, child, reason="source unavailable", kind="dependency")
         kb.recompute_ready(conn)
         assert kb.get_task(conn, child).status == "blocked"

@@ -456,6 +456,7 @@ def cron_status():
     else:
         pids = find_gateway_pids()
         gateway_alive_via_lock = False
+        desktop_ticker_alive = False
         served_by_multiplexer = False
         if not pids:
             # The pid scan transiently misses a live gateway right after a restart; the runtime
@@ -471,7 +472,15 @@ def cron_status():
             # Multiplexer identity does not establish the active profile's ticker health.
             if not gateway_alive_via_lock:
                 served_by_multiplexer = named_profile_served_by_running_multiplexer()
-        if pids or gateway_alive_via_lock or served_by_multiplexer:
+                if not served_by_multiplexer:
+                    # The Desktop `serve` backend owns an in-process ticker but
+                    # does not hold the gateway runtime lock or appear in the
+                    # gateway PID scan. A fresh heartbeat is its liveness signal;
+                    # _print_ticker_health still distinguishes alive from able
+                    # to fire by requiring a recent successful tick for green.
+                    from cron.jobs import get_ticker_heartbeat_age
+                    desktop_ticker_alive = _ticker_age_is_fresh(get_ticker_heartbeat_age())
+        if pids or gateway_alive_via_lock or served_by_multiplexer or desktop_ticker_alive:
             if served_by_multiplexer:
                 print("  Scheduler host: default-profile multiplexer")
                 _print_ticker_health([], restart_command="hermes --profile default gateway restart")

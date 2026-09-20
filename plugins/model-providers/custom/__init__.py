@@ -56,12 +56,14 @@ class CustomProfile(ProviderProfile):
         # vLLM and SGLang all top out at "max"; "ultra" verbatim 400s); enabled
         # without effort -> omit so the server default applies. Never emit
         # think=True (Ollama-only flag).
-        if reasoning_config and isinstance(reasoning_config, dict):
+        ollama_endpoint = _looks_like_ollama_endpoint(ctx.get("base_url"))
+        if (reasoning_config and isinstance(reasoning_config, dict)
+                and not (ctx.get("supports_reasoning") is False and ollama_endpoint)):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort == "none" or reasoning_config.get("enabled", True) is False:
                 # See #14820.
                 top_level["reasoning_effort"] = "none"
-                if _looks_like_ollama_endpoint(ctx.get("base_url")):
+                if ollama_endpoint:
                     extra_body["think"] = False
             elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):
                 # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as

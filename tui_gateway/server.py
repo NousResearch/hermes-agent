@@ -2458,6 +2458,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
     if isinstance(reasoning_config, dict):
         # Disabled must differ from unset ("" = provider default) or the desktop loses "thinking off" after turn 1.
         reasoning_effort = "none" if reasoning_config.get("enabled") is False else str(reasoning_config.get("effort", "") or "")
+    reasoning_effort_wire = "" if reasoning_effort in {"", "none"} else (
+        "max" if reasoning_effort == "ultra" else reasoning_effort
+    )
     service_tier = getattr(agent, "service_tier", None) or mirror.get("service_tier") or ""
     # yolo ORs the same three sources check_all_command_guards() does (approvals.mode=off, the process
     # --yolo env, the per-session flag): the session flag alone would show "off" while config auto-approves.
@@ -2482,7 +2485,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
     info: dict = {
         "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
         "provider": pending_provider or provider,
-        "reasoning_effort": reasoning_effort, "service_tier": service_tier, "fast": service_tier == "priority",
+        "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
+        "service_tier": service_tier, "fast": service_tier == "priority",
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},

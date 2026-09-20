@@ -450,11 +450,21 @@ def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_re
     assert gm.rollback_migration(fleet.root) is True and _config_flag(fleet.root) is False
 
 
-def test_failed_auto_migration_restores_secondaries_and_raises(fleet, monkeypatch):
+def test_failed_auto_migration_keeps_manifest_for_recovery(fleet, monkeypatch, capsys):
+    # Automatic migration stays within the existing service domain. A failed
+    # served-profile confirmation leaves the manifest as the recovery authority;
+    # it does not throw or silently restore a second independent fleet.
+    fleet.services["default"] = ("systemd", False)
     monkeypatch.setattr(gm, '_wait_for_served', lambda *args: ['default'])
-    with pytest.raises(RuntimeError, match='Automatic gateway migration failed'):
-        gm.maybe_auto_migrate_after_update()
-    assert fleet.services == {'coder': ('systemd', False), 'ops': ('systemd', False)}
+    gm.maybe_auto_migrate_after_update()
+    assert "has not confirmed serving" in capsys.readouterr().out
+    assert fleet.services == {"default": ("systemd", False)}
+    assert _config_flag(fleet.root) is True
+    assert (fleet.root / gm.MANIFEST_NAME).exists()
+    assert gm.rollback_migration(fleet.root) is True
+    assert fleet.services == {
+        "default": ("systemd", False), "coder": ("systemd", False), "ops": ("systemd", False),
+    }
     assert _config_flag(fleet.root) is False
 
 
@@ -463,7 +473,7 @@ def test_rollback_restores_survivors_when_default_fails_and_skips_deleted(fleet,
     assert gm.apply_migration(plan, served_wait=5)
     from hermes_constants import mark_named_profile_deleted
     mark_named_profile_deleted(fleet.root / 'profiles/ops')
-    monkeypatch.setattr(gm, '_restore_default_gateway', lambda *args: (_ for _ in ()).throw(RuntimeError('default failed')))
+    monkeypatch.setattr(gm, '_restart_default', lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('default failed')))
     fleet.ops.clear()
     assert not gm.rollback_migration(fleet.root)
     assert ('coder', 'start') in fleet.ops
@@ -477,9 +487,9 @@ def test_migration_stops_and_records_every_secondary_service_scope(fleet, monkey
     plan = gm.build_migration_plan()
     operations = []
     original_op = gm._service_op
-    def service_op(kind, system, verb, home):
+    def service_op(kind, system, verb, home, *, run_as_user=None):
         operations.append((home.name, system, verb))
-        original_op(kind, system, verb, home)
+        original_op(kind, system, verb, home, run_as_user=run_as_user)
     monkeypatch.setattr(gm, '_service_op', service_op)
     assert gm.apply_migration(plan, served_wait=5)
     assert {system for name, system, verb in operations if name == 'coder' and verb == 'uninstall'} == {False, True}

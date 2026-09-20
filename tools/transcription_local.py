@@ -151,13 +151,15 @@ def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
     try:
         return WhisperModel(model_name, local_files_only=True, **kwargs)
     except (_hub_cache_miss_error(), RuntimeError) as exc:
-        if isinstance(exc, RuntimeError) and "Unable to open file" not in str(exc):
+        if isinstance(exc, RuntimeError) and not any(
+            marker in str(exc) for marker in ("Unable to open file", "not cached")
+        ):
             raise
         logger.info("faster-whisper model '%s' is not cached; downloading it from the Hugging Face Hub", model_name)
 
     try:
         return WhisperModel(model_name, local_files_only=False, **kwargs)
-    except OSError as exc:
+    except (_hub_cache_miss_error(), OSError) as exc:
         raise RuntimeError(
             f"Unable to download faster-whisper model '{model_name}': {exc}. "
             "If huggingface.co is unreachable, set HF_ENDPOINT to an accessible mirror; "

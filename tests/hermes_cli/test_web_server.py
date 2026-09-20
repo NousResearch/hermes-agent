@@ -800,7 +800,8 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert worker_home / "gateway.pid" in seen["pid_paths"]
         assert worker_home / "gateway_state.json" in seen["status_paths"]
-        assert seen["expected_home"] == worker_home
+        assert seen["expected_homes"]
+        assert set(seen["expected_homes"]) == {worker_home}
 
 
 

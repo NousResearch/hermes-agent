@@ -219,8 +219,7 @@ class PluginDispatchMixin:
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
-                logger.warning(
-                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+                self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if hook_name in {"pre_kanban_complete", "pre_kanban_review"}:
                     results.append({"action": "block", "message": "Kanban completion policy callback failed"})
         return results

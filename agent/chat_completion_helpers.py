@@ -589,6 +589,19 @@ def _configured_stale_base(agent) -> float:
     return cfg if cfg is not None else env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
 
 
+def _local_stream_stale_timeout_default() -> float:
+    """Configured local-provider stale ceiling, shared with the Codex first-event watchdog."""
+    local_default = 900.0
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        value = agent_cfg.get("local_stream_stale_timeout") if isinstance(agent_cfg, dict) else None
+        if isinstance(value, (int, float)):
+            local_default = float(value)
+    return env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", local_default)
+
+
 def _scale_stale_timeout_for_context(base: float, est_tokens: int) -> float:
     """Large contexts: slow models think for minutes before the first token;
     scale the threshold or the detector kills healthy streams."""
@@ -1208,12 +1221,23 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.", ttfb_timeout, idle_default,
                 f"{est_tokens:,}", disable_above)
             ttfb_timeout = idle_default
-        ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
+        # This ceiling is opt-in: the default cap used to undo the large-request
+        # scale-up immediately, restoring the short first-byte cutoff it was meant to avoid.
+        ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 0.0)
         if ttfb_cap > 0 and ttfb_timeout > ttfb_cap:
             logger.info("Capping openai-codex no-event TTFB timeout from %.0fs to %.0fs "
                 "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
+    elif not ttfb_explicit and (base_url := getattr(agent, "base_url", None)) and is_local_endpoint(base_url):
+        # Local inference servers may spend minutes in prefill before their first event;
+        # match the Chat Completions local stale ceiling unless explicitly overridden.
+        local_ceiling = _local_stream_stale_timeout_default()
+        if local_ceiling > ttfb_timeout:
+            logger.info("Local provider detected (%s) — no-event TTFB watchdog raised from %.0fs to %.0fs "
+                        "(agent.local_stream_stale_timeout); set HERMES_CODEX_TTFB_TIMEOUT_SECONDS for an explicit cutoff.",
+                        base_url, ttfb_timeout, local_ceiling)
+            ttfb_timeout = local_ceiling
 
     if ttfb_enabled and not ttfb_explicit:
         ttfb_timeout = max(ttfb_timeout, effort_floor)
@@ -1803,9 +1827,16 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
     rewrites a dual-surface /anthropic base to /v1, losing the Anthropic wire signal. An explicit
     ``api_mode`` always wins (even "chat_completions") and suppresses later re-detection;
     ``provider: anthropic`` without a base_url still resolves to anthropic_messages."""
-    explicit = str(fb.get("api_mode") or "").strip()
+    from hermes_cli.runtime_provider import _parse_api_mode, _get_named_custom_provider
+    explicit = _parse_api_mode(fb.get("api_mode") or fb.get("transport"))
     if explicit:
         return True, explicit
+    if fb_provider not in {"custom", "moa"}:
+        declared = (_get_named_custom_provider(fb_provider) or {}).get("api_mode")
+        if declared:
+            parsed = _parse_api_mode(declared)
+            if parsed:
+                return True, parsed
     if fb_provider == "anthropic" or (fb_base_url_hint and _is_anthropic_wire_url(fb_base_url_hint)):
         return False, "anthropic_messages"
     return False, "chat_completions"
@@ -1820,6 +1851,11 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
         # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
         from hermes_cli.providers import nous_api_mode
         return nous_api_mode(fb_model)
+    from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
+    from hermes_cli.models import opencode_model_api_mode
+    opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
+    if opencode_family is not None:
+        return opencode_model_api_mode(opencode_family, fb_model)
     if _is_anthropic_wire_url(fb_base_url):
         # Named custom providers (cron-anthropic) resolve base_url from config; the hint pass never saw it.
         return "anthropic_messages"
@@ -1922,6 +1958,20 @@ def _should_skip_fallback_candidate(
     return False
 
 
+_FALLBACK_POOL_LONG_WAIT_SECONDS = 300.0
+
+
+def _fallback_pool_has_usable_credential(provider: str, model: str) -> bool:
+    """Skip a configured fallback whose whole pool is benched well beyond a brief throttle."""
+    from agent.credential_pool import load_pool
+
+    pool = load_pool(provider)
+    if pool is None or not pool.has_credentials() or pool.has_available(model=model):
+        return True
+    next_at = pool.next_available_at(model=model)
+    return next_at is None or next_at <= time.time() + _FALLBACK_POOL_LONG_WAIT_SECONDS
+
+
 def _update_fallback_context_compressor(agent) -> None:
     """Point compression limits at the fallback model's context window (not the primary's),
     respecting the explicit model.context_length config override."""
@@ -2013,6 +2063,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if _should_skip_fallback_candidate(
             agent, fb, fb_key, fb_provider, fb_model, unavailable, reason=reason,
         ):
+            continue
+
+        if not _fallback_pool_has_usable_credential(fb_provider, fb_model):
+            logger.info("Fallback skip: %s/%s has no credential available for an extended cooldown", fb_provider, fb_model)
             continue
 
         try:
@@ -2793,6 +2847,8 @@ class _StreamingCall(StreamingWaitMonitor):
             self.stream_attempt_state["current"] += 1
             attempt_id = int(self.stream_attempt_state["current"])
         self.provider_tool_in_flight["yes"] = False
+        self.result["partial_tool_names"] = []
+        self.deltas_were_sent["yes"] = False
         return attempt_id
 
     def _cancel_current_stream_attempt(self, reason: str) -> None:
@@ -2837,7 +2893,10 @@ class _StreamingCall(StreamingWaitMonitor):
     def _emit_text(self, text: str) -> None:
         self._fire_first_delta()
         self.agent._fire_stream_delta(text)
-        self.deltas_were_sent["yes"] = True
+        # Whitespace can be forwarded to preserve streaming fidelity, but it is
+        # not user-visible delivery and is safe to retry without duplication.
+        if text.strip():
+            self.deltas_were_sent["yes"] = True
 
     def _emit_reasoning(self, text: str) -> None:
         self._fire_first_delta()
@@ -2983,6 +3042,7 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        refusal_parts: list[str] = []
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
@@ -3058,6 +3118,10 @@ class _StreamingCall(StreamingWaitMonitor):
                 reasoning_parts.append(reasoning_text)
                 self._emit_reasoning(reasoning_text)
 
+            refusal_text = getattr(delta, "refusal", None)
+            if refusal_text:
+                refusal_parts.append(refusal_text)
+
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
             delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
@@ -3092,7 +3156,8 @@ class _StreamingCall(StreamingWaitMonitor):
             return self._adopt_final_response(stream.final_response)
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
-            response_id=response_id, upstream_provider=upstream_provider)
+            response_id=response_id, upstream_provider=upstream_provider,
+            refusal="".join(refusal_parts) or None)
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -3141,7 +3206,7 @@ class _StreamingCall(StreamingWaitMonitor):
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None):
+        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, refusal=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -3175,7 +3240,8 @@ class _StreamingCall(StreamingWaitMonitor):
         if provider_stream_error is not None:
             raise provider_stream_error
         flush_pending()
-        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning)
+        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls,
+            reasoning_content=full_reasoning, refusal=refusal)
         # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
         # look a request up. Fabricated only when the stream never sent one.
         return SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
@@ -3255,6 +3321,7 @@ class _StreamingCall(StreamingWaitMonitor):
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
                         has_tool_use = True
+                        self.provider_tool_in_flight["yes"] = True
                         if getattr(block, "name", None):
                             self._emit_tool_started(block.name)
                 elif event_type == "content_block_delta":
@@ -3363,6 +3430,13 @@ class _StreamingCall(StreamingWaitMonitor):
             # reset the streamed-text buffer so it isn't double-recorded; fresh accumulators.
             self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
             self._quiet(self.agent._reset_stream_delivery_tracking)
+            if self.agent.api_mode == "anthropic_messages" and _is_stream_parse_err:
+                tools = self.api_kwargs.get("tools")
+                if isinstance(tools, list):
+                    self.api_kwargs["tools"] = [
+                        {**tool, "eager_input_streaming": False} if isinstance(tool, dict) else tool
+                        for tool in tools
+                    ]
             self.result["partial_tool_names"] = []
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False

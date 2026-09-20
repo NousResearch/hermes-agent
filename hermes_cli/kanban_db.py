@@ -915,10 +915,17 @@ class Task:
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        text_columns = {
+            "id", "title", "body", "assignee", "status", "created_by", "workspace_kind",
+            "workspace_path", "claim_lock", "branch_name", "project_id", "tenant", "result",
+            "idempotency_key", "workflow_template_id", "current_step_key", "session_id",
+            "completion_contract", "model_override", "provider_override", "reasoning_effort", "block_kind",
+        }
+        text_value = lambda col, value: _lossy_text(value) if col in text_columns else value  # noqa: E731
         return cls(
-            **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
-            **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
-            **{col: g(col) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
+            **{col: text_value(col, row[col]) for col in _TASK_REQUIRED_COLUMNS},
+            **{col: text_value(col, g(col)) for col in _TASK_OPTIONAL_COLUMNS},
+            **{col: text_value(col, g(col)) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
@@ -938,11 +945,11 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
-    "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind",
+    "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind", "session_id",
 )
 
 
@@ -996,7 +1003,7 @@ class Comment:
     def from_row(cls, r: sqlite3.Row) -> "Comment":
         return cls(
             id=r["id"], task_id=r["task_id"], author=r["author"],
-            body=r["body"], created_at=r["created_at"],
+            body=_lossy_text(r["body"]), created_at=r["created_at"],
         )
 
 
@@ -1784,7 +1791,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
-        _append_event(conn, task_id, "assigned", {"assignee": profile})
+        _append_event(conn, task_id, "assigned", {"from": row["assignee"], "assignee": profile})
     # Observer fires AFTER commit so subscribers see durable state.
     notify_task_updated(conn, task_id, ("assignee",))
     return True
@@ -2225,21 +2232,28 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+_UNSET_RUN_PROFILE = object()
+
+
 def _end_or_synthesize_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, status: str,
     summary: Optional[str] = None, metadata: Optional[dict] = None, synthesize: bool,
+    profile: Any = _UNSET_RUN_PROFILE,
 ) -> Optional[int]:
     """:func:`_end_run`; when no run was active and ``synthesize`` holds, record a
     zero-duration run instead so the handoff fields survive in attempt history."""
     run_id = _end_run(conn, task_id, outcome=outcome, status=status, summary=summary, metadata=metadata)
     if run_id is None and synthesize:
-        run_id = _synthesize_ended_run(conn, task_id, outcome=outcome, summary=summary, metadata=metadata)
+        run_id = _synthesize_ended_run(
+            conn, task_id, outcome=outcome, summary=summary, metadata=metadata, profile=profile,
+        )
     return run_id
 
 
 def _synthesize_ended_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None,
+    profile: Any = _UNSET_RUN_PROFILE,
 ) -> int:
     """Zero-duration closed run for a terminal transition on a never-claimed
     task, so the handoff fields aren't silently dropped (``_end_run`` is a
@@ -2249,7 +2263,8 @@ def _synthesize_ended_run(
     trow = conn.execute(
         "SELECT assignee, current_step_key FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
-    profile = trow["assignee"] if trow else None
+    if profile is _UNSET_RUN_PROFILE:
+        profile = trow["assignee"] if trow else None
     step_key = trow["current_step_key"] if trow else None
     cur = conn.execute(
         """
@@ -2282,17 +2297,13 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     that path.
     """
     row = conn.execute(
-        "SELECT kind, payload FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked', 'gave_up') "
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
     if not row:
         return False
-    if row["kind"] == "blocked":
-        return True
-    if row["kind"] == "gave_up":
-        return bool(_json_dict(_row_get(row, "payload")).get("sticky"))
-    return False
+    return row["kind"] == "blocked"
 
 
 def _latest_event(
@@ -2447,6 +2458,19 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
         "WHERE l.child_id = ? "
         "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
     ).fetchone() is None
+
+
+def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
+    """Return direct parent ids and statuses that still gate this task."""
+    return [
+        (str(row["id"]), str(row["status"]))
+        for row in conn.execute(
+            "SELECT p.id, p.status FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+            "ORDER BY p.id", (task_id,),
+        ).fetchall()
+    ]
 
 
 def _claim_and_open_run(
@@ -2669,10 +2693,12 @@ def release_stale_claims(
     now = int(time.time())
     reclaimed = 0
     host_prefix = _host_prefix()
+    from hermes_cli.kanban_db_dispatch import _worker_alive
+
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
+        "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
         "       assignee, consecutive_failures, max_retries "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
@@ -2684,13 +2710,19 @@ def release_stale_claims(
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
         heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
-        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]) and not heartbeat_stale:
+        if (
+            host_local
+            and row["worker_pid"]
+            and _worker_alive(row["worker_pid"], _row_get(row, "worker_started_at"))
+            and not heartbeat_stale
+        ):
             _extend_live_stale_claim(conn, row, now)
             continue
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"],
             task_id=row["id"], signal_fn=signal_fn,
+            started_at=_row_get(row, "worker_started_at"),
         )
         # A live worker of ours must keep its claim (else a duplicate spawns beside it).
         if _worker_survived_termination(termination):
@@ -2703,7 +2735,7 @@ def release_stale_claims(
             retry_status = _retry_status_for_run(conn, row["id"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (retry_status, row["id"], row["claim_lock"], now),
@@ -2792,7 +2824,7 @@ def reclaim_task(
     """Operator reclaim regardless of TTL: release the claim, restore the source
     phase, reset the failure counter. False when not running."""
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if not row:
         return False
@@ -2800,12 +2832,15 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
-    termination = _terminate_reclaimed_worker(row["worker_pid"], prev_lock, signal_fn=signal_fn)
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        started_at=_row_get(row, "worker_started_at"),
+    )
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
+            "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?", (retry_status, task_id, prev_lock),
         )
@@ -3478,11 +3513,16 @@ def block_task(
                 {"reason": reason, "kind": kind, "source_status": source_status},
             )
         else:
+            pending_dependency = not _parents_satisfied(conn, task_id)
+            route_kind = "needs_input" if kind == "dependency" and not pending_dependency else kind
             new_status, event_kind, set_sql, params, payload = _route_block(
-                kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
+                route_kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
                 prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
-                pending_dependency=not _parents_satisfied(conn, task_id),
+                pending_dependency=pending_dependency,
             )
+            if route_kind != kind:
+                payload["requested_kind"] = kind
+                payload["rekind_reason"] = "no_open_parent"
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
@@ -3663,6 +3703,7 @@ def request_review(
                 run_id = _end_or_synthesize_run(
                     conn, task_id, outcome="review_requested", status="review",
                     summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+                    profile=implementer,
                 )
             except BaseException:
                 if isinstance(metadata, dict):
@@ -3968,7 +4009,7 @@ def invalidate_descendants_for_parent_reopen(
                 FROM task_links l
                 JOIN descendants d ON d.id = l.parent_id
             )
-            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock
+            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.worker_started_at, t.claim_lock
             FROM descendants d
             JOIN tasks t ON t.id = d.id
             ORDER BY t.id
@@ -3985,7 +4026,7 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = "review"
             elif previous_status == "running":
                 resume_status = _retry_status_for_run(conn, row["id"], row["current_run_id"])
-                terminations.append((row["worker_pid"], row["claim_lock"]))
+                terminations.append((row["worker_pid"], row["claim_lock"], row["worker_started_at"]))
                 run_id = _end_run(
                     conn, row["id"], outcome="reclaimed", status="todo",
                     summary=f"ancestor {task_id} reopened",
@@ -3995,7 +4036,8 @@ def invalidate_descendants_for_parent_reopen(
             conn.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL, "
                 "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
-                "current_run_id = NULL, consecutive_failures = 0 WHERE id = ?", (row["id"],),
+                "worker_started_at = NULL, current_run_id = NULL, consecutive_failures = 0 "
+                "WHERE id = ?", (row["id"],),
             )
             entry = {
                 "id": row["id"], "prior_status": previous_status,
@@ -4025,8 +4067,8 @@ def invalidate_descendants_for_parent_reopen(
     if not caller_owns_txn:
         # Standalone: committed above, audit trail durable, safe to kill now.
         # Composed calls leave this to the caller post-commit.
-        for pid, claim_lock in terminations:
-            _terminate_reclaimed_worker(pid, claim_lock)
+        for pid, claim_lock, started_at in terminations:
+            _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
     return {"invalidated": invalidated, "terminations": terminations}
 
 

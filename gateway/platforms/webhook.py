@@ -619,6 +619,15 @@ class WebhookAdapter(BasePlatformAdapter):
             return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id)
+        if route_config.get("coalesce"):
+            buffered = self._coalescer.enqueue(
+                route_name=route_name, coalesce=route_config["coalesce"], payload=payload,
+                event_type=event_type, prompt=prompt, delivery_id=delivery_id, now=now,
+                route_config=route_config, profile=profile,
+            )
+            if buffered:
+                return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
+                                          "delivery_id": delivery_id}, status=202)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
 

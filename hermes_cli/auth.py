@@ -773,20 +773,21 @@ def _provider_state_in(store: Dict[str, Any], provider_id: str) -> Optional[Dict
 def _load_provider_state_with_source(
     auth_store: Dict[str, Any], provider_id: str,
 ) -> tuple[Optional[Dict[str, Any]], Optional[Path]]:
-    """Provider state plus the auth.json path it came from (profile first, then the global root).
+    """Provider state plus its owning auth.json path; a named profile never inherits root state.
 
     Refresh paths that rotate single-use OAuth refresh tokens must write the updated chain back to
     the same store they read."""
     state = _provider_state_in(auth_store, provider_id)
     if state is not None:
         return state, _auth_file_path()
+    if _global_auth_file_path() is not None:
+        return None, None
     global_state = _provider_state_in(_load_global_auth_store(), provider_id)
     return (global_state, _global_auth_file_path()) if global_state is not None else (None, None)
 
 
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
-    """Provider state; in profile mode falls back to the global-root ``auth.json`` per provider (same
-    shadowing as ``read_credential_pool``), so profile workers see globally-authed providers."""
+    """Provider state owned by the active home; named profiles never inherit root credentials."""
     return _load_provider_state_with_source(auth_store, provider_id)[0]
 
 
@@ -893,33 +894,17 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
-    In profile mode the global-root ``auth.json`` is a read-only fallback applied per provider ONLY
-    when the profile has zero entries for it (``hermes auth add`` in the profile shadows global)."""
+    Named profiles own independent pools: never inherit credentials from the global-root store."""
     pool = _load_auth_store().get("credential_pool")
     pool = pool if isinstance(pool, dict) else {}
-    global_pool = _load_global_auth_store().get("credential_pool")
-    global_pool = global_pool if isinstance(global_pool, dict) else {}
 
     if provider_id is None:
-        merged = dict(pool)
-        for gp_key, gp_entries in global_pool.items():
-            existing = merged.get(gp_key)
-            if not (isinstance(gp_entries, list) and gp_entries):
-                continue
-            if not (isinstance(existing, list) and existing):  # profile wins when it has ANY entries
-                merged[gp_key] = list(gp_entries)
-        return merged
+        return dict(pool)
 
     provider_entries = pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
         return list(provider_entries)
-    # Single-use OAuth refresh grants are profile-owned secrets, never a
-    # fallback credential. Sharing them across profiles creates implicit
-    # identity inheritance even if writes are serialized back to the root.
-    if provider_id in SINGLE_USE_REFRESH_POOL_PROVIDERS and _global_auth_file_path() is not None:
-        return []
-    global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
+    return []
 
 
 _POOL_STATUS_FIELDS = (
@@ -1063,7 +1048,7 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
 
 
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
-    """Persisted auth state for a provider (profile first, global-root fallback), or None."""
+    """Persisted provider state owned by the active Hermes home, or None."""
     return _load_provider_state(_load_auth_store(), provider_id)
 
 
@@ -1795,7 +1780,8 @@ _OAUTH_GRANT_DEAD_CODES = frozenset({"invalid_grant", "invalid_token", "refresh_
 OAUTH_PROVIDER_FLOWS: Dict[str, OAuthProviderFlow] = {
     "nous": OAuthProviderFlow(
         "nous", "resolve_nous_runtime_credentials", "get_nous_auth_status",
-        terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES, logout_from_config=True),
+        terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | {"nous_auth_missing", "nous_auth_missing_refresh_token"},
+        logout_from_config=True),
     "openai-codex": OAuthProviderFlow(
         "openai-codex", "resolve_codex_runtime_credentials", "get_codex_auth_status",
         terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | {"codex_refresh_failed", "codex_auth_missing_refresh_token"},

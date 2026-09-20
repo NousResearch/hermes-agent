@@ -405,6 +405,20 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
+    # These typed cards have a durable owner/authority contract; asking the LLM
+    # to rewrite their scope could split an exact-head PR action or erase the
+    # specialist owner of a governed research intake.
+    if kb._task_requires_pr_write_authority(
+        title=task.title, body=task.body, idempotency_key=task.idempotency_key,
+    ):
+        return DecomposeOutcome(
+            task_id, False, "atomic PR automation must remain one exact-head work item",
+        )
+    if kb.is_governed_research_intake(idempotency_key=task.idempotency_key):
+        return DecomposeOutcome(
+            task_id, False, "governed research intake must retain its typed owner",
+        )
+
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,

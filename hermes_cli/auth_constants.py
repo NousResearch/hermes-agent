@@ -140,11 +140,13 @@ class AuthError(RuntimeError):
 
     def __init__(
         self, message: str, *, provider: str = "", code: Optional[str] = None, relogin_required: bool = False,
+        retry_after: Optional[float] = None,
     ) -> None:
         super().__init__(message)
         self.provider = provider
         self.code = code
         self.relogin_required = relogin_required
+        self.retry_after = retry_after
 
 
 def _provider_error_factory(provider: str) -> Callable[..., AuthError]:

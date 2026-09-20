@@ -453,21 +453,23 @@ def _format_gave_up_notification(
             f"✖ {board_tag}{tag}Kanban {task_id} gave up: iteration budget "
             f"exhausted ({used}/{maximum}) after repeated attempts"
         )
-    if trigger == "spawn_failed":
-        reason = "after repeated spawn failures"
-    elif trigger:
-        reason = f"after repeated {trigger} failures"
-    else:
-        reason = "after repeated worker failures"
     suffix = f"\n{error}" if error else ""
-    return f"✖ {board_tag}{tag}Kanban {task_id} gave up {reason}{suffix}"
+    failures = payload.get("failures")
+    count = f" after failing {failures} times" if failures else " after repeated failures"
+    next_steps = (
+        f"\nUnblock: `hermes kanban unblock {task_id}`"
+        f"\nInspect: `hermes kanban log {task_id}`"
+        f"\nAssign: `hermes kanban reassign {task_id}`"
+    )
+    return f"✖ {board_tag}{tag}Kanban {task_id} blocked{count}.{suffix}\n{next_steps}"
 
 
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
     "gave_up": lambda ev, n: (
-        _format_gave_up_notification(board_tag=n.board_tag, tag=n.worker_tag, task_id=n.task_id, payload=ev.payload), None, None,
+        _format_gave_up_notification(board_tag=n.board_tag, tag=getattr(n, "worker_tag", ""),
+                                     task_id=n.task_id, payload=ev.payload), None, None,
     ),
     "crashed": lambda ev, n: (
         f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,

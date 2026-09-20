@@ -657,6 +657,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    raw_turn_author = params.get("_turn_author")
+    turn_author = None
+    if raw_turn_author is not None:
+        from tools.bot_relay import DeliveryAuthor
+        if not isinstance(raw_turn_author, DeliveryAuthor):
+            return _err(rid, 4124, "turn author may only be supplied by the in-process relay")
+        turn_author = dict(raw_turn_author.author)
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None

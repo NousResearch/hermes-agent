@@ -707,6 +707,12 @@ def _get_hermes_oauth_file() -> Path:
     return get_hermes_home() / ".anthropic_oauth.json"
 
 
+def _root_hermes_oauth_file() -> Path:
+    """Return the root Hermes OAuth singleton used by a profile borrowing its pool grant."""
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / ".anthropic_oauth.json"
+
+
 def _generate_pkce() -> tuple:
     """Generate PKCE code_verifier and code_challenge (S256)."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
@@ -776,13 +782,13 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 
 
 def _write_hermes_oauth_credentials(
-    access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int],
+    access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int], *, target: Optional[Path] = None,
 ) -> None:
     """Commit refreshed hermes_pkce tokens to ``<HERMES_HOME>/.anthropic_oauth.json`` (``CredentialPersistError``
     on failure); without it the next ``load_pool()`` re-seeds the stale (consumed) pair from the file over the
     rotated pool entry."""
     _commit_private_json(
-        _get_hermes_oauth_file(),
+        target or _get_hermes_oauth_file(),
         {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
         "Hermes OAuth credentials",
     )

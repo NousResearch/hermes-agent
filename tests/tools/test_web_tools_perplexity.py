@@ -3,7 +3,7 @@
 import asyncio
 import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.tools.conftest import register_all_web_providers
 
@@ -71,10 +71,22 @@ def test_extract_dispatch_snippets_per_url_and_missing_key():
         {"url": urls[0], "text": "Tokio is an asynchronous runtime … for Rust.", "tokens_count": 12},
         {"url": urls[1], "error": "Page not found or unavailable."},
     ]}
-    with patch.dict(os.environ, {"PERPLEXITY_API_KEY": "pplx-test"}), \
-         patch.object(wt, "_get_extract_backend", return_value="perplexity"), \
-         patch("plugins.web.perplexity.provider.httpx.post", return_value=_ok(payload)) as post:
-        out = json.loads(asyncio.run(wt.web_extract_tool(urls)))
+    from agent.secret_scope import set_secret_scope, reset_secret_scope
+    secret_scope = set_secret_scope({"PERPLEXITY_API_KEY": "pplx-test"})
+    async def _run_sync_in_process(provider, provider_urls, requested_format, timeout):
+        return provider.extract(provider_urls, format=requested_format)
+
+    try:
+        with patch.dict(os.environ, {"PERPLEXITY_API_KEY": "pplx-test"}), \
+             patch.object(wt, "async_is_safe_url", new=AsyncMock(return_value=True)), \
+             patch("tools.web_tools_extract._run_sync_extract_terminable", new=AsyncMock(side_effect=_run_sync_in_process)), \
+             patch("agent.web_search_provider.get_provider_env",
+                   side_effect=lambda name: "pplx-test" if name == "PERPLEXITY_API_KEY" else ""), \
+             patch.object(wt, "_get_extract_backend", return_value="perplexity"), \
+             patch("plugins.web.perplexity.provider.httpx.post", return_value=_ok(payload)) as post:
+            out = json.loads(asyncio.run(wt.web_extract_tool(urls)))
+    finally:
+        reset_secret_scope(secret_scope)
 
     assert post.call_args.args[0] == "https://api.perplexity.ai/sdk/content/snippets"
     _assert_hermes_identity_headers(post.call_args.kwargs["headers"])

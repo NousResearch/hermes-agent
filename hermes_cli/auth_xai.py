@@ -71,9 +71,11 @@ def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
 
 
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
-    from hermes_cli.auth import _load_global_auth_store
+    from hermes_cli.auth import _global_auth_file_path, _load_global_auth_store
     state = _xai_oauth_state_from_store(_load_auth_store_maybe_locked(_lock))
-    if not _xai_oauth_state_has_usable_tokens(state):
+    # A named profile owns its credentials. Root fallback is only valid when
+    # the active home is the root itself (classic, unprofiled mode).
+    if _global_auth_file_path() is None and not _xai_oauth_state_has_usable_tokens(state):
         global_state = _xai_oauth_state_from_store(_load_global_auth_store())
         if _xai_oauth_state_has_usable_tokens(global_state):
             state = global_state

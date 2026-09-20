@@ -43,8 +43,7 @@ def _quarantined_nous_error(exc: BaseException) -> BaseException:
                              relogin_required=True)
     if isinstance(exc, AuthError):
         return AuthError(_sentence(exc), provider=exc.provider, code=exc.code,
-                         relogin_required=exc.relogin_required, retry_after=exc.retry_after,
-                         retryable=exc.retryable)
+                         relogin_required=exc.relogin_required)
     return exc
 
 

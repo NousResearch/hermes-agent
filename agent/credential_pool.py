@@ -1007,6 +1007,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 )
                 if until is not None
             ]
+            model_cooldowns = [
+                until for until in (model_cooldown_until(entry, model) for entry in self._entries)
+                if until is not None
+            ]
+            candidates.extend(model_cooldowns)
             return min(candidates) if candidates else None
 
     def entries(self) -> List[PooledCredential]:
@@ -1172,6 +1177,30 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             extra=updated_extra,
         )
 
+    def _mark_terminal_refresh_dead(
+        self, entry: PooledCredential, exc: BaseException, *, display: str, relogin_command: str,
+    ) -> PooledCredential:
+        """Persist a terminal refresh verdict before singleton quarantine removes its seed row."""
+        reason = str(getattr(exc, "code", "") or "").strip()
+        if not reason:
+            message = str(exc).lower()
+            reason = next((code for code in _TERMINAL_AUTH_REASONS if code in message), "terminal_refresh_failure")
+        status_code = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+        updated = self._adopt(
+            entry,
+            last_status=STATUS_DEAD,
+            last_status_at=time.time(),
+            last_error_code=status_code if isinstance(status_code, int) else None,
+            last_error_reason=reason,
+            last_error_message=str(exc),
+            last_error_reset_at=None,
+        )
+        logger.warning(
+            "%s OAuth refresh token is terminally invalid (%s): %s. Re-authenticate with `%s`.",
+            display, reason, exc, relogin_command,
+        )
+        return updated
+
     # ---- cross-process token resync ---------------------------------------
     #
     # OAuth refresh tokens are single-use. When another process (CLI, another
@@ -1283,6 +1312,20 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             store_access = tokens.get("access_token", "")
             store_refresh = tokens.get("refresh_token", "")
             entry_refresh = entry.refresh_token or ""
+            if is_codex and entry.source == "manual:device_code":
+                # This source is also used for independent accounts. Only treat
+                # it as a legacy singleton alias when its principal matches and
+                # the singleton was refreshed more recently than this row.
+                entry_claims = _decode_jwt_claims(entry.access_token or "")
+                store_claims = _decode_jwt_claims(store_access or "")
+                entry_auth = entry_claims.get("https://api.openai.com/auth", {})
+                store_auth = store_claims.get("https://api.openai.com/auth", {})
+                entry_account = entry_auth.get("chatgpt_account_id") if isinstance(entry_auth, dict) else None
+                store_account = store_auth.get("chatgpt_account_id") if isinstance(store_auth, dict) else None
+                entry_time = _parse_absolute_timestamp(entry.last_refresh) or 0.0
+                store_time = _parse_absolute_timestamp(state.get("last_refresh")) or 0.0
+                if not entry_account or entry_account != store_account or store_time <= entry_time:
+                    return entry
             # Adopt when either side differs: a fresh refresh_token from
             # another process means our pair is consumed/stale.
             should_adopt = bool(store_access) and (
@@ -1692,6 +1735,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Anthropic OAuth refresh failed but pool store has newer tokens — adopting")
                     return self._adopt(synced, **_MARK_OK)
+            from agent.anthropic_credentials import is_terminal_anthropic_refresh_error
+            if is_terminal_anthropic_refresh_error(exc):
+                self._mark_terminal_refresh_dead(
+                    entry, exc, display="Anthropic", relogin_command="hermes auth add anthropic",
+                )
+                return None
         elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
             _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
             synced = self._sync_entry_from_auth_store(entry)
@@ -1703,7 +1752,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # re-seed the revoked credentials, and drop singleton-seeded
             # entries from the pool (mirrors the Nous quarantine path).
             if getattr(auth_mod, terminal_fn_name)(exc):
-                logger.debug("%s OAuth refresh token is terminally invalid; clearing local token state", display)
+                self._mark_terminal_refresh_dead(
+                    entry, exc, display=display, relogin_command=f"hermes auth add {self.provider}",
+                )
                 self._clear_terminal_tokens_state(entry, exc)
                 self._quarantine_sources(entry, {"device_code"})
                 return None
@@ -1722,7 +1773,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
                 return entry
             if auth_mod._is_terminal_nous_refresh_error(exc):
-                logger.debug("Nous refresh token is terminally invalid; clearing local token state")
+                self._mark_terminal_refresh_dead(
+                    entry, exc, display="Nous", relogin_command="hermes auth add nous",
+                )
                 self._clear_terminal_nous_state(entry, exc)
                 self._quarantine_sources(
                     entry,
@@ -1799,7 +1852,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if not token:
             return False
         try:
-            return bool(auth_mod._probe_codex_quota_restored(token, base_url=entry.base_url))
+            restored = bool(auth_mod._probe_codex_quota_restored(token, base_url=entry.base_url))
+            # The probe may have rotated an expired pool token. Sync the new pair
+            # into this pool while retaining the quota verdict until the probe
+            # explicitly confirms recovery.
+            synced = self._sync_entry_from_auth_store(entry)
+            if synced is not entry:
+                from hermes_cli.auth import _POOL_STATUS_FIELDS
+                status = {name: getattr(entry, name) for name in _POOL_STATUS_FIELDS}
+                self._adopt(synced, **status)
+            return restored
         except Exception:
             logger.debug("Codex quota-restored probe failed", exc_info=True)
             return False
@@ -1917,10 +1979,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 # Codex quota windows can reopen EARLY; a throttled live probe
                 # lifts a stale cooldown (issue #43747).
+                quota_restored = False
+                if clear_expired and exhausted_until is not None and now < exhausted_until:
+                    quota_restored = self._codex_quota_restored_upstream(entry)
+                    entry = self._find(lambda candidate: candidate.id == entry.id) or entry
                 if (
                     exhausted_until is not None
                     and now < exhausted_until
-                    and not (clear_expired and self._codex_quota_restored_upstream(entry))
+                    and not quota_restored
                 ):
                     continue
                 if clear_expired:

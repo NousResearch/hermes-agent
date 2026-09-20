@@ -1277,6 +1277,11 @@ class TestAnthropicStreamCallbacks:
         )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
+        from agent.source_provenance import DEFAULT_POLICY_DIGEST
+        agent.session_id = "stream-session"
+        agent._current_turn_id = "stream-turn"
+        agent._current_api_request_id = "stream-turn:api:1"
+        agent._llm_egress_policy_digest = DEFAULT_POLICY_DIGEST
 
         # Text already reached the user, so only the mid-tool-call retry path may re-open the
         # stream; a tool_use that never registers as in flight is stubbed instead.
@@ -1309,7 +1314,11 @@ class TestAnthropicStreamCallbacks:
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
         tools = [{"name": "cronjob_manage", "input_schema": {"type": "object"}}]
 
-        response = agent._interruptible_streaming_api_call({"model": agent.model, "tools": tools})
+        response = agent._interruptible_streaming_api_call({
+            "model": agent.model,
+            "messages": [{"role": "user", "content": "Please run the cron job."}],
+            "tools": tools,
+        })
 
         assert response is repaired_message
         assert agent._anthropic_client.messages.create.call_count == 0
@@ -1333,6 +1342,11 @@ class TestAnthropicStreamCallbacks:
         )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
+        from agent.source_provenance import DEFAULT_POLICY_DIGEST
+        agent.session_id = "stream-session"
+        agent._current_turn_id = "stream-turn"
+        agent._current_api_request_id = "stream-turn:api:1"
+        agent._llm_egress_policy_digest = DEFAULT_POLICY_DIGEST
 
         attempts = [
             _AnthropicEventStream([SimpleNamespace(type="content_block_start",
@@ -1351,7 +1365,11 @@ class TestAnthropicStreamCallbacks:
         agent.stream_delta_callback = emitted.append
 
         response = agent._interruptible_streaming_api_call(
-            {"model": agent.model, "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}]})
+            {
+                "model": agent.model,
+                "messages": [{"role": "user", "content": "Please run the old tool."}],
+                "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}],
+            })
 
         assert agent._anthropic_client.messages.stream.call_count == 2
         assert "old_tool" not in (response.choices[0].message.content or "")

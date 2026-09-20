@@ -241,13 +241,62 @@ def _ssl_interop_hint(exc: BaseException) -> str:
     )
 
 
+def _is_transient_transport_error(exc: BaseException) -> bool:
+    """Recognize transport failures, including SSL/socket errors wrapped by httpx."""
+    err: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while err is not None and id(err) not in seen:
+        if isinstance(err, (httpx.TransportError, OSError)):
+            return True
+        seen.add(id(err))
+        err = err.__cause__
+    return False
+
+
 def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "httpx.Response":
-    """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``."""
-    try:
-        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
-            return client.post(url, **kwargs)
-    except Exception as exc:
-        raise _codex_err(f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
+    """Retry transient transport blips; surface protocol/application failures immediately."""
+    attempt, attempts = 1, 3
+    while True:
+        try:
+            with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+                return client.post(url, **kwargs)
+        except Exception as exc:
+            if attempt == attempts or not _is_transient_transport_error(exc):
+                raise _codex_err(
+                    f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
+            time.sleep(attempt)
+            attempt += 1
+
+
+_CODEX_AUTH_BODY_MAX_BYTES = 1024 * 1024
+
+
+class _CappedByteStream(httpx.SyncByteStream):
+    """Limit buffered OAuth response bodies before JSON decoding."""
+
+    def __init__(self, response: "httpx.Response") -> None:
+        self._response, self._raw = response, response.stream
+
+    def __iter__(self) -> Iterator[bytes]:
+        total = 0
+        for chunk in self._raw:  # type: ignore[union-attr]  # sync client only
+            total += len(chunk)
+            if total > _CODEX_AUTH_BODY_MAX_BYTES:
+                self.close()
+                host = getattr(getattr(self._response, "url", None), "host", "Codex")
+                raise _codex_err(
+                    f"Codex auth response from {host} exceeded "
+                    f"{_CODEX_AUTH_BODY_MAX_BYTES // 1024} KiB; refusing to parse it.",
+                    "codex_auth_response_too_large", relogin=False)
+            yield chunk
+
+    def close(self) -> None:
+        self._raw.close()  # type: ignore[union-attr]
+
+
+def _cap_codex_response_body(response: "httpx.Response") -> None:
+    """httpx response hook enforcing a 1 MiB limit on Codex OAuth response bodies."""
+    response.stream = _CappedByteStream(response)
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -262,7 +311,7 @@ def _codex_http_client(**kwargs: Any) -> "httpx.Client":
     token refresh / device login / usage probes time out where the official Codex CLI (which races families
     per RFC 8305) works.
     """
-    client = httpx.Client(**kwargs)
+    client = httpx.Client(event_hooks={"response": [_cap_codex_response_body]}, **kwargs)
     with suppress(Exception):
         from agent.process_bootstrap import enable_happy_eyeballs_on_client
         enable_happy_eyeballs_on_client(client)
@@ -437,6 +486,20 @@ def resolve_codex_runtime_credentials(
     if data is None:
         pool_token = _pool_codex_access_token()
         if pool_token:
+            if force_refresh:
+                from agent.credential_pool import load_pool
+                pool = load_pool("openai-codex")
+                refreshed = pool.try_refresh_matching(api_key_hint=pool_token) if pool is not None else None
+                refreshed_token = (
+                    _stripped(getattr(refreshed, "runtime_api_key", None))
+                    or _stripped(getattr(refreshed, "access_token", None))
+                )
+                if refreshed_token and refreshed_token != pool_token:
+                    return _codex_runtime_result(refreshed_token, source="credential_pool", last_refresh=None)
+                raise _codex_err(
+                    "Could not renew the Codex credential from the credential pool.",
+                    "codex_refresh_failed", relogin=True,
+                )
             return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None)
         pool_rate_limit = _codex_pool_rate_limit_status()
         if pool_rate_limit:
@@ -500,6 +563,7 @@ def _entry_is_rate_limit_exhausted(entry: Dict[str, Any]) -> bool:
 CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS = 300  # 5 minutes
 _codex_quota_probe_cache: Dict[str, Tuple[float, Optional[bool]]] = {}
 _codex_quota_probe_lock = threading.Lock()
+_codex_quota_refresh_attempts: Dict[str, float] = {}
 
 
 def _codex_usage_probe_url(base_url: Optional[str]) -> str:
@@ -530,6 +594,10 @@ def _probe_codex_quota_restored(
     # network calls for corrupt/placeholder entries (and keeps hermetic test fixtures offline).
     if not token or not _decode_jwt_claims(token):
         return None
+    if _codex_access_token_is_expiring(token, 0):
+        token = _refresh_expired_codex_pool_token(token) or ""
+        if not token:
+            return None
     cache_key = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
     now = time.monotonic()
     with _codex_quota_probe_lock:
@@ -548,7 +616,7 @@ def _probe_codex_quota_restored(
         account_id = (
             auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None)
         if _nonempty_str(account_id):
-            headers["ChatGPT-Account-Id"] = account_id.strip()
+            headers["ChatGPT-Account-ID"] = account_id.strip()
         with _codex_http_client(timeout=10.0) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:
@@ -558,6 +626,14 @@ def _probe_codex_quota_restored(
                 used = (rate_limit.get(key) or {}).get("used_percent")
                 if isinstance(used, (int, float)):
                     worst_used = max(worst_used or 0.0, float(used))
+            for allowance in (response.json() or {}).get("additional_rate_limits", ()):
+                if not isinstance(allowance, dict):
+                    continue
+                scoped = allowance.get("rate_limit") or {}
+                for key in ("primary_window", "secondary_window"):
+                    used = (scoped.get(key) or {}).get("used_percent")
+                    if isinstance(used, (int, float)):
+                        worst_used = max(worst_used or 0.0, float(used))
             if worst_used is not None:
                 result = worst_used < 100.0
         elif response.status_code == 429:
@@ -568,6 +644,55 @@ def _probe_codex_quota_restored(
     with _codex_quota_probe_lock:
         _codex_quota_probe_cache[cache_key] = (now, result)
     return result
+
+
+def _refresh_expired_codex_pool_token(access_token: str) -> Optional[str]:
+    """Rotate an expired pool grant before probing usage; preserve its quota cooldown."""
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+
+    cache_key = hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
+    now = time.monotonic()
+    with _codex_quota_probe_lock:
+        attempted_at = _codex_quota_refresh_attempts.get(cache_key)
+        if attempted_at is not None and now - attempted_at < CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS:
+            return None
+        _codex_quota_refresh_attempts[cache_key] = now
+
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            pool = auth_store.get("credential_pool")
+            entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+            row = next((item for item in entries or () if isinstance(item, dict)
+                        and _stripped(item.get("access_token")) == access_token), None)
+            if row is None:
+                return None
+            refresh_token = _stripped(row.get("refresh_token"))
+            if not refresh_token:
+                return None
+            refreshed = refresh_codex_oauth_pure(access_token, refresh_token)
+            fresh_access = _stripped(refreshed.get("access_token"))
+            fresh_refresh = _stripped(refreshed.get("refresh_token"))
+            if not fresh_access or not fresh_refresh:
+                return None
+            for item in entries:
+                if isinstance(item, dict) and _stripped(item.get("access_token")) == access_token:
+                    item.update(access_token=fresh_access, refresh_token=fresh_refresh)
+                    if refreshed.get("last_refresh"):
+                        item["last_refresh"] = refreshed["last_refresh"]
+            providers = auth_store.setdefault("providers", {})
+            state = providers.get("openai-codex") if isinstance(providers, dict) else None
+            state = state if isinstance(state, dict) else {}
+            tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else {}
+            if _stripped(tokens.get("access_token")) == access_token or row.get("source") == "device_code":
+                tokens.update(access_token=fresh_access, refresh_token=fresh_refresh)
+                state.update(tokens=tokens, last_refresh=refreshed.get("last_refresh"))
+                providers["openai-codex"] = state
+            _save_auth_store(auth_store)
+            return fresh_access
+    except Exception:
+        logger.debug("Could not refresh expired Codex pool grant before quota probe", exc_info=True)
+        return None
 
 
 def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
@@ -646,10 +771,12 @@ def _pool_codex_access_token() -> str:
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143).
     """
     from hermes_cli.auth import _nonempty_str, read_credential_pool
+    from agent.credential_pool import _parse_absolute_timestamp
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
-            token, reset_at = entry.get("access_token"), entry.get("last_error_reset_at")
-            in_cooldown = isinstance(reset_at, (int, float)) and reset_at > time.time()
+            token = entry.get("access_token")
+            reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
+            in_cooldown = reset_at is not None and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
                 return token.strip()
     except Exception:
@@ -749,10 +876,12 @@ def _codex_poll_authorization_code(
     issuer: str, *, device_auth_id: str, user_code: str, poll_interval: int) -> Dict[str, Any]:
     """Step 3 of the Codex device flow: poll until sign-in completes (403/404 = still pending)."""
     max_wait = 15 * 60  # 15 minutes
+    max_consecutive_blips = 6
     start = time.monotonic()
     code_resp = None
     try:
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+            consecutive_blips = 0
             while time.monotonic() - start < max_wait:
                 time.sleep(poll_interval)
                 try:
@@ -761,9 +890,19 @@ def _codex_poll_authorization_code(
                         json={"device_auth_id": device_auth_id, "user_code": user_code},
                         headers={"Content-Type": "application/json"})
                 except Exception as exc:
-                    raise _codex_err(
-                        f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
-                        "device_code_poll_error") from exc
+                    if not _is_transient_transport_error(exc):
+                        raise _codex_err(
+                            f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
+                            "device_code_poll_error") from exc
+                    consecutive_blips += 1
+                    if consecutive_blips >= max_consecutive_blips:
+                        raise _codex_err(
+                            f"Device auth polling request failed after {consecutive_blips} consecutive"
+                            f" transport errors: {exc}{_ssl_interop_hint(exc)}",
+                            "device_code_poll_error") from exc
+                    print("Transient network error while waiting for sign-in; retrying...")
+                    continue
+                consecutive_blips = 0
                 if poll_resp.status_code == 200:
                     code_resp = poll_resp.json()
                     break

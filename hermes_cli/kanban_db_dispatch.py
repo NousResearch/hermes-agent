@@ -1371,6 +1371,8 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1402,6 +1404,16 @@ def _record_task_failure(
             return False
         fence_sql = ""
         fence_params: tuple[object, ...] = ()
+        if expected_run_id is not None:
+            if row["current_run_id"] != int(expected_run_id):
+                return False
+            fence_sql += " AND current_run_id = ?"
+            fence_params += (int(expected_run_id),)
+        if expected_claim_lock is not None:
+            if row["claim_lock"] != expected_claim_lock:
+                return False
+            fence_sql += " AND claim_lock = ?"
+            fence_params += (expected_claim_lock,)
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -1623,12 +1635,13 @@ def check_respawn_guard(
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            requeued = conn.execute(
-                "SELECT 1 FROM task_events WHERE task_id = ? AND kind IN "
-                "('unblocked', 'reclaimed', 'promoted', 'review_reopened') AND created_at > ? LIMIT 1",
+            handoffs = conn.execute(
+                "SELECT kind, payload FROM task_events WHERE task_id = ? AND created_at > ? "
+                "AND kind IN ('unblocked', 'reclaimed', 'promoted', 'review_reopened', "
+                "'changes_requested', 'assigned') ORDER BY id",
                 (task_id, c["created_at"]),
-            ).fetchone()
-            if not requeued:
+            ).fetchall()
+            if not any(_is_handoff_event(event["kind"], event["payload"]) for event in handoffs):
                 return "active_pr"
 
     return None
@@ -2886,10 +2899,19 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
-    env = build_subprocess_env(
-        scrub_secrets=is_multiplex_active(),
-        inherit_profile_home=True,
-    )
+    secret_token = None
+    if is_multiplex_active():
+        secret_token = set_secret_scope(
+            build_profile_secret_scope(Path(resolve_profile_env(profile_arg)))
+        )
+    try:
+        env = build_subprocess_env(
+            scrub_secrets=is_multiplex_active(),
+            inherit_profile_home=True,
+        )
+    finally:
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
     # Keep the assigned repository cwd from shadowing Hermes runtime imports.
     env["PYTHONSAFEPATH"] = "1"
     # The dispatcher is detached from every conversation; its worker must never

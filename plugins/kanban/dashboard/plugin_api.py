@@ -588,6 +588,8 @@ def _request_review_status(conn, task_id: str, payload) -> bool:
         reviewer=(payload.assignee or None), force=True, with_reason=True)
     ok, reason = result if isinstance(result, tuple) else (result, None)
     if not ok:
+        if reason == "parent dependencies are not satisfied":
+            reason = _open_parent_refusal(conn, task_id, "review") or reason
         raise CompletionPolicyError(reason or "review transition refused")
     return True
 
@@ -659,6 +661,15 @@ def _open_parent_refusal(conn, task_id: str, s: str) -> Optional[str]:
     if s not in ("done", "review"):
         return None
     blockers = kanban_db.unsatisfied_parents(conn, task_id)
+    if not blockers:
+        # Preserve useful blocker details on older DB adapters and board shims
+        # that expose parent_ids but not the diagnostic query.
+        blockers = [
+            (parent_id, parent.status)
+            for parent_id in kanban_db.parent_ids(conn, task_id)
+            if (parent := kanban_db.get_task(conn, parent_id)) is not None
+            and parent.status not in ("done", "archived")
+        ]
     if not blockers:
         return None
     detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)

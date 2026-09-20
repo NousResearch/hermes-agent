@@ -63,7 +63,7 @@ def test_gateway_dispatcher_stuck_warning_names_guard_reason(monkeypatch, caplog
     monkeypatch.setattr(kw, "_KanbanDispatcher", _Dispatcher)
     monkeypatch.setattr(kw, "_resolve_dispatcher_settings", lambda cfg, kb: type("S", (), {"interval": 1.0})())
     monkeypatch.setattr(kw, "_to_thread_process_service", _direct)
-    monkeypatch.setattr(kw, "_kanban_dispatch_allowed", lambda: True)
+    monkeypatch.setattr(kw, "_kanban_dispatch_allowed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(kw, "_resolve_auto_decompose_settings", lambda load_config: (False, 0))
     monkeypatch.setattr(kbd, "reap_worker_zombies", lambda: [])
     monkeypatch.setattr(kw.asyncio, "sleep", _sleep)

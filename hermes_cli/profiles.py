@@ -1113,7 +1113,10 @@ def create_profile(
     if clone_all and source_dir:
         _clone_all_into(source_dir, profile_dir, canon)
     else:
-        _bootstrap_profile_dir(profile_dir, source_dir)
+        _bootstrap_profile_dir(profile_dir, source_dir, sync_imports=sync_imports)
+    _finish_profile_layout(
+        profile_dir, no_skills=no_skills, clone_all=clone_all, description=description,
+    )
     if source_dir is not None and not clone_channels:
         from hermes_cli.profile_channels import strip_channel_settings
         stripped = strip_channel_settings(profile_dir, include_state=clone_all, source_dir=source_dir)

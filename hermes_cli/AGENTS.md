@@ -6,7 +6,9 @@ Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide
 
 `cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins
 `hermes_cli/cli_commands_mixin.py`, `cli_stream_mixin.py`, `cli_status_bar_mixin.py`,
-`cli_billing_mixin.py`, `cli_tui_mixin.py`, ... **Rich** renders banner/panels; **prompt_toolkit**
+`cli_billing_mixin.py`, `cli_tui_mixin.py` (widgets, keybindings, panels), `cli_tui_runtime_mixin.py`
+(run-loop phases: input dispatch, startup, signals, shutdown), `cli_init_mixin.py` (the `__init__`
+phases), ... **Rich** renders banner/panels; **prompt_toolkit**
 handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
 the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through

@@ -393,7 +393,17 @@ chat message can link straight to a plugin install:
 hermes://plugin/install?repo=owner/repo            # main install link
 hermes://plugin/install?repo=owner/repo&enable=1   # enable the agent plugin after install
 hermes://plugin/install?repo=owner/repo&force=1    # replace an existing install
+hermes://plugin/install?catalog=<name>             # reviewed catalog entry at its pinned commit
 ```
+
+The `catalog=<name>` form takes a [Plugin Catalog](./plugin-catalog.md)
+name instead of a repo. Desktop resolves it against the live catalog (the
+same feed the **Capabilities → Plugins** picker shows) and opens the same
+**reviewed catalog entry** dialog an in-app pick does: the agent half installs
+at the catalog's pinned commit, never the branch tip. A name that is not in
+the catalog shows an error toast and nothing else — it is never reinterpreted
+as a git path, so a link cannot smuggle an unreviewed repo behind a
+familiar-looking name.
 
 Clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
 a "Before you install" note, and GitHub browse + clone links — then

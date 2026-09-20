@@ -1589,6 +1589,10 @@ export interface Translations {
       updateToPin: (sha: string) => string
       updateFailed: (name: string) => string
       updated: (name: string) => string
+      deepLinkErrorTitle: string
+      deepLinkCatalogInvalidName: string
+      deepLinkCatalogUnknown: (name: string) => string
+      deepLinkCatalogUnavailable: string
     }
     officialCatalog: string
     officialPill: string

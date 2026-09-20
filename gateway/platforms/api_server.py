@@ -1703,9 +1703,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, presented_key: Optional[str]
     ) -> tuple[Optional[str], Optional[SessionSource], Optional[Any]]:
         """Promote only an exact configured alias to native session identity."""
+        if not presented_key:
+            return presented_key, None, None
         config = load_gateway_config()
         aliases = config.session_key_aliases
-        if not presented_key or presented_key not in aliases:
+        if presented_key not in aliases:
             return presented_key, None, None
         raw = aliases[presented_key]
         try:
@@ -3132,6 +3134,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return None, err
+        # The URL chooses the transcript; an alias must not mix another conversation's
+        # memory scope with that transcript's history. Never silently retarget the URL.
+        if session_source is not None and (session or {}).get("session_key") != gateway_session_key:
+            return None, _error_response(
+                "Session does not belong to the configured session key alias",
+                400, code="session_alias_mismatch")
         body, err = await self._read_json_body(request)
         if err:
             return None, err

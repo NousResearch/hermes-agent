@@ -34,6 +34,8 @@ class HostedControls:
             binding = HostedRoomBinding(room['room_id'], room['authority_gateway_id'], room['authority_epoch'])
             member = task['payload'].get('target_member_id', task['payload']['target_profile'])
             if not self._member_is_peer(room['room_id'], member):
+                if task['status'] == 'indeterminate':
+                    return task
                 rpc = self._resolve_member_transport(binding, task)
                 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
                 if (type(rpc) is HostedRoomAuthorityRPC

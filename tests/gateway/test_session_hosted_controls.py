@@ -18,8 +18,12 @@ def test_unknown_discard_is_exact_and_never_requeues(tmp_path, monkeypatch):
     class Service(CanonicalHostedRoomService):
         pass
     with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))
+        runner = SimpleNamespace(_draining=False)
+        authority = SimpleNamespace(db=db, profile_id=str(tmp_path),
+            epoch=begin_runtime_epoch(db, instance_id='test'), instance_id='test', runner=runner)
+        runner.session_authority = authority
         service = Service(authority, None)
+        authority.hosted_room_service = service
         service.authorize_room('alice', 'room', create=True)
         gateway = local_authority_gateway_id()
         create_room(db.db_path, room_id='room', name='Room', authority_gateway_id=gateway, members=[
@@ -44,7 +48,8 @@ def test_unknown_discard_is_exact_and_never_requeues(tmp_path, monkeypatch):
         monkeypatch.setattr(service, '_resolve_member_transport', lambda *args: rpc)
         monkeypatch.setattr(service, 'publish_terminal', lambda *args: None)
         args = dict(room_id='room', task_id='task', member_id='one', execution_generation=1)
-        action, = service.status('room')['pending_actions']
+        action, = [item for item in service.status('room')['pending_actions']
+                   if item['kind'] == 'discard']
         assert action == {'kind': 'discard', 'member_id': 'one', 'task_id': 'task', 'execution_generation': 1}
         for change in ({'member_id': 'two'}, {'execution_generation': 2}, {'execution_generation': True}):
             with pytest.raises(RuntimeStoreError):

@@ -265,6 +265,10 @@ def install_hosted_transport(server, authority, loop, *, attest):
         # be added to _OPERATIONS (and therefore attested) before it can reach _call.
         rpc = HostedRoomAuthorityRPC(authority, loop, **selector, principal=principal,
                                     authorize=lambda *args: True)
+        if operation == 'discard' and output is not None:
+            params['_owner_output_cleanup'] = output.capture_unknown_output_context(
+                authority, binding, attested, peer_subject, params
+            )
         key = _BINDING + rpc.ref.session_id
         encoded = json.dumps(binding, sort_keys=True)
         def persist(conn):

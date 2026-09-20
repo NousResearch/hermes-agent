@@ -233,6 +233,7 @@ class HostedRoomAuthorityRPC:
     async def _discard(self, params):
         generation = params['execution_generation']
         source_digest = params.pop('_source_discard_digest', None)
+        owner_output_cleanup = params.pop('_owner_output_cleanup', None)
         if (type(generation) is not int or generation < 1
                 or not isinstance(source_digest, str) or len(source_digest) != 64
                 or any(ch not in '0123456789abcdef' for ch in source_digest)):
@@ -244,6 +245,13 @@ class HostedRoomAuthorityRPC:
         if len(matches) != 1:
             raise RuntimeStoreError('stale_generation')
         row, task = matches[0]
+        if owner_output_cleanup is not None:
+            output = __import__(
+                'gateway.session_hosted_output_rpc', fromlist=['discard_unknown_owner_output']
+            )
+            output.discard_unknown_owner_output(
+                self.authority, row, task, generation, owner_output_cleanup
+            )
         # The public fence is hosted; the canonical CAS uses its own generation.
         if row['status'] == 'unknown':
             await self.authority.resolve_unknown(

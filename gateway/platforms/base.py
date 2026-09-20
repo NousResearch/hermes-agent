@@ -2402,8 +2402,9 @@ class BasePlatformAdapter(ABC):
         if not math.isfinite(parsed) or parsed < 0:
             parsed = float(default)
         parsed = max(parsed, min_value)
-        if max_value is not None:
-            parsed = min(parsed, max_value)
+        if max_value is not None and parsed > max_value:
+            logger.warning("%s=%s exceeds the %s ceiling; clamped", key, parsed, max_value)
+            parsed = max_value
         return parsed
 
     def _configure_text_batch_delays(self) -> None:

@@ -602,6 +602,19 @@ class HostedRoomAttachmentStore:
             room_id=room_id, upload_id=upload_id, kind=kind,
             name=name, mime=mime, data=data, public=True)
 
+    @contextmanager
+    def _public_upload_transaction(self, room_id: str) -> Iterator[sqlite3.Connection]:
+        # Even an idempotent return must finish committed expiry reclamation.
+        # Exceptions roll back the row/refcount changes before any unlink.
+        with self._transaction(immediate=True) as conn:
+            from gateway.hosted_room_route_schema import require_room_work_open
+            require_room_work_open(conn, room_id, error=AttachmentAdmissionError)
+            _, removed_blob_ids = self._prune_rows(conn, now=float(self.clock()))
+            yield conn
+        for blob_id in removed_blob_ids:
+            self._blob_path(blob_id).unlink(missing_ok=True)
+        self._sweep_orphans()
+
     def _put(
         self,
         *,
@@ -631,11 +644,8 @@ class HostedRoomAttachmentStore:
         if not public:
             self.prune(now=now)
 
-        removed_blob_ids: list[str] = []
-        with self._lock, self._transaction(immediate=True) as conn:
-            if public:
-                from gateway.hosted_room_route_schema import require_room_work_open
-                require_room_work_open(conn, room_id, error=AttachmentAdmissionError)
+        transaction = self._public_upload_transaction(room_id) if public else self._transaction(immediate=True)
+        with self._lock, transaction as conn:
             existing = conn.execute(
                 "SELECT * FROM hosted_room_attachments WHERE room_id=? AND upload_id=?",
                 (room_id, upload_id),
@@ -658,8 +668,6 @@ class HostedRoomAttachmentStore:
                 )
                 return self._metadata(existing, idempotent=True)
 
-            if public:
-                _, removed_blob_ids = self._prune_rows(conn, now=now)
             room_totals = conn.execute(
                 """SELECT COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS count
                      FROM hosted_room_attachments
@@ -744,10 +752,6 @@ class HostedRoomAttachmentStore:
             if row is None:  # pragma: no cover - guarded by insert
                 raise RuntimeError("stored attachment could not be reloaded")
             result = self._metadata(row)
-        for blob_id in removed_blob_ids:
-            self._blob_path(blob_id).unlink(missing_ok=True)
-        if public:
-            self._sweep_orphans()
         return result
 
     def find_upload(self, *, room_id: Any, upload_id: Any) -> dict[str, Any] | None:

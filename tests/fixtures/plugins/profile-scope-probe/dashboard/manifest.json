@@ -1,0 +1,13 @@
+{
+  "name": "profile-scope-probe",
+  "label": "Profile Scope Probe",
+  "description": "Test-only plugin whose backend reads a profile-scoped credential.",
+  "icon": "Database",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/profile-scope-probe",
+    "position": "after:config"
+  },
+  "entry": "index.js",
+  "api": "plugin_api.py"
+}

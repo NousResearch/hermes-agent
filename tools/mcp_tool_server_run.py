@@ -202,20 +202,57 @@ class MCPServerRunMixin:
         self._park_reason = revival_reason
         self._deregister_tools()
         self._reconnect_event.clear()
-        outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)
-        if outcome == "shutdown":
+        paused = False
+        while True:
+            outcome = await self._wait_for_reconnect_or_shutdown(
+                timeout=_core._PARKED_RETRY_INTERVAL)
+            if outcome == "shutdown":
+                return True
+            # A disabled or deleted config entry must stop the self-probe here: the probe
+            # rebuilds the transport from the config captured at start, so it would re-run
+            # OAuth setup for a server the user turned off, every interval, for the life of
+            # the process (background loops that do not run the gateway reconcile tick
+            # never learn the entry changed). An explicit reconnect request — manual
+            # refresh or `hermes mcp login` — still revives immediately regardless of the
+            # config gate; only the unattended probe honours it. Announce the pause once:
+            # a line per skipped wake would be the very flood this gate exists to stop.
+            if outcome == "self-probe" and not self._still_configured_enabled():
+                (logger.debug if paused else logger.info)(
+                    "MCP server '%s': parked entry is disabled or gone from mcp_servers; pausing the "
+                    "self-probe until it is re-enabled", self.name)
+                paused = True
+                continue
+            # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
+            # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
+            # task-local ContextVar reaches it; it stays set for the task's life — every later
+            # revival of a once-parked server is unattended too. Left interactive, an expired
+            # refresh token opened a new authorize tab every _PARKED_RETRY_INTERVAL, all night.
+            if outcome == "self-probe":
+                from tools.mcp_oauth import _oauth_interactive_enabled
+
+                _oauth_interactive_enabled.set(False)
+            logger.debug(
+                "MCP server '%s': attempting revival %s (%s); rebuilding transport.",
+                self.name,
+                revival_reason,
+                outcome,
+            )
+            return False
+
+    def _still_configured_enabled(self) -> bool:
+        """Whether ``mcp_servers`` on disk still wants this server connected: entry present
+        and ``enabled`` not false. Config read is cached on the file signature, so a parked
+        task polling this every ``_PARKED_RETRY_INTERVAL`` stays cheap. Fail-open on a
+        config-read error: a broken config must not wedge a healthy server's revival."""
+        try:
+            from tools import mcp_tool_config as _config
+            entry = (_config._load_mcp_config() or {}).get(self.name)
+            if entry is None:
+                return False
+            from tools.mcp_tool_common import _parse_boolish
+            return _parse_boolish(entry.get("enabled", True), default=True)
+        except Exception:
             return True
-        # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
-        # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
-        # task-local ContextVar reaches it; it stays set for the task's life — every later
-        # revival of a once-parked server is unattended too. Left interactive, an expired
-        # refresh token opened a new authorize tab every _PARKED_RETRY_INTERVAL, all night.
-        if outcome == "self-probe":
-            from tools.mcp_oauth import _oauth_interactive_enabled
-            _oauth_interactive_enabled.set(False)
-        logger.debug("MCP server '%s': attempting revival %s (%s); rebuilding transport.",
-                     self.name, revival_reason, outcome)
-        return False
 
     async def _prepare_run(self, config: dict) -> bool:
         """Bind config, build sampling/elicitation handlers, validate HTTP. False when the server

@@ -63,3 +63,37 @@ def test_responses_upgrade_is_skipped_for_external_process_profile_on_any_base_u
     plain._provider_model_requires_responses_api = lambda model, provider=None: True
     _finalize_routing(plain, None, None)
     assert plain.api_mode == "codex_responses"
+
+
+def test_fallback_activation_keeps_external_process_provider_on_chat_completions(monkeypatch):
+    """GPT-5 fallback activation re-derives api_mode through ``_provider_model_requires_responses_api``;
+    an external-process (ACP) facade has no ``responses`` surface, so the predicate must decline for
+    any such profile — the bundled copilot-acp and an out-of-tree one alike (#65842, #107754)."""
+    from agent.chat_completion_helpers import _fallback_api_mode_resolved
+    from providers.base import ProviderProfile
+    from run_agent import AIAgent
+
+    profiles = {name: ProviderProfile(name=name, auth_type="external_process") for name in ("copilot-acp", "acme-acp")}
+    monkeypatch.setattr("providers.get_provider_profile", profiles.get)
+    agent = SimpleNamespace(
+        _is_azure_openai_url=lambda url: False, _is_direct_openai_url=lambda url: False,
+        _provider_model_requires_responses_api=AIAgent._provider_model_requires_responses_api)
+
+    for provider in profiles:
+        assert _fallback_api_mode_resolved(agent, provider, "gpt-5.6", "https://proxy.example.invalid/v1") == "chat_completions", provider
+    assert _fallback_api_mode_resolved(agent, "acme-http", "gpt-5.6", "https://proxy.example.invalid/v1") == "codex_responses"
+
+
+def test_should_stream_is_off_for_any_external_process_profile(monkeypatch):
+    """Streaming is disabled for every ACP provider, keyed on the profile — not on the ``acp://``
+    marker alone and not on one vendor's slug."""
+    from agent.turn_api_call import _should_stream
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(name="acme-acp", auth_type="external_process")
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile if name == "acme-acp" else None)
+    make = lambda provider: SimpleNamespace(  # noqa: E731
+        provider=provider, base_url="https://proxy.example.invalid/v1", _has_stream_consumers=lambda: True)
+
+    assert _should_stream(make("acme-acp")) is False
+    assert _should_stream(make("acme-http")) is True

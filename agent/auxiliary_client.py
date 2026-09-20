@@ -6860,7 +6860,10 @@ def _create_with_progress_once(
     error is surfaced to the normal recovery chains instead.
     """
     _notify_aux_dispatch()
-    _notify_aux_progress()  # Preserve the watchdog's historical dispatch tick.
+    # Dispatch alone is not forward progress: a 401/retry/fallback dispatch must not
+    # reset the compression inactivity fence, or a zero-output attempt runs to the
+    # total ceiling instead of idling out (#114938). Progress ticks only for
+    # substantive stream payloads or a completed usable response.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
         response = client.chat.completions.create(**kwargs)
         if not _client_streams_internally(client):
@@ -7085,7 +7088,7 @@ async def _acreate_with_progress(
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
     _notify_aux_dispatch()
-    _notify_aux_progress()
+    # Same contract as the sync twin (#114938): dispatch alone is not progress.
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
         response = await client.chat.completions.create(**kwargs)
         if not _async_client_streams_internally(client):

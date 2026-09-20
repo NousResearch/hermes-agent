@@ -144,15 +144,15 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         # ``providers.<name>.enabled: false`` entries stay in config but are invisible here.
         if not isinstance(entry, dict) or not is_provider_enabled(entry):
             continue
-        # API key from the env var named by key_env, else the inline api_key. Read BEFORE the
-        # alias match (scope-aware ``get_secret_str`` fails closed identically for every entry).
-        key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
-        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         if requested_norm not in custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)):
             continue
         base_url = _entry_url(entry)
         if not base_url:
             continue
+        # Resolve credentials only after identity and endpoint validation. Merely scanning an
+        # unrelated entry must not read its profile-scoped secret.
+        key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
+        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         result: Dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
                                   "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
         # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.

@@ -1890,6 +1890,7 @@ def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
 
 
 @method("session.compress")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:

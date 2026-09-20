@@ -226,6 +226,44 @@ def test_removing_model_thresholds_restores_empty_map(monkeypatch):
     assert compressor.threshold_percent == 0.50
 
 
+def test_live_refresh_re_resolves_structured_model_and_context_policy(monkeypatch):
+    session, compressor = _neutral_session()
+    _sync_with_cfg(
+        monkeypatch,
+        session,
+        {
+            "model": {"context_length": 200_000},
+            "compression": {
+                "threshold": 0.60,
+                "target_ratio": 0.20,
+                "model_thresholds": {
+                    "unset-test-model": {"threshold": 0.70, "target_ratio": 0.30},
+                },
+                "context_window_profiles": [
+                    {"max_context": 250_000, "threshold": 0.55, "target_ratio": 0.40},
+                ],
+            },
+        },
+    )
+
+    assert compressor.context_length == 200_000
+    assert compressor.threshold_percent == 0.70
+    assert compressor.summary_target_ratio == 0.30
+    assert compressor.threshold_tokens == 140_000
+
+    codex_session, codex_compressor = _session_with_compressor()
+    _sync_with_cfg(
+        monkeypatch,
+        codex_session,
+        {
+            "model": {"context_length": 272_000},
+            "compression": {"threshold": float("nan")},
+        },
+    )
+
+    assert codex_compressor.threshold_percent == 0.85
+
+
 def test_removing_threshold_restores_derived_default(monkeypatch):
     session, compressor = _neutral_session(threshold_percent=0.85)
     assert compressor.threshold_percent == 0.85

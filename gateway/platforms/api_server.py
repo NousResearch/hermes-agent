@@ -3385,10 +3385,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if delta:
                 events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
+        def _reasoning(delta: str) -> None:
+            """Live model reasoning, kept out of ``assistant.delta`` (#99552)."""
+            if delta:
+                events.enqueue("reasoning.delta", {"message_id": message_id, "delta": delta})
+
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
-            if event_type == "reasoning.available":
-                events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
-            elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
+            # Completion-time ``reasoning.available`` previews are derived from finished
+            # assistant content, so exposing them as a synthetic ``_thinking`` tool event
+            # misclassifies or duplicates the final answer; live reasoning arrives through
+            # the dedicated callback above instead (#99552).
+            if event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
         def _commentary(text: str, *, already_streamed: bool = False) -> None:
@@ -3408,7 +3415,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
+                    reasoning_callback=_reasoning, tool_progress_callback=_tool_progress,
+                    interim_assistant_callback=_commentary,
                     active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")

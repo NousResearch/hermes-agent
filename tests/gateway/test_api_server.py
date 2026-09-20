@@ -752,6 +752,60 @@ class TestDisconnectedAgentReap:
 class TestRunEventCallback:
 
     @pytest.mark.asyncio
+    async def test_run_emits_live_reasoning_not_completion_preview(self, adapter, monkeypatch):
+        """Run events must carry model reasoning deltas, never the completion-time
+        ``reasoning.available`` preview that is derived from finished assistant
+        content (#99552)."""
+        class FakeAgent:
+            session_prompt_tokens = 1
+            session_completion_tokens = 2
+            session_total_tokens = 3
+
+            def __init__(self, **kwargs):
+                self.session_id = kwargs["session_id"]
+                self.reasoning_callback = kwargs["reasoning_callback"]
+                self.stream_delta_callback = kwargs["stream_delta_callback"]
+                self.tool_progress_callback = kwargs["tool_progress_callback"]
+
+            def run_conversation(self, user_message, conversation_history, task_id):
+                del user_message, conversation_history, task_id
+                self.reasoning_callback("")
+                self.reasoning_callback("check facts")
+                self.tool_progress_callback(
+                    "reasoning.available", "_thinking", "answer misclassified", None
+                )
+                self.stream_delta_callback("answer")
+                return {"final_response": "answer"}
+
+        monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent(**kwargs))
+        app = web.Application()
+        app.router.add_post("/v1/runs", adapter._handle_runs)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json={"input": "reason first"})
+            assert resp.status == 202
+            run_id = (await resp.json())["run_id"]
+
+            events = []
+            queue = adapter._run_streams[run_id]
+            while True:
+                event = await asyncio.wait_for(queue.get(), timeout=2)
+                if event is None:
+                    break
+                events.append(event)
+
+        streamed = [
+            (event["event"], event.get("delta"))
+            for event in events
+            if event["event"] in {"reasoning.delta", "message.delta"}
+        ]
+        assert streamed == [
+            ("reasoning.delta", "check facts"),
+            ("message.delta", "answer"),
+        ]
+        assert not any(event["event"] == "reasoning.available" for event in events)
+        assert "answer misclassified" not in str(events)
+
+    @pytest.mark.asyncio
     async def test_subagent_events_redact_secrets_and_carry_child_session(self, adapter):
         """Free-text fields (goal/summary/output_tail/preview) must pass the
         forced secret redaction before hitting the public /v1/runs stream,

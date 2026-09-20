@@ -89,11 +89,13 @@ _USAGE_FIELDS = (
     ("total_tokens", "session_total_tokens"), ("cache_read_tokens", "session_cache_read_tokens"),
     ("cache_write_tokens", "session_cache_write_tokens"))
 # Tool-progress event -> SSE payload fields (tool_name, preview, kwargs); key order is wire format.
+# ``reasoning.available`` is deliberately absent: it is a completion-time preview derived from
+# finished assistant content, so it would misclassify or duplicate the final answer. Live
+# reasoning rides ``reasoning.delta`` from the agent's ``reasoning_callback`` instead (#99552).
 _FIXED_EVENT_FIELDS = {
     "tool.started": lambda tool, preview, kw: {"tool": tool, "preview": preview},
     "tool.completed": lambda tool, preview, kw: {
-        "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False)},
-    "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
+        "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False)}}
 _TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
 
 
@@ -879,6 +881,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with suppress(Exception):
             loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
 
+    def _reasoning_cb(delta: Optional[str]) -> None:
+        """Live model reasoning, tagged so it never mixes into ``message.delta`` (#99552)."""
+        if not delta or run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "reasoning.delta", delta=delta))
+
     def _interim_cb(text: str, *, already_streamed: bool = False) -> None:
         # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
         # same ``message.interim`` contract as the TUI gateway; reasoning never reaches this
@@ -912,7 +921,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             return
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
-                stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
+                stream_delta_callback=_text_cb, reasoning_callback=_reasoning_cb,
+                tool_progress_callback=self._make_run_event_callback(run_id, loop),
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)

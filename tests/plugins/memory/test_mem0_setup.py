@@ -65,10 +65,31 @@ class TestBuildOSSConfig:
         oss, env_writes = build_oss_config(flags)
         assert oss["llm"]["provider"] == "openai"
         assert oss["llm"]["config"]["model"] == "gpt-5-mini"
+        assert oss["llm"]["config"]["is_reasoning_model"] is True
         assert oss["embedder"]["provider"] == "openai"
         assert oss["embedder"]["config"]["model"] == "text-embedding-3-small"
         assert oss["vector_store"]["provider"] == "qdrant"
         assert env_writes["OPENAI_API_KEY"] == "sk-oai"
+
+
+    def test_explicit_gpt_5_mini_is_reasoning_model(self):
+        flags = parse_flags([
+            "--mode", "oss", "--oss-llm-key", "sk-oai",
+            "--oss-llm-model", "gpt-5-mini",
+        ])
+        oss, _ = build_oss_config(flags)
+        assert oss["llm"]["config"]["model"] == "gpt-5-mini"
+        assert oss["llm"]["config"]["is_reasoning_model"] is True
+
+
+    def test_custom_openai_model_is_not_forced_to_reasoning(self):
+        flags = parse_flags([
+            "--mode", "oss", "--oss-llm-key", "sk-oai",
+            "--oss-llm-model", "gpt-5.2",
+        ])
+        oss, _ = build_oss_config(flags)
+        assert oss["llm"]["config"]["model"] == "gpt-5.2"
+        assert "is_reasoning_model" not in oss["llm"]["config"]
 
 
     def test_ollama_no_key_needed(self):
@@ -77,6 +98,7 @@ class TestBuildOSSConfig:
         assert oss["llm"]["provider"] == "ollama"
         assert "model" in oss["llm"]["config"]
         assert oss["llm"]["config"]["ollama_base_url"] == "http://localhost:11434"
+        assert "is_reasoning_model" not in oss["llm"]["config"]
         assert oss["embedder"]["config"]["ollama_base_url"] == "http://localhost:11434"
         assert env_writes == {}
 
@@ -231,3 +253,21 @@ class TestConnectivityChecks:
         assert ok is True
 
 
+
+
+def test_discovery_loaded_setup_module_exposes_post_setup(monkeypatch):
+    """`hermes memory setup mem0` reaches the wizard when the package is first imported by plugin
+    discovery, which execs sibling modules before ``__init__`` (#103078). The invariant is on the
+    module the loader actually cached, not on a normal top-level import."""
+    from plugins.memory import load_memory_provider
+
+    saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.startswith("plugins.memory.mem0")}
+    try:
+        provider = load_memory_provider("mem0", register_skills=False)
+        assert provider is not None
+        assert hasattr(sys.modules["plugins.memory.mem0._setup"], "post_setup")
+    finally:
+        for k in list(sys.modules):
+            if k.startswith("plugins.memory.mem0"):
+                del sys.modules[k]
+        sys.modules.update(saved)

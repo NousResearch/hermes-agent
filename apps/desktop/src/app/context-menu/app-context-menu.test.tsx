@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -107,6 +108,23 @@ describe('AppContextMenu', () => {
     expect(screen.queryByText('Copy resolved URL')).toBeNull()
   })
 
+  // The url chip used to be a `<button>`: `resolveDomTarget` only knows
+  // `a[href]`, so the right-click fell through to the shell fallback menu.
+  it('offers the link verbs on a message url chip right-click', async () => {
+    installBridge()
+    mountMenu()
+    // The coordinator binds to window in the capture phase, so a second
+    // render alongside the menu is fine — same as a real transcript.
+    render(<DirectiveContent text="@url:`https://example.com/pr/1`" />)
+    const chip = document.querySelector('[data-slot="aui_directive-chip"]')!
+
+    fireEvent.contextMenu(chip)
+
+    expect(await screen.findByText('Open in in-app browser')).toBeTruthy()
+    expect(screen.getByText('Open in external browser')).toBeTruthy()
+    expect(screen.getByText('Copy URL')).toBeTruthy()
+  })
+
   it('opens the in-app browser from the link menu', async () => {
     installBridge()
     mountMenu()
@@ -116,6 +134,28 @@ describe('AppContextMenu', () => {
     fireEvent.click(await screen.findByText('Open in in-app browser'))
 
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
+  })
+
+  it('skips Open in in-app browser on the HUD — that window has no browser pane', async () => {
+    const originalLocation = window.location
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, search: '?win=hud' }
+    })
+
+    try {
+      installBridge()
+      mountMenu()
+      const host = attach('<a href="https://accounts.google.com/o/oauth2/auth">Sign in</a>')
+
+      fireEvent.contextMenu(host.querySelector('a')!)
+
+      expect(await screen.findByText('Open in external browser')).toBeTruthy()
+      expect(screen.queryByText('Open in in-app browser')).toBeNull()
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
   })
 
   it('offers the resolved copy only for loopback links on a remote gateway', async () => {

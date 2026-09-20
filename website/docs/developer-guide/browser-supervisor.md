@@ -73,6 +73,11 @@ frozen snapshot without awaiting.
   Idempotent.
 - **Stop:** session teardown or `/browser disconnect`. Cancels the asyncio
   task, closes the WebSocket, discards state.
+- **Dropped endpoint:** after a successful attach the supervisor reconnects with
+  backoff (≤10 s) but gives up after `MAX_POST_ATTACH_RECONNECT_FAILURES`
+  consecutive failures — one final warning, the thread exits and the registry
+  entry is dropped. A dead local Chrome (its task finished) therefore never leaves
+  a retrying thread behind; the next browser call starts a fresh supervisor.
 - **Rebind:** if the CDP URL changes (user reconnects to a new Chrome), the
   old supervisor is stopped and a fresh one started — state is never reused
   across endpoints.

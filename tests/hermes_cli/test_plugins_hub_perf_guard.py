@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_cli import web_server
+import hermes_cli.config as _cfg_mod
+import hermes_cli.web_routers.dashboard_ui as _rt_dashboard_ui
+import hermes_cli.web_server_dashboard as _web_server_dashboard
+import hermes_cli.web_server_memory as _web_server_memory
 from hermes_cli import plugins_cmd
+from hermes_cli import plugin_catalog
+from hermes_cli import plugins_cmd_catalog
 from tools import registry as tools_registry
 
 
@@ -14,9 +21,9 @@ _PLUGIN_ROW = [("demo", "1.0.0", "demo plugin", "user", "/tmp/demo-plugin", "dem
 
 def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugins=None):
     monkeypatch.setattr(web_server, "_get_dashboard_plugins", lambda force_rescan=False: [])
-    monkeypatch.setattr(web_server, "_discover_memory_provider_statuses", lambda: [])
-    monkeypatch.setattr(web_server, "get_hermes_home", lambda: Path("/tmp/hermes-home"))
-    monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {"hidden_plugins": []}})
+    monkeypatch.setattr(_web_server_memory, "_discover_memory_provider_statuses", lambda: [])
+    monkeypatch.setattr(_cfg_mod, "get_hermes_home", lambda: Path("/tmp/hermes-home"))
+    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {"dashboard": {"hidden_plugins": []}})
 
     monkeypatch.setattr(
         plugins_cmd,
@@ -40,7 +47,7 @@ def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugi
 
 def test_plugins_hub_does_not_probe_cold_check_fns(monkeypatch):
     tools_registry.invalidate_check_fn_cache()
-    web_server._invalidate_plugins_hub_cache()
+    _web_server_dashboard._invalidate_plugins_hub_cache()
 
     calls = {"count": 0, "threads": set()}
 
@@ -51,7 +58,7 @@ def test_plugins_hub_does_not_probe_cold_check_fns(monkeypatch):
 
     _patch_minimal_hub_dependencies(monkeypatch, check_fn=check_fn)
 
-    payload = web_server._merged_plugins_hub(force_refresh=True)
+    payload = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
 
     # The request path itself must never execute the probe: the cold verdict
     # is unknown, so the payload reports no auth requirement. Any probing
@@ -63,7 +70,7 @@ def test_plugins_hub_does_not_probe_cold_check_fns(monkeypatch):
 
 def test_plugins_hub_cold_cache_schedules_background_probe(monkeypatch):
     tools_registry.invalidate_check_fn_cache()
-    web_server._invalidate_plugins_hub_cache()
+    _web_server_dashboard._invalidate_plugins_hub_cache()
 
     probe_ran = threading.Event()
 
@@ -74,18 +81,18 @@ def test_plugins_hub_cold_cache_schedules_background_probe(monkeypatch):
     _patch_minimal_hub_dependencies(monkeypatch, check_fn=check_fn)
 
     scheduled: list = []
-    real_schedule = web_server._schedule_check_fn_probe
+    real_schedule = _web_server_dashboard._schedule_check_fn_probe
 
     def tracking_schedule(fn):
         thread = real_schedule(fn)
         scheduled.append(thread)
         return thread
 
-    monkeypatch.setattr(web_server, "_schedule_check_fn_probe", tracking_schedule)
+    monkeypatch.setattr(_web_server_dashboard, "_schedule_check_fn_probe", tracking_schedule)
 
     # Cold cache → the fetch schedules a background probe and reports the
     # verdict as unknown (auth_required stays False for now).
-    payload = web_server._merged_plugins_hub(force_refresh=True)
+    payload = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
     assert payload["plugins"][0]["auth_required"] is False
     assert scheduled and scheduled[0] is not None
 
@@ -94,7 +101,7 @@ def test_plugins_hub_cold_cache_schedules_background_probe(monkeypatch):
 
     # Once the TTL cache refreshes, the probed False verdict surfaces as an
     # auth requirement.
-    refreshed = web_server._merged_plugins_hub(force_refresh=True)
+    refreshed = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
     assert refreshed["plugins"][0]["auth_required"] is True
     assert refreshed["plugins"][0]["auth_command"] == "hermes auth demo"
 
@@ -102,7 +109,7 @@ def test_plugins_hub_cold_cache_schedules_background_probe(monkeypatch):
 
 def test_plugins_hub_uses_cached_failed_check_fn_verdict(monkeypatch):
     tools_registry.invalidate_check_fn_cache()
-    web_server._invalidate_plugins_hub_cache()
+    _web_server_dashboard._invalidate_plugins_hub_cache()
 
     def check_fn():
         return False
@@ -110,7 +117,7 @@ def test_plugins_hub_uses_cached_failed_check_fn_verdict(monkeypatch):
     assert tools_registry._check_fn_cached(check_fn) is False
     _patch_minimal_hub_dependencies(monkeypatch, check_fn=check_fn)
 
-    payload = web_server._merged_plugins_hub(force_refresh=True)
+    payload = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
 
     assert payload["plugins"][0]["auth_required"] is True
     assert payload["plugins"][0]["auth_command"] == "hermes auth demo"
@@ -119,7 +126,7 @@ def test_plugins_hub_uses_cached_failed_check_fn_verdict(monkeypatch):
 
 def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
     tools_registry.invalidate_check_fn_cache()
-    web_server._invalidate_plugins_hub_cache()
+    _web_server_dashboard._invalidate_plugins_hub_cache()
 
     calls = {"discover": 0}
 
@@ -133,11 +140,35 @@ def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
         discover_all_plugins=discover_all_plugins,
     )
 
-    first = web_server._merged_plugins_hub(force_refresh=True)
-    second = web_server._merged_plugins_hub()
+    first = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
+    second = _web_server_dashboard._merged_plugins_hub()
 
     assert calls["discover"] == 1
     assert first is second
+
+
+def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch):
+    """The synchronous catalog lookup must run in the route's worker thread."""
+    tools_registry.invalidate_check_fn_cache()
+    _web_server_dashboard._invalidate_plugins_hub_cache()
+    event_loop_thread = threading.current_thread()
+    annotation_threads: list[threading.Thread] = []
+
+    _patch_minimal_hub_dependencies(monkeypatch, check_fn=lambda: True)
+    monkeypatch.setattr(web_server, "_require_token", lambda _request: None)
+
+    def removed_annotation(name, _dir_path, _removed_entries):
+        annotation_threads.append(threading.current_thread())
+        return "withdrawn by catalog" if name == "demo" else None
+
+    monkeypatch.setattr(plugins_cmd_catalog, "removed_annotation", removed_annotation)
+    monkeypatch.setattr(plugin_catalog, "resolved_removed_entries", lambda: [])
+
+    payload = asyncio.run(_rt_dashboard_ui.get_plugins_hub(object()))
+
+    assert payload["plugins"][0]["removed_reason"] == "withdrawn by catalog"
+    assert annotation_threads == [annotation_threads[0]]
+    assert annotation_threads[0] is not event_loop_thread
 
 
 def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
@@ -146,7 +177,7 @@ def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
     from hermes_cli.web_models import _AgentPluginInstallBody
 
     tools_registry.invalidate_check_fn_cache()
-    web_server._invalidate_plugins_hub_cache()
+    _web_server_dashboard._invalidate_plugins_hub_cache()
 
     calls = {"discover": 0}
 
@@ -161,8 +192,8 @@ def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
     )
 
     # Prime the TTL cache; a plain fetch must be served from it.
-    web_server._merged_plugins_hub(force_refresh=True)
-    web_server._merged_plugins_hub()
+    _web_server_dashboard._merged_plugins_hub(force_refresh=True)
+    _web_server_dashboard._merged_plugins_hub()
     assert calls["discover"] == 1
 
     # Simulate a successful install through the endpoint; its invalidation
@@ -173,10 +204,10 @@ def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
     )
 
     asyncio.run(
-        web_server.post_agent_plugin_install(
+        _rt_dashboard_ui.post_agent_plugin_install(
             object(), _AgentPluginInstallBody(identifier="demo")
         )
     )
 
-    web_server._merged_plugins_hub()
+    _web_server_dashboard._merged_plugins_hub()
     assert calls["discover"] == 2

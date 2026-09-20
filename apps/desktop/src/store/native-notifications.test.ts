@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
+import type { SessionInfo } from '@/types/hermes'
+
 import { $gateway } from './gateway'
 import {
   clearPluginNotifyHandlers,
@@ -14,8 +17,10 @@ import {
   setNativeNotifyKind
 } from './native-notifications'
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
-import { $approvalRequest, setApprovalRequest } from './prompts'
-import { $activeSessionId, setActiveSessionId } from './session'
+import { $approvalRequest, clearAllPrompts, setApprovalRequest } from './prompts'
+import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
+import { $activeSessionId, setActiveSessionId, setSessions } from './session'
+import { dropSessionState, publishSessionState } from './session-states'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -47,6 +52,7 @@ beforeEach(() => {
   }
 
   setActiveSessionId(null)
+  resetBackgroundPollingGuard()
   setWindowState({ focused: false, hidden: true })
   __resetNativeNotifyBaselineForTests()
 })
@@ -58,6 +64,22 @@ afterEach(() => {
     desktopWindow.hermesDesktop = initialHermesDesktop
   } else {
     delete desktopWindow.hermesDesktop
+  }
+
+  resetBackgroundPollingGuard()
+})
+
+it('captures durable navigation identity while keeping the runtime id for approval actions', () => {
+  const runtimeId = freshSession()
+  publishSessionState(runtimeId, createClientSessionState('durable-chat'))
+
+  try {
+    dispatchNativeNotification({ kind: 'approval', sessionId: runtimeId, title: 'Approval' })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: runtimeId, focusSessionId: 'durable-chat' })
+    )
+  } finally {
+    dropSessionState(runtimeId)
   }
 })
 
@@ -144,6 +166,26 @@ describe('dispatchNativeNotification preferences', () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
     )
+  })
+})
+
+describe('dispatchNativeNotification session context', () => {
+  it('names the session on blocking-prompt titles only, falling back to the id tail without a row', () => {
+    setSessions([{ id: 'named-chat', title: 'Migrate the schema' } as SessionInfo])
+
+    try {
+      dispatchNativeNotification({ kind: 'input', sessionId: 'named-chat', title: 'Input needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Input needed — Migrate the schema' }))
+
+      dispatchNativeNotification({ kind: 'approval', sessionId: 'abcdef123456', title: 'Approval needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — #123456' }))
+
+      setActiveSessionId('named-chat')
+      dispatchNativeNotification({ kind: 'turnDone', sessionId: 'named-chat', title: 'Hermes finished' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Hermes finished' }))
+    } finally {
+      setSessions([])
+    }
   })
 })
 
@@ -306,6 +348,7 @@ describe('respondToApprovalAction', () => {
   const request = vi.fn().mockResolvedValue({ resolved: true })
 
   beforeEach(() => {
+    clearAllPrompts()
     request.mockClear()
     $gateway.set({ request } as unknown as ReturnType<typeof $gateway.get>)
   })
@@ -320,13 +363,29 @@ describe('respondToApprovalAction', () => {
 
     await respondToApprovalAction('bg', 'approve')
 
-    expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', session_id: 'bg' })
     expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('answers the exact notification request without clearing the rest of its stack', async () => {
+    setActiveSessionId('bg')
+    setApprovalRequest({ command: 'first', description: 'first', requestId: 'r1', sessionId: 'bg' })
+    setApprovalRequest({ command: 'second', description: 'second', requestId: 'r2', sessionId: 'bg' })
+    await respondToApprovalAction('bg', 'approve:r1')
+    expect(request).toHaveBeenCalledWith('approval.respond', {
+      all: false,
+      choice: 'once',
+      request_id: 'r1',
+      session_id: 'bg'
+    })
+    expect($approvalRequest.get()?.requestId).toBe('r2')
+    await respondToApprovalAction('bg', 'approve:r1')
+    expect($approvalRequest.get()?.requestId).toBe('r2')
   })
 
   it('rejects via approval.respond {choice: "deny"}', async () => {
     await respondToApprovalAction('bg', 'reject')
-    expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'deny', session_id: 'bg' })
   })
 
   it('ignores unknown action ids', async () => {
@@ -337,6 +396,14 @@ describe('respondToApprovalAction', () => {
   it('no-ops without a gateway', async () => {
     $gateway.set(null)
     await respondToApprovalAction('bg', 'approve')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('does not retry an approval action for a runtime already marked gone', async () => {
+    markSessionGone('bg')
+
+    await respondToApprovalAction('bg', 'approve')
+
     expect(request).not.toHaveBeenCalled()
   })
 })

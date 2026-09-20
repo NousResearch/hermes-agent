@@ -21,13 +21,16 @@ def skills_home(tmp_path, monkeypatch):
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(
         "---\nname: demo-dedup-skill\ndescription: Demo skill for dedup tests.\n---\n"
-        "# Demo\n\nStep one: run the demo procedure fully.\n"
+        "# Demo\n\nStep one: run the demo procedure fully.\n",
+        encoding="utf-8",
     )
     refs = d / "references"
     refs.mkdir()
-    (refs / "guide.md").write_text("# Guide\n\nDetailed reference content here.\n")
+    (refs / "guide.md").write_text("# Guide\n\nDetailed reference content here.\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     reset_skill_view_dedup()
+    from tools.skill_manager_guards import _reset_background_review_read_marks
+    _reset_background_review_read_marks()
     return home
 
 
@@ -57,7 +60,7 @@ class TestSkillViewDedup:
         _view("demo-dedup-skill")
         md = skills_home / "skills" / "demo-dedup-skill" / "SKILL.md"
         time.sleep(0.01)
-        md.write_text(md.read_text() + "\nStep two: new instruction.\n")
+        md.write_text(md.read_text(encoding="utf-8") + "\nStep two: new instruction.\n", encoding="utf-8")
         r2 = _view("demo-dedup-skill")
         assert "Step two" in r2.get("content", "")
         assert r2.get("dedup") is None
@@ -87,6 +90,47 @@ class TestSkillViewDedup:
         r1 = json.loads(_skill_view_with_bump(args, task_id=None))
         r2 = json.loads(_skill_view_with_bump(args, task_id=None))
         assert "Step one" in r2.get("content", "")
+
+    def test_background_review_skips_dedup_and_marks_read(self, skills_home):
+        from tools.skill_provenance import (
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        _view("demo-dedup-skill")
+
+        token = set_current_write_origin("background_review")
+        try:
+            review = _view("demo-dedup-skill")
+        finally:
+            reset_current_write_origin(token)
+
+        assert review["success"] is True
+        assert "Step one" in review.get("content", "")
+        assert review.get("dedup") is None
+        assert review.get("content_returned") is None
+        # The real read marks the file, so the fork's read-before-write guard now admits the patch.
+        from tools.skill_manager_guards import _background_review_has_read
+        assert _background_review_has_read(skills_home / "skills" / "demo-dedup-skill" / "SKILL.md")
+
+    def test_background_review_does_not_pollute_foreground_cache(self, skills_home):
+        from tools.skill_provenance import (
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        token = set_current_write_origin("background_review")
+        try:
+            _view("demo-dedup-skill")
+        finally:
+            reset_current_write_origin(token)
+
+        foreground = _view("demo-dedup-skill")
+        assert "Step one" in foreground.get("content", "")
+
+        repeat = _view("demo-dedup-skill")
+        assert repeat.get("dedup") is True
+        assert repeat.get("content_returned") is False
 
     def test_compression_hook_importable(self):
         # conversation_compression imports this lazily; keep the seam stable.

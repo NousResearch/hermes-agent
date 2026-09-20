@@ -44,7 +44,7 @@ def adapter():
     return RelayAdapter(PlatformConfig(), _desc(), transport=StubConnector(_desc()))
 
 
-def _interaction_forward(payload: dict) -> PassthroughForward:
+def _interaction_forward(payload: dict, *, profile: str | None = None) -> PassthroughForward:
     body = json.dumps(payload).encode("utf-8")
     return PassthroughForward(
         platform="discord",
@@ -53,6 +53,7 @@ def _interaction_forward(payload: dict) -> PassthroughForward:
         path="/interactions/discord/appShared",
         headers=[("content-type", "application/json")],
         body=body,
+        profile=profile,
     )
 
 
@@ -73,6 +74,27 @@ def test_passthrough_from_wire_byte_preserves_body():
     assert fwd.bot_id == "appShared"
     assert fwd.body == original
     assert fwd.headers == [("content-type", "application/json")]
+
+
+def test_passthrough_from_wire_stamps_routed_profile():
+    """A connector-routed profile on the wire frame lands on PassthroughForward.
+
+    Mirrors _event_from_wire's profile stamping for the ``inbound`` frame
+    (#60586) — the passthrough plane needs the same carry-through so a
+    Team-Gateway's Discord interactions route to the same profile a plain
+    message would.
+    """
+    wire = {
+        "platform": "discord",
+        "botId": "appShared",
+        "method": "POST",
+        "path": "/interactions/discord/appShared",
+        "headers": [],
+        "bodyB64": "",
+        "profile": "reviewer",
+    }
+    fwd = _passthrough_from_wire(wire)
+    assert fwd.profile == "reviewer"
 
 
 @pytest.mark.asyncio
@@ -135,6 +157,40 @@ async def test_discord_interaction_routes_through_handle_message(adapter, monkey
     # The logical platform is now recorded for egress sender selection too
     # (_capture_scope skips only the generic "relay").
     assert adapter._platform_by_chat.get("chan-9") == "discord"
+
+
+@pytest.mark.asyncio
+async def test_discord_interaction_stamps_routed_profile(adapter, monkeypatch):
+    """A connector-routed profile on the passthrough forward lands on the
+    resulting event's SessionSource, the same way it does for a plain relayed
+    message (#60586) — so a Team-Gateway's Discord slash-command/button/modal
+    routes to the same profile a plain message would, instead of always
+    falling back to agent:main."""
+    await adapter.connect()
+    stub = adapter._transport
+
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    fwd = _interaction_forward(
+        {
+            "id": "interaction-2",
+            "type": 2,  # APPLICATION_COMMAND
+            "channel_id": "chan-9",
+            "guild_id": "guild-7",
+            "data": {"name": "summarize"},
+            "member": {"user": {"id": "user-3", "username": "ben"}},
+        },
+        profile="reviewer",
+    )
+    await stub.push_passthrough(fwd, buffer_id=None)
+
+    assert len(seen) == 1
+    assert seen[0].source.profile == "reviewer"
 
 
 @pytest.mark.asyncio
@@ -210,3 +266,42 @@ async def test_dm_interaction_keys_as_discord_dm(adapter, monkeypatch):
     assert ev.source.delivered_via_upstream_relay is True
 
 
+
+
+@pytest.mark.asyncio
+async def test_routed_profile_round_trips_on_every_egress_frame(adapter, monkeypatch):
+    """Relay passthrough round-trip keeps ``profile`` (#88715 phase 5): the profile the connector
+    stamped on an inbound interaction is echoed on the chat's outbound frames and on the
+    ``follow_up`` addressed by the routed session key, so the connector can stamp it on the NEXT
+    passthrough_forward for that chat; a single-profile gateway emits no ``profile`` key at all."""
+    await adapter.connect()
+    stub = adapter._transport
+    monkeypatch.setattr(adapter, "handle_message", _noop_handle)
+
+    fwd = _interaction_forward(
+        {
+            "id": "interaction-3", "type": 2, "channel_id": "chan-9", "guild_id": "guild-7",
+            "data": {"name": "summarize"}, "member": {"user": {"id": "user-3", "username": "ben"}},
+        },
+        profile="reviewer",
+    )
+    await stub.push_passthrough(fwd, buffer_id=None)
+    await adapter.send("chan-9", "done")
+    await adapter.send_follow_up(
+        session_key="agent:reviewer:discord:group:chan-9", kind="discord.interaction_token", content="x")
+    assert stub.sent[-1]["metadata"]["profile"] == "reviewer"
+    assert stub.follow_ups[-1]["metadata"]["profile"] == "reviewer"
+
+    # Legacy namespace / unrouted chat: byte-identical frames, no profile key.
+    await stub.push_passthrough(_interaction_forward({
+        "id": "interaction-4", "type": 2, "channel_id": "chan-1", "guild_id": "guild-7",
+        "data": {"name": "summarize"}, "member": {"user": {"id": "user-3"}}}), buffer_id=None)
+    await adapter.send("chan-1", "done")
+    await adapter.send_follow_up(
+        session_key="agent:main:discord:group:chan-1", kind="discord.interaction_token", content="x")
+    assert "profile" not in stub.sent[-1]["metadata"]
+    assert "profile" not in stub.follow_ups[-1]["metadata"]
+
+
+async def _noop_handle(event):
+    return None

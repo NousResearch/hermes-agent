@@ -92,3 +92,36 @@ def test_watcher_resolves_when_all_children_are_dead():
             )
 
     asyncio.run(_run())
+
+
+def test_watch_ok_probe_does_not_create_unawaited_coroutine():
+    """The fast-fail gate must inspect the watcher, not call it (#96044).
+
+    The old probe — inspect.isawaitable(_watch_children()) — created a
+    fresh coroutine per stdio tool call and never awaited it, emitting
+    'coroutine ... was never awaited' RuntimeWarnings under -W error and
+    churning the GC. Pin that the shipped source no longer calls the
+    watcher during the probe.
+    """
+    import inspect as _inspect
+
+    import tools.mcp_tool_handlers as handlers_mod
+
+    src = _inspect.getsource(handlers_mod)
+    assert "isawaitable(_watch_children())" not in src
+    assert "iscoroutinefunction(_watch_children)" in src
+
+
+def test_watch_ok_semantics_mock_vs_real():
+    """MagicMock watchers stay on the plain-await path; real async defs
+    (and AsyncMock) qualify for the fast-fail race — same split the old
+    isawaitable(call) probe produced, without the coroutine leak."""
+    import inspect as _inspect
+    from unittest.mock import AsyncMock, MagicMock
+
+    async def _real_watcher():  # what the real method looks like
+        pass
+
+    assert _inspect.iscoroutinefunction(_real_watcher) is True
+    assert _inspect.iscoroutinefunction(AsyncMock()) is True
+    assert _inspect.iscoroutinefunction(MagicMock()) is False

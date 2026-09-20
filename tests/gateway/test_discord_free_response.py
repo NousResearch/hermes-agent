@@ -1,8 +1,10 @@
 """Tests for Discord free-response defaults and mention gating."""
 
+import asyncio
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 
 import pytest
@@ -228,6 +230,72 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
 
 
 @pytest.mark.asyncio
+async def test_unmentioned_bot_chunks_join_recent_tag_batch(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    adapter._ready_event.set()
+    adapter._text_batch_delay_seconds = 0.6
+    adapter._text_batch_split_delay_seconds = 2.0
+    channel = FakeTextChannel(channel_id=321)
+    bot_user = adapter._client.user
+    bot_user.bot = True
+    tagged = make_message(
+        channel=channel,
+        content=f"<@{bot_user.id}> first chunk",
+        mentions=[bot_user],
+    )
+    tagged.author.bot = True
+    second = make_message(channel=channel, content="second chunk")
+    second.id = 124
+    second.author.bot = True
+    third = make_message(channel=channel, content="third chunk")
+    third.id = 125
+    third.author.bot = True
+    # Fake clock: chunk 3 lands past the tag's own 2s window and is admitted only because
+    # chunk 2 re-armed it (Discord paces bot sends at ~1/s, so real bursts look like this).
+    clock = [1000.0]
+    monkeypatch.setattr(discord_platform, "time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
+    assert await adapter._dispatch_discord_message(tagged) is True
+    clock[0] += 1.5
+    assert await adapter._dispatch_discord_message(second) is True
+    clock[0] += 1.5
+    assert await adapter._dispatch_discord_message(third) is True
+    await asyncio.wait_for(
+        asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=5.0,
+    )
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "first chunk\nsecond chunk\nthird chunk"
+
+
+@pytest.mark.asyncio
+async def test_short_tagged_bot_chunk_waits_for_followup_window(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._text_batch_delay_seconds = 0.01
+    adapter._text_batch_split_delay_seconds = 0.08
+    channel = FakeTextChannel(channel_id=321)
+    bot_user = adapter._client.user
+    tagged = make_message(
+        channel=channel,
+        content=f"<@{bot_user.id}> short chunk",
+        mentions=[bot_user],
+    )
+    tagged.author.bot = True
+    adapter._record_bot_tag_debounce(tagged)
+
+    # Assert the selected quiet period without a wall-clock race on busy CI.
+    with patch.object(discord_platform.asyncio, "sleep", new_callable=AsyncMock) as sleep:
+        assert await adapter._handle_message(tagged, role_authorized=True) is True
+        adapter.handle_message.assert_not_awaited()
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        sleep.assert_awaited_once_with(adapter._text_batch_split_delay_seconds)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
     """Quote-replies should stay in-channel instead of trying to create a thread."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
@@ -378,7 +446,7 @@ async def test_fetch_channel_context_skips_self_improvement_boundary_message(ada
         ],
         channel_id=123,
     )
-    adapter._nonconversational_messages.mark_many(["9"])
+    await adapter._nonconversational_messages.mark_many(["9"])
 
     result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
 
@@ -825,5 +893,60 @@ async def test_discord_reply_in_free_channel_triggers_backfill(adapter, monkeypa
     assert event.channel_context == (
         "[Context around the replied-to message]\n[Hermes [bot]] earlier answer"
     )
+
+
+class TestNonConversationalTrackerOffload:
+    """atomic_json_write() calls os.fsync(), which blocks until the write
+    reaches stable storage. mark_many() runs on the event loop from both
+    DiscordAdapter.send() and send_update_prompt(), so the persist step
+    must be offloaded to a thread — mirrors
+    test_directory_write_runs_off_event_loop_thread in
+    test_channel_directory.py for the same #83906 bug class.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mark_many_persist_runs_off_event_loop_thread(self):
+        import threading
+
+        tracker = discord_platform._DiscordNonConversationalMessageTracker()
+        loop_thread = threading.get_ident()
+        write_threads = []
+
+        def fake_write(path, data, *args, **kwargs):
+            write_threads.append(threading.get_ident())
+
+        with patch.object(discord_platform, "atomic_json_write", side_effect=fake_write):
+            await tracker.mark_many(["999"])
+
+        assert "999" in tracker
+        assert write_threads
+        assert all(tid != loop_thread for tid in write_threads)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_mark_many_persists_land_in_order(self):
+        """Two in-flight mark_many() calls (send() racing a history fetch) must
+        not let an older snapshot overwrite a newer one on disk."""
+        import asyncio as _asyncio
+        import time
+
+        tracker = discord_platform._DiscordNonConversationalMessageTracker()
+        tracker._ids = {}
+        writes = []
+        calls = [0]
+
+        def slow_first_write(path, data, *args, **kwargs):
+            idx = calls[0]
+            calls[0] += 1
+            if idx == 0:
+                time.sleep(0.05)
+            writes.append(list(data))
+
+        with patch.object(discord_platform, "atomic_json_write", side_effect=slow_first_write):
+            first = _asyncio.create_task(tracker.mark_many(["1"]))
+            await _asyncio.sleep(0.005)
+            second = _asyncio.create_task(tracker.mark_many(["2"]))
+            await _asyncio.gather(first, second)
+
+        assert sorted(writes[-1]) == ["1", "2"]
 
 

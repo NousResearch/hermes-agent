@@ -7,7 +7,7 @@ components must go through the shared sanitizer in tools.environments.base.
 """
 
 from tools.environments import singularity as singularity_env
-from tools.environments.base import sanitize_task_id_for_path
+from tools.environments.path_utils import sanitize_task_id_for_path
 
 
 def _stub_singularity(monkeypatch, tmp_path):

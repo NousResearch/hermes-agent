@@ -135,15 +135,13 @@ describe('Sessions/Bots strip — #91223', () => {
     expect(tabEl('hermes-bots:pane')).toBeTruthy()
   })
 
-  it('an explicit never still paints the strip — hide-only chrome has no other handle', () => {
+  it('an explicit never hides the sessions/Bots strip', () => {
     setTreeGroupTabStrip('g-side', 'never')
-    expect(tabStripVisibleForGroup(zoneAt(0))).toBe(true)
+    expect(tabStripVisibleForGroup(zoneAt(0))).toBe(false)
 
     render(<LiveTreeGroup parentAxis="row" />)
 
-    expect(tablist()).toBeTruthy()
-    expect(tabEl('sessions')).toBeTruthy()
-    expect(tabEl('hermes-bots:pane')).toBeTruthy()
+    expect(tablist()).toBeNull()
   })
 })
 
@@ -182,9 +180,7 @@ describe('docked tool tile — collapsing keeps the restore chip', () => {
   it('chevron-collapse of a row-docked tile keeps the tab as a restore handle', () => {
     render(<LiveTreeGroup index={1} parentAxis="row" />)
 
-    fireEvent.click(
-      globalThis.document.querySelector('[data-tree-group="g-routines"] button[aria-label="Minimize"]')!
-    )
+    fireEvent.click(globalThis.document.querySelector('[data-tree-group="g-routines"] button[aria-label="Minimize"]')!)
 
     expect(zoneAt(1).minimized).toBe(true)
     expect(tabEl('hermes-bots:routines')).toBeTruthy()
@@ -204,7 +200,7 @@ describe('docked tool tile — collapsing keeps the restore chip', () => {
   })
 })
 
-describe('a stacked tool zone collapsed in a row keeps the horizontal strip', () => {
+describe('a stacked tool zone collapsed in a row keeps a vertical restore rail', () => {
   beforeEach(() => {
     registerPane('workspace', { placement: 'main', uncloseable: true }, 'Chat')
     registerPane('terminal', { placement: 'bottom' }, 'Terminal')
@@ -227,6 +223,7 @@ describe('a stacked tool zone collapsed in a row keeps the horizontal strip', ()
 
     expect(tabEl('terminal')).toBeTruthy()
     expect(tabEl('logs')).toBeTruthy()
-    expect(globalThis.document.querySelector('[data-zone-tabstrip="g-tools"]')).toBeTruthy()
+    expect(tabEl('terminal')?.getAttribute('data-vertical')).toBe('true')
+    expect(tabEl('logs')?.getAttribute('data-vertical')).toBe('true')
   })
 })

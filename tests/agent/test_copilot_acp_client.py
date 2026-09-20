@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -317,3 +318,262 @@ def test_probe_skipped_for_custom_args_without_acp():
     with _patch("agent.copilot_acp_client.subprocess.run") as run_mock:
         assert _acp_supported("mycli", ["--custom-transport"]) is True
     run_mock.assert_not_called()
+
+
+# --- session/set_model: honor the picker-selected model ----------------------
+#
+# `copilot --acp` validates but IGNORES the `--model` spawn flag; the ACP
+# session runs the CLI's own default unless the client issues the ACP-native
+# `session/set_model` call. Without it, picking gpt-5.6-terra in Hermes
+# visibly answers as the CLI's default model.
+
+
+# --- session model selection -------------------------------------------------
+
+
+def _session_with_config_options():
+    return {
+        "sessionId": "s1",
+        "configOptions": [
+            {
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "auto",
+                "options": [
+                    {"value": "auto", "name": "Auto"},
+                    {"value": "gpt-5.6-terra", "name": "GPT-5.6 Terra"},
+                    {
+                        "value": "claude-fable-5",
+                        "name": "Claude Fable 5",
+                        "_meta": {"copilotEnablement": "disabled"},
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def test_model_selection_prefers_stable_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "gpt-5.6-terra"
+    ) == (
+        "session/set_config_option",
+        {"sessionId": "s1", "configId": "model", "value": "gpt-5.6-terra"},
+    )
+
+
+def test_model_selection_rejects_disabled_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "claude-fable-5"
+    ) is None
+
+
+def test_model_selection_rejects_unknown_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "not-served-here"
+    ) is None
+
+
+def test_model_selection_falls_back_to_legacy_extension():
+    from agent.copilot_acp_client import _model_selection_request
+
+    legacy_session = {
+        "sessionId": "s1",
+        "models": {
+            "availableModels": [
+                {"modelId": "auto"},
+                {"modelId": "gpt-5.6-terra"},
+            ]
+        },
+    }
+    assert _model_selection_request(legacy_session, "gpt-5.6-terra") == (
+        "session/set_model",
+        {"sessionId": "s1", "modelId": "gpt-5.6-terra"},
+    )
+
+
+def test_model_selection_skips_provider_virtual_slug():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "copilot-acp"
+    ) is None
+
+
+def test_run_prompt_receives_picker_model():
+    # _create_chat_completion must forward `model` into _run_prompt — the
+    # original wiring dropped it, reducing the selection to prompt text.
+    client = CopilotACPClient(acp_cwd="/tmp")
+    seen = {}
+
+    def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
+        seen["model"] = model
+        return "ok", ""
+
+    with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
+        client._create_chat_completion(
+            model="gpt-5.6-terra", messages=[{"role": "user", "content": "hi"}]
+        )
+    assert seen["model"] == "gpt-5.6-terra"
+
+
+def test_list_models_reads_enabled_session_config_options(tmp_path):
+    server = tmp_path / "fake_copilot_acp.py"
+    server.write_text(
+        """import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+    elif method == "session/new":
+        result = {
+            "sessionId": "catalog-session",
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "options": [
+                    {"value": "auto"},
+                    {"value": "gpt-5.6-terra"},
+                    {"value": "gpt-5.6-terra"},
+                    {"value": "claude-fable-5", "_meta": {"copilotEnablement": "disabled"}},
+                ],
+            }],
+            "models": {"availableModels": [{"modelId": "stale-legacy-model"}]},
+        }
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    client = CopilotACPClient(
+        command=sys.executable,
+        args=[str(server)],
+        acp_cwd=str(tmp_path),
+    )
+
+    assert client.list_models(timeout_seconds=30) == ["auto", "gpt-5.6-terra"]
+    assert client.is_closed is True
+
+
+def test_model_discovery_does_not_allow_file_requests(tmp_path):
+    target = tmp_path / "should-not-be-read.txt"
+    target.write_text("private", encoding="utf-8")
+    server = tmp_path / "fake_copilot_acp_fs_request.py"
+    server.write_text(
+        f"""import json
+import sys
+
+initialize = json.loads(sys.stdin.readline())
+print(json.dumps({{"jsonrpc": "2.0", "id": initialize["id"], "result": {{"protocolVersion": 1}}}}), flush=True)
+session = json.loads(sys.stdin.readline())
+print(json.dumps({{"jsonrpc": "2.0", "id": 99, "method": "fs/read_text_file", "params": {{"path": {str(target)!r}}}}}), flush=True)
+file_response = json.loads(sys.stdin.readline())
+assert file_response["error"]["code"] == -32601
+print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId": "catalog-session", "configOptions": [{{"id": "model", "options": [{{"value": "gpt-5.6-sol"}}]}}]}}}}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    client = CopilotACPClient(
+        command=sys.executable,
+        args=[str(server)],
+        acp_cwd=str(tmp_path),
+    )
+
+    assert client.list_models(timeout_seconds=30) == ["gpt-5.6-sol"]
+
+
+# --- concurrent sessions on a shared client ---------------------------------
+#
+# Aux clients are cached per provider config and served to every concurrent
+# caller, so one CopilotACPClient can run several ACP sessions at once. Each
+# session must reap ITS OWN child on exit: reaping whatever most recently
+# claimed shared state kills a sibling's live process and leaks the session's
+# own.
+
+
+_FAKE_ACP_SERVER = """import json
+import sys
+import time
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+    elif method == "session/new":
+        result = {"sessionId": "s1"}
+    elif method == "session/prompt":
+        time.sleep(0.4)
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "done"}},
+        }}), flush=True)
+        result = {"stopReason": "end_turn"}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"""
+
+
+def _recording_client(tmp_path, spawned):
+    server = tmp_path / "fake_copilot_acp.py"
+    server.write_text(_FAKE_ACP_SERVER, encoding="utf-8")
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    real_spawn = client._spawn
+
+    def record_spawn():
+        proc = real_spawn()
+        spawned.append(proc)
+        return proc
+
+    client._spawn = record_spawn
+    return client
+
+
+def test_overlapping_sessions_reap_their_own_process(tmp_path):
+    spawned = []
+    client = _recording_client(tmp_path, spawned)
+
+    session_a = client._session(30)
+    session_b = client._session(30)
+    session_a.__enter__()
+    session_b.__enter__()
+
+    proc_a, proc_b = spawned
+    session_a.__exit__(None, None, None)
+
+    leaked = proc_a.poll() is None
+    killed = proc_b.poll() is not None
+    assert not leaked and not killed, (
+        f"session A teardown: own child leaked={leaked}, sibling process killed={killed}"
+    )
+
+    assert client.is_closed is False, "a shared client is not closed while a sibling session is live"
+
+    session_b.__exit__(None, None, None)
+    assert proc_b.poll() is not None
+    assert client.is_closed is True, "the last session to drain still flips is_closed for single-session callers"
+
+
+def test_close_terminates_every_live_session_process(tmp_path):
+    spawned = []
+    client = _recording_client(tmp_path, spawned)
+
+    session_a = client._session(30)
+    session_b = client._session(30)
+    session_a.__enter__()
+    session_b.__enter__()
+
+    client.close()
+
+    assert all(proc.poll() is not None for proc in spawned)

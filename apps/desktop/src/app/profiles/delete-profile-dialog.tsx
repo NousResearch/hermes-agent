@@ -4,6 +4,7 @@ import { deleteProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
+import { dropTilesForProfile } from '@/store/session-states'
 
 // Thin wrapper over ConfirmDialog: owns the deleteProfile call, inherits
 // Enter-to-confirm + busy/done/error from the shared dialog. The single choke
@@ -69,6 +70,11 @@ export function DeleteProfileDialog({
 
         // Legacy arity when unscoped: callers and tests pin the one-arg call.
         await (remote ? deleteProfile(profile.name, scope) : deleteProfile(profile.name))
+        // The profile is gone. Drop its persisted tiles now — a leftover
+        // session/Bot tile restores on relaunch and dials the deleted
+        // profile's backend, whose ensure_hermes_home() re-creates the
+        // directory the delete just removed (hermes-agent#94235).
+        dropTilesForProfile(profile.name)
         await onDeleted?.()
 
         if (wasActive) {

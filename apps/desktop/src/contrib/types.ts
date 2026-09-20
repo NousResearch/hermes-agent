@@ -10,9 +10,10 @@ import type { ReactNode } from 'react'
 export type ContributionSource = 'core' | (string & {})
 
 /**
- * Which workspace surface a contribution targets. `'sessions'` is the classic
- * session workspace; `'bots'` scopes content to an individual bot identified
- * by an opaque owner key.
+ * Which workspace surface the window is looking at. `'sessions'` is the classic
+ * session workspace; `'bots'` means Bot Mode has one exact bot selected,
+ * identified by an opaque owner key. Consumers ADAPT to this — it steers where
+ * the `+` routes — but it never decides whether a pane renders.
  */
 export type WorkspaceMode = 'sessions' | 'bots'
 
@@ -47,16 +48,4 @@ export interface Contribution {
    * themes, commands — anything consumed by an engine rather than rendered.
    */
   data?: unknown
-  /**
-   * Which workspace surface this contribution belongs to. Omit for a global
-   * contribution that participates in every workspace (pre-existing behavior).
-   * Presentation ownership hint only.
-   */
-  workspaceMode?: WorkspaceMode
-  /**
-   * Exact opaque owner key within the `'bots'` surface (e.g. a
-   * connection-qualified profile id). Never parsed here; compared exactly.
-   * Presentation ownership hint only.
-   */
-  workspaceOwnerKey?: string
 }

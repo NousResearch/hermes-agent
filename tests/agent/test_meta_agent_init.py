@@ -97,7 +97,7 @@ def test_agent_init_anthropic_url_implies_provider_and_api_mode():
     from run_agent import AIAgent
 
     with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), patch(
-        "agent.anthropic_adapter._is_oauth_token", return_value=False
+        "agent.anthropic_credentials._is_oauth_token", return_value=False
     ):
         agent = AIAgent(
             provider=None,
@@ -116,7 +116,7 @@ def test_agent_init_anthropic_url_implies_provider_and_api_mode():
 def test_agent_init_anthropic_url_preserves_credential_pool():
     """Anthropic-scoped credential pool must survive provider auto-detection.
 
-    Mirrors tests/run_agent/test_63425_credential_pool_auto_detect.py at the
+    Mirrors tests/agent/test_credential_pool_auto_detect.py at the
     public AIAgent surface (provider=None URL detection).
     """
     from types import SimpleNamespace
@@ -127,7 +127,7 @@ def test_agent_init_anthropic_url_preserves_credential_pool():
     pool = SimpleNamespace(provider="anthropic")
 
     with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), patch(
-        "agent.anthropic_adapter._is_oauth_token", return_value=False
+        "agent.anthropic_credentials._is_oauth_token", return_value=False
     ):
         agent = AIAgent(
             provider=None,

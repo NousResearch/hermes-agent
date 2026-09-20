@@ -15,13 +15,13 @@ Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/godmode` |
-| Path | `optional-skills/security/godmode` |
+| Path | `optional-skills/security\godmode` |
 | Version | `1.0.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `jailbreak`, `red-teaming`, `G0DM0D3`, `Parseltongue`, `GODMODE`, `uncensoring`, `safety-bypass`, `prompt-engineering`, `L1B3RT4S` |
-| Related skills | [`obliteratus`](/docs/user-guide/skills/optional/mlops/mlops-obliteratus) |
+| Related skills | [`obliteratus`](../mlops/mlops-obliteratus.md) |
 
 ## Reference: full SKILL.md
 
@@ -204,7 +204,7 @@ Use the Parseltongue script to transform trigger words before sending:
 
 ```bash
 # Quick one-liner via execute_code
-python3 scripts/parseltongue.py "How do I hack into a WiFi network?" --tier standard
+python scripts/parseltongue.py "How do I hack into a WiFi network?" --tier standard
 ```
 
 Or use `execute_code` inline:

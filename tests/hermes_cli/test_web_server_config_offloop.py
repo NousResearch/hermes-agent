@@ -12,6 +12,8 @@ import threading
 import time
 
 import pytest
+import hermes_cli.config as _cfg_mod
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 class TestGetConfigOffLoop:
@@ -51,7 +53,7 @@ class TestGetConfigOffLoop:
         acquired = threading.Event()
 
         def _holder():
-            with web_server._SKILLS_PROFILE_LOCK:
+            with _web_server_profiles._SKILLS_PROFILE_LOCK:
                 acquired.set()
                 release.wait(hold_s)
 
@@ -131,7 +133,7 @@ class TestRouterOffLoop:
         acquired = threading.Event()
 
         def _holder():
-            with web_server._SKILLS_PROFILE_LOCK:
+            with _web_server_profiles._SKILLS_PROFILE_LOCK:
                 acquired.set()
                 release.wait(hold_s)
 
@@ -220,7 +222,7 @@ class TestConfigMutationLock:
 
         # Widen the race window: make save_config slow so an unserialized
         # interleave is near-certain, not just possible.
-        real_save = web_server.save_config
+        real_save = _cfg_mod.save_config
 
         def _slow_save(cfg, **kwargs):
             time.sleep(0.15)
@@ -228,7 +230,7 @@ class TestConfigMutationLock:
 
         threads = []
         try:
-            web_server.save_config = _slow_save
+            _cfg_mod.save_config = _slow_save
             threads = [
                 threading.Thread(target=_put_theme),
                 threading.Thread(target=_put_font),
@@ -238,7 +240,7 @@ class TestConfigMutationLock:
         finally:
             for t in threads:
                 t.join()
-            web_server.save_config = real_save
+            _cfg_mod.save_config = real_save
 
         assert all(code == 200 for _, code in results), results
         cfg = load_config()

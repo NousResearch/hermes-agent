@@ -1,13 +1,7 @@
-"""Starter bank templates for the Hindsight memory-provider setup wizard.
-
-Fetches the Hindsight Bank Templates catalog, filters to templates tagged for
-the ``hermes`` integration, and applies a chosen manifest to the user's bank
-via the import API (``POST /v1/default/banks/{bank}/import``, which creates the
-bank if it doesn't exist).
-
-Kept out of ``__init__`` so the wizard logic stays small and testable. The
-catalog source is overridable with ``HINDSIGHT_TEMPLATES_URL`` (e.g. to pin a
-version or point at a mirror).
+"""Starter bank templates for the Hindsight setup wizard: fetch the Bank Templates
+catalog, filter to the ``hermes`` integration, apply a manifest via
+``POST /v1/default/banks/{bank}/import`` (creates the bank if missing).
+Catalog source overridable with ``HINDSIGHT_TEMPLATES_URL`` (pin/mirror).
 """
 
 from __future__ import annotations
@@ -22,16 +16,14 @@ from hermes_cli.urllib_security import open_credentialed_url
 
 logger = logging.getLogger(__name__)
 
-# The Bank Templates catalog lives in the Hindsight docs repo and is the same
-# file that powers hindsight.vectorize.io/templates.
+# Same file that powers hindsight.vectorize.io/templates.
 _DEFAULT_CATALOG_URL = (
     "https://raw.githubusercontent.com/vectorize-io/hindsight/main/"
     "hindsight-docs/src/data/templates.json"
 )
 _HTTP_TIMEOUT = 15
 
-# The starter-template step needs the API reachable during setup. A
-# local_embedded daemon isn't running yet at that point, so it's skipped there.
+# The API must be reachable during setup; a local_embedded daemon isn't up yet.
 SUPPORTED_MODES = ("cloud", "local_external")
 
 
@@ -57,36 +49,31 @@ def fetch_hermes_templates(url: str | None = None) -> list[dict]:
 
 
 def fetch_manifest(entry: dict, url: str | None = None) -> dict:
-    """Fetch the BankTemplateManifest JSON for a catalog entry."""
-    # manifest_file is relative to the catalog (e.g. "templates/foo.json").
-    manifest_url = urljoin(url or catalog_url(), entry["manifest_file"])
-    return _get_json(manifest_url)
+    """Fetch the BankTemplateManifest JSON for a catalog entry (``manifest_file`` is
+    relative to the catalog, e.g. "templates/foo.json")."""
+    return _get_json(urljoin(url or catalog_url(), entry["manifest_file"]))
+
+
+def _bank_request(api_url: str, bank_id: str, api_key: str | None, action: str, *, headers: dict, **kwargs):
+    if api_key:
+        headers = {**headers, "Authorization": f"Bearer {api_key}"}
+    endpoint = f"{api_url.rstrip('/')}/v1/default/banks/{bank_id}/{action}"
+    return urllib.request.Request(endpoint, headers=headers, **kwargs)  # noqa: S310
 
 
 def apply_template(api_url: str, bank_id: str, api_key: str | None, manifest: dict) -> None:
     """Apply a manifest to a bank via the import endpoint. Raises on failure."""
-    endpoint = f"{api_url.rstrip('/')}/v1/default/banks/{bank_id}/import"
-    data = json.dumps(manifest).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")  # noqa: S310
+    req = _bank_request(api_url, bank_id, api_key, "import", data=json.dumps(manifest).encode("utf-8"),
+                        headers={"Content-Type": "application/json"}, method="POST")
     with open_credentialed_url(req, timeout=_HTTP_TIMEOUT) as resp:
         resp.read()  # drain; open_credentialed_url raises HTTPError on non-2xx
 
 
 def probe_existing_customization(api_url: str, bank_id: str, api_key: str | None) -> bool:
-    """Best-effort: True if the bank already has template-level config, mental
-    models, or directives — i.e. applying a template would overwrite settings.
-
-    A missing bank, or any error, is treated as "not customized": the step must
-    never block on this probe.
-    """
-    endpoint = f"{api_url.rstrip('/')}/v1/default/banks/{bank_id}/export"
-    headers = {"Accept": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(endpoint, headers=headers)  # noqa: S310
+    """Best-effort: True if the bank already has template-level config, mental models
+    or directives (a template would overwrite them). A missing bank or any error
+    counts as "not customized": the step must never block on this probe."""
+    req = _bank_request(api_url, bank_id, api_key, "export", headers={"Accept": "application/json"})
     try:
         with open_credentialed_url(req, timeout=_HTTP_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -96,21 +83,10 @@ def probe_existing_customization(api_url: str, bank_id: str, api_key: str | None
     return bool(data.get("bank") or data.get("mental_models") or data.get("directives"))
 
 
-def run_template_step(
-    *,
-    api_url: str,
-    bank_id: str,
-    api_key: str | None,
-    select,
-    cancelled,
-    log=print,
-) -> str | None:
-    """Drive the wizard's starter-template step.
-
-    ``select(title, items, default, cancel_returns)`` is the picker (injected so
-    this is testable without curses). Returns the applied template id, or None
-    if skipped/blank/failed. Never raises — the template is a nice-to-have.
-    """
+def run_template_step(*, api_url: str, bank_id: str, api_key: str | None, select, cancelled, log=print) -> str | None:
+    """Wizard starter-template step. ``select(title, items, default, cancel_returns)``
+    is the picker (injected: testable without curses). Returns the applied template
+    id, or None if skipped/blank/failed. Never raises — a template is a nice-to-have."""
     try:
         entries = fetch_hermes_templates()
     except Exception as e:  # network/parse — non-fatal
@@ -127,9 +103,8 @@ def run_template_step(
 
     entry = entries[idx]
 
-    # If the bank is already configured (re-running setup on an existing bank),
-    # applying a template overwrites its config and upserts its models/directives.
-    # Confirm before clobbering.
+    # Re-running setup on a configured bank: a template overwrites its config and
+    # upserts models/directives — confirm before clobbering.
     if probe_existing_customization(api_url, bank_id, api_key):
         confirm = select(
             f"  Bank '{bank_id}' already has memory settings — apply this template on top?",

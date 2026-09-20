@@ -259,6 +259,141 @@ def test_provider_request_overlays_interceptor_added_extra_body():
     assert provider_request["extra_body"] == {"prompt_cache_retention": "24h"}
 
 
+@pytest.mark.parametrize(
+    "api_mode",
+    ["chat_completions", "codex_responses", "anthropic_messages"],
+)
+def test_provider_request_maps_headers_for_supported_sdk_modes(api_mode):
+    original = {"model": "test-model"}
+    relay_request_body = relay_llm._relay_request_body(
+        original,
+        {"api_mode": api_mode},
+    )
+
+    provider_request = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content=relay_request_body,
+            headers={
+                "traceparent": (
+                    "00-11111111111111111111111111111111-"
+                    "2222222222222222-01"
+                )
+            },
+        ),
+        relay_request_body=relay_request_body,
+        codec_baseline_body=dict(relay_request_body),
+        metadata={"api_mode": api_mode},
+    )
+
+    assert provider_request["extra_headers"] == {
+        "traceparent": (
+            "00-11111111111111111111111111111111-2222222222222222-01"
+        )
+    }
+
+
+def test_provider_request_preserves_custom_headers_for_native_transport():
+    original = {"payload": "provider-native"}
+
+    provider_request = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content=original,
+            headers={
+                "traceparent": (
+                    "00-11111111111111111111111111111111-"
+                    "2222222222222222-01"
+                ),
+                "x-custom-route": "private",
+            },
+        ),
+        relay_request_body=original,
+        codec_baseline_body=dict(original),
+        metadata={"api_mode": "strict_native"},
+    )
+
+    assert provider_request["extra_headers"] == {
+        "x-custom-route": "private"
+    }
+
+
+def test_provider_request_traces_custom_transport_with_header_capability():
+    original = {
+        "payload": "provider-native",
+        "extra_headers": {"authorization": "Bearer provider-token"},
+    }
+    traceparent = (
+        "00-11111111111111111111111111111111-2222222222222222-01"
+    )
+
+    provider_request = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content=original,
+            headers={"traceparent": traceparent},
+        ),
+        relay_request_body=original,
+        codec_baseline_body=dict(original),
+        metadata={"api_mode": "custom"},
+    )
+
+    assert provider_request["extra_headers"] == {
+        "authorization": "Bearer provider-token",
+        "traceparent": traceparent,
+    }
+
+
+def test_managed_request_does_not_add_sdk_headers_to_strict_callback(relay_turn):
+    del relay_turn
+    observed = []
+
+    def strict_transport(*, payload):
+        observed.append(payload)
+        return {"content": payload}
+
+    result = relay_llm.execute(
+        {"payload": "provider-native"},
+        lambda request: strict_transport(**request),
+        session_id="session-1",
+        name="strict-native",
+        model_name="strict-model",
+        metadata={
+            "api_mode": "bedrock_converse",
+            "api_request_id": "strict-native-request",
+        },
+    )
+
+    assert observed == ["provider-native"]
+    assert result == {"content": "provider-native"}
+
+
+def test_managed_stream_does_not_add_sdk_headers_to_strict_callback(relay_turn):
+    del relay_turn
+    observed = []
+    chunks = [{"delta": "provider-native"}]
+
+    def strict_transport(*, payload):
+        observed.append(payload)
+        return iter(chunks)
+
+    stream = relay_llm.stream(
+        {"payload": "provider-native"},
+        lambda request: strict_transport(**request),
+        session_id="session-1",
+        name="strict-native",
+        model_name="strict-model",
+        finalizer=lambda: {"content": "provider-native"},
+        metadata={
+            "api_mode": "bedrock_converse",
+            "api_request_id": "strict-native-stream",
+        },
+    )
+
+    assert list(stream) == chunks
+    assert observed == ["provider-native"]
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []
@@ -355,9 +490,15 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
         relay.intercepts.deregister_llm_request("hermes-test-request")
 
     assert captured_requests[0]["temperature"] == 0.25
-    assert captured_requests[0]["extra_headers"] == {
-        "authorization": "Bearer provider-token"
-    }
+    headers = captured_requests[0]["extra_headers"]
+    assert headers["authorization"] == "Bearer provider-token"
+    version, trace_id, parent_id, flags = headers["traceparent"].split("-")
+    assert version == "00"
+    assert len(trace_id) == 32
+    assert len(parent_id) == 16
+    assert flags == "01"
+    int(trace_id, 16)
+    int(parent_id, 16)
     assert chunks[0].choices[0].delta.content == "HELLO"
     assert stream.output_modified is True
     assert turn.logical_llm_calls == {}

@@ -15,13 +15,13 @@ Read the live Hermes desktop DOM/CSS over CDP.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/inspecting-hermes-desktop-dom` |
+| Path | `skills/software-development\inspecting-hermes-desktop-dom` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `desktop`, `electron`, `cdp`, `dom`, `ui-verification`, `self-inspection` |
-| Related skills | [`node-inspect-debugger`](/docs/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger), [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging), [`dogfood`](/docs/user-guide/skills/bundled/software-development/software-development-dogfood) |
+| Related skills | [`node-inspect-debugger`](./software-development-node-inspect-debugger.md), [`systematic-debugging`](./software-development-systematic-debugging.md), [`dogfood`](./software-development-dogfood.md) |
 
 ## Reference: full SKILL.md
 

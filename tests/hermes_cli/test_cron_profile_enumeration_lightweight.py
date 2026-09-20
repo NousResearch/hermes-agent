@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from hermes_cli import web_server
+import hermes_cli.web_server_cron as _web_server_cron
 
 
 class CronProfileEnumerationTests(unittest.TestCase):
@@ -25,7 +26,7 @@ class CronProfileEnumerationTests(unittest.TestCase):
                     side_effect=AssertionError("full profile scan is forbidden"),
                 ),
             ):
-                result = web_server._cron_profile_dicts()
+                result = _web_server_cron._cron_profile_dicts()
 
         lightweight.assert_called_once_with(multiplex=True)
         self.assertEqual([item["name"] for item in result], ["default", "coder-01"])

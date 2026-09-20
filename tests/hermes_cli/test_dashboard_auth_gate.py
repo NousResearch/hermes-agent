@@ -7,6 +7,7 @@ import asyncio
 import logging
 
 import pytest
+import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 # Phase 5 / Phase 6: these tests mutate ``web_server.app.state.auth_required``
 # at module level. Run them in the same xdist worker so they don't race
@@ -14,6 +15,7 @@ import pytest
 # ``app.state``) — the marker name is shared across all dashboard-auth test
 # files that gate the app.
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_server
 
@@ -274,7 +276,7 @@ def test_start_server_passes_bounded_trusted_proxy_networks(monkeypatch, caplog)
 
 def test_trusted_proxy_allowlist_rejects_unbounded_entries(caplog):
     """Wildcard and whole-address-space trust must fail closed."""
-    trusted = web_server._dashboard_forwarded_allow_ips({
+    trusted = _web_server_lifecycle._dashboard_forwarded_allow_ips({
         "trusted_proxies": ["*", "0.0.0.0/0", "::/0", "172.18.0.7"],
     })
 
@@ -288,7 +290,7 @@ def test_trusted_container_proxy_controls_https_detection():
     from starlette.requests import Request
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-    trusted = web_server._dashboard_forwarded_allow_ips({
+    trusted = _web_server_lifecycle._dashboard_forwarded_allow_ips({
         "trusted_proxies": ["172.18.0.0/16"],
     })
 
@@ -408,6 +410,62 @@ def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypa
             open_browser=False, allow_public=False,
         )
     assert web_server.app.state.auth_required is True
+
+
+def test_desktop_ssh_backend_serves_session_token_requests_despite_public_url(monkeypatch):
+    """A Desktop-SSH isolated backend on a host that also declares a public
+    ``dashboard.public_url`` must keep answering session-token REST calls.
+
+    Pinned at the request layer, not the predicate: the reporter's failure was
+    the post-bootstrap ``/api/profiles`` call coming back
+    ``401 {"reason": "no_cookie"}`` while ``/api/status`` still passed (#94119,
+    #96490). The gate predicate alone cannot catch a middleware-order or
+    ``auth_required`` plumbing regression that re-engages the cookie gate.
+    """
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dashboard.example.test:9443")
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    clear_providers()
+    register_provider(StubAuthProvider())
+    _stub_uvicorn_run(monkeypatch)
+    _restore_app_state_after_test(
+        monkeypatch, "auth_required", "bound_host", "bound_port", "trusted_public_hosts",
+    )
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", web_server._SESSION_TOKEN)
+    ssh_token = "a" * 64
+    try:
+        web_server.start_server(
+            host="127.0.0.1", port=0,
+            open_browser=False, allow_public=False,
+            ssh_session_token=ssh_token,
+        )
+        client = TestClient(web_server.app, base_url="http://127.0.0.1")
+        with_token = client.get("/api/profiles", headers={"X-Hermes-Session-Token": ssh_token})
+        assert with_token.status_code == 200, with_token.text
+        without_token = client.get("/api/profiles")
+        assert without_token.status_code == 401
+        # Loopback token mode, never the cookie gate's redirect envelope.
+        assert without_token.json().get("reason") != "no_cookie"
+        # The renderer's gateway session rides the same token on the WS leg (#94119 step 4): the
+        # upgrade is admitted, the backend announces itself and answers a session-list RPC.
+        monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        loopback = {"host": "127.0.0.1"}  # TestClient's WS default Host is "testserver"
+        with client.websocket_connect(f"/api/ws?token={ssh_token}", headers=loopback) as ws:
+            assert ws.receive_json()["params"]["type"] == "gateway.ready"
+            ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "session.list", "params": {}})
+            reply = ws.receive_json()
+            while reply.get("id") != 1:  # events may interleave before the response
+                reply = ws.receive_json()
+            assert "result" in reply, reply
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect("/api/ws", headers=loopback):
+                pass
+        assert rejected.value.code == 4401
+    finally:
+        clear_providers()
 
 
 def test_loopback_public_url_fail_closed_message_is_actionable(monkeypatch):

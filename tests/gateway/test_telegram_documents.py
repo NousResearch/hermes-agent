@@ -17,11 +17,10 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SendResult,
     SUPPORTED_VIDEO_TYPES,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +226,20 @@ class TestDocumentDownloadBlock:
         # Content should NOT be injected
         assert "[Content of" not in (event.text or "")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        doc = _make_document(
+            file_name="notes.txt", mime_type="text/plain",
+            file_size=len(content), file_obj=_make_file_obj(content),
+        )
+        await adapter._handle_media_message(_make_update(_make_message(document=doc)), MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert ("[Content of" in event.text) is inlined
+        assert event.media_text_inlined == [inlined]
+
 
     @pytest.mark.asyncio
     async def test_document_cache_failure_replies_and_signals_agent(self, adapter):
@@ -308,7 +321,10 @@ class TestMediaGroups:
         msg1 = _make_message(caption="two images", photo=[first_photo])
         msg2 = _make_message(photo=[second_photo])
 
-        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
+        with patch(
+            "plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]),
+        ):
             await adapter._handle_media_message(_make_update(msg1), MagicMock())
             await adapter._handle_media_message(_make_update(msg2), MagicMock())
             assert adapter.handle_message.await_count == 0

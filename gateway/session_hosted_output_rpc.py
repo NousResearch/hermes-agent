@@ -1397,15 +1397,19 @@ def _validate_export_response(result, item, offset, receipt_id):
         raise RoomArtifactError("Group Chat output chunk is invalid") from exc
     expected = min(CHUNK_BYTES, item["size"] - offset)
     if (
-        result["version"] != 1
+        type(result["version"]) is not int
+        or result["version"] != 1
         or result["receipt_id"] != receipt_id
         or result["artifact_id"] != item["artifact_id"]
+        or type(result["offset"]) is not int
         or result["offset"] != offset
+        or type(result["total_size"]) is not int
         or result["total_size"] != item["size"]
         or result["sha256"] != item["sha256"]
         or len(raw) != expected
         or result["eof"] is not (offset + expected == item["size"])
-        or _HEX.fullmatch(str(result["target_profile_id_sha256"])) is None
+        or not isinstance(result["target_profile_id_sha256"], str)
+        or _HEX.fullmatch(result["target_profile_id_sha256"]) is None
         or type(result["serving_owner_epoch"]) is not int
         or result["serving_owner_epoch"] < 1
         or not isinstance(result["serving_instance_id"], str)

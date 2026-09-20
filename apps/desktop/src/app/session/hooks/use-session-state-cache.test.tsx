@@ -14,6 +14,7 @@ import {
   $turnStartedAt,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
+  setConnection,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
@@ -688,5 +689,35 @@ describe('useSessionStateCache — reconnect busy reconcile (#93059)', () => {
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(false)
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.awaitingResponse).toBe(false)
     expect($sessionStates.get()['runtime-1']?.busy).toBe(false)
+  })
+})
+
+describe('useSessionStateCache — warm-cache invalidation on connection switch (#93888)', () => {
+  afterEach(() => {
+    setConnection(null)
+    cleanup()
+  })
+
+  it('clears stale stored→runtime bindings when the connection changes', () => {
+    let cache!: Cache
+
+    setConnection({ connectionId: 'local', mode: 'local' } as never)
+    render(<Harness activeSessionId="runtime-local" onReady={value => (cache = value)} selectedStoredSessionId="stored-local" />)
+
+    // Populate the warm cache under the local backend.
+    act(() => {
+      cache.ensureSessionState('runtime-local', 'stored-local')
+    })
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-local')).toBe('runtime-local')
+
+    // Switch to a remote gateway: the previous backend's runtime ids are
+    // meaningless to it, so they must not survive (a stale local runtime id
+    // sent to a remote gateway is rejected as "Session not found").
+    act(() => {
+      setConnection({ connectionId: 'remote', mode: 'remote' } as never)
+    })
+
+    expect(cache.runtimeIdByStoredSessionIdRef.current.size).toBe(0)
+    expect(cache.sessionStateByRuntimeIdRef.current.size).toBe(0)
   })
 })

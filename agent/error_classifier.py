@@ -92,6 +92,12 @@ class ClassifiedError:
         """True when a ``billing`` verdict rests on an ambiguous body (#82154)."""
         return bool(self.error_context.get("billing_unverified"))
 
+    @property
+    def spend_guard(self) -> bool:
+        """True when the provider refused on estimated COST, not on exhausted credit:
+        funds remain and a cheaper request shape (lower ``max_tokens``) still runs."""
+        return bool(self.error_context.get("spend_guard"))
+
 
 # ── Pattern tables (lowercased substrings) ──────────────────────────────
 
@@ -137,6 +143,29 @@ _BILLING_ERROR_CODES = frozenset({
     "credit_balance_exhausted", "organization_spend_limit_exceeded",
     "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
 })
+
+# Spend-confirmation guard: a router that prices the call BEFORE running it and
+# declines when the estimate is large against the balance left on the key, offering a
+# confirm flag instead ("This call is estimated at about $1.87, more than half of your
+# $3.63 balance (26,827 prompt tokens + up to 32,000 output tokens). Send
+# "th_confirm_spend": true to run it anyway, or reduce the prompt or max_tokens.").
+# Money, with funds still on the key — but that closing advice contains "max_tokens",
+# a _CONTEXT_OVERFLOW_PATTERNS entry, and _400_TAIL_RULES checks overflow before
+# billing. Unguarded, the 400 enters the compression loop: three shrink-and-resend
+# rounds, the identical 400 each time (the estimate is dominated by the output budget,
+# which compression never touches), then "the conversation is too long for the model
+# (21,101 tokens)" against a 1,050,000-token window. Two independent signals are
+# required so real overflow wording can never match.
+_SPEND_CONFIRM_FLAG_PATTERNS = (
+    "confirm_spend", "confirm_cost", "spend_confirmation", "acknowledge_spend",
+)
+_SPEND_ESTIMATE_PATTERNS = (
+    "estimated at", "estimated cost", "estimated price", "would cost", "will cost",
+)
+_SPEND_BALANCE_PATTERNS = (
+    "balance", "credit left", "credits left", "remaining credit", "credits remaining",
+    "funds remaining",
+)
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
 # contains an overflow phrase; rate limit is matched first so throttle wins.
@@ -563,6 +592,34 @@ def _billing_hints(error_msg: str) -> Verdict:
     return {**_V_BILLING, "error_context": ctx}
 
 
+def is_spend_confirmation_guard(error_msg: str) -> bool:
+    """True for a pre-flight COST refusal: the route priced the call, found the estimate
+    large against the remaining balance, and declined pending confirmation.
+
+    Either the confirm flag by name, or an estimate phrase AND a balance phrase. One
+    signal alone is too weak: "balance" also appears in genuine exhaustion wording
+    ("your credit balance is too low"), which is billing too but wants the assertive
+    copy, and a bare cost phrase shows up in advisory text. Never context overflow —
+    compression cannot lower an estimate whose dominant term is ``max_tokens``."""
+    msg = (error_msg or "").lower()
+    if any(p in msg for p in _SPEND_CONFIRM_FLAG_PATTERNS):
+        return True
+    return (
+        any(p in msg for p in _SPEND_ESTIMATE_PATTERNS)
+        and any(p in msg for p in _SPEND_BALANCE_PATTERNS)
+    )
+
+
+def _spend_guard_verdict() -> Verdict:
+    """Billing verdict for a spend guard, marked unverified. Rotation stays ON — a key too
+    low to afford this call is unlikely to afford the next one — but ``billing_unverified``
+    buys the pool a short cooldown instead of a permanent write-off, which is right here:
+    the key is not empty, and a smaller ``max_tokens`` would have gone through. What matters
+    most is what this verdict is NOT: ``context_overflow``, so no compression loop starts.
+    Fresh dict per call — the context travels into a ClassifiedError."""
+    return {**_V_BILLING, "error_context": {"spend_guard": True, "billing_unverified": True}}
+
+
 def _first_match(error_msg: str, rules: Sequence[tuple[Sequence[str], Any]]) -> Optional[Verdict]:
     """Verdict of the first rule whose pattern list hits ``error_msg``."""
     for patterns, verdict in rules:
@@ -830,6 +887,10 @@ def _by_message(c: _Ctx) -> Optional[Verdict]:
     head = _first_match(c.msg, _MESSAGE_HEAD_RULES)
     if head is not None:
         return head
+    # Relay stripped the status off the same cost refusal: _MESSAGE_TAIL_RULES checks
+    # billing before overflow, but no _BILLING_PATTERNS entry matches this wording.
+    if is_spend_confirmation_guard(c.msg):
+        return _spend_guard_verdict()
     usage_limit = any(p in c.msg for p in _USAGE_LIMIT_PATTERNS)
     return _classify_402(c.msg, dict) if usage_limit else _first_match(c.msg, _MESSAGE_TAIL_RULES)
 
@@ -1111,6 +1172,10 @@ def _classify_400(c: _Ctx) -> Verdict:
     # 400 whose wording a proxy stripped would fall through to format_error.
     if code in _MEMORY_CEILING_ERROR_CODES:
         return _V_OVERLOADED
+    # Money, not tokens. Must precede the tail rules: their overflow patterns match the
+    # guard's own "reduce the prompt or max_tokens" advice, and billing sits behind them.
+    if is_spend_confirmation_guard(msg):
+        return _spend_guard_verdict()
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict

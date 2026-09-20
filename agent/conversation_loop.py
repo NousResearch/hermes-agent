@@ -562,9 +562,25 @@ def _billing_block_dict(provider, base_url, model, message="", *, unverified: bo
     return block
 
 
-def _billing_terminal_label(summary: str, unverified: bool) -> str:
+# A spend guard is fixed by the REQUEST, not by the account, so the generic "add credits"
+# text would send the user to the wrong place first.
+_SPEND_GUARD_GUIDANCE = "\n".join([
+    "The route priced this call against the credit left on the key and declined to spend that "
+    "much in one request. The key is not empty.",
+    "Compressing the conversation will not help: the estimate prices the whole output budget, "
+    "so max_tokens dominates it and compression never touches that.",
+    "Lower model.max_tokens in config.yaml (fastest), top up the balance on that key, or send "
+    "the route's confirm flag (e.g. th_confirm_spend: true) through that provider's extra_body "
+    "in config.yaml.",
+])
+
+
+def _billing_terminal_label(summary: str, unverified: bool, spend_guard: bool = False) -> str:
     """Terminal-failure prefix for a billing-classified error; ``unverified`` (#82154) must
-    not assert exhaustion as fact."""
+    not assert exhaustion as fact, and ``spend_guard`` is not exhaustion at all — the route
+    declined to spend this much in one call while funds remain, so it is checked first."""
+    if spend_guard:
+        return f"Provider declined the call on estimated cost, not on exhausted credit: {summary}"
     if unverified:
         return (
             "Provider reported usage/credit exhaustion (unverified — the same "
@@ -580,12 +596,13 @@ def _billing_failure_result(
     """Structured terminal result for a billing-classified failure — the single construction
     point for the non-retryable abort and max-retries paths (#82154)."""
     unverified = bool(getattr(classified, "billing_unverified", False))
+    spend_guard = bool(getattr(classified, "spend_guard", False))
     if guidance is None:
-        guidance = _billing_or_entitlement_message(
+        guidance = _SPEND_GUARD_GUIDANCE if spend_guard else _billing_or_entitlement_message(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=unverified,
         )
-    final = _billing_terminal_label(summary, unverified) + (f"\n\n{guidance}" if guidance else "")
+    final = _billing_terminal_label(summary, unverified, spend_guard) + (f"\n\n{guidance}" if guidance else "")
     return {
         "final_response": final, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": summary,
@@ -593,6 +610,7 @@ def _billing_failure_result(
         # Classifier's own retry verdict so the UI shows Retry only when a re-run can differ.
         "failure_retryable": bool(classified.retryable),
         "billing_unverified": unverified,
+        "spend_guard": spend_guard,
         "billing_block": _billing_block_dict(provider, base_url, model, guidance, unverified=unverified),
     }
 

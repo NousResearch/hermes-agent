@@ -53,9 +53,9 @@ def _is_plausible_reasoning_promotion(reasoning: str) -> bool:
     candidate = reasoning.strip()
     if not candidate or "\ufffd" in candidate:
         return False
-    if any(not char.isprintable() and not char.isspace() for char in candidate):
+    if any(not char.isprintable() and char not in "\n\r\t" for char in candidate):
         return False
-    return any(char.isalnum() for char in candidate)
+    return True
 
 
 def finish_text_response(

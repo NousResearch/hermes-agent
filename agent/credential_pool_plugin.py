@@ -11,7 +11,8 @@ Contract (documented in website/docs/developer-guide/model-provider-plugin.md):
 * the hook returns a mapping of rotated values — dataclass field names
   (``access_token``, ``refresh_token``, ``expires_at_ms`` …) replace the row's
   fields, every other key (``expires_in``, ``token_type``, ``scope`` — the
-  natural token-endpoint shape) lands in ``entry.extra``; ``None`` = no rotation;
+  natural token-endpoint shape) lands in ``entry.extra``; ``None``/empty = could not
+  rotate and the pool benches the row like a failed refresh POST;
 * raising ``AuthError(..., relogin_required=True)`` (or a grant-dead OAuth code)
   is terminal: the row goes DEAD with a WARNING naming ``hermes auth add``;
   any other exception is transient and only benches the row.

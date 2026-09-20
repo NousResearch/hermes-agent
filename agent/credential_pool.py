@@ -1472,7 +1472,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
             elif (plugin_refresh := plugin_refresh_hook(self.provider)) is not None:
-                updated = apply_plugin_refresh_result(entry, plugin_refresh(entry))
+                rotated = plugin_refresh(entry)
+                if not rotated:
+                    # ``None``/empty = the plugin could not rotate: bench like a failed refresh POST, never
+                    # report the stale row as refreshed (the loop would replay the dead bearer).
+                    raise RuntimeError("provider refresh_credential returned no rotated fields")
+                updated = apply_plugin_refresh_result(entry, rotated)
             elif self.provider == "nous":
                 stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
                 synced = self._sync_nous_entry_from_auth_store(entry)

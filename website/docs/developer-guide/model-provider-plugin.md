@@ -102,6 +102,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
 | `auth_handler` | `Callable \| None` | Provider-owned `hermes auth add/status/logout/refresh <name>` — see [Provider-owned auth](#provider-owned-auth-auth_handler-refresh_credential) |
 | `refresh_credential` | `Callable \| None` | Provider-owned rotation of a pooled OAuth row — same section |
+| `classify_api_error` | `Callable \| None` | Provider-scoped error-classification override — see [Recovery and error classification](#recovery-and-error-classification) |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails — in the `/model` picker AND the first-time `hermes setup` / `hermes model` API-key flow, which resolve the catalog the same way (`fetch_models()` merged curated-first with `fallback_models`; `fallback_models` alone when the fetch returns `None` or raises) |
 | `supports_vision` | bool | Declares the provider's API accepts image content inside **tool-result** messages (a provider-wide wire capability). Per-model user-image routing comes from `model_capabilities` / models.dev, not from this flag |
 | `model_capabilities` | `dict[str, dict[str, Any]]` | Per-model capability declarations in the `model_overrides` schema — see [Declaring model capabilities](#declaring-model-capabilities) |
@@ -379,7 +380,7 @@ register_provider(ProviderProfile(
 | Contract | |
 |---|---|
 | `auth_handler(action, args)` | `args` is the parsed `hermes auth` namespace for CLI actions; the interactive setup picker passes a minimal namespace carrying only `provider`, so read options with `getattr(args, name, None)`. Truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action**. An exception becomes `SystemExit("<provider> auth handler failed for `&lt;action&gt;`: …")`. |
-| `refresh_credential(entry)` | Receives the `PooledCredential`; returns a mapping of rotated values or `None`. Keys that are `PooledCredential` fields (`access_token`, `refresh_token`, `expires_at_ms`, …) replace the row's fields; every other key (`expires_in`, `token_type`, `scope` — the raw token-endpoint shape) lands in `entry.extra` and round-trips through `auth.json`. `None` = no rotation happened, the row is marked ok. Its presence is what makes the provider *refreshable* — `hermes auth refresh <name>` and the main-loop 401 recovery call it through the pool with no core name list involved; the auxiliary client's 401 recovery reaches it only for pooled rows it already treats as recoverable (api-key rows and the built-in OAuth routes). |
+| `refresh_credential(entry)` | Receives the `PooledCredential`; returns a mapping of rotated values or `None`. Keys that are `PooledCredential` fields (`access_token`, `refresh_token`, `expires_at_ms`, …) replace the row's fields; every other key (`expires_in`, `token_type`, `scope` — the raw token-endpoint shape) lands in `entry.extra` and round-trips through `auth.json`. Returning `None`/an empty mapping means the plugin could not rotate: the row is benched exactly like a failed refresh request (never reported as refreshed, so a dead bearer is not replayed). Its presence is what makes the provider *refreshable* — `hermes auth refresh <name>` and the main-loop 401 recovery call it through the pool with no core name list involved; the auxiliary client's 401 recovery reaches it only for pooled rows it already treats as recoverable (api-key rows and the built-in OAuth routes). |
 | Refresh failures | Raise `hermes_cli.auth_constants.AuthError(..., relogin_required=True)` (or with `code` `invalid_grant` / `invalid_token` / `refresh_token_reused`) when the grant is dead: the row goes **DEAD**, leaves rotation and Hermes logs a WARNING naming `hermes auth add <name>`. Any other exception (network, 429, 5xx) is transient — the row is benched for one cooldown and retried. |
 | Concurrency | The hook runs under the shared `auth.json` lock. Before calling it the pool re-reads the row; if another Hermes process (gateway + CLI, two profiles) already rotated the pair, that pair is adopted and your hook is **not** called — safe for single-use refresh tokens. After the hook returns, the rotated row is written through to `auth.json`. |
 | No hooks | `api_key` profiles behave exactly as before. Any other `auth_type` without `auth_handler` fails loud on `hermes auth add`. |
@@ -429,6 +430,35 @@ the `token_url` host must be the `authorize_url` host or a subdomain of it (or l
 the listener binds the literal `127.0.0.1`; tokens, `state` and the PKCE verifier are never logged.
 Optional fields: `audience`, `extra_authorize_params`, `extra_token_params`, `redirect_path`,
 `timeout_seconds`, `label`.
+
+## Recovery and error classification
+
+A `kind: model-provider` plugin is loaded by provider discovery, **not** by the generic plugin manager, so
+the `transform_api_error_classification` plugin hook is not reachable from it without shipping a second
+plugin component. The profile carries the equivalent seam instead:
+
+```python
+def classify(error, *, status_code, error_code, message, body, model):
+    # A vendor-specific 403 that is a spent plan, not a bad credential.
+    if status_code == 403 and error_code == "quota_exhausted":
+        return {"reason": "billing", "retryable": False, "should_rotate_credential": True, "should_fallback": True}
+    return None  # decline → built-in classification
+
+
+register_provider(ProviderProfile(name="example-oauth", auth_type="oauth_external",
+                                  base_url="https://api.example.com/v1",
+                                  refresh_credential=example_refresh, classify_api_error=classify))
+```
+
+| Contract | |
+|---|---|
+| `classify_api_error(error, *, status_code, error_code, message, body, model)` | Consulted by `agent.error_classifier.classify_api_error` for failures of **this provider only**, after any generic `transform_api_error_classification` hooks and before the built-in pipeline. `message` is the lower-cased error text, `body` the parsed JSON body (may be empty). Return `{"reason": <FailoverReason name>}` plus optional `retryable` / `should_compress` / `should_rotate_credential` / `should_fallback` / `error_context` to override; `None` (or an unknown reason) leaves the built-in verdict. Exceptions are swallowed and logged at DEBUG. The verdict drives the same recovery as for built-ins — e.g. `billing` benches the credential for the billing TTL instead of the transient 403 cooldown. |
+| 401 on a plugin credential | Handled by the credential pool, no core edit: the failing pooled row is refreshed through `refresh_credential` once per attempt (capped at two refreshes per row per session), the client is rebuilt with the rotated token and the request retried. A `None`/empty return or an exception benches the row — the request then rotates or falls to the generic "sign in again: `hermes auth add <name>`" copy, never to a built-in provider's guidance. |
+| Auxiliary calls | Auxiliary-client 401s take the same pool refresh (`try_refresh_current` → `refresh_credential`). |
+
+Recovery that remains name-keyed in core is behaviour with no safe generic shape (a provider-specific
+token store to re-sync, a plan-tier entitlement wall, a single-use refresh-token quarantine). A plugin
+that needs one of those owns it inside `refresh_credential` / `classify_api_error`.
 
 ## Discovery timing
 

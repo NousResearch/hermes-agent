@@ -67,8 +67,13 @@ class ProviderProfile:
     # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
     # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
     # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
+    # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
+    # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after
+    # the generic ``transform_api_error_classification`` plugin hooks and before the built-in pipeline.
+    # Return ``{"reason": <FailoverReason name>, ...hint flags}`` to override, ``None`` to decline.
     auth_handler: Callable[[str, Any], Any] | None = None
     refresh_credential: Callable[[Any], Any] | None = None
+    classify_api_error: Callable[..., Any] | None = None
 
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside

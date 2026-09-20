@@ -700,6 +700,45 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     return verdict
 
 
+def _profile_verdict(c: _Ctx) -> Optional[Verdict]:
+    """The current provider's own ``ProviderProfile.classify_api_error`` verdict, or None.
+
+    A ``kind: model-provider`` plugin never enters the PluginManager hook lifecycle, so without this a
+    vendor-specific body (a 403 ``quota_exhausted`` that is billing, not auth) could only be corrected by
+    shipping a second plugin component. Scoped to the provider that produced the error; no name table."""
+    if not c.provider_slug:
+        return None
+    try:
+        from providers import get_provider_profile
+        hook = getattr(get_provider_profile(c.provider_slug), "classify_api_error", None)
+        if not callable(hook):
+            return None
+        result = hook(c.error, status_code=c.status_code, error_code=c.error_code, message=c.msg,
+                      body=c.body, model=c.model)
+    except Exception as exc:
+        logger.debug("Provider profile error classification failed for %s: %s", c.provider_slug, exc)
+        return None
+    if not isinstance(result, dict):
+        return None
+    reason = result.get("reason")
+    if isinstance(reason, str):
+        try:
+            reason = FailoverReason(reason.strip().lower())
+        except ValueError:
+            return None
+    if not isinstance(reason, FailoverReason):
+        return None
+    verdict = _v(reason, **{k: bool(result[k]) for k in _HINT_FLAGS if k in result})
+    if isinstance(result.get("error_context"), dict):
+        verdict["error_context"] = result["error_context"]
+    logger.info("API error classified by provider profile: %s (provider=%s, status=%s)",
+                reason.value, c.provider, c.status_code)
+    return verdict
+
+
+_HINT_FLAGS = ("retryable", "should_compress", "should_rotate_credential", "should_fallback")
+
+
 # A welcome-host 403 that spells one of these out is a safety block or a billing wall, not the
 # tier refusing. The free-tier refusal phrases are left OUT: on the free route they mean exactly
 # "the tier refused", and an anonymous session has no credits to check.
@@ -877,11 +916,11 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
     return _STATUS_HANDLERS[status](c) if status in _STATUS_HANDLERS else default
 
 
-# Stage order: plugin hooks → provider-specific special cases → HTTP status →
-# MoA shapes → structured error code → message patterns → SSL → disconnect +
+# Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →
+# HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 

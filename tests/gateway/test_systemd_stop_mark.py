@@ -53,7 +53,7 @@ def test_stop_mark_never_blocks_restart_and_unit_wires_exec_stop(monkeypatch):
 
     unit = gateway_cli.generate_systemd_unit(system=False)
     # Both modules run through the installation launcher (`hermes --run-module <mod>`).
-    assert "ExecStop=-" in unit and "gateway.systemd_stop_mark" in unit
+    assert "ExecStop=-" in unit and "--run-module hermes_systemd_planned_stop $MAINPID" in unit
     # The cgroup reaper still runs after the main process exits.
     assert "ExecStopPost=-" in unit and "gateway.cgroup_cleanup" in unit
-    assert unit.index("systemd_stop_mark") < unit.index("cgroup_cleanup")
+    assert unit.index("hermes_systemd_planned_stop") < unit.index("cgroup_cleanup")

@@ -262,7 +262,7 @@ describe('useModelControls', () => {
     })
   })
 
-  it('sends an active primary-session picker change without a scope flag so the gateway decides persistence', async () => {
+  it('scopes an active primary-session picker change to --session so it cannot rewrite other chats', async () => {
     $activeSessionId.set('session-1')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
     let controls!: Controls
@@ -276,13 +276,13 @@ describe('useModelControls', () => {
       })
     ).resolves.toBe(true)
 
-    // No hardcoded --global (#90235): resolve_persist_behavior on the gateway
-    // owns the policy — session-only unless model.persist_switch_by_default
-    // is set or no default has ever been configured (#86414's first pick).
+    // Composer picks stay on THIS session. Settings → Model is the only
+    // profile-default door — a primary pick without --session is how a
+    // Gemini sticky from another project landed on a grok chat.
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'session-1',
       key: 'model',
-      value: 'claude-sonnet-4.6 --provider anthropic'
+      value: 'claude-sonnet-4.6 --provider anthropic --session'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
@@ -367,7 +367,7 @@ describe('useModelControls', () => {
       confirm_expensive_model: true,
       key: 'model',
       session_id: 'session-1',
-      value: 'muse-spark-1.2-contributor --provider opencode-go'
+      value: 'muse-spark-1.2-contributor --provider opencode-go --session'
     })
     expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
     expect($currentProvider.get()).toBe('opencode-go')

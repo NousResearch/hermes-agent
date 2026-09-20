@@ -114,6 +114,32 @@ const $primaryReasoningEffortPending = computed([$primaryState, $selectedStoredS
   state ? reasoningEffortPending(state) : Boolean(selected)
 )
 
+/**
+ * Model/provider for the workspace pane. Same cold-resume rule as `$busy`:
+ * a selected stored session that has no slice (or an empty model on the
+ * slice) must NOT inherit the global composer sticky. That sticky is the
+ * last pick from ANY chat in this window — Maintenance on Gemini leaking
+ * onto a grok thread after Cmd+N / send / gateway restart.
+ *
+ * Drafts (no stored id) still read `$currentModel` so a new chat follows
+ * the last pick. Live slices with a real model always win.
+ */
+function primaryIdentityField(
+  select: (state: ClientSessionState) => string,
+  $draft: ReadableAtom<string>
+): ReadableAtom<string> {
+  return computed([$primaryState, $draft, $selectedStoredSessionId], (state, draft, selected) => {
+    if (state) {
+      const value = select(state)
+
+      return value || (selected ? '' : draft)
+    }
+
+    return selected ? '' : draft
+  })
+}
+
+
 export const PRIMARY_SESSION_VIEW: SessionView = {
   kind: 'primary',
   $awaitingResponse: primaryField<boolean>(state => state.awaitingResponse, $awaitingResponse),
@@ -123,8 +149,8 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $lastVisibleIsUser: computed($primaryMessages, lastVisibleMessageIsUser),
   $messages: $primaryMessages,
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),
-  $model: primaryField<string>(state => state.model, $currentModel),
-  $provider: primaryField<string>(state => state.provider, $currentProvider),
+  $model: primaryIdentityField(state => state.model, $currentModel),
+  $provider: primaryIdentityField(state => state.provider, $currentProvider),
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
   $reasoningEffortPending: $primaryReasoningEffortPending,
   $reasoningEffortWire: primaryField<string>(state => state.reasoningEffortWire ?? '', $currentReasoningEffortWire),

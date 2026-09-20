@@ -766,8 +766,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         return disk_hit
     # Most specific first: (name, paths tried until one answers 200, body check). LM Studio answers /api/tags
     # with {"error": ...} and 200, so Ollama's body must carry "models"; older llama.cpp builds have no /v1 prefix.
+    # LM Studio's native list is {"models": [...]}; gateways such as OmniRoute serve an OpenAI-style {"data": [...]} at
+    # the same path and must not be misread as LM Studio.
     waterfall = (
-        ("lm-studio", (f"{lmstudio_url}/api/v1/models",), lambda r: True),
+        ("lm-studio", (f"{lmstudio_url}/api/v1/models",), lambda r: r.json().get("models") is not None),
         ("ollama", (f"{server_url}/api/tags",), lambda r: "models" in r.json()),
         ("llamacpp", (f"{server_url}/v1/props", f"{server_url}/props"), lambda r: "default_generation_settings" in r.text),
         ("vllm", (f"{server_url}/version",), lambda r: "version" in r.json()),

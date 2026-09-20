@@ -585,6 +585,23 @@ class TestDetectLocalServerTypeAuth:
             "Authorization": "Bearer lm-token"
         }
 
+    def test_openai_style_models_list_at_native_path_is_not_lm_studio(self):
+        """Gateways like OmniRoute answer /api/v1/models with an OpenAI {"data": [...]} list."""
+        from agent.model_metadata import detect_local_server_type
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"object": "list", "data": [{"id": "auto/best-coding"}]}
+        resp.text = ""
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            assert detect_local_server_type("http://192.168.0.224:20128/v1") != "lm-studio"
+
     def test_native_api_base_url_is_not_doubled(self):
         from agent.model_metadata import detect_local_server_type
 

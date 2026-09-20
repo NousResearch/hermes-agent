@@ -144,7 +144,7 @@ class TestDetectLocalServerTypeCache:
 
         lmstudio_resp = MagicMock()
         lmstudio_resp.status_code = 200
-        lmstudio_resp.json.return_value = {"data": []}
+        lmstudio_resp.json.return_value = {"models": []}
         swap_client = MagicMock()
         swap_client.__enter__ = lambda s: swap_client
         swap_client.__exit__ = MagicMock(return_value=False)

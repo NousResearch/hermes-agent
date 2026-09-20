@@ -95,6 +95,23 @@ export function persistString(key: string, value: null | string) {
   writeKey(key, value)
 }
 
+/** Numeric preference. An absent or unparseable value yields the fallback. */
+export function storedNumber(key: string, fallback: number): number {
+  const value = readKey(key)
+
+  if (value === null) {
+    return fallback
+  }
+
+  const parsed = Number(value)
+
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+export function persistNumber(key: string, value: number) {
+  writeKey(key, String(value))
+}
+
 export function storedStringArray(key: string): string[] {
   const value = readKey(key)
 

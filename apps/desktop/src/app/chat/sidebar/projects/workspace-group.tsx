@@ -12,6 +12,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { $sidebarShowAllSessions, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { newSessionInProfile, pinNewChatProfile, selectProfile } from '@/store/profile'
+import { $projectTreePreviewLimit } from '@/store/project-tree-preview-limit'
 import { switchBranchInRepo } from '@/store/projects'
 import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
@@ -19,7 +20,7 @@ import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 import { SidebarGroupRow, SidebarRowLead, SidebarRowLink, SidebarRowStack } from '../chrome'
 import { rankSessions } from '../order'
 
-import { PROJECT_PREVIEW_COUNT, SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
+import { SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
 import type { SidebarSessionGroup } from './workspace-groups'
 import {
   WorkspaceAddButton,
@@ -57,6 +58,7 @@ export function SidebarWorkspaceGroup({
   // the same switch that widens the project overview, read at the leaf like
   // overview-row does.
   const showAllSessions = useStore($sidebarShowAllSessions)
+  const previewCount = useStore($projectTreePreviewLimit)
   // Empty worktree/branch lanes start collapsed — they only show a "No sessions
   // yet" placeholder, so defaulting them open just adds noise. Profile lanes and
   // lanes that already hold sessions default open.
@@ -71,7 +73,7 @@ export function SidebarWorkspaceGroup({
   // is how you see the rest. Workspace groups page within what's loaded unless
   // the user asked for everything.
   const laneCap = showAllSessions ? sessions.length : visibleCount
-  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : laneCap)
+  const visibleSessions = sessions.slice(0, isProfileGroup ? previewCount : laneCap)
   const hiddenCount = isProfileGroup ? 0 : sessions.length - visibleSessions.length
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 

@@ -763,6 +763,10 @@ export interface Translations {
       backendIdleTimeoutAria: string
       backendIdleTimeoutTitle: string
     }
+    projectTreePreview: {
+      aria: string
+      title: string
+    }
     customEndpoints: {
       title: string
       deleteEndpoint: string

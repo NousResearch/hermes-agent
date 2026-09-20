@@ -895,6 +895,10 @@ export const zhHant = defineLocale({
       backendIdleTimeoutAria: '後端閒置逾時（毫秒）',
       backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
     },
+    projectTreePreview: {
+      aria: '每個專案預覽的對話數',
+      title: '專案對話預覽'
+    },
     customEndpoints: {
       title: '自訂端點',
       deleteEndpoint: '刪除端點',

@@ -9,6 +9,7 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
+import { $projectTreePreviewLimit } from '@/store/project-tree-preview-limit'
 import { fetchProjectSessions, projectProfile } from '@/store/projects'
 
 import {
@@ -24,7 +25,7 @@ import {
   SidebarRowShell
 } from '../chrome'
 
-import { expandedProjectSessions, latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
+import { expandedProjectSessions, latestProjectSessions, useWorkspaceNodeOpen } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
 import { excludeProjectSessions, type SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
@@ -119,12 +120,13 @@ export function ProjectOverviewRow({
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
   const showAllSessions = useStore($sidebarShowAllSessions)
+  const previewCount = useStore($projectTreePreviewLimit)
   // The tree payload previews only the most-recent few sessions per project
   // (kept light on purpose); "Show all" hydrates THIS project's lanes on demand
   // rather than widening every project's preview window.
   const [expanded, setExpanded] = useState<SidebarProjectTree | null>(null)
   const [expanding, setExpanding] = useState(false)
-  const limit = showAllSessions || expanded ? Infinity : PROJECT_PREVIEW_COUNT
+  const limit = showAllSessions || expanded ? Infinity : previewCount
   const fetched = (previewSessions ?? []).slice(0, limit)
   const recent = fetched.length ? fetched : latestProjectSessions(project, limit)
   // The hydrated lanes come straight from the backend, so — like the drill-in

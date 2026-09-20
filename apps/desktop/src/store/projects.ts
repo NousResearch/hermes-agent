@@ -26,6 +26,10 @@ import {
   requestFreshSession
 } from '@/store/profile'
 import {
+  $projectTreePreviewLimit,
+  PROJECT_TREE_PREVIEW_MAX
+} from '@/store/project-tree-preview-limit'
+import {
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -397,8 +401,11 @@ interface ProjectTreePayload {
 }
 
 // Expanded previews need the complete existing tree window before the renderer
-// finds its two recency groups. Keep the normal three-row payload unchanged.
-const projectTreePreviewLimit = () => ($sidebarShowAllSessions.get() ? 2000 : 3)
+// finds its two recency groups. The collapsed row count is user-configurable
+// (Settings → Advanced) and defaults to the historical three.
+const projectTreePreviewLimit = () =>
+  $sidebarShowAllSessions.get() ? PROJECT_TREE_PREVIEW_MAX : $projectTreePreviewLimit.get()
+
 // The all-profiles fan-out reads one database per profile, so it is allowed the
 // same headroom as the cross-profile session list rather than the interactive
 // default.

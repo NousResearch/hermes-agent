@@ -13,8 +13,10 @@ import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
 // Page size when revealing more already-loaded rows within a workspace group.
 export const SIDEBAR_GROUP_PAGE = 5
 
-// Recent sessions previewed under each project in the overview.
-export const PROJECT_PREVIEW_COUNT = 3
+// Recent sessions previewed under each project in the overview. The live count
+// is `$projectTreePreviewLimit` (Settings → Advanced); this exported default is
+// the fallback the store ships with, kept named for callers that need it.
+export { PROJECT_TREE_PREVIEW_DEFAULT as PROJECT_PREVIEW_COUNT } from '@/store/project-tree-preview-limit'
 
 // Max concurrent `git worktree list` probes when a project spans many repos.
 const WORKTREE_PROBE_CONCURRENCY = 4

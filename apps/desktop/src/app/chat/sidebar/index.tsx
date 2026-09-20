@@ -83,6 +83,7 @@ import {
   sidebarProfileForScope
 } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
+import { $projectTreePreviewLimit } from '@/store/project-tree-preview-limit'
 import {
   $activeProjectId,
   $newProjectDropPlacement,
@@ -161,7 +162,6 @@ import {
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
-  PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
@@ -388,6 +388,7 @@ export function ChatSidebar({
   const sortOrderIds = useStore($sidebarSessionRankIds)
   const agentsGrouped = grouping === 'project'
   const showAllSessions = useStore($sidebarShowAllSessions)
+  const projectPreviewLimit = useStore($projectTreePreviewLimit)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
   const pinsOpen = useStore($sidebarPinsOpen)
@@ -806,17 +807,24 @@ export function ChatSidebar({
     return () => window.clearTimeout(warm)
   }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
 
-  // Widen the existing tree query when the user expands previews, without
-  // repeating repo discovery. Initial load/scope changes use the effect above.
-  useEffect(
-    () =>
-      $sidebarShowAllSessions.listen(() => {
-        if (gatewayReady && worktreeGroupingActive) {
-          void refreshProjectTree()
-        }
-      }),
-    [gatewayReady, worktreeGroupingActive]
-  )
+  // Widen the existing tree query when the user expands previews or raises the
+  // configured preview count, without repeating repo discovery. Initial
+  // load/scope changes use the effect above.
+  useEffect(() => {
+    const refreshIfReady = () => {
+      if (gatewayReady && worktreeGroupingActive) {
+        void refreshProjectTree()
+      }
+    }
+
+    const unlistenShowAll = $sidebarShowAllSessions.listen(refreshIfReady)
+    const unlistenPreviewLimit = $projectTreePreviewLimit.listen(refreshIfReady)
+
+    return () => {
+      unlistenShowAll()
+      unlistenPreviewLimit()
+    }
+  }, [gatewayReady, worktreeGroupingActive])
 
   // Sessions the branch join can't answer for get one look at their own
   // transcript — a `gh pr create` in there names the PR outright. Backfills
@@ -1168,7 +1176,7 @@ export function ChatSidebar({
         projectOverview ?? [],
         agentSessions,
         projects,
-        showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT,
+        showAllSessions ? Infinity : projectPreviewLimit,
         {
           removed: removedSessionIds,
           // Rank before the trim, so "3 priciest in this project" isn't "3 most
@@ -1176,7 +1184,7 @@ export function ChatSidebar({
           rankIds: sortOrderIds
         }
       ),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
+    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions, projectPreviewLimit]
   )
 
   // A row's "Show all" hydrates raw backend lanes, which — like the drill-in —

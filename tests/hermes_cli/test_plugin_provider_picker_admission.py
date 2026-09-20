@@ -19,8 +19,13 @@ def _register(monkeypatch, profile):
 
     monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
     monkeypatch.delitem(auth.PROVIDER_REGISTRY, profile.name, raising=False)
-    auth._register_plugin_provider(profile)  # what plugin discovery does at import time
-    monkeypatch.setitem(auth.PROVIDER_REGISTRY, profile.name, auth.PROVIDER_REGISTRY[profile.name])
+    # Mirror into the auth registry the way plugin discovery does; built from public types so the
+    # helper is independent of the auth module's private mirroring function.
+    pconfig = auth.ProviderConfig(
+        profile.name, profile.display_name or profile.name, profile.auth_type, inference_base_url=profile.base_url)
+    if profile.auth_type == "api_key" and profile.env_vars:
+        pconfig = auth._api_key_provider(profile.name, profile.display_name or profile.name, profile.base_url, tuple(profile.env_vars), "")
+    monkeypatch.setitem(auth.PROVIDER_REGISTRY, profile.name, pconfig)
 
 
 @pytest.mark.parametrize("auth_type", ["external_process", "oauth_external", "oauth_device_code", "api_key"])

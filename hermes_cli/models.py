@@ -1511,7 +1511,11 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     # Every non-api-key profile falls back to its own fallback_models (OAuth plugins have no
     # static _PROVIDER_MODELS row), exactly as api_key plugins do below.
     if profile.auth_type == "external_process":
-        live = profile.fetch_models()
+        try:
+            live = profile.fetch_models()
+        except Exception as exc:  # a failed subprocess launch degrades to the curated list, like api_key below
+            logger.debug("external_process catalog fetch failed for %s: %s", normalized, exc)
+            live = None
         return list(live) if live else (list(profile.fallback_models) or None)
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None

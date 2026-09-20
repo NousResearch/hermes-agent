@@ -407,17 +407,20 @@ def auth_add_command(args) -> None:
     if configured_provider is not None:
         _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
     elif raw_provider.startswith(CUSTOM_POOL_PREFIX):
-        from agent.credential_pool import custom_provider_pool_key_candidates
+        # Canonicalization returns its input unchanged on a miss; equality
+        # therefore does not prove that an entry owns the requested identity.
+        requested_name = _normalize_custom_pool_name(raw_provider[len(CUSTOM_POOL_PREFIX):])
         custom_entry = next((
             entry for entry in _get_custom_provider_entries()
-            if provider == canonical_custom_pool_key(raw_provider, entry.get("base_url"))
+            if requested_name in {
+                _normalize_custom_pool_name(entry["provider_key"]),
+                _normalize_custom_pool_name(entry["name"]),
+            }
         ), None)
         if custom_entry is not None:
-            candidates = custom_provider_pool_key_candidates(
-                custom_entry.get("base_url"),
-                custom_entry.get("provider_key") or custom_entry.get("name"),
-            )
-            _merge_custom_alias_pools(provider, list(candidates) + [raw_provider])
+            # Only this positively identified entry's legacy custom alias is
+            # eligible. URL equality (including shared endpoints) is not ownership.
+            _merge_custom_alias_pools(provider, [custom_entry["pool_key"], raw_provider])
 
     is_custom = provider.startswith(CUSTOM_POOL_PREFIX)
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()

@@ -20,6 +20,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -29,10 +30,6 @@ MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
-# Headroom over the inactivity timeout, mirroring cron/jobs.py::_oneshot_run_claim_ttl_seconds:
-# HERMES_CRON_TIMEOUT is an *inactivity* limit, not a wall-clock cap, so healthy runs may
-# legitimately exceed it.
-_LIVE_OWNER_STALE_CLAIM_HEADROOM = 3
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -157,7 +154,7 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
     if not math.isfinite(inactivity) or inactivity <= 0:
         return None
     return max(
-        inactivity * _LIVE_OWNER_STALE_CLAIM_HEADROOM,
+        inactivity * CLAIM_TTL_INACTIVITY_HEADROOM,
         float(_get_script_timeout()),
         LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS,
     )

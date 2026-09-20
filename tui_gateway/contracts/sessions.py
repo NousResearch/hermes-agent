@@ -342,7 +342,14 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 
 class SessionBranchParams(SessionParams):
     name: str | None = None
-    count: int | None = None  # keep only the first N rows of the source history
+    # Legacy: a count over the desktop's MERGED message projection. IGNORED — that projection
+    # (tool rows folded into assistant bubbles) has no stable mapping onto the raw rows, so the
+    # slice landed in the wrong place and silently dropped the conversation tail (#80973).
+    count: int | None = None
+    # Durable ``messages.id`` to cut the copied history at (ORDINAL: keep rows with id <= X).
+    # The desktop names the clicked bubble's terminal row id instead of a merged-message count;
+    # an id outside this transcript's range is refused with 4009 rather than silently widening.
+    up_to_row_id: int | None = None
 
 
 class SessionBranchResult(Result):

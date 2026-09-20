@@ -47,7 +47,7 @@ import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-stat
 export { sessionMatchesStoredId }
 import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionMessage, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -177,7 +177,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId', 'endRowId'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -1297,6 +1297,46 @@ export function selectBranchMessages(
   }
 
   return toBranchMessages(authoritativeMessages.slice(0, authoritativeIndex + 1))
+}
+
+const normalizedForkMessageText = (message: ChatMessage): string => chatMessageText(message).replace(/\s+/g, ' ').trim()
+
+/**
+ * Resolve a live renderer message to the durable row represented by the
+ * authoritative REST transcript. Live bubbles use ephemeral ids and do not
+ * receive row ids until a resume round-trip, while the REST path exposes the
+ * SQLite id on every raw row. Match the same visible role/text occurrence so
+ * repeated messages do not resolve to the wrong row.
+ */
+export function resolveDurableRowIdForMessage(
+  messages: ChatMessage[],
+  targetIndex: number,
+  persistedMessages: SessionMessage[]
+): number | undefined {
+  const target = messages[targetIndex]
+
+  if (!target || target.hidden) {
+    return undefined
+  }
+
+  const targetText = normalizedForkMessageText(target)
+
+  if (!targetText) {
+    return undefined
+  }
+
+  const isSameVisibleMessage = (candidate: ChatMessage) =>
+    !candidate.hidden && candidate.role === target.role && normalizedForkMessageText(candidate) === targetText
+
+  const occurrence = messages.slice(0, targetIndex + 1).filter(isSameVisibleMessage).length
+
+  if (!occurrence) {
+    return undefined
+  }
+
+  const authoritative = toChatMessages(persistedMessages).filter(isSameVisibleMessage)
+
+  return authoritative[occurrence - 1]?.rowId
 }
 
 export function upsertOptimisticSession(

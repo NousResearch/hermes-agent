@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts } from './model-status-label'
+import {
+  currentPickerSelection,
+  displayModelName,
+  formatModelPillLabel,
+  modelDisplayParts,
+  modelRouteTags
+} from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
@@ -14,6 +20,32 @@ describe('model-status-label', () => {
   it('strips trailing date-pin snapshots from the display name', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+  })
+
+  it('shows the routing path for every routed model', () => {
+    const models = [
+      'cc/claude-opus-5',
+      'claude/claude-opus-5',
+      'no-think/claude/claude-opus-5',
+      'zai/glm-5.3',
+      'local-model'
+    ]
+
+    const tags = modelRouteTags(models)
+
+    expect(tags.get('cc/claude-opus-5')).toBe('cc')
+    expect(tags.get('claude/claude-opus-5')).toBe('claude')
+    expect(tags.get('no-think/claude/claude-opus-5')).toBe('no-think/claude')
+    expect(tags.get('zai/glm-5.3')).toBe('zai')
+    expect(tags.has('local-model')).toBe(false)
+  })
+
+  it('uses one route tag for a base model and its fast sibling', () => {
+    const models = ['anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.8-fast']
+    const tags = modelRouteTags(models)
+
+    expect(tags.get('anthropic/claude-opus-4.8')).toBe('anthropic')
+    expect(tags.get('anthropic/claude-opus-4.8-fast')).toBe('anthropic')
   })
 
   it('renders local GGUF ids as a clean name with a quant tag', () => {

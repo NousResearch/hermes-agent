@@ -20,12 +20,13 @@ import {
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tip } from '@/components/ui/tooltip'
 import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelRouteTags } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -278,6 +279,11 @@ export function ModelCatalogMenu({
     [pickerProviders, search, current.model, current.provider, shownKeys]
   )
 
+  const routeTags = useMemo(
+    () => new Map(pickerProviders.map(provider => [provider.slug, modelRouteTags(provider.models ?? [])])),
+    [pickerProviders]
+  )
+
   // Presets are searchable rows like everything else — an unfiltered preset
   // sitting under zero model matches would otherwise become the "first match"
   // Enter commits.
@@ -494,6 +500,7 @@ export function ModelCatalogMenu({
 
                     const isCurrent = activeId !== null
                     const name = modelDisplayParts(family.id).name
+                    const routeTag = routeTags.get(group.provider.slug)?.get(family.id) ?? ''
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -538,44 +545,49 @@ export function ModelCatalogMenu({
 
                     return (
                       <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
-                        <DropdownMenuSubTrigger
-                          hideChevron
-                          onClick={activate}
-                          onKeyDown={event => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              activate()
-                            }
-                          }}
-                          {...kbRowProps(`${group.provider.slug}:${family.id}`)}
-                        >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                          </span>
-                          {loadProgress ? (
-                            <span
-                              className="ml-auto flex shrink-0 items-center gap-1.5"
-                              title={copyPicker.loadingIntoMemory}
-                            >
-                              <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
-                                <span
-                                  className="block h-full rounded-full bg-primary transition-[width] duration-500"
-                                  style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
-                                />
-                              </span>
-                              <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
-                                {loadProgress.percent}%
-                              </span>
+                        <Tip label={activeId ?? family.id}>
+                          <DropdownMenuSubTrigger
+                            hideChevron
+                            onClick={activate}
+                            onKeyDown={event => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                activate()
+                              }
+                            }}
+                            {...kbRowProps(`${group.provider.slug}:${family.id}`)}
+                          >
+                            <span className="min-w-0 flex-1 truncate">
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                              {routeTag ? (
+                                <span className="text-(--ui-text-tertiary)"> · {routeTag}</span>
+                              ) : null}
+                              {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                             </span>
-                          ) : null}
-                          {isCurrent ? (
-                            <Codicon
-                              className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
-                              name="check"
-                              size="0.75rem"
-                            />
-                          ) : null}
-                        </DropdownMenuSubTrigger>
+                            {loadProgress ? (
+                              <span
+                                className="ml-auto flex shrink-0 items-center gap-1.5"
+                                title={copyPicker.loadingIntoMemory}
+                              >
+                                <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                                  <span
+                                    className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                                    style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                                  />
+                                </span>
+                                <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
+                                  {loadProgress.percent}%
+                                </span>
+                              </span>
+                            ) : null}
+                            {isCurrent ? (
+                              <Codicon
+                                className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
+                                name="check"
+                                size="0.75rem"
+                              />
+                            ) : null}
+                          </DropdownMenuSubTrigger>
+                        </Tip>
                         <ModelEditSubmenu
                           canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
                           defaultEffort={defaultEffort}

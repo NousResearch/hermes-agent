@@ -102,6 +102,22 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   return { name: prettifyBase(base) || model.trim() || 'No model', tag }
 }
 
+/** Build exact model-id → route tags for every provider-prefixed model. */
+export function modelRouteTags(models: readonly string[]): ReadonlyMap<string, string> {
+  const tags = new Map<string, string>()
+
+  for (const model of models) {
+    const trimmed = model.trim()
+    const slash = trimmed.lastIndexOf('/')
+
+    if (slash > 0) {
+      tags.set(model, trimmed.slice(0, slash))
+    }
+  }
+
+  return tags
+}
+
 /** Friendly one-line model name for menus and the status bar. */
 export function displayModelName(model: string): string {
   return modelDisplayParts(model).name

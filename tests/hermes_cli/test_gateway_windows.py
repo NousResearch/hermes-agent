@@ -18,8 +18,13 @@ _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
-    """A broken/empty locale must not leave us without a decoder (issue #38172)."""
+    """A broken/empty locale must not leave us without a decoder (issue #38172).
 
+    The Windows console code page is neutralised first: when it resolves it wins over the locale
+    (see test_gateway_windows_schtasks_encoding.py), and this test is about the last-resort path.
+    """
+
+    monkeypatch.setattr(gateway_windows, "_windows_console_codepage", lambda: 0)
     monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "")
     assert gateway_windows._schtasks_encoding() == "utf-8"
 

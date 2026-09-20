@@ -53,6 +53,8 @@ class TestHandleReasoningCommand(unittest.TestCase):
         """Create a minimal CLI stub with the reasoning attributes."""
         stub = SimpleNamespace(
             reasoning_config=reasoning_config,
+            _explicit_reasoning_config=None,
+            _session_reasoning_config=None,
             show_reasoning=show_reasoning,
             agent=MagicMock(),
         )
@@ -101,7 +103,28 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
         save_config.assert_not_called()
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertEqual(stub._session_reasoning_config, {"enabled": True, "effort": "high"})
         self.assertIsNone(stub.agent)
+
+    def test_global_save_clears_session_provenance_only_after_success(self):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        for saved in (True, False):
+            with self.subTest(saved=saved):
+                stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"})
+                stub._explicit_reasoning_config = {"enabled": True, "effort": "low"}
+                with patch("cli.save_config_value", return_value=saved), patch("cli._cprint"):
+                    CLICommandsMixin._handle_reasoning_command(stub, "/reasoning none --global")
+
+                if saved:
+                    self.assertIsNone(stub._session_reasoning_config)
+                    self.assertIsNone(stub._explicit_reasoning_config)
+                else:
+                    self.assertEqual(stub._session_reasoning_config, {"enabled": False})
+                    self.assertEqual(
+                        stub._explicit_reasoning_config,
+                        {"enabled": True, "effort": "low"},
+                    )
 
 
 
@@ -148,7 +171,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
             _session_db=None,
             _pending_title=None,
             _resumed=False,
-            reasoning_config=None,
+            reasoning_config={"enabled": True, "effort": "high"},
+            _explicit_reasoning_config={"enabled": False},
+            _session_reasoning_config={"enabled": True, "effort": "high"},
             _notify_session_boundary=MagicMock(),
             # Session had switched to fast + a session-only model.
             service_tier="priority",
@@ -187,6 +212,13 @@ class TestHandleReasoningCommand(unittest.TestCase):
         # Model reset to the config default via the live agent swap.
         self.assertEqual(stub.model, "config-default-model")
         agent.switch_model.assert_called_once()
+        self.assertIsNone(stub._session_reasoning_config)
+        self.assertEqual(stub.reasoning_config, {"enabled": False})
+        self.assertEqual(agent.reasoning_config, {"enabled": False})
+        self.assertEqual(
+            agent.switch_model.call_args.kwargs["reasoning_config_override"],
+            {"enabled": False},
+        )
 
 
 # ---------------------------------------------------------------------------

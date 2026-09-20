@@ -1331,6 +1331,8 @@ class CLICommandsMixin:
         # the session recorded no cwd. See #38562.
         self._restore_session_cwd(session_meta)
         self._restore_session_yolo(session_meta)
+        # A /reasoning choice belongs to the session being left. Launch --reasoning remains.
+        self._session_reasoning_config = None
         self._restore_session_model(session_meta)
 
     def _resolve_resume_target(self, target: str):
@@ -2598,12 +2600,16 @@ class CLICommandsMixin:
                        _dim_line('Display:      show, hide'),
                        _dim_line('Scope:        session-scoped by default, --global to persist'))
         self.reasoning_config = parsed
+        self._session_reasoning_config = parsed
         _retire_agent(self)  # Force agent re-init with new reasoning config
         saved = explicit_global and _save("agent.reasoning_effort", arg)
         if saved:
             if not isinstance(CLI_CONFIG.get("agent"), dict):
                 CLI_CONFIG["agent"] = {}
             CLI_CONFIG["agent"]["reasoning_effort"] = arg
+            # Only discard explicit provenance after config.yaml accepted the replacement.
+            self._session_reasoning_config = None
+            self._explicit_reasoning_config = None
         _cp(_accent_line(f"✓ Reasoning effort set to '{effort_display_label(arg, *_route)}' "
                          f"{_scope_outcome(explicit_global, saved)}"))
 

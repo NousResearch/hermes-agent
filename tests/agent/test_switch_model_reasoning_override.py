@@ -6,8 +6,31 @@ Tests that switch_model:
 3. Saves reasoning_config into _primary_runtime for fallback recovery
 """
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
+
+
+@pytest.fixture
+def configured_agent(tmp_path, monkeypatch):
+    """Exercise real config loading, agent construction and switching without a provider call."""
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {
+        "model": {"default": "model-a", "provider": "openai"},
+        "agent": {"reasoning_effort": None, "reasoning_overrides": {"model-a": "high", "model-b": "low"}},
+    }
+    (tmp_path / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+    agent = AIAgent(
+        model="model-a", provider="openai", api_key="test-key", api_mode="chat_completions",
+        base_url="http://127.0.0.1:1/v1", enabled_toolsets=[], quiet_mode=True,
+        skip_context_files=True, skip_memory=True, skip_background_review=True,
+        reasoning_config={"enabled": True, "effort": "high"},
+    )
+    yield agent
+    agent.close()
 
 
 class TestSwitchModelReasoningOverride:
@@ -77,7 +100,8 @@ class TestSwitchModelReasoningOverride:
 
 
 
-    def test_restore_primary_runtime_restores_reasoning(self):
+    @pytest.mark.parametrize("saved_reasoning", [{"enabled": True, "effort": "xhigh"}, None])
+    def test_restore_primary_runtime_restores_reasoning(self, saved_reasoning):
         """restore_primary_runtime should restore reasoning_config from snapshot."""
         from agent.agent_runtime_helpers import restore_primary_runtime
 
@@ -91,7 +115,7 @@ class TestSwitchModelReasoningOverride:
             "client_kwargs": {},
             "use_prompt_caching": True,
             "use_native_cache_layout": False,
-            "reasoning_config": {"enabled": True, "effort": "xhigh"},
+            "reasoning_config": saved_reasoning,
             "compressor_model": "claude-opus-4.5",
             "compressor_base_url": "",
             "compressor_api_key": "",
@@ -122,5 +146,28 @@ class TestSwitchModelReasoningOverride:
 
         result = restore_primary_runtime(agent)
         assert result is True
-        assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
+        assert agent.reasoning_config == saved_reasoning
 
+    @pytest.mark.parametrize("override", [{"enabled": False}, {"enabled": True, "effort": "high"}, None])
+    def test_explicit_session_reasoning_override_beats_destination_default(self, configured_agent, override):
+        """Explicit values (even matching the source default) and exact None restores win."""
+        agent = configured_agent
+        for target in ("model-b", "unconfigured-model"):
+            agent.switch_model(
+                target, "openai", api_key="test-key", base_url="http://127.0.0.1:1/v1",
+                api_mode="chat_completions", reasoning_config_override=override,
+            )
+            assert agent.model == target
+            assert agent.reasoning_config == override
+            assert agent._primary_runtime["reasoning_config"] == override
+
+    def test_unproven_reasoning_is_re_resolved_for_destination(self, configured_agent):
+        """An inherited source-model value must not leak, even when the target has no default."""
+        agent = configured_agent
+        for target, expected in (("model-b", {"enabled": True, "effort": "low"}), ("unconfigured-model", None)):
+            agent.switch_model(
+                target, "openai", api_key="test-key", base_url="http://127.0.0.1:1/v1",
+                api_mode="chat_completions",
+            )
+            assert agent.model == target
+            assert agent.reasoning_config == expected

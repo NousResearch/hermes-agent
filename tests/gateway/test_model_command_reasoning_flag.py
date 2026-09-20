@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform
+from gateway.run import GatewayRunner
 from gateway.slash_commands_model import _ModelSwitchContext
 
 
@@ -51,3 +52,37 @@ async def test_no_flag_and_once_leave_reasoning_untouched():
                                     one_turn=True, reasoning_effort="high"),
         source=source)
     assert "applied" not in calls
+
+
+def test_cached_agent_switch_preserves_session_reasoning_override(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    explicit_disabled = {"enabled": False}
+    agent = SimpleNamespace(reasoning_config={"enabled": True, "effort": "medium"})
+    seen = {}
+
+    def _switch_model(**kwargs):
+        seen.update(kwargs)
+        agent.reasoning_config = kwargs.get(
+            "reasoning_config_override", {"enabled": True, "effort": "medium"}
+        )
+
+    agent.switch_model = _switch_model
+    monkeypatch.setattr(runner, "_cached_agent_for", lambda _session_key: agent)
+    monkeypatch.setattr(runner, "_peek_session_state", lambda _session_key: SimpleNamespace(
+        conversation=SimpleNamespace(reasoning_override=explicit_disabled)
+    ))
+    result = SimpleNamespace(
+        new_model="new-model", target_provider="nous", api_key="key",
+        base_url="https://inference-api.nousresearch.com/v1", api_mode="chat_completions",
+        runtime_capabilities=None,
+    )
+    ctx = _ModelSwitchContext(
+        session_key="telegram:c1", current_model="old-model", source=None,
+        config_path=None, persist_global=False,
+    )
+
+    error = runner._switch_cached_agent_model(result, ctx, picker=False)
+
+    assert error is None
+    assert agent.reasoning_config == explicit_disabled
+    assert seen["reasoning_config_override"] == explicit_disabled

@@ -177,11 +177,19 @@ class GatewayModelCommandsMixin:
         cached_agent = self._cached_agent_for(ctx.session_key)
         if cached_agent is None:
             return None
+        peek_session_state = getattr(self, "_peek_session_state", lambda _key: None)
+        session_state = peek_session_state(ctx.session_key)
+        reasoning_override = (
+            session_state.conversation.reasoning_override if session_state is not None else None
+        )
+        switch_kwargs = {}
+        if reasoning_override is not None:
+            switch_kwargs["reasoning_config_override"] = reasoning_override
         try:
             cached_agent.switch_model(
                 new_model=result.new_model, new_provider=result.target_provider,
                 api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
-                capabilities=getattr(result, "runtime_capabilities", None),
+                capabilities=getattr(result, "runtime_capabilities", None), **switch_kwargs
             )
         except Exception as exc:
             logger.warning(

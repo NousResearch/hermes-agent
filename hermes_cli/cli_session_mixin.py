@@ -87,10 +87,15 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
         if not r.success:
             return
         if cli.agent:
+            from hermes_cli.cli_model_switch_mixin import _cli_reasoning_override
+
+            switch_kwargs = {}
+            if (reasoning_override := _cli_reasoning_override(cli)) is not None:
+                switch_kwargs["reasoning_config_override"] = reasoning_override
             cli.agent.switch_model(
                 new_model=r.new_model, new_provider=r.target_provider, api_key=r.api_key,
                 base_url=r.base_url, api_mode=r.api_mode,
-                capabilities=getattr(r, "runtime_capabilities", None))
+                capabilities=getattr(r, "runtime_capabilities", None), **switch_kwargs)
         cli.model = r.new_model
         cli.provider = r.target_provider
         cli.requested_provider = r.target_provider
@@ -533,6 +538,7 @@ class CLISessionMixin:
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
+        self._session_reasoning_config = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
         _reset_model_to_config_default(self, silent)
         # After the model reset: the effort belongs to the model the fresh session lands on (a /reasoning

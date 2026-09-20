@@ -62,8 +62,15 @@ class TestHook:
     def _auto(self, monkeypatch):
         monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "auto")
         self.switches = []
-        monkeypatch.setattr("agent.agent_runtime_helpers.switch_model",
-                            lambda agent, m, p, api_key="", base_url="", api_mode="", **k: self.switches.append(api_mode) or setattr(agent, "api_mode", api_mode))
+        self.switch_kwargs = []
+        monkeypatch.setattr(
+            "agent.agent_runtime_helpers.switch_model",
+            lambda agent, m, p, api_key="", base_url="", api_mode="", **k: (
+                self.switches.append(api_mode),
+                self.switch_kwargs.append(k),
+                setattr(agent, "api_mode", api_mode),
+            )[-1],
+        )
 
     def test_gmi_cleared_schedules_once_and_applies_at_next_iteration(self, monkeypatch):
         monkeypatch.setattr(nous_wire, "GMI_NATIVE_WIRE_CLEARED", True)
@@ -78,6 +85,16 @@ class TestHook:
         assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(provider="Anthropic", id="gen-1-x"), 2) is False
         assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(provider="Anthropic", id="gen-1-x"), 1) is False
         assert self.switches == ["anthropic_messages"]
+
+    @pytest.mark.parametrize("reasoning", [{"enabled": False}, None])
+    def test_protocol_only_switch_keeps_exact_reasoning_runtime(self, monkeypatch, reasoning):
+        monkeypatch.setattr(nous_wire, "GMI_NATIVE_WIRE_CLEARED", True)
+        a = _agent(reasoning_config=reasoning)
+
+        assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(id="msg_01abc"), 1) is True
+        assert nous_wire.apply_pending_wire_switch(a) is True
+
+        assert self.switch_kwargs[0]["reasoning_config_override"] == reasoning
 
     def test_openrouter_stays_on_chat(self):
         a = _agent()

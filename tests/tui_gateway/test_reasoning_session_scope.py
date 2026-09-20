@@ -20,8 +20,11 @@ Covers the "desktop reverts thinking to medium after one turn" report:
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 import tui_gateway.server as server
 from tui_gateway.server import _session_info
@@ -111,4 +114,47 @@ class TestLoadReasoningConfigYamlBoolean:
             server, "_load_cfg", return_value={"agent": {"reasoning_effort": "false"}}
         ):
             assert server._load_reasoning_config() == {"enabled": False}
+
+
+class TestStoredReasoningProvenance:
+    @pytest.mark.parametrize(
+        ("model_config", "expected"),
+        [
+            ({"reasoning_config": {"enabled": True, "effort": "low"}}, {}),
+            (
+                {"reasoning_config_override": {"enabled": False}},
+                {"reasoning_config_override": {"enabled": False}},
+            ),
+        ],
+    )
+    def test_only_explicit_override_markers_are_restored(self, model_config, expected) -> None:
+        assert server._stored_session_runtime_overrides({"model_config": model_config}) == expected
+
+    def test_runtime_persistence_writes_and_clears_only_the_explicit_marker(self) -> None:
+        class _DB:
+            def __init__(self):
+                self.model_config = {"reasoning_config_override": {"enabled": True, "effort": "low"}}
+
+            def get_session(self, _session_key):
+                return {"model_config": json.dumps(self.model_config)}
+
+            def update_session_meta(self, _session_key, model_config, _model):
+                self.model_config = json.loads(model_config)
+
+        db = _DB()
+        agent = _agent({"enabled": False})
+        agent._session_db = db
+        session = {
+            "agent": agent,
+            "session_key": "sess-key",
+            "create_reasoning_override": {"enabled": False},
+        }
+
+        server._persist_live_session_runtime(session)
+        assert db.model_config["reasoning_config_override"] == {"enabled": False}
+
+        session.pop("create_reasoning_override")
+        server._persist_live_session_runtime(session)
+        assert "reasoning_config_override" not in db.model_config
+        assert db.model_config["reasoning_config"] == {"enabled": False}
 

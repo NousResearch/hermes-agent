@@ -16,9 +16,14 @@ class _Agent:
     def __init__(self):
         self.model, self.provider, self.base_url, self.api_key, self.api_mode = "old", "nous", "", "", ""
         self.reasoning_config = {"enabled": True, "effort": "medium"}
+        self.switch_kwargs = {}
 
-    def switch_model(self, **_kw):
-        self.reasoning_config = {"enabled": True, "effort": "medium"}  # re-resolved from config
+    def switch_model(self, **kwargs):
+        self.switch_kwargs = kwargs
+        self.reasoning_config = kwargs.get(
+            "reasoning_config_override",
+            {"enabled": True, "effort": "medium"},  # re-resolved from config
+        )
 
 
 @pytest.fixture
@@ -62,3 +67,17 @@ def test_reasoning_flag_with_global_writes_config_and_drops_the_pin(_quiet_switc
 
     with pytest.raises(ValueError, match="--reasoning takes"):
         server._apply_model_switch("sid", {"agent": _Agent()}, "new/model --reasoning turbo")
+
+
+def test_plain_model_switch_preserves_existing_session_reasoning_pin(_quiet_switch):
+    agent = _Agent()
+    explicit_disabled = {"enabled": False}
+    session = {"agent": agent, "create_reasoning_override": explicit_disabled}
+
+    out = getattr(server, "_apply_model_switch")(
+        "sid", session, "new/model --provider nous --session"
+    )
+
+    assert out["value"] == "new/model"
+    assert agent.reasoning_config == explicit_disabled
+    assert agent.switch_kwargs["reasoning_config_override"] == explicit_disabled

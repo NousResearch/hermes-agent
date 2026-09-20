@@ -24,11 +24,19 @@ from hermes_cli.cli_agent_setup_mixin import _retire_agent
 # new model's effort behind with the old route.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode", "reasoning_config")
+    "api_key", "base_url", "api_mode", "reasoning_config", "_session_reasoning_config")
 
 
 def _runtime_fields(cli) -> dict:
     return {key: getattr(cli, key, None) for key in _RUNTIME_FIELDS}
+
+
+def _cli_reasoning_override(cli):
+    """Current proven override: a session /reasoning choice, then the launch flag."""
+    session_override = getattr(cli, "_session_reasoning_config", None)
+    if session_override is not None:
+        return session_override
+    return getattr(cli, "_explicit_reasoning_config", None)
 
 
 def _resolve_cli_reasoning(cli) -> None:
@@ -38,6 +46,10 @@ def _resolve_cli_reasoning(cli) -> None:
     because a lazily built agent inherits this field — an always-thinking model then goes out with
     the launch model's effort and 400s (#112921, #96012). ``agent.switch_model`` re-resolves its own
     copy for the live-agent path."""
+    override = _cli_reasoning_override(cli)
+    if override is not None:
+        cli.reasoning_config = copy.deepcopy(override)
+        return
     from cli import CLI_CONFIG
     from hermes_constants import resolve_reasoning_config
     # getattr: tests drive /new unbound on a SimpleNamespace without ``model`` (blank -> config default).
@@ -210,20 +222,25 @@ def _picker_offers_reasoning(provider_data: dict, model: str) -> bool:
     return not (isinstance(entry, dict) and entry.get("reasoning") is False)
 
 
-def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> None:
-    """Apply a ``--reasoning <level>`` that rode along with a model pick. Runs AFTER the swap: the
-    agent's ``switch_model`` re-resolves ``reasoning_config`` from config.yaml, so an earlier write
-    would be clobbered. Session-scoped unless the pick itself persists (``--global``)."""
+def _apply_reasoning_after_switch(
+    cli, effort: str, *, persist_global: bool, session_scope: bool = True
+) -> None:
+    """Apply a reasoning level that rode with a model pick and record its provenance."""
     from cli import CLI_CONFIG, _cprint, _parse_reasoning_config, save_config_value
     parsed = _parse_reasoning_config(effort)
     if parsed is None:
         return
     cli.reasoning_config = parsed
+    if session_scope:
+        cli._session_reasoning_config = copy.deepcopy(parsed)
     if cli.agent is not None:
         cli.agent.reasoning_config = parsed
     saved = persist_global and save_config_value("agent.reasoning_effort", effort)
     if saved:
         CLI_CONFIG.setdefault("agent", {})["reasoning_effort"] = effort
+        # Drop the session/launch pin only after the durable write succeeds.
+        cli._session_reasoning_config = None
+        cli._explicit_reasoning_config = None
     _cprint(f"    Reasoning effort: {effort}" + (" (saved to config)" if saved else ""))
 
 
@@ -243,7 +260,9 @@ def _commit_model_switch(
         cli._pending_one_turn_model_restore = snapshot
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
     if reasoning_effort:
-        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn)
+        _apply_reasoning_after_switch(
+            cli, reasoning_effort, persist_global=persist_global and not one_turn,
+            session_scope=not one_turn)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
@@ -494,9 +513,12 @@ class CLIModelSwitchMixin:
         # self.model / self.provider / self.reasoning_config.
         if self.agent is not None:
             try:
+                switch_kwargs = {}
+                if (reasoning_override := _cli_reasoning_override(self)) is not None:
+                    switch_kwargs["reasoning_config_override"] = reasoning_override
                 self.agent.switch_model(
                     new_model=self.model, new_provider=self.provider, api_key=self.api_key or "",
-                    base_url=self.base_url or "", api_mode=self.api_mode or "")
+                    base_url=self.base_url or "", api_mode=self.api_mode or "", **switch_kwargs)
             except Exception:
                 logger.debug("In-place agent model swap on resume failed", exc_info=True)
         msg = f"Model restored from session: {stored_model}"
@@ -590,6 +612,9 @@ class CLIModelSwitchMixin:
         if primary and hasattr(agent, "_restore_primary_runtime"):
             try:
                 agent._primary_runtime = copy.deepcopy(primary)
+                # A later /reasoning choice can be newer than the route snapshot.
+                if "reasoning_config" in snapshot:
+                    agent._primary_runtime["reasoning_config"] = copy.deepcopy(snapshot["reasoning_config"])
                 agent._fallback_activated = True
                 agent._rate_limited_until = 0
                 if agent._restore_primary_runtime():
@@ -602,7 +627,8 @@ class CLIModelSwitchMixin:
                     new_model=snapshot.get("model", ""), new_provider=snapshot.get("provider", ""),
                     api_key=snapshot.get("api_key", ""), base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
-                    capabilities=snapshot.get("capabilities"))
+                    capabilities=snapshot.get("capabilities"),
+                    reasoning_config_override=snapshot.get("reasoning_config"))
                 if "reasoning_config" in snapshot:
                     agent.reasoning_config = snapshot["reasoning_config"]
             except Exception as exc:
@@ -667,10 +693,13 @@ class CLIModelSwitchMixin:
 
         if self.agent is not None:
             try:
+                switch_kwargs = {}
+                if (reasoning_override := _cli_reasoning_override(self)) is not None:
+                    switch_kwargs["reasoning_config_override"] = reasoning_override
                 self.agent.switch_model(
                     new_model=result.new_model, new_provider=result.target_provider,
                     api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
-                    capabilities=getattr(result, "runtime_capabilities", None))
+                    capabilities=getattr(result, "runtime_capabilities", None), **switch_kwargs)
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client. Roll the CLI's own staged
                 # fields back too and abort the rest of the commit (note + success print) so a failed switch

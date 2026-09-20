@@ -189,6 +189,23 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
+def test_handle_approve_reports_record_it_could_not_remove(hermes_home, monkeypatch):
+    """An applied write whose pending record survives must be named, not counted as clean:
+    the next `approve all` would replay it (duplicate memory entry / stale skill patch)."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
+                         summary="a", origin="foreground")
+    monkeypatch.setattr(wa, "discard_pending", lambda subsystem, pending_id: False)
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", rec["id"]], memory_store=store)
+    assert "Approved 1" in out
+    assert rec["id"] in out and "could not be removed" in out and "reject" in out
+    assert len(store.user_entries) == 1
+    assert wa.pending_count("memory") == 1
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

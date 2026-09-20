@@ -74,16 +74,23 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
 
-    applied, failed = 0, []
+    applied, failed, stuck = 0, [], []
     for rec in targets:
         ok, msg = _apply_one(subsystem, rec, memory_store)
-        if ok:
-            wa.discard_pending(subsystem, rec["id"])
-            applied += 1
-        else:
+        if not ok:
             failed.append(f"{rec['id']}: {msg}")
+            continue
+        applied += 1
+        # The write has landed; a record that cannot be removed would be replayed by the next
+        # `approve all` (a duplicate memory entry, or a skill patch whose old_string is gone).
+        if not wa.discard_pending(subsystem, rec["id"]):
+            stuck.append(rec["id"])
 
     out = [f"Approved {applied} {subsystem} write(s)."]
+    if stuck:
+        out.append("Applied, but the pending record could not be removed (approving it again "
+                   "would apply the write twice) — drop it with "
+                   f"/{subsystem} reject <id>: {', '.join(stuck)}")
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)

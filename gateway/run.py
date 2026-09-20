@@ -1900,8 +1900,6 @@ _AGENT_ENV_BRIDGE = {
     "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
     "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
     "session_stall_timeout": "HERMES_SESSION_STALL_TIMEOUT",
-    # Internal bridge only — config.yaml (agent.reconnect_attention_after) is the documented setting.
-    "reconnect_attention_after": "HERMES_RECONNECT_ATTENTION_AFTER_SECONDS",
     "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
     "cron_drain_timeout": "HERMES_CRON_DRAIN_TIMEOUT",
     "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
@@ -3223,19 +3221,30 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
 # Max seconds between platform reconnect retries (primary watcher and secondary profiles share it).
 _RECONNECT_BACKOFF_CAP = 300
 
-# Seconds continuously in the reconnect queue before NEEDS_ATTENTION. Retrying never stops (transient
-# outages must self-heal); this only makes a permanently-failing loop loud. 0 disables.
-
-
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def _reconnect_attention_after_secs() -> float:
+    """``agent.reconnect_attention_after`` of the profile whose scope is bound at call time (the launch
+    profile's when unbound). Seconds continuously in the reconnect queue before NEEDS_ATTENTION; retrying
+    never stops (transient outages must self-heal), this only makes a permanently-failing loop loud.
+    Non-positive disables. Read per call, never cached: one process serves many profiles and a config
+    edit must not need a gateway restart (#115635)."""
+    from hermes_cli.config import load_config_readonly
+    agent_cfg = load_config_readonly().get("agent")
+    raw = agent_cfg.get("reconnect_attention_after") if isinstance(agent_cfg, dict) else None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_DEFAULT_CONFIG["agent"]["reconnect_attention_after"])
+
+
 def _reconnect_needs_attention(info: dict, now: float) -> bool:
     """True when a reconnect-queue entry has waited long enough for NEEDS_ATTENTION.
     ``queued_at`` is re-stamped on each (re)entry, so only *continuous* failure escalates."""
-    threshold = _float_env("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200)
+    threshold = _reconnect_attention_after_secs()
     if threshold <= 0:
         return False  # escalation disabled
     queued_at = info.get("queued_at")

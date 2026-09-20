@@ -1,107 +1,83 @@
-"""Profile-scope leak regression for reconnect attention threshold.
+"""``agent.reconnect_attention_after`` is read from the profile whose scope is bound at call time.
 
-Issue: _RECONNECT_ATTENTION_AFTER_SECONDS was a module-level constant that
-captured os.environ at import time. Under multiplex, switching profiles and
-re-bridging config had no effect — the threshold stayed locked to the launch
-profile's value.
-
-Test: two HERMES_HOME dirs (A -> B) prove the threshold moves with the
-active profile after the fix.
+Regression for #115635: the threshold was a module constant frozen from ``os.environ`` at import,
+so a multiplexed secondary escalated at the LAUNCH profile's value and a live config edit needed a
+gateway restart. Two homes, A -> B -> A, per AGENTS.md § "One process may serve many profiles".
 """
-
-from __future__ import annotations
-
-import os
-import subprocess
-import sys
-import textwrap
-from pathlib import Path
+import asyncio
+import time
 
 import pytest
 import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+import gateway.run as gateway_run
+from gateway.config import Platform
+from gateway.run import GatewayRunner
 
 
-def _write_config(home: Path, agent_cfg: dict | None = None) -> None:
-    cfg: dict = {}
-    if agent_cfg:
-        cfg["agent"] = agent_cfg
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+def _home_with_threshold(root, name, seconds):
+    home = root / name
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"agent": {"reconnect_attention_after": seconds}}), encoding="utf-8")
+    return home
 
 
-def test_reconnect_attention_respects_profile_switch(tmp_path: Path) -> None:
-    """Bridging a different profile's config must update the reconnect threshold.
+def test_threshold_follows_bound_profile_scope_a_b_a(tmp_path, monkeypatch):
+    home_a = _home_with_threshold(tmp_path, "a", 10)
+    home_b = _home_with_threshold(tmp_path, "b", 100000)
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+    now = time.monotonic()
+    queued_20s_ago = {"queued_at": now - 20}
 
-    Before the fix, _RECONNECT_ATTENTION_AFTER_SECONDS was cached at import time,
-    so profile B inherited profile A's threshold silently.
-    """
-    home_a = tmp_path / "profile_a"
-    home_b = tmp_path / "profile_b"
-    home_a.mkdir()
-    home_b.mkdir()
+    assert gateway_run._reconnect_needs_attention(dict(queued_20s_ago), now) is True
+    with gateway_run._profile_runtime_scope(home_b, hydrate_secrets=False):
+        assert gateway_run._reconnect_needs_attention(dict(queued_20s_ago), now) is False
+    assert gateway_run._reconnect_needs_attention(dict(queued_20s_ago), now) is True
 
-    _write_config(home_a, agent_cfg={"reconnect_attention_after": 10})
-    _write_config(home_b, agent_cfg={"reconnect_attention_after": 20})
+    # Live edit of the bound profile's config takes effect on the next call, no restart.
+    (home_a / "config.yaml").write_text(
+        yaml.safe_dump({"agent": {"reconnect_attention_after": 100000}}), encoding="utf-8")
+    assert gateway_run._reconnect_needs_attention(dict(queued_20s_ago), now) is False
 
-    script = textwrap.dedent(
-        f"""
-        import os, sys, time
-        sys.path.insert(0, {str(PROJECT_ROOT)!r})
 
-        from pathlib import Path
-        from gateway import run
-        from gateway.run import _bridge_config_to_env, _load_bridge_config
+@pytest.mark.asyncio
+async def test_secondary_reconnect_loop_escalates_under_own_profile(tmp_path, monkeypatch):
+    """A secondary profile's reconnect loop flags ``<profile>:<platform>`` NEEDS_ATTENTION at ITS
+    threshold — the launch profile's (100000 here) must not suppress it."""
+    launch = _home_with_threshold(tmp_path, "launch", 100000)
+    secondary = _home_with_threshold(tmp_path, "sec", 0.01)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
 
-        # Simulate serving profile A first
-        cfg_a = _load_bridge_config(Path({str(home_a / 'config.yaml')!r}))
-        _bridge_config_to_env(cfg_a)
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._profile_adapters = {}
+    runner._profile_failed_platforms = {}
+    writes = []
+    monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda key, **kw: writes.append((key, kw)))
 
-        # 15 s > A's threshold of 10 -> should flag
-        info_a = {{"queued_at": time.monotonic() - 15}}
-        assert run._reconnect_needs_attention(info_a, time.monotonic()) is True, \
-            "A threshold 10: 15s should flag"
+    class _RetryableAdapter:
+        has_fatal_error = True
+        fatal_error_retryable = True
 
-        # 5 s < A's threshold of 10 -> should not flag
-        info_a_ok = {{"queued_at": time.monotonic() - 5}}
-        assert run._reconnect_needs_attention(info_a_ok, time.monotonic()) is False, \
-            "A threshold 10: 5s should not flag"
+    async def failing_attempt(profile_name, platform):
+        return _RetryableAdapter(), False
 
-        # Switch to profile B (same process, multiplex scenario)
-        cfg_b = _load_bridge_config(Path({str(home_b / 'config.yaml')!r}))
-        _bridge_config_to_env(cfg_b)
+    async def noop_disconnect(adapter, platform):
+        return None
 
-        # 15 s < B's threshold of 20 -> must NOT flag after fix
-        info_b = {{"queued_at": time.monotonic() - 15}}
-        result = run._reconnect_needs_attention(info_b, time.monotonic())
-        print(f"RESULT={{result}}")
-        """
-    )
+    monkeypatch.setattr(runner, "_secondary_reconnect_attempt", failing_attempt)
+    monkeypatch.setattr(runner, "_safe_adapter_disconnect", noop_disconnect)
+    monkeypatch.setattr(runner, "_profile_home_or_none", lambda name: secondary)
+    monkeypatch.setattr(gateway_run, "_reconnect_backoff", lambda attempts: 0.02)
 
-    env = dict(os.environ)
-    env["HERMES_HOME"] = str(home_a)
-    # Keep interpreter paths required by stdlib / platform detection
-    for k in (
-        "PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME", "USERPROFILE",
-        "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
-        "SYSTEMROOT", "TEMP", "TMP",
-    ):
-        if k in os.environ and k not in env:
-            env[k] = os.environ[k]
+    task = asyncio.create_task(runner._run_secondary_profile_reconnect("sec", Platform.DISCORD))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not any(kw.get("needs_attention") for _k, kw in writes):
+        await asyncio.sleep(0.02)
+    runner._running = False
+    await asyncio.wait_for(task, timeout=2)
 
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if proc.returncode != 0:
-        pytest.fail(
-            f"Subscript failed (rc={proc.returncode})\n"
-            f"stderr:\n{proc.stderr}\nstdout:\n{proc.stdout}"
-        )
-    assert "RESULT=False" in proc.stdout, (
-        f"Expected False after B bridge (threshold 20, elapsed 15), got:\n"
-        f"{proc.stdout}"
-    )
+    flagged = [(key, kw) for key, kw in writes if kw.get("needs_attention")]
+    assert [key for key, _kw in flagged] == ["sec:discord"], writes
+    assert flagged[0][1]["platform_state"] == "retrying" and flagged[0][1].get("retrying_since")

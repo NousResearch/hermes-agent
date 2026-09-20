@@ -109,6 +109,186 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+
+# --- Structured block options -------------------------------------------------
+#
+# A blocking worker's choices used to exist ONLY as prose inside ``reason``
+# ("1 / 2 / 3", "reply (a) or (b)"), which no renderer can turn into buttons
+# without guessing. ``block_task(options=[{"label": ..., "value": ...}])``
+# carries them as DATA on the block event payload instead, so the resolver
+# behind a press (which only carries task id + index) can re-read the
+# label/value pair from the card.
+#
+# Prose fallback — the ONLY recognised free-text form. Never regex-parse
+# arbitrary prose into buttons: a wrong button is worse than none.
+#
+#     OPTIONS: a=<text> | b=<text>
+#
+# One line, starting at column 0, whose first token is exactly ``OPTIONS:``.
+# ``a``/``b`` are option *values* (short ids), ``<text>`` the labels. A line
+# that does not parse cleanly yields NO options rather than a guess.
+BLOCK_OPTION_MAX = 4
+BLOCK_OPTION_LABEL_MAX = 48
+BLOCK_OPTION_VALUE_MAX = 32
+BLOCK_OPTIONS_LINE_PREFIX = "OPTIONS:"
+# Option values double as ids both in the rendered ``<value>=<label>`` line and
+# in press accounting, so they must survive both unharmed: no spaces, no
+# ``=``/``|`` delimiters.
+_BLOCK_OPTION_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def normalize_block_options(options: Any) -> Optional[list]:
+    """Validate worker-declared block options -> ``[{"label", "value"}, ...]``.
+
+    ``None`` — or an empty list, which declares nothing — returns ``None``.
+    Anything malformed raises ``ValueError`` with an actionable message: a
+    half-valid list must never reach the event payload, and the tool layer
+    renders the ``ValueError`` as a structured tool error.
+
+    The pair is deliberately tight: ``label`` is the short text a renderer puts
+    on the button, ``value`` a short id (``a``, ``b``, ``1``) a press can be
+    recorded against. Unknown keys on an entry are ignored — only these two are
+    persisted and only these two are documented to the model.
+    """
+    if options is None:
+        return None
+    if not isinstance(options, (list, tuple)):
+        raise ValueError('options must be a list of {"label": ..., "value": ...} objects')
+    items = list(options)
+    if not items:
+        return None
+    if len(items) > BLOCK_OPTION_MAX:
+        raise ValueError(f"at most {BLOCK_OPTION_MAX} options (got {len(items)})")
+    normalised: list = []
+    seen: set = set()
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f'options[{idx}] must be an object like {{"label": "Yes, do it", "value": "a"}} '
+                f"(got {type(item).__name__})")
+        label = str(item.get("label") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not label:
+            raise ValueError(f'options[{idx}] needs a non-empty "label" (the text on the button)')
+        if not value:
+            raise ValueError(f'options[{idx}] needs a non-empty "value" (a short id, e.g. "a")')
+        if len(label) > BLOCK_OPTION_LABEL_MAX:
+            raise ValueError(f'options[{idx}]["label"] is {len(label)} chars; '
+                             f"keep it under {BLOCK_OPTION_LABEL_MAX}")
+        if len(value) > BLOCK_OPTION_VALUE_MAX:
+            raise ValueError(f'options[{idx}]["value"] is {len(value)} chars; '
+                             f"keep it under {BLOCK_OPTION_VALUE_MAX}")
+        if not _BLOCK_OPTION_VALUE_RE.match(value):
+            raise ValueError(f'options[{idx}]["value"] must be letters/digits/._- only '
+                             f"(got {value!r})")
+        if "\n" in label or "\r" in label or "|" in label:
+            raise ValueError(f'options[{idx}]["label"] must be one line without "|" '
+                             f"(it is rendered into the OPTIONS: fallback line)")
+        if value in seen:
+            raise ValueError(f"duplicate option value {value!r}; values must be unique ids")
+        seen.add(value)
+        normalised.append({"label": label, "value": value})
+    return normalised
+
+
+def render_block_options_line(options: Any) -> str:
+    """``OPTIONS: a=<label> | b=<label>`` — the one recognised prose form."""
+    pairs = [f"{o['value']}={o['label']}" for o in (options or [])]
+    return BLOCK_OPTIONS_LINE_PREFIX + " " + " | ".join(pairs)
+
+
+def parse_block_options(reason: Optional[str]) -> list:
+    """Read the prose fallback: exactly one ``OPTIONS: <id>=<label> | ...`` line.
+
+    Exact-line-only by design: the line must start at column 0 with the literal
+    ``OPTIONS:`` token, be the ONLY such line in the reason, and every
+    ``|``-separated part must be a clean ``id=label`` pair with a valid id.
+    A missing line, a second such line, a malformed part, or more than
+    ``BLOCK_OPTION_MAX`` parts returns ``[]``.
+
+    Free-form prose is never salvaged into choices ("1 / 2 / 3", "reply (a) or
+    (b)" produce nothing): a wrong button is worse than no button.
+    """
+    if not reason or not isinstance(reason, str):
+        return []
+    lines = [ln.rstrip() for ln in reason.splitlines()
+             if ln.rstrip().startswith(BLOCK_OPTIONS_LINE_PREFIX)]
+    if len(lines) != 1:
+        return []
+    body = lines[0][len(BLOCK_OPTIONS_LINE_PREFIX):].strip()
+    if not body:
+        return []
+    parsed: list = []
+    for part in body.split("|"):
+        value, sep, label = part.partition("=")
+        value, label = value.strip(), label.strip()
+        if not sep or not value or not label:
+            return []
+        parsed.append({"label": label, "value": value})
+    if len(parsed) > BLOCK_OPTION_MAX:
+        return []
+    try:
+        return normalize_block_options(parsed) or []
+    except ValueError:
+        return []
+
+
+def reason_with_block_options(reason: Optional[str], options: Any) -> Optional[str]:
+    """Append the canonical ``OPTIONS:`` line to ``reason`` unless it is there.
+
+    Declared options are the source of truth (the payload holds them), but the
+    stored reason is what every text-only reader shows — the board UI,
+    ``hermes kanban show``, and any watcher that predates the structured field.
+    Keeping the two in step is what stops a declared set of choices from
+    silently disappearing for those readers. A reason that already carries a
+    well-formed line is left untouched, verbatim.
+    """
+    line = render_block_options_line(options)
+    if parse_block_options(reason):
+        return reason
+    base = (reason or "").rstrip()
+    return f"{base}\n{line}" if base else line
+
+
+def block_options_for_task(conn: sqlite3.Connection, task_id: str) -> dict:
+    """The options a blocked card carries — for the resolver behind a press.
+
+    Reads the task's latest block event (``blocked`` / ``block_loop_detected`` /
+    ``dependency_wait``): the structured ``options`` list when the blocking
+    worker declared one, else the documented ``OPTIONS:`` line parsed out of
+    that event's ``reason``. ``origin`` says which — ``declared`` (the worker
+    passed ``options``), ``prose`` (only the fallback line), or ``none`` — so a
+    renderer can tell a real declaration from the fallback.
+    """
+    out = {"options": [], "origin": "none", "reason": "",
+           "event_kind": None, "event_id": None}
+    row = conn.execute(
+        "SELECT id, kind, payload FROM task_events WHERE task_id = ? "
+        "AND kind IN ('blocked', 'block_loop_detected', 'dependency_wait') "
+        "ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
+    if row is None:
+        return out
+    payload = _json_dict(_row_get(row, "payload"))
+    reason = payload.get("reason") or ""
+    if not isinstance(reason, str):
+        reason = str(reason)
+    out["event_kind"] = _row_get(row, "kind")
+    out["event_id"] = _row_get(row, "id")
+    out["reason"] = reason
+    declared = None
+    try:
+        declared = normalize_block_options(payload.get("options"))
+    except ValueError:
+        declared = None
+    if declared:
+        out["options"] = declared
+        out["origin"] = "declared"
+        return out
+    prose = parse_block_options(reason)
+    if prose:
+        out["options"] = prose
+        out["origin"] = "prose"
+    return out
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -3120,15 +3300,29 @@ def edit_completed_task_result(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    options: Optional[list] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
     re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
     promote it into a context-free respawn. ``transient`` still counts
     toward the loop breaker so a forever-flaky task escalates. True on any
-    transition."""
+    transition.
+
+    ``options`` (optional, at most :data:`BLOCK_OPTION_MAX`) is the blocking
+    worker's list of choices, each ``{"label": ..., "value": ...}`` — see
+    :func:`normalize_block_options`. They are persisted as DATA on the block
+    event payload (re-readable through :func:`block_options_for_task`), and the
+    same choices are appended to the stored ``reason`` as the documented
+    ``OPTIONS: a=<label> | b=<label>`` line unless it already carries one, so
+    text-only surfaces keep them. Called without ``options`` the payload is
+    exactly what it was before this parameter existed.
+    """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
+    options = normalize_block_options(options)
+    if options:
+        reason = reason_with_block_options(reason, options)
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
@@ -3148,6 +3342,7 @@ def block_task(
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            options=options,
         )
         if rekind_reason:
             payload["requested_kind"] = requested_kind
@@ -3184,6 +3379,7 @@ def block_task(
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
     prev_kind: Optional[str], prev_recurrences: int,
+    options: Optional[list] = None,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
@@ -3197,13 +3393,22 @@ def _route_block(
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+
+    ``options`` (already normalised by :func:`block_task`) is copied onto the
+    payload of every block route, so the choices a blocking worker declared stay
+    re-readable from the card (:func:`block_options_for_task`) whichever lane it
+    landed in. Absent or empty -> the payload is exactly what it was before.
     """
-    payload = {"reason": reason, "kind": kind, "source_status": source_status}
+    payload: dict = {"reason": reason, "kind": kind, "source_status": source_status}
+    if options:
+        payload["options"] = options
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
+    if options:
+        payload["options"] = options
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload

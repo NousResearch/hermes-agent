@@ -306,6 +306,34 @@ def _ok_landed(kb, conn, tid: str, default_status: str, **extra: Any) -> str:
                status=landed.status if landed else default_status, **extra)
 
 
+def _block_options_arg(args: dict) -> Optional[list]:
+    """Validate + redact the optional ``kanban_block`` options list.
+
+    ``None`` when the worker declared no options — the handler then behaves
+    exactly as it did before the field existed. Raises ``_Reject`` (a structured
+    tool error the model can fix) on a malformed list, so a half-valid set of
+    choices never reaches the card.
+    """
+    raw = args.get("options")
+    if raw is None:
+        return None
+    from hermes_cli import kanban_db as kb
+
+    try:
+        options = kb.normalize_block_options(raw)
+    except ValueError as exc:
+        raise _Reject(f"kanban_block options rejected: {exc}")
+    if not options:
+        return None
+    redacted = [{"label": _redact(o["label"]), "value": _redact(o["value"])} for o in options]
+    try:
+        return kb.normalize_block_options(redacted)
+    except ValueError as exc:
+        raise _Reject(
+            f"kanban_block options rejected after redaction: {exc} — re-declare the "
+            f"options without a credential-shaped label or value")
+
+
 def _redact(value: Any) -> str:
     return redact_sensitive_text(str(value), force=True)
 
@@ -725,11 +753,35 @@ def _handle_complete(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_block")
 def _handle_block(args: dict, **kw) -> str:
-    """Transition the task to blocked with a reason a human will read."""
+    """Transition the task to blocked with a reason a human will read.
+
+    ``options`` (optional, max 4) declares the choices the human should pick
+    from — ``[{"label": "short button text", "value": "short-id"}, ...]``. They
+    are persisted as DATA on the card's block event payload, so a press can be
+    resolved from the card (the callback only carries task id + index), and the
+    same choices are appended to the stored reason as
+
+        OPTIONS: a=<label> | b=<label>
+
+    That line is the ONLY prose form a renderer will ever turn into choices:
+
+    * it starts at column 0 with the literal ``OPTIONS:`` token,
+    * it is the only such line in the reason,
+    * every ``|``-separated part is a clean ``id=label`` pair.
+
+    Anything else yields NO options — a malformed pair, a second such line, or
+    free-form prose like "reply (a) or (b)" / "1 / 2 / 3". Prose is never
+    guessed into buttons: a wrong button is worse than no button. A card blocked
+    by hand (or by an older worker) therefore keeps its choices by ending the
+    reason with exactly that line. Calling ``kanban_block`` without ``options``
+    behaves exactly as it did before the field existed — reason untouched,
+    payload unchanged.
+    """
     tid = _worker_guard("kanban_block", args)
     reason = _redact(
         _require_text(args, "reason", "reason is required — explain what input you need"))
     kind = args.get("kind")
+    options = _block_options_arg(args)
     with _board(args.get("board")) as (kb, conn):
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
@@ -749,7 +801,8 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        ok = kb.block_task(conn, tid, reason=reason, kind=kind, options=options,
+                           expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}

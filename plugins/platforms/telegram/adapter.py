@@ -4633,6 +4633,7 @@ class TelegramAdapter(BasePlatformAdapter):
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
+            ("kb:", self._handle_kanban_button_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
@@ -4646,6 +4647,33 @@ class TelegramAdapter(BasePlatformAdapter):
         if not session_key:
             await query.answer(text=resolved)
         return session_key
+
+    async def _handle_kanban_button_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """``kb:<task_id>:<index>`` — an operator decision on a Kanban blocker ask.
+
+        Same gate and the same shape as the ``ea:`` buttons: only an authorized chat may
+        press, and the press applies the very verb the operator gets by typing the decision
+        in chat (a USER CONFIRMED comment on the card, then unblock / schedule / complete) —
+        no agent run. The chosen option is resolved from the card itself, which is what lets
+        the callback_data stay under Telegram's 64-byte cap.
+        """
+        if not await self._callback_authorized(
+                query, cb, "⛔ You are not authorized to answer this ask."):
+            return
+        pressed_by = (getattr(query.from_user, "first_name", None) or "").strip()
+        try:
+            from plugins.platforms.telegram.kanban_buttons import apply_press
+            # Kanban DB work is synchronous (SQLite): keep it off the event loop, the way
+            # the gateway's own kanban watchers do.
+            outcome = await asyncio.to_thread(
+                apply_press, data, pressed_by=pressed_by or None, author=pressed_by or "operator")
+        except Exception:
+            logger.exception("[%s] kanban button press failed", self.name)
+            await query.answer(text="Could not apply that decision — check the card.")
+            return
+        await query.answer(text=outcome.answer_text)
+        if outcome.edit_text:
+            await self._edit_md_quiet(query, outcome.edit_text)
 
     async def _handle_exec_approval_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``ea:<choice>:<approval_id>`` — resolve a pending exec approval."""

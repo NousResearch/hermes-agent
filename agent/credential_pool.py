@@ -316,6 +316,24 @@ def label_from_token(token: str, fallback: str) -> str:
     return fallback
 
 
+def _codex_principal_identity(access_token: Any) -> Optional[Tuple[str, str]]:
+    """Return the ChatGPT account and subject claims, or None if either is missing.
+
+    Signature verification is unnecessary here: these claims only match credentials Hermes
+    already holds; they are not used to authenticate a request.
+    """
+    claims = _decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else None
+    account_id = auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None
+    subject = claims.get("sub") if isinstance(claims, dict) else None
+    if not (
+        isinstance(account_id, str) and account_id.strip()
+        and isinstance(subject, str) and subject.strip()
+    ):
+        return None
+    return account_id.strip(), subject.strip()
+
+
 def _next_priority(entries: List[PooledCredential]) -> int:
     return max((entry.priority for entry in entries), default=-1) + 1
 

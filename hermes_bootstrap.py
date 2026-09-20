@@ -298,7 +298,15 @@ def harden_import_path(src_root: str | None = None) -> None:
     sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 
     root_abs = os.path.abspath(root)
-    sys.path[:] = [p for p in sys.path if os.path.abspath(p) != root_abs]
+    def is_hermes_root(path: str) -> bool:
+        try:
+            return os.path.abspath(path) == root_abs
+        except OSError:
+            # The process can outlive its launch directory. Relative paths cannot be resolved
+            # then, so discard them instead of aborting startup.
+            return not os.path.isabs(path)
+
+    sys.path[:] = [p for p in sys.path if not is_hermes_root(p)]
     sys.path.insert(0, root)
 
 

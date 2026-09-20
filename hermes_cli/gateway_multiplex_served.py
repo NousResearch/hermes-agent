@@ -22,8 +22,9 @@ def live_default_gateway_pid() -> Optional[int]:
     from gateway.status import get_running_pid
     default_root = get_default_hermes_root()
     try:
-        pid = get_running_pid(
-            default_root / "gateway.pid", cleanup_stale=False, expected_home=default_root)
+        # An explicit PID path scopes identity validation to its parent home.
+        # ``get_running_pid`` derives that expected home from the path itself.
+        pid = get_running_pid(default_root / "gateway.pid", cleanup_stale=False)
         if pid is not None:
             return pid
         # Pre-multiplex Hermes versions wrote only gateway.pid and had no lock file. Keep

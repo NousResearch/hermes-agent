@@ -2295,7 +2295,10 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
         from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
     except Exception:
         _fixed_temperature_for_model = _OMIT_TEMP = None
-    raw_temp = _fixed_temperature_for_model(agent.model, agent.base_url) if _fixed_temperature_for_model is not None else None
+    raw_temp = (
+        _fixed_temperature_for_model(agent.model, getattr(agent, "base_url", None))
+        if _fixed_temperature_for_model is not None else None
+    )
     temperature = None if raw_temp is _OMIT_TEMP else raw_temp
     provider_name = (agent.provider or "").strip().lower()
     # LM Studio uses top-level `reasoning_effort` (not extra_body.reasoning).
@@ -2326,6 +2329,12 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
         extra_body["tags"] = nous_portal_tags()
 
     summary_kwargs = {"model": agent.model, "messages": api_messages}
+    build_api_kwargs = getattr(agent, "_build_api_kwargs", None)
+    if build_api_kwargs is not None:
+        with contextlib.suppress(Exception):
+            tools = build_api_kwargs(api_messages).get("tools")
+            if tools is not None:
+                summary_kwargs["tools"] = tools
     if temperature is not None:
         summary_kwargs["temperature"] = temperature
     if agent.max_tokens is not None:
@@ -2889,6 +2898,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
+        self._stale_kill_requested = False
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
         self.managed_stream_holder = {"stream": None}
@@ -2919,6 +2929,7 @@ class _StreamingCall(StreamingWaitMonitor):
         with self.stream_attempt_lock:
             self.stream_attempt_state["current"] += 1
             attempt_id = int(self.stream_attempt_state["current"])
+        self._stale_kill_requested = False
         self.provider_tool_in_flight["yes"] = False
         self.result["partial_tool_names"] = []
         self.deltas_were_sent["yes"] = False
@@ -3306,6 +3317,13 @@ class _StreamingCall(StreamingWaitMonitor):
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
+        stale_timeout = self._stream_stale_timeout
+        stale_elapsed = time.time() - self.last_chunk_time["t"]
+        if self._stale_kill_requested or (
+            stale_timeout is not None and stale_elapsed >= stale_timeout
+        ):
+            import httpx as _httpx
+            raise _httpx.RemoteProtocolError("stream was terminated by the stale-stream watchdog")
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not tool_calls_acc:
             raise EmptyStreamError(
@@ -3512,7 +3530,7 @@ class _StreamingCall(StreamingWaitMonitor):
             getattr(self.agent, "provider", None), getattr(self.agent, "base_url", None),
             getattr(self.agent, "model", None), getattr(self.agent, "api_mode", None),
         )
-        if current_route != self._initial_route:
+        if current_route != getattr(self, "_initial_route", current_route):
             logger.info("Streaming route changed while a request was in flight; returning the stale request error")
             self.result["error"] = e
             return False
@@ -3663,6 +3681,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._buffer_status(
             f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
             f"context: ~{_est_ctx:,} tokens). Reconnecting...")
+        self._stale_kill_requested = True
         with contextlib.suppress(Exception):
             self._cancel_current_stream_attempt("stale_stream_kill")
             self.clients.close_once("stale_stream_kill")
@@ -3805,8 +3824,12 @@ class _StreamingCall(StreamingWaitMonitor):
                 self.deltas_were_sent["yes"]
                 or bool((getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip())
                 or bool(getattr(self, "result", {}).get("partial_tool_names"))
-                or self.provider_tool_in_flight["yes"]
             )
+            # Inline contexts have no streaming consumer until this call returns. Internal
+            # accumulator text therefore is not delivered output; preserve the transport error
+            # so the caller can retry instead of continuing from an invisible partial stub.
+            if self.worker is None and not self.deltas_were_sent["yes"]:
+                has_partial_response = bool(getattr(self, "result", {}).get("partial_tool_names"))
             if has_partial_response:
                 return self._partial_stream_stub()
             raise self.result["error"]

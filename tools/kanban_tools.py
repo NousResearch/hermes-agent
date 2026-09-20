@@ -1133,6 +1133,9 @@ def _handle_request_review(args: dict, **kw) -> str:
     if metadata is not None:
         metadata = _redact_metadata(metadata)
         _check(metadata is not None, "metadata could not be safely serialized")
+    artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
+    if artifacts:
+        metadata = _merge_artifacts(metadata, artifacts)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)

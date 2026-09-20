@@ -52,9 +52,9 @@ def _candidate_ledger_key(key):
     return getattr(key, "ledger_key", key)
 
 
-def _record_connect_failure(server_name: str) -> None:
+def _record_connect_failure(server_name: str, *, key=None) -> None:
     """Stamp a geometric, capped retry cooldown after a failed connect (under ``_lock``)."""
-    key = _server_key(server_name)
+    key = _server_key(server_name) if key is None else key
     n = _core._server_connect_failures.get(key, 0) + 1
     _core._server_connect_failures[key] = n
     backoff = min(_core._CONNECT_RETRY_BASE_BACKOFF_SEC * (2 ** (n - 1)), _core._CONNECT_RETRY_MAX_BACKOFF_SEC)
@@ -208,7 +208,7 @@ def _note_connect_failure(name: str, exc: BaseException) -> str:
         key = _server_key(name)
         _core._server_connecting.discard(key)
         _core._server_connect_errors[key] = message
-        _record_connect_failure(name)
+        _record_connect_failure(name, key=key)
     return message
 
 
@@ -449,6 +449,7 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
                     key = _candidate_ledger_key(candidate)
                     _core._server_connecting.discard(key)
                     _core._server_connect_errors.setdefault(key, f"Connection attempt {how} during discovery")
+                    _record_connect_failure(_candidate_public_name(candidate), key=key)
         raise
     finally:
         if _was_interrupted:
@@ -633,7 +634,7 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
         # case, so a multiplexed profile would re-enter discovery (cross-process lock) and log
         # "added" every tick forever for a server that is already serving it.
         known = {name for name in wanted
-                 if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                 if (key := _resolve_server_key(name, scope, current=False, lock_held=True)) in _core._servers
                  or key in _core._server_connecting or key in _core._lazy_server_configs}
     # A configured server that is not live is retried here — this is the only reviver for one whose
     # FIRST connect failed (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
@@ -741,7 +742,7 @@ def mcp_server_reconnecting(name: str) -> bool:
     way every time, so callers must treat it as blocked rather than wait forever. Reads cached
     state; never connects."""
     with _core._lock:
-        server = _core._servers.get(_resolve_server_key(name))
+        server = _core._servers.get(_resolve_server_key(name, lock_held=True))
     if server is None or server.session is not None or not server._ever_connected:
         return False
     if server._park_reason and "permanent" in server._park_reason:

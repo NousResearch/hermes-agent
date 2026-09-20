@@ -141,6 +141,11 @@ def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
     transport = types.SimpleNamespace(normalize_response=lambda response, **kw: types.SimpleNamespace(content="ok", tool_calls=None))
     agent = types.SimpleNamespace(
         provider="p", model="m", api_mode="chat_completions", _force_ascii_payload=False,
+        base_url=None, _base_url_lower="", reasoning_config=None, max_tokens=None,
+        providers_allowed=None, providers_ignored=None, providers_order=None, provider_sort=None,
+        provider_require_parameters=False, provider_data_collection=None,
+        openrouter_min_coding_score=None, _supports_reasoning_extra_body=lambda: False,
+        _is_openrouter_url=lambda: False,
         _build_api_kwargs=lambda messages: dict(body), _ensure_primary_openai_client=lambda reason: client,
         _get_transport=lambda: transport)
 

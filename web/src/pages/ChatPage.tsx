@@ -78,17 +78,6 @@ import {
   uploadChatImage,
 } from "@/lib/chatImagePaste";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
-import {
-  PTY_GAVE_UP_BANNER,
-  PTY_RECONNECTING_BANNER,
-  PTY_SESSION_ENDED_MESSAGE,
-  PTY_SESSION_ENDED_TERMINAL_LINE,
-  PTY_START_FAILED_MESSAGE,
-  PTY_TOKEN_MISSING_BANNER,
-  ptyReconnectExhausted,
-  ptyRejectionBanner,
-  type PtyBannerAction,
-} from "@/lib/pty-close-copy";
 import { ptyAttachToken } from "@/lib/pty-attach-token";
 import { loseWebglContexts } from "@/lib/xterm-webgl-release";
 import { PluginSlot } from "@/plugins";
@@ -1539,6 +1528,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       wsRef.current?.close();
       wsRef.current = null;
       host.removeEventListener("keydown", _imeCompositionGuard, true);
+      loseWebglContexts(host);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

@@ -134,6 +134,22 @@ def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
             or provider.startswith(CUSTOM_POOL_PREFIX) or configured_provider is not None)
 
 
+def _unknown_provider_exit(provider: str) -> SystemExit:
+    """Offer nearby provider names and the commands for listing or choosing providers."""
+    import difflib
+
+    known = sorted(
+        set(PROVIDER_REGISTRY) | {"openrouter"}
+        | {entry["name"] for entry in _get_custom_provider_entries()}
+    )
+    close = difflib.get_close_matches(provider, known, n=3, cutoff=0.5)
+    hint = f" Did you mean {', '.join(close)}?" if close else ""
+    return SystemExit(
+        f"Unknown provider '{provider}'.{hint} Run `hermes auth` to see the provider list, or "
+        "`hermes model` to pick one interactively."
+    )
+
+
 def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
 

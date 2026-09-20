@@ -146,7 +146,10 @@ THREAT_PATTERNS = [
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env',
      "hermes_env_access", "critical", "exfiltration", "directly references Hermes secrets file"),
     # `cat <secrets-file>` reads credentials; `cat >`/`cat >>` WRITES one (setup heredocs) — not exfil.
-    (r'cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)',
+    # The lookbehind anchors `cat` to a word boundary so it cannot match the tail of an unrelated
+    # command (`adb logcat | grep ...`, `concat`), which otherwise fires critical on prose that
+    # merely goes on to mention "credentials" later in the same line.
+    (r'(?<![\w.-])cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)',
      "read_secrets_file", "critical", "exfiltration", "reads known secrets file"),
     (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']',
      "js_read_secrets_file", "critical", "exfiltration", "JavaScript reads a known credential file"),

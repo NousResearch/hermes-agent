@@ -2135,6 +2135,19 @@ def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runt
     assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
 
 
+def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_expansion(monkeypatch):
+    """``provider: openai`` expands to the anonymous ``custom`` runtime (#116055) before the overlay runs;
+    the overlay must judge the name the user configured, or the documented ``openai`` opt-in is a silent no-op."""
+    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai", "default": "gpt-5.5-codex", "openai_runtime": "codex_app_server"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai", explicit_api_key="sk-explicit")
+
+    assert resolved["provider"] == "custom"  # the alias expansion itself is unchanged
+    assert resolved["api_mode"] == "codex_app_server"
+
+
 # ── #116055: ``provider: openai`` means the same thing on both auxiliary paths ──────────────────
 
 def test_openai_alias_resolves_identically_on_runtime_and_aux_client_paths(monkeypatch):

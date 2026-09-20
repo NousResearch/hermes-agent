@@ -657,8 +657,12 @@ class GatewayAdapterLifecycleMixin:
             if not await _idle(10):  # re-check every 10 seconds
                 return
 
-    def _flag_reconnect_needs_attention(self, platform, info: dict, now: float) -> None:
-        """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker."""
+    def _flag_reconnect_needs_attention(
+        self, platform, info: dict, now: float, *, status_key: Optional[str] = None
+    ) -> None:
+        """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
+        is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
+        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key."""
         from gateway.run import _reconnect_needs_attention
         if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
             return
@@ -668,10 +672,10 @@ class GatewayAdapterLifecycleMixin:
             "%s has been failing/reconnecting continuously for %.1f hours (%d attempts) — flagging "
             "NEEDS_ATTENTION. Retries continue, but this usually means a permanent problem (revoked "
             "credentials, missing intents, broken sidecar). Check `hermes status` / `/platform list`.",
-            platform.value, queued_for / 3600.0, info.get("attempts", 0),
+            status_key or platform.value, queued_for / 3600.0, info.get("attempts", 0),
         )
         self._update_platform_runtime_status(
-            platform.value, platform_state="retrying", needs_attention=True,
+            status_key or platform.value, platform_state="retrying", needs_attention=True,
             retrying_since=(datetime.now(timezone.utc) - timedelta(seconds=queued_for)).isoformat(),
         )
 
@@ -842,12 +846,12 @@ class GatewayAdapterLifecycleMixin:
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
         from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
-            # ``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+            # Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
             # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
             # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
             with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
-                from gateway.status import write_runtime_status
-                write_runtime_status(served_profiles=[])
+                from gateway.status import publish_runtime_status
+                publish_runtime_status(served_profiles=[])
             return 0
         try:
             from hermes_cli.profiles import get_active_profile_name
@@ -893,7 +897,7 @@ class GatewayAdapterLifecycleMixin:
         """Record the served set (eligible for routing/HTTP prefixes/cron/runtime scope — broader
         than "has a connected adapter") for `hermes status`; seed per-profile PairingStores."""
         with _log_suppressed(logging.DEBUG, "could not record served_profiles", exc_info=True):
-            from gateway.status import write_runtime_status
+            from gateway.status import publish_runtime_status
             from gateway.pairing import PairingStore
             served = [active] + sorted(name for name, _home in profile_homes if name != active)
             self._note_served_profiles(profile_homes)
@@ -902,7 +906,7 @@ class GatewayAdapterLifecycleMixin:
                     self.pairing_stores[name] = (
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
-            write_runtime_status(served_profiles=served)
+            publish_runtime_status(served_profiles=served)
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises
@@ -1191,8 +1195,10 @@ class GatewayAdapterLifecycleMixin:
 
     async def _run_secondary_profile_reconnect(self, profile_name: str, platform: Platform) -> None:
         """Reconnect a retryable secondary adapter under its own profile scope."""
-        from gateway.run import _reconnect_backoff
+        from gateway.run import _profile_runtime_scope, _reconnect_backoff
         attempts = 0
+        # Same escalation shape as the primary queue entry; ``queued_at`` is this task's start.
+        queue_info = {"queued_at": time.monotonic(), "attempts": 0}
         current_task = asyncio.current_task()
         try:
             while self._running:
@@ -1231,6 +1237,13 @@ class GatewayAdapterLifecycleMixin:
                 if not self._running:
                     return
                 attempts += 1
+                queue_info["attempts"] = attempts
+                profile_home = self._profile_home_or_none(profile_name)
+                # The attempt above already hydrated this profile's secret sources off-loop.
+                with self._scope_or_null(
+                        functools.partial(_profile_runtime_scope, hydrate_secrets=False), profile_home):
+                    self._flag_reconnect_needs_attention(
+                        platform, queue_info, time.monotonic(), status_key=f"{profile_name}:{platform.value}")
                 backoff = _reconnect_backoff(attempts)
                 logger.info(
                     "Secondary %s reconnect retry in %ds (profile: %s)", platform.value, backoff, profile_name

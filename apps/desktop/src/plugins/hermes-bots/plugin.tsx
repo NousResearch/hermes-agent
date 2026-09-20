@@ -15,7 +15,7 @@
  * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
  */
 
-import { CHAT_EMPTY_AREA, COMPOSER_AREAS, host, PALETTE_AREA, translateNow } from '@hermes/plugin-sdk'
+import { CHAT_EMPTY_AREA, COMPOSER_AREAS, host, LocalizedTabTitle, PALETTE_AREA, translateNow } from '@hermes/plugin-sdk'
 import type { ChatEmptyProps, PluginContext } from '@hermes/plugin-sdk'
 
 import { startFaceClock, stopFaceClock } from './avatar'
@@ -92,7 +92,7 @@ interface ComposerDraftPayload {
 
 export default {
   id: ID,
-  name: 'Bots',
+  name: translateNow('common.bots'),
   description:
     'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
@@ -367,7 +367,9 @@ export default {
     ctx.register({
       id: 'pane',
       area: 'panes',
-      title: 'Bots',
+      // `title` is sampled at register (module import, before the locale has
+      // loaded) — the tab renders `tabTitle` below so BOTS follows the locale.
+      title: translateNow('common.bots'),
       // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
       // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
       // two cramped panes down the column. Center is safe now: insertAtGroup
@@ -395,6 +397,8 @@ export default {
         width: '260px',
         collapsible: true,
         hideOnly: true,
+        tabTitle: () => <LocalizedTabTitle select={t => t.common.bots} />,
+        tabTitleText: () => translateNow('common.bots'),
         dock: {
           pane: 'sessions',
           pos: 'center',
@@ -425,6 +429,8 @@ export default {
         // a pane title is read at registration, outside React.
         title: translateNow('cron.title'),
         data: {
+          tabTitle: () => <LocalizedTabTitle select={t => t.cron.title} />,
+          tabTitleText: () => translateNow('cron.title'),
           placement: 'main',
           // Repair persisted layouts that stranded Cronjobs in the Bots tab strip.
           dock: {

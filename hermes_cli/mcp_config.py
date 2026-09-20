@@ -835,7 +835,13 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     try:
         from tools.mcp_oauth_manager import get_manager
         if selected_flow == "browser":
-            get_manager().remove(name)
+            # Tokens, client registration and the CIMD refusal go; the cached authorization-server
+            # metadata stays. A fresh discovery still overwrites it, but when the metadata document
+            # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
+            # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
+            from tools.mcp_oauth import HermesTokenStorage
+            get_manager().evict(name)
+            HermesTokenStorage(name).remove(keep_metadata=True)
     except Exception as exc:
         _warning(f"Could not clear existing OAuth state: {exc}")
 

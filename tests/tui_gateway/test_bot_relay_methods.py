@@ -111,6 +111,38 @@ def test_deliver_requires_params(home):
     assert "error" in err
 
 
+def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypatch):
+    """#103731: the sender signs with its bare @handle, which for another machine's ``default`` is
+    ``@hermes`` — the recipient's OWN default. The delivered text names the sender by the form this
+    gateway resolves back to it: its title slug when the local relay roster carries it, else
+    ``handle@connection``. A stamp that is not the relay's is left alone."""
+    seen = []
+
+    class _Proc:
+        returncode, stderr, stdout = 0, "", "ok"
+
+    def _fake_run(argv, **_kwargs):
+        seen.append(Path(argv[argv.index("--query-file") + 1]).read_text(encoding="utf-8"))
+        return _Proc()
+
+    # The deliver child's runner, whichever this tree has: subprocess.run today, and
+    # quiet_single_query.run_reported_turn once the relay books turns from their report
+    # (#114980) — patching only the first would spawn a real ``hermes chat -Q`` child there.
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
+    ])
+    stamp = "Message from 🤖 CoS Bot (@hermes): are we done?"
+    sender = {"from_profile": "default", "from_handle": "hermes", "from_connection": "vps-1"}
+    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": stamp, **sender}))
+    _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": stamp, **sender, "from_connection": "lan-2"}))
+    _result(srv._methods["bot_relay.deliver"](3, {"profile": "ops", "message": "plain text (@hermes): x", **sender}))
+    assert seen == ["Message from 🤖 CoS Bot (@cos-bot): are we done?",
+                    "Message from 🤖 CoS Bot (@hermes@lan-2): are we done?",
+                    "plain text (@hermes): x"]
+
+
 def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch):
     """#110782: the subprocess transport applies the gateway's silence rule — a bare marker
     relays as "", prose that merely mentions one is relayed verbatim."""
@@ -334,7 +366,12 @@ SENDER_AUTHOR = {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}
     {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER},
 ], ids=["no identity", "server-internal identity"])
 def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_runs, bound_client, identity):
-    """The Desktop and server-internal callers carry no login identity; their sender fields become the author."""
+    """A caller with no identity, or one holding the ``?internal=`` credential, keeps its sender fields.
+
+    NOT the Desktop: it mints a ws-ticket carrying the signed-in ``{user_id, provider}`` on every
+    gateway that requires sign-in (``hermes_cli/dashboard_auth/routes.py``), so it is a login
+    identity and takes the principal-author branch above.
+    """
     from agent.turn_author import TURN_AUTHOR_ENV
 
     calls, _outcomes = fake_runs
@@ -345,21 +382,38 @@ def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_r
     assert [json.loads(c["env"][TURN_AUTHOR_ENV]) for c in calls] == [SENDER_AUTHOR]
 
 
-def test_deliver_refuses_a_sender_from_a_logged_in_client(home, fake_runs, bound_client):
-    """A browser login never relays for another connection, so its from_* fields are refused before any turn runs.
-    Without sender fields the same client still delivers, unattributed."""
+def test_deliver_from_a_logged_in_client_is_attributed_to_its_principal_never_to_the_claimed_sender(
+        home, fake_runs, bound_client):
+    """A logged-in client's sender fields are not trusted — but the dm is neither refused nor left unattributed.
+
+    Refusing the CALL (the original guard) took cross-machine relay offline for every auth-gated gateway,
+    because the Desktop is itself a logged-in client there. Dropping the AUTHOR instead made the turn the
+    human's to the recipient's memory (Honcho routes an unattributed turn into the human session and allows
+    conclusion / profile / mirror writes). So the author is derived from the caller's minted identity:
+    stable, unspoofable, and still a bot — whether or not the client named a sender.
+    """
+    import json
+
     from agent.turn_author import TURN_AUTHOR_ENV
 
     calls, _outcomes = fake_runs
     bound_client.auth_identity = {"user_id": "alice", "provider": "google"}
 
-    for sender in ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER):
-        err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **sender})
-        assert err["error"]["code"] == 4095
-    assert not calls
+    shapes = ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER, {})
+    for rid, sender in enumerate(shapes):
+        _result(srv._methods["bot_relay.deliver"](rid, {"profile": "ops", "message": "ping", **sender}))
 
-    _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
-    assert len(calls) == 1 and TURN_AUTHOR_ENV not in calls[0]["env"]
+    assert len(calls) == len(shapes), "every relayed dm from a logged-in client must still run its turn"
+    authors = [json.loads(c["env"][TURN_AUTHOR_ENV]) for c in calls]
+    assert all(a["is_bot"] is True for a in authors), "a relayed dm stays bot-authored for the recipient's memory"
+    assert all(a["id"].startswith("bot:principal:dashboard:") and a["id"].endswith("/relay") for a in authors)
+    assert all(a["name"] == "relayed teammate" for a in authors)
+    assert SENDER_AUTHOR not in authors, "the claimed sender must not become the author"
+    assert len({a["id"] for a in authors}) == 1, "one signed-in principal, one author — with or without sender fields"
+
+    bound_client.auth_identity = {"user_id": "bob", "provider": "google"}
+    _result(srv._methods["bot_relay.deliver"](9, {"profile": "ops", "message": "ping", **SENDER}))
+    assert json.loads(calls[-1]["env"][TURN_AUTHOR_ENV])["id"] != authors[0]["id"], "a different principal is a different author"
 
 
 @pytest.mark.parametrize("subdir", ["profiles/ops", "dev"])

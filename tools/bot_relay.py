@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root
+from tools.bot_mode_probe import _default_home, _hermes_root, alias_forms
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -166,32 +166,97 @@ def read_remote_roster(root: Path | str) -> list[dict]:
         return []
 
 
+def _target_ids(row: dict) -> set[str]:
+    """Lower-cased routing ids of a roster row: its @handle and profile folder id."""
+    return {row["handle"].lower(), row["profile"].lower()}
+
+
+def _target_aliases(row: dict) -> set[str]:
+    """Every lower-cased bare form that addresses ``row``: routing ids plus the Bot Mode title's
+    mention slugs (``"CoS Bot"`` → ``cos-bot``/``cosbot``, what the Desktop picker inserts). A remote
+    ``default`` is ``@hermes`` on every gateway, so its title is the only bare form that can single it out."""
+    return _target_ids(row) | alias_forms(row.get("title") or "")
+
+
 def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
-    """Matched row for a bare handle/profile (unique across connections) or
-    ``<handle|profile>@<connection-id>``; ``"ambiguous"`` for a bare form on several connections; None otherwise."""
+    """Matched row for a bare handle/profile/title slug (unique across connections) or
+    ``<handle|profile|title-slug>@<connection-id>``; ``"ambiguous"`` for a bare form on several
+    connections; None otherwise. An exact handle/profile match beats a title slug, so a title
+    colliding with another row's handle never steals it."""
     want, at, conn = (p.strip() for p in str(raw_target or "").strip().lstrip("@").partition("@"))
     if not want or (at and not conn):
         return None
-    matches = [row for row in roster if want.lower() in (row["handle"].lower(), row["profile"].lower())
-               and (not conn or row["connection_id"].lower() == conn.lower())]
+    want = want.lower()
+    rows = [row for row in roster if not conn or row["connection_id"].lower() == conn.lower()]
+    matches = [row for row in rows if want in _target_ids(row)] or [row for row in rows if want in _target_aliases(row)]
     if not matches:
         return None
     return matches[0] if len(matches) == 1 else "ambiguous"
 
 
-def remote_target_forms(roster: list[dict]) -> list[str]:
-    """Target strings: bare handle when unique across connections, else
-    ``handle@connection`` (mirrors ``resolve_remote_target``)."""
-    handles = [row["handle"].lower() for row in roster]
-    return [f"{row['handle']}@{row['connection_id']}" if handles.count(h) > 1 else row["handle"]
-            for row, h in zip(roster, handles)]
+def _title_slug(row: dict) -> str:
+    """The Bot Mode title's slug form (``"CoS Bot"`` → ``cos-bot``, what the picker inserts); "" when the
+    title is empty, reserved (a bot titled "Hermes") or not a valid handle."""
+    title = str(row.get("title") or "")
+    slug = re.sub(r"[^a-z0-9_-]+", "-", title.strip().lower()).strip("-")
+    return slug if slug in alias_forms(title) else ""
+
+
+def remote_target_forms(roster: list[dict], local_taken: "set[str] | frozenset[str]" = frozenset()) -> list[str]:
+    """One unambiguous target string per row, shortest first: the bare handle when no other remote
+    row and no LOCAL profile (``local_taken``: this gateway's handles and friendly-name slugs) answers
+    to it; else the title slug under the same test (a remote ``default`` titled "CoS Bot" is
+    ``@cos-bot``, since bare ``@hermes`` is always this gateway's own default); else
+    ``handle@connection``. Mirrors ``resolve_remote_target``."""
+    taken = {form.lower() for form in local_taken}
+    id_claims: dict[str, int] = {}
+    alias_claims: dict[str, int] = {}
+    for row in roster:
+        for form in _target_ids(row):
+            id_claims[form] = id_claims.get(form, 0) + 1
+        for form in _target_aliases(row):
+            alias_claims[form] = alias_claims.get(form, 0) + 1
+
+    def _form(row: dict) -> str:
+        # The handle needs only be unique among routing ids (resolution gives it precedence over a
+        # colliding title); a title slug must be unique among every alias.
+        for candidate, claims in ((row["handle"], id_claims), (_title_slug(row), alias_claims)):
+            if candidate and candidate.lower() not in taken and claims.get(candidate.lower(), 0) == 1:
+                return candidate
+        return f"{row['handle']}@{row['connection_id']}"
+
+    return [_form(row) for row in roster]
+
+
+_SENDER_STAMP_RE = re.compile(r"^(Message from 🤖 .+? \(@)([A-Za-z0-9_-]+)(\): )", re.DOTALL)
+
+
+def qualify_sender_stamp(message: str, from_handle: Any, from_connection: Any, roster: list[dict],
+                         local_taken: "set[str] | frozenset[str]" = frozenset()) -> str:
+    """Rewrite a relayed DM's ``Message from 🤖 <name> (@<handle>):`` stamp so the handle is the
+    form THIS gateway can reply to: the sender's row in the local relay roster as
+    ``remote_target_forms`` renders it, else ``handle@connection``. A relayed ``@hermes`` is another
+    machine's default — left bare, a reply lands on the recipient's own default (#103731)."""
+    handle, conn = str(from_handle or "").strip().lstrip("@"), str(from_connection or "").strip()
+    match = _SENDER_STAMP_RE.match(str(message or ""))
+    if not match or not conn or not _HANDLE_RE.match(handle) or not _HANDLE_RE.match(conn):
+        return message
+    forms = dict(zip(((r["connection_id"].lower(), r["handle"].lower()) for r in roster), remote_target_forms(roster, local_taken)))
+    form = forms.get((conn.lower(), handle.lower())) or f"{handle}@{conn}"
+    return f"{match.group(1)}{form}{match.group(3)}{message[match.end():]}"
 
 
 def _envelope_ttl_seconds() -> int:
     """Configured drain TTL (``bot_mode.envelope_ttl_seconds``), read per-drain.
     ``0`` (or negative) disables expiry."""
     val = _bot_mode_cfg("envelope_ttl_seconds", loader="load_config_readonly")
-    return DEFAULT_ENVELOPE_TTL_SECONDS if val is None else int(val)
+    if val is None:
+        return DEFAULT_ENVELOPE_TTL_SECONDS
+    try:
+        return int(val)
+    except (TypeError, ValueError, OverflowError):
+        logger.debug("Invalid bot_mode.envelope_ttl_seconds %r; using fallback", val)
+        return DEFAULT_ENVELOPE_TTL_SECONDS
 
 
 def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
@@ -345,42 +410,24 @@ def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:
 def waiter_command(root: Path | str, envelope: dict) -> str:
     """Shell command that blocks until the reply file appears, then prints it; spawned
     via ``terminal_tool(background=True, notify_on_complete=True)`` so its stdout arrives
-    as the same completion notification local DMs use. Stdlib-only."""
+    as the same completion notification local DMs use.
+
+    A ``tools/bot_mode_dm.py --wait-reply`` entrypoint, like the local delivery runner — not
+    ``python -c``. The approval gate flags inline interpreter code ("script execution via -e/-c
+    flag"), and ``approvals.single_query_mode`` defaults to ``deny`` for the one-shot ``-Q`` turn a
+    bot replies from, so the reply waiter was refused exactly when a bot answered a teammate: the
+    message was delivered, the reply never woke the sender. Roster fields ride as argv (``shlex``
+    quoted), never as source text, so a hostile handle or connection id stays data.
+    """
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
     label = f"@{envelope.get('target_handle', '')} on {envelope.get('target_connection', '')}"
-    # !r keeps roster fields from breaking out of the generated python -c source.
-    # The r-prefix keeps Windows paths viable: the Windows execution layer folds
-    # repr's "\\" back to "\", turning "\U" into an invalid unicode escape; a
-    # raw literal parses the folded backslash literally. No-op on POSIX, and \'
-    # still cannot terminate a raw literal, so the injection defense holds.
-    code = (
-        # Encode label with !r so roster fields cannot break out of the generated python -c source (quotes,
-        # parens, or extra statements in connection_id). See #93590.
-        "import json,os,sys,time\n"
-        f"p = r{reply_path!r}\n"
-        f"label = r{label!r}\n"
-        f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
-        "while time.time() < deadline:\n"
-        "    if os.path.exists(p):\n"
-        "        d = json.load(open(p, encoding='utf-8'))\n"
-        "        if d.get('error'):\n"
-        # Typed reason code rides ahead of the free text so the sender can
-        # branch on it without parsing provider prose.
-        # See #93091.
-        "            code = str(d.get('reason') or '').strip()\n"
-        "            tag = ' [reason: ' + code + ']' if code else ''\n"
-        "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
-        "            sys.exit(1)\n"
-        "        print('Reply from ' + label + ':')\n"
-        "        print(d.get('reply') or '(empty reply)')\n"
-        "        sys.exit(0)\n"
-        # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
-        "    time.sleep(0.25)\n"
-        f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
-        "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
-        "sys.exit(1)\n"
-    )
-    return f"{shlex.quote(sys.executable or 'python3')} -c {shlex.quote(code)}"
+    runner = str(Path(__file__).resolve().with_name("bot_mode_dm.py"))
+    argv = [sys.executable or "python3", runner, "--wait-reply", reply_path, label, str(REPLY_WAIT_SECONDS)]
+    if sys.platform == "win32":
+        # Same rewrite as the delivery runner: the tracked local backend uses Git Bash on native
+        # Windows, where forward-slash drive paths run and backslash paths parse as command names.
+        argv = [part.replace("\\", "/") for part in argv]
+    return shlex.join(argv)
 
 
 def _hermes_cli() -> str:
@@ -443,6 +490,19 @@ def _delivery_child_session_env_names() -> "tuple[str, ...]":
     from gateway.session_context import _VAR_MAP
 
     return tuple(_VAR_MAP)
+
+
+def relaying_principal_author(principal: str) -> dict:
+    """The author of a relayed DM whose sender fields cannot be trusted: a logged-in client named them.
+
+    Server-derived and unspoofable — the id is built from the caller's minted identity digest, never from
+    anything the client sent — and still a BOT author, because the recipient's memory routes on that:
+    Honcho writes a bot-authored turn into the bot's own a2a session and refuses conclusion / profile /
+    mirror writes for it, while an unattributed turn is treated as the human's (#107598 review). The
+    human-facing signature stays in the message text the sender composed."""
+    from agent.turn_author import bot_author_id
+
+    return {"id": bot_author_id("relay", str(principal or "").strip()), "name": "relayed teammate", "is_bot": True}
 
 
 def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = None) -> dict[str, str]:

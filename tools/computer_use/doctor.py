@@ -27,6 +27,9 @@ _ZERO_DISPLAY_MSG = "ScreenCaptureKit reachable but 0 shareable display(s) — e
 _ZERO_DISPLAY_HINT = ("Wake the built-in display, connect a monitor or HDMI dummy dongle (e.g. Headless Ghost), or enable "
                       "a virtual display (Screen Sharing/VNC, BetterDisplay). Verify with `system_profiler SPDisplaysDataType`.")
 _IO_EXC = (OSError, subprocess.TimeoutExpired)
+_PRUNED_UNIT_MSG = "Exec targets {target} which no longer exists — a cua-driver upgrade pruned that release directory"
+_PRUNED_UNIT_HINT = ("Point the {kind} at ~/.cua-driver/packages/current/cua-driver — `current` survives upgrades; "
+                     "versioned packages/releases/<version>/ dirs are pruned (only the last 5 are kept)")
 Report = Dict[str, Any]
 _Row = Tuple[str, str, Report]  # (status, message, extra {hint?, data?}) for one check
 
@@ -281,6 +284,58 @@ def _apply_display_count_guard(report: Report) -> Report:
                 report["overall"] = "degraded"
     return report
 
+def _stale_cua_exec_references(config_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
+    """(kind, unit, target) for systemd user units / XDG autostart entries whose cua-driver Exec points at a
+    pruned ``packages/releases/<version>/`` directory.
+
+    Linux has no managed cua-driver autostart (Windows-only), so daemon units are hand-written against a concrete
+    release dir. The installer prunes all but the last five, so a versioned reference crash-loops with 203/EXEC
+    after every upgrade while every binary-level check stays green (#114748). ``packages/current`` and
+    still-present release dirs are healthy by construction and never reported.
+    """
+    # systemd --user and XDG autostart both honour $XDG_CONFIG_HOME; a host that sets it keeps its units there.
+    home = os.path.expanduser("~")
+    base = config_dir or os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    findings: List[Tuple[str, str, str]] = []
+    sources = (("systemd user unit", os.path.join(base, "systemd", "user"), ".service", "ExecStart"),
+               ("XDG autostart entry", os.path.join(base, "autostart"), ".desktop", "Exec"))
+    for kind, directory, suffix, key in sources:
+        try:
+            names = sorted(e.name for e in os.scandir(directory) if e.name.endswith(suffix) and e.is_file())
+        except OSError:
+            continue
+        for name in names:
+            try:
+                with open(os.path.join(directory, name), encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                stripped = line.strip()
+                tokens = stripped.split("=", 1)[1].split() if stripped.startswith(key + "=") else []
+                if not tokens:
+                    continue
+                # first token = executable; systemd's prefix modifiers (-, +, !, :) never start a path
+                target = tokens[0].lstrip("-+:!")
+                resolved = os.path.expanduser(target.replace("%h", home))
+                if "/packages/releases/" in resolved and not os.path.exists(resolved):
+                    findings.append((kind, name, target))
+    return findings
+
+def _apply_stale_unit_guard(report: Report) -> Report:
+    """Append a fail check per hand-written unit/autostart entry whose cua-driver Exec target was pruned — the
+    daemon can crash-loop (203/EXEC) for days while every binary-level check stays green (#114748). Binary-level
+    repair (`install`) cannot fix a stale unit reference, so doctor is the only surface that can name it."""
+    for kind, unit, target in _stale_cua_exec_references() if sys.platform == "linux" else ():
+        checks = report.get("checks")
+        if isinstance(checks, list):
+            checks.append({"name": f"daemon unit ({unit})", "status": "fail",
+                           "message": _PRUNED_UNIT_MSG.format(target=target),
+                           "hint": _PRUNED_UNIT_HINT.format(kind=kind)})
+            if report.get("overall") == "ok":  # fail-worse overalls are never softened
+                report["overall"] = "degraded"
+    return report
+
 def _wayland_environment_context(report: Report) -> Optional[Report]:
     """Linux+Wayland only: doctor probes the CLI process's environment, not the gateway's."""
     if report.get("platform") != "linux" or not os.environ.get("WAYLAND_DISPLAY"):
@@ -352,6 +407,7 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2
     report = _apply_display_count_guard(report)
+    report = _apply_stale_unit_guard(report)
     identity = _build_identity(binary, report)
     environment = _wayland_environment_context(report)
     if json_output:

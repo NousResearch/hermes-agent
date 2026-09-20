@@ -148,17 +148,37 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # (HERMES_LANGFUSE_PUBLIC_KEY, HERMES_SPOTIFY_CLIENT_ID, ...). The denylist is name-by-name so
 # it cannot break provider setup wizards. Enforced on *write* only: pre-existing/out-of-band
 # ``.env`` values keep working; the dashboard's writable surface just cannot escalate.
+
+# Whole families whose every member steers execution or config injection, matched by prefix
+# because enumeration cannot cover unbounded names (GIT_CONFIG_KEY_17 / GIT_CONFIG_VALUE_17).
+_ENV_VAR_NAME_DENY_PREFIXES: tuple[str, ...] = (
+    "LD_", "DYLD_",
+    # PARAMETERS/COUNT/KEY_*/VALUE_* inject config pairs; GLOBAL/SYSTEM/NOSYSTEM redirect the
+    # config sources _subprocess_compat already nulls for the same reason.
+    "GIT_CONFIG_",
+)
+
 _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
-    # Loader / linker
+    # Loader / linker (the LD_/DYLD_ prefixes cover the family; kept name-by-name for clarity)
     "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
     "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
     "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
-    # Python / Node
+    # Python / Node — init-time injection beyond the loader paths
     "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
-    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "NODE_OPTIONS", "NODE_PATH",
-    # General / git
-    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER",
+    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "PYTHONBREAKPOINT", "PYTHONCASEOK",
+    "NODE_OPTIONS", "NODE_PATH",
+    # Other interpreter / toolchain injection (same class as PYTHONPATH / NODE_OPTIONS)
+    "PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB", "CLASSPATH",
+    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+    "GOFLAGS", "RUSTFLAGS",
+    # General / git — executed helpers, repo/config redirection, and template hooks
+    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER", "MANPAGER",
     "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_SHELL",
+    "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS", "SUDO_ASKPASS",
+    "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_EXTERNAL_DIFF",
+    "GIT_PROXY_COMMAND", "GIT_TEMPLATE_DIR", "GIT_DIR",
+    # Shell init files / interactive hooks — sourced before or during execution
+    "BASH_ENV", "ENV", "ZDOTDIR", "PROMPT_COMMAND", "VIMINIT", "EXINIT",
     # Hermes runtime location
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
     "HERMES_CONFIG_PATH", "HERMES_ENV_PATH",
@@ -184,7 +204,8 @@ def validate_env_var_name_for_write(key: str) -> None:
     """Validate an env name before a generic persistence write (exposed for batch callers)."""
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
-    if _env_var_policy_name(key) in _ENV_VAR_NAME_DENYLIST:
+    policy_name = _env_var_policy_name(key)
+    if policy_name in _ENV_VAR_NAME_DENYLIST or policy_name.startswith(_ENV_VAR_NAME_DENY_PREFIXES):
         raise ValueError(
             f"Environment variable {key!r} is on the writer denylist. "
             "Names that influence subprocess execution (LD_PRELOAD, PYTHONPATH, PATH, EDITOR, ...) "
@@ -3080,172 +3101,6 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-# ---- Cron model-drift helpers: which unpinned jobs stay on their creation snapshot ----
-
-_CRON_DRIFT_AXIS_BY_KEY = {
-    "model": "model", "model.default": "model", "model.model": "model", "model.name": "model",
-    "model.provider": "provider", "provider": "provider"}
-
-
-def _cron_model_drift_axis_for_config_key(key: str) -> Optional[str]:
-    """Return the cron inference axis affected by a config key, if any."""
-    return _CRON_DRIFT_AXIS_BY_KEY.get(str(key or "").strip().lower())
-
-
-def _cron_section(config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Return the ``cron`` mapping of *config* (loading the merged config when None), else None."""
-    if config is None:
-        try:
-            config = load_config()
-        except Exception:
-            return None
-    cron_config = config.get("cron") if isinstance(config, dict) else None
-    return cron_config if isinstance(cron_config, dict) else None
-
-
-_CRON_MODEL_IMPACT_JOB_LIMIT = 50
-_CRON_MODEL_IMPACT_ID_LIMIT = 256
-_CRON_MODEL_IMPACT_NAME_LIMIT = 120
-
-
-def _model_assignment_text(value: Any) -> str:
-    """Return a trimmed scalar model/provider value, or empty for malformed data."""
-    return value.strip() if isinstance(value, str) else ""
-
-
-def resolve_cron_model_drift_defaults(
-    config: Any, *, environ: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
-    """Resolve the global ``(provider, model)`` cron compares against snapshots.
-    Mirrors the scheduler's precedence: a truthy configured model wins over ``HERMES_MODEL``; the
-    environment is only a fallback. Per-job and cron fleet defaults are handled by the caller
-    because they cover an axis rather than changing the global assignment."""
-    env = os.environ if environ is None else environ
-    provider = ""
-    model_config = config.get("model") if isinstance(config, dict) else None
-    if isinstance(model_config, dict):
-        provider = _model_assignment_text(model_config.get("provider"))
-        model_config = model_config.get("default") or model_config.get("model") or model_config.get("name")
-    configured_model = _model_assignment_text(model_config)
-    return provider, configured_model or _model_assignment_text(env.get("HERMES_MODEL", ""))
-
-
-def cron_model_drift_axes(
-    job: Any, *, current_provider: Any = "", current_model: Any = "", config: Any = None
-) -> List[str]:
-    """Return the unpinned axes on which *job* will keep running on its creation snapshot rather
-    than the new global assignment (the scheduler treats the snapshot as the effective pin)."""
-    if not isinstance(job, dict):
-        return []
-
-    current = {
-        "provider": _model_assignment_text(current_provider).lower(),
-        "model": _model_assignment_text(current_model).lower()}
-    # A cron.model / cron.model_provider fleet default covers its axis: that axis never reads the
-    # snapshot at fire time, so reporting it would be false.
-    fleet = _cron_section(config) or {}
-    drifted: List[str] = []
-    for axis, fleet_key in (("provider", "model_provider"), ("model", "model")):
-        if _model_assignment_text(fleet.get(fleet_key)) or _model_assignment_text(job.get(axis)):
-            continue
-        snapshot = _model_assignment_text(job.get(f"{axis}_snapshot")).lower()
-        if snapshot and current[axis] and snapshot != current[axis]:
-            drifted.append(axis)
-    return drifted
-
-
-def _is_control_char(char: str) -> bool:
-    return unicodedata.category(char).startswith("C")
-
-
-def _valid_cron_impact_job_id(value: Any) -> str:
-    job_id = value.strip() if isinstance(value, str) else ""
-    if len(job_id) > _CRON_MODEL_IMPACT_ID_LIMIT or any(map(_is_control_char, job_id)):
-        return ""
-    return job_id
-
-
-def _cron_impact_job_name(value: Any, job_id: str) -> str:
-    if isinstance(value, str):
-        printable = "".join(char for char in value if not _is_control_char(char))
-        name = " ".join(printable.split())[:_CRON_MODEL_IMPACT_NAME_LIMIT].rstrip()
-        if name:
-            return name
-    return f"Job {job_id}"[:_CRON_MODEL_IMPACT_NAME_LIMIT].rstrip()
-
-
-def _cron_model_impact_result(available: bool) -> Dict[str, Any]:
-    return {"available": available, "affected_count": 0, "truncated": False, "jobs": []}
-
-
-def build_cron_model_impact(
-    *, current_provider: Any = "", current_model: Any = "", config: Any = None, jobs: Any = None
-) -> Dict[str, Any]:
-    """Build a bounded, profile-local summary of unpinned jobs that stay on their creation snapshot
-    after a global model/provider change. Job-store inspection is best effort: the model assignment
-    has already succeeded when Desktop requests this, so an unreadable store is reported as
-    unavailable rather than failing."""
-    if jobs is None:
-        try:
-            from cron.jobs import load_jobs
-
-            jobs = load_jobs()
-        except Exception:
-            return _cron_model_impact_result(False)
-    if not isinstance(jobs, list):
-        return _cron_model_impact_result(False)
-
-    result = _cron_model_impact_result(True)
-
-    from cron.jobs import is_job_runnable
-
-    seen_ids: Set[str] = set()
-    for job in jobs:
-        if not isinstance(job, dict) or not is_job_runnable(job) or job.get("no_agent"):
-            continue
-        job_id = _valid_cron_impact_job_id(job.get("id"))
-        if not job_id or job_id in seen_ids:
-            continue
-        seen_ids.add(job_id)
-        axes = cron_model_drift_axes(
-            job, current_provider=current_provider, current_model=current_model, config=config)
-        if not axes:
-            continue
-        result["affected_count"] += 1
-        if len(result["jobs"]) < _CRON_MODEL_IMPACT_JOB_LIMIT:
-            result["jobs"].append({
-                "id": job_id,
-                "name": _cron_impact_job_name(job.get("name"), job_id),
-                "drifted_axes": axes})
-
-    result["truncated"] = result["affected_count"] > len(result["jobs"])
-    return result
-
-
-def warn_unpinned_cron_jobs_after_model_config_change(
-    key: str, value: Any, config: Optional[Dict[str, Any]] = None) -> None:
-    """Tell the operator which unpinned cron jobs a global model/provider change does NOT move."""
-    axis = _cron_model_drift_axis_for_config_key(key)
-    if axis is None:
-        return
-
-    new_value = _model_assignment_text(value)
-    if not new_value:
-        return
-    impact = build_cron_model_impact(
-        current_provider=new_value if axis == "provider" else "",
-        current_model=new_value if axis == "model" else "", config=config, jobs=None)
-    affected = impact["affected_count"]
-    if affected <= 0:
-        return
-
-    noun, verb = ("job", "keeps") if affected == 1 else ("jobs", "keep")
-    print(
-        f"ℹ️  {affected} unpinned cron {noun} {verb} running on the {axis} it was created under "
-        f"(its {axis}_snapshot), not the new global {axis}. To move it, pin it with "
-        "`hermes cron edit <job_id> --provider <provider> --model <model>` or set a fleet default "
-        "with `hermes config set cron.model <model>`.")
-
-
 def _default_value_for_key(dotted_key: str):
     """Return the leaf value declared for *dotted_key* in ``DEFAULT_CONFIG`` (None for dicts/misses)."""
     node = cfg_get(DEFAULT_CONFIG, *_split_key_path(dotted_key))
@@ -3529,18 +3384,39 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     Before #71047 a write such as ``hermes config set platforms.telegram.streaming false`` landed on a key
     the gateway never reads: ``config get`` echoed the new value back while the runtime kept the old
     ``display.platforms`` one — a silent no-op that looks like a duplicated key to the user.
+
+    ``gateway.platforms.<name>.<field>`` is canonicalized to the top-level ``platforms.<name>.<field>``
+    first (#115212): ``merge_platform_sections`` reads both blocks but the top-level one wins on
+    shared keys, so a nested write beside an existing top-level value printed ``✓ Set`` while the
+    gateway kept the old value.
     """
     segs = _split_key_path(key)
+    note = None
+    if len(segs) >= 3 and segs[0] == "gateway" and segs[1] == "platforms":
+        segs = segs[1:]
+        key = ".".join(segs)
+        note = f"  (note: the top-level platforms.{segs[1]} block outranks gateway.platforms — saved as {key})"
     if len(segs) != 3 or segs[0] != "platforms":
-        return key, None
+        return key, note
     try:
         from gateway.display_config import OVERRIDEABLE_KEYS as _display_keys
     except Exception:
-        return key, None
+        return key, note
     if segs[2] not in _display_keys:
-        return key, None
+        return key, note
     canonical = f"display.platforms.{segs[1]}.{segs[2]}"
     return canonical, f"  (note: per-platform display setting — saved as {canonical})"
+
+
+def _legacy_gateway_platforms_key(requested_key: str) -> Optional[str]:
+    """The ``gateway.platforms.<name>.<field>`` spelling the user typed, when that is what they typed.
+    ``merge_platform_sections`` still honours a value that lives only there, so ``get`` must fall
+    back to it and ``unset``/``set`` must clear it, or the CLI reports "not set" / writes a value
+    while the gateway keeps reading the nested one."""
+    segs = _split_key_path(requested_key)
+    if len(segs) >= 3 and segs[0] == "gateway" and segs[1] == "platforms":
+        return ".".join(segs)
+    return None
 
 
 def _exit_if_key_managed(key: str, action: str) -> None:
@@ -3681,6 +3557,7 @@ def set_config_value(key: str, value: str, force: bool = False):
 
     # Canonicalize per-platform display keys BEFORE validation/coercion so both see the path the
     # runtime reads.
+    legacy_key = _legacy_gateway_platforms_key(key)
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
         print(_redirect_note)
@@ -3707,6 +3584,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
+    if legacy_key and _unset_nested(user_config, legacy_key):
+        print(f"  (removed the shadowed {legacy_key} duplicate)")
     # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
     # state of the OLD provider, and the runtime honours them for whatever provider the block now
     # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync
@@ -3753,7 +3632,6 @@ def set_config_value(key: str, value: str, force: bool = False):
     print(f"✓ Set {key} = {_display_value} in {config_path}")
     if _route_notice:
         print(_route_notice)
-    warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the user the runtime may never read
     # it and suggest the likely-intended path.
@@ -3776,8 +3654,12 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     else:
         # Mirror set_config_value: read the canonical display.platforms path.
         # See #71047.
+        legacy_key = _legacy_gateway_platforms_key(key)
         key, _ = _redirect_platform_display_key(key)
-        value = _get_nested(load_config(), key)
+        config = load_config()
+        value = _get_nested(config, key)
+        if value is _MISSING and legacy_key:
+            value = _get_nested(config, legacy_key)
 
     if value is _MISSING:
         _exit_invalid(f"Config key not set: {key}")
@@ -3839,11 +3721,14 @@ def unset_config_value(key: str):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
 
+    legacy_key = _legacy_gateway_platforms_key(key)
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
         # Mirror set_config_value's display.platforms canonicalization (#71047).
         print(_redirect_note.replace("saved as", "resolved as"))
     removed = _unset_nested(user_config, key)
+    if legacy_key:
+        removed = _unset_nested(user_config, legacy_key) or removed
 
     env_var = terminal_config_env_var_for_key(key)
     if env_var and key != "terminal.cwd":

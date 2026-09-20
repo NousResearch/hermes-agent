@@ -34,12 +34,9 @@ def _user_indices(messages: List[Dict[str, Any]]) -> List[int]:
 def _comparison_content(message: Dict[str, Any]) -> Any:
     """Project content the way the durable row stores it (flush projection, then the read-side sanitize) so a
     warm row and its durable twin compare equal."""
-    from agent.memory_manager import sanitize_context
     from agent.session_persistence import _durable_content
-    content = _durable_content(message.get("content"))
-    if message.get("role") in {"user", "assistant"} and isinstance(content, str):
-        return sanitize_context(content).strip()
-    return content
+    from hermes_state_messages import SessionMessagesMixin
+    return SessionMessagesMixin._loaded_view_content(message.get("role"), _durable_content(message.get("content")))
 
 
 class SessionRewindMixin:

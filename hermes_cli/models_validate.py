@@ -437,11 +437,26 @@ def _nous_portal_recommended_names() -> set[str]:
         return set()
 
 
+def _profile_owns_catalog(normalized: str) -> bool:
+    """True when the registered profile's catalog is not the generic ``{base_url}/models`` listing —
+    it overrides ``fetch_models`` or points ``models_url`` elsewhere — so that listing is not
+    authoritative for it (a relay may 200 with a different product catalog, #101705)."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(normalized)
+    return profile is not None and (
+        type(profile).fetch_models is not ProviderProfile.fetch_models or bool(profile.models_url))
+
+
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     """Generic live /v1/models probe. Returns None when the API was unreachable (the caller then
-    tries Bedrock discovery / the curated catalog)."""
+    tries Bedrock discovery / the curated catalog). A profile that owns its catalog is validated
+    against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
+    if _profile_owns_catalog(req.normalized) and _match_in_catalog(req.lookup, _static_catalog(req.normalized)).exact:
+        return _accept()
     api_models = _m.fetch_api_models(req.api_key, req.base_url)
     if api_models is None:
         return None

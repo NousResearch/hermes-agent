@@ -11,6 +11,7 @@ package can only add modules, never shadow core; PyPI-by-name specs only (``_spe
 
 from __future__ import annotations
 
+import configparser
 import contextlib
 import logging
 import os
@@ -422,6 +423,54 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
+def _pip_config_candidates(env: dict[str, str]) -> list[Path]:
+    """pip's config files, lowest precedence first, as ``pip._internal.configuration`` ranks them:
+    global, then user (skipped entirely when ``PIP_CONFIG_FILE`` names an existing file), then the
+    venv's ``sys.prefix`` site file, then ``PIP_CONFIG_FILE`` itself on top. ``RawConfigParser.read``
+    applies them in order, so the last file wins. ``PIP_CONFIG_FILE=os.devnull`` disables all of them."""
+    explicit = env.get("PIP_CONFIG_FILE", "")
+    if explicit == os.devnull:
+        return []
+    home = Path.home()
+    if sys.platform == "win32":
+        name = "pip.ini"
+        global_files = [Path(env.get("ProgramData") or r"C:\ProgramData") / "pip" / name]
+        user_files = [home / "pip" / name, Path(env.get("APPDATA") or home / "AppData" / "Roaming") / "pip" / name]
+    elif sys.platform == "darwin":
+        name = "pip.conf"
+        global_files = [Path("/Library/Application Support/pip") / name]
+        app_support = home / "Library" / "Application Support" / "pip"
+        user_files = [home / ".pip" / name, (app_support if app_support.is_dir() else home / ".config" / "pip") / name]
+    else:
+        name = "pip.conf"
+        xdg_dirs = (env.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(os.pathsep)
+        global_files = [Path(d) / "pip" / name for d in xdg_dirs if d] + [Path("/etc") / name]
+        user_files = [home / ".pip" / name, Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "pip" / name]
+    explicit_files = [Path(explicit)] if explicit else []
+    if explicit_files and explicit_files[0].is_file():
+        user_files = []
+    return global_files + user_files + [Path(sys.prefix) / name] + explicit_files
+
+
+def _pip_conf_index_url(env: dict[str, str]) -> Optional[str]:
+    """Read pip's configured index-url so uv can use the same mirror.
+
+    uv does not read ``pip.conf`` — without this bridge a user whose pip is
+    mirrored (common behind restricted networks) watches every lazy install
+    hit the default pypi.org and time out (#95608).
+    """
+    # Raw: pip does not interpolate, and mirror URLs carry percent-encoded credentials.
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(str(p) for p in _pip_config_candidates(env))
+        if not parser.has_section("global"):
+            return None
+        return parser.get("global", "index-url", fallback="").strip() or None
+    except configparser.Error as e:
+        logger.debug("Could not read pip.conf for index-url: %s", e)
+        return None
+
+
 def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
     """Package dirs a freshly installed *spec* owns, from the dist's file list (``python-telegram-bot``
     ships ``telegram``; some ship several)."""
@@ -543,6 +592,12 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
         # import would recompile the backend AND its transitives (_warm_installed_bytecode is the
         # belt-and-braces pass for the spec's own roots on any tier).
         if uv_bin := _uv_binary():
+            # Bridge pip's index unless any uv index knob is set; PIP_INDEX_URL beats pip.conf, as in
+            # pip (see _pip_conf_index_url for why uv needs this at all).
+            if not any(uv_env.get(k) for k in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")):
+                pip_index_url = (uv_env.get("PIP_INDEX_URL") or "").strip() or _pip_conf_index_url(uv_env)
+                if pip_index_url:
+                    uv_env["UV_INDEX_URL"] = pip_index_url
             try:
                 r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs], timeout=timeout, env=uv_env)
                 if r.returncode != 0:
@@ -552,7 +607,14 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
                 return _finish(r)
             except subprocess.TimeoutExpired as e:
                 logger.debug("uv invocation failed: %s", e)
-                return _InstallResult(False, "", f"uv pip install timed out: {e}")
+                # Actionable context for the #95608 shape: a 300s stall with
+                # no feedback, then silence. The failure string flows into
+                # FeatureUnavailable, which callers surface as warnings.
+                hint = (
+                    f"uv pip install timed out after {timeout}s. If your network needs a package "
+                    "mirror, set index-url in pip.conf (bridged to uv automatically) or UV_INDEX_URL."
+                )
+                return _InstallResult(False, "", hint)
             except FileNotFoundError as e:  # uv vanished between lookup and spawn; it never evaluated the requirements
                 logger.debug("uv invocation failed: %s", e)
         # Tier 2: python -m pip (ensurepip bootstrap if needed)

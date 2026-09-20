@@ -232,7 +232,8 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
 #
 # The runner routes any token starting with ``-`` that isn't one of its own
 # options (``-j``/``--jobs``, ``--paths``, ``--slice``, ``--file-timeout``,
-# ``--generate-slices``, ``--files``, ``--include-integration``) straight
+# ``--generate-slices``, ``--files``, ``--include-integration``,
+# ``--files-from``) straight
 # through to each per-file pytest invocation — no ``--`` separator required.
 # Before this, a bare ``-q`` errored out with "unrecognized arguments",
 # forcing a retry on every run. These tests are behavior contracts, not
@@ -551,3 +552,52 @@ def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: 
     assert "SIGSEGV" in proc.stdout
     assert "where no tests ran" not in proc.stdout
     assert "NO TESTS RAN" not in proc.stdout
+
+
+# ── --files-from: file-backed explicit file lists ───────────────────────────
+#
+# --files carries the whole list as ONE argv element, and Linux caps a
+# single argument at MAX_ARG_STRLEN (128 KiB) — a much smaller limit than
+# ARG_MAX. The whole-suite list (~210 KB) dies with E2BIG in execve before
+# the runner's first line runs. --files-from takes the same explicit list
+# from a file (or stdin via '-'), one path per line, so the list is bounded
+# by the filesystem instead of one argv element.
+
+
+def test_files_from_runs_exactly_the_listed_files(tmp_path: Path) -> None:
+    """A newline-separated list file bypasses discovery like --files."""
+    probe_dir = _make_probe_dir(tmp_path)
+    extra = tmp_path / "probe_extra"
+    extra.mkdir()
+    (extra / "test_extra.py").write_text("def test_extra():\n    assert True\n")
+
+    list_file = tmp_path / "files.txt"
+    list_file.write_text(
+        f"{probe_dir / 'test_flagprobe.py'}\n\n{extra / 'test_extra.py'}\n",
+        encoding="utf-8",
+    )
+
+    # --paths points at the probe dir too; an explicit list must win and
+    # NOT discover the extra file by accident.
+    proc = _run_runner(probe_dir, "--files-from", str(list_file), "-q")
+    assert proc.returncode == 0, proc.stdout
+    assert "Running 2 test files" in proc.stdout, proc.stdout
+    assert "3 passed" not in proc.stdout, proc.stdout
+
+
+def test_files_from_dash_reads_the_list_from_stdin(tmp_path: Path) -> None:
+    """--files-from - reads the list from stdin."""
+    probe_dir = _make_probe_dir(tmp_path)
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    proc = subprocess.run(
+        [sys.executable, str(runner), "--files-from", "-",
+         "-j", "1", "--file-timeout", "30", "-q"],
+        input=f"{probe_dir / 'test_flagprobe.py'}\n",
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "Running 1 test files" in proc.stdout, proc.stdout
+    assert "✓2" in proc.stdout or "2 passed" in proc.stdout, proc.stdout

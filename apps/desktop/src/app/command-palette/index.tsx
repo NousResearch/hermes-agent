@@ -89,7 +89,7 @@ import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
-import { openSession, openSessionIntentFromModifiers } from '../open-session'
+import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
@@ -691,7 +691,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // sidebar, minus the sidebar's licence to spend main.
   const goSession = useCallback(
     (sessionId: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
-      openSession(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
+      openSessionFromPicker(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
     },
     [navigate]
   )
@@ -1180,7 +1180,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       })
     }
 
-    const fieldItems = [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
+    const fieldItems = [...settingsCatalog.subpageEntries, ...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
 
     if (fieldItems.length > 0) {
       result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
@@ -1302,7 +1302,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     if (search.trim()) {
       result.push({
         heading: cc.settingsFields,
-        items: [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
+        items: [...settingsCatalog.subpageEntries, ...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
       })
 
       if (settingsCatalog.credentialEntries.length > 0) {

@@ -522,7 +522,7 @@ export class JsonRpcGatewayClient {
             continue
           }
 
-          this.dispatchIfNewer(event as GatewayEvent)
+          this.dispatchIfNewer({ ...event, replayed: true } as GatewayEvent)
         }
       }
     } catch {
@@ -584,7 +584,7 @@ export class JsonRpcGatewayClient {
 
     for (const parked of hold.values()) {
       for (const event of parked) {
-        this.dispatchIfNewer(event)
+        this.dispatchIfNewer({ ...event, replayed: true })
       }
     }
   }

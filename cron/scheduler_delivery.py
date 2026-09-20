@@ -702,6 +702,24 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+def _get_standalone_send_timeout() -> int:
+    """Wall-clock bound for one standalone-lane send (#115469).
+
+    ``_send_to_platform``'s gateway-loop dispatch deliberately awaits its future with no
+    timeout ("the adapter and outer _run_async bound the wait") — but on this lane the
+    outer runner is a bare ``asyncio.run``, not ``model_tools._run_async``, so without a
+    bound here a reconnecting transport pins the run (and the restart drain behind it)
+    indefinitely. Mirrors the sibling lanes: live dispatch ``future.result(timeout=60)``,
+    thread fallback ``result(timeout=30)``. ``cron.standalone_send_timeout_seconds``;
+    default 60."""
+    try:
+        cfg = _sched.load_config()
+        value = int(cfg.get("cron", {}).get("standalone_send_timeout_seconds", 60))
+        return value if value > 0 else 60
+    except Exception:
+        return 60
+
+
 _BOT_CHAT_STDERR_TAIL = 500
 # stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
 _BOT_CHAT_STDOUT_TAIL = 200
@@ -724,9 +742,25 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
     """
     from hermes_cli.quiet_single_query import read_turn_report
 
+    # Lossy decode everywhere; on Windows also decode as the UTF-8 the child writes.
+    # A stray non-UTF-8 byte (e.g. a grandchild sharing the pipe interleaving a
+    # partial multi-byte write) must not raise UnicodeDecodeError in the drain
+    # thread and take both the reply and the failure tail with it (#105582; same
+    # errors= hardening as _run_job_script). On win32 the child is guaranteed
+    # UTF-8 — hermes_cli reconfigures its own streams via hermes_bootstrap even
+    # under PYTHONIOENCODING=cp1252 — while the gateway parent is NOT started in
+    # UTF-8 mode (its env overlay sets only PYTHONIOENCODING), so text=True alone
+    # decodes the pipes with the ANSI code page: accented replies come back
+    # mojibake'd, or the reader thread dies on bytes undefined in cp1252 and the
+    # captured reply is silently lost while the delivery still books as delivered
+    # (#115894). On POSIX the child keeps the locale codec, so the locale default
+    # stays correct there (#66566).
+    popen_kwargs: dict = {"errors": "replace"}
+    if sys.platform == "win32":
+        popen_kwargs["encoding"] = "utf-8"
     proc = subprocess.Popen(
         argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=env, creationflags=windows_hide_flags())
+        env=env, creationflags=windows_hide_flags(), **popen_kwargs)
     streams: dict = {}
 
     def _drain() -> None:
@@ -813,8 +847,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     # fail-closed scrub as the chat message and the session mirror. Rebind ``content`` itself so
     # the durable deferred record below also carries the scrubbed copy, not the raw output.
     content = _redact_cron_payload(content, "bot-chat payload")
+    job_name = _redact_cron_payload(job.get("name", job_id), "job name")
     message = (
-        f'[Cronjob "{_redact_cron_payload(job.get("name", job_id), "job name")}" output — '
+        f'[Cronjob "{job_name}" output — '
         f"scheduled job, not the user. Review it, act on anything that needs action, and "
         f"summarize for the chat.]\n\n{content}"
     )
@@ -935,7 +970,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV
         report_file = f"{query_file}.turn.json"
         env[TURN_REPORT_FILE_ENV] = report_file
-        result = _run_bot_chat_turn(argv, env, report_file, _get_bot_chat_delivery_timeout())
+        timeout_s = _get_bot_chat_delivery_timeout()
+        result = _run_bot_chat_turn(argv, env, report_file, timeout_s)
         if result.returncode != 0:
             tail = _format_failure_streams(result)
             logger.warning(
@@ -948,33 +984,32 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
     except subprocess.TimeoutExpired:
-        # The turn was killed mid-flight: the killed child cannot complete, but its turn may
-        # have persisted the query into the session before the kill landed. Replaying the
-        # full payload risks a duplicate; staying silent loses the alert entirely (the
-        # 2026-09-19 docgen-deadman case: findings existed in the job output and nobody
-        # knew to look). Fail-safe middle: queue a SHORT degraded-delivery marker through
-        # the deferred lane — it references the saved output instead of repeating it, so a
-        # late-completing original turn cannot duplicate content. One marker per execution
-        # (stable key); a marker that itself times out is never re-marked (recursion guard).
+        # Replaying the full payload risks a duplicate (the killed turn may already have
+        # persisted it); staying silent loses the alert entirely (2026-09-19 docgen-deadman
+        # case). So queue a SHORT marker that points at the saved output, once per execution
+        # (stable key); the re-mark guard reads the record's ``degraded`` flag, never the text.
         marker_queued = False
-        if "DELIVERY DEGRADED" not in content:
+        if not (deferred or {}).get("degraded"):
             marker = (
-                f"[Cronjob \"{job.get('name', job_id)}\" — DELIVERY DEGRADED, scheduled job, "
-                f"not the user. This alert's bot-chat turn timed out after "
-                f"{_get_bot_chat_delivery_timeout()}s, so the full output could NOT be posted "
-                f"here. Read the complete saved output with `hermes cron runs` "
-                f"(job '{job_id}'). Excerpt: {content.strip()[:280]}]"
+                f"DELIVERY DEGRADED: this alert's bot-chat turn timed out after "
+                f"{timeout_s}s, so the full output could NOT be posted here. Read the "
+                f"complete saved output with `hermes cron runs` (job '{job_id}'). "
+                f"Excerpt: {content.strip()[:280]}"
             )
             try:
                 from cron.bot_chat_delivery import defer as _defer_marker
-                _defer_marker(f"{key}-degraded", dict(job), marker, profile, home,
-                              for_failure=for_failure)
+                # Deferred ids double as live-owner delivery ids, which must be 32-64 hex
+                # chars (tools.bot_live_delivery._delivery_id) — so the marker's id is a
+                # fresh digest derived from the execution key, not a suffixed one.
+                marker_key = hashlib.sha256(f"{key}:degraded".encode("utf-8")).hexdigest()
+                _defer_marker(marker_key, dict(job), marker, profile, home,
+                              for_failure=for_failure, degraded=True)
                 marker_queued = True
             except Exception as defer_exc:
                 logger.warning(
                     "Job '%s': degraded-delivery marker could not be queued: %s",
                     job_id, defer_exc)
-        tail = (
+        hint = (
             "a short degraded-delivery notice was queued to Bot Chat — posted once the "
             f"session frees; full output stays saved, run `hermes cron runs` for job '{job_id}'"
             if marker_queued else
@@ -982,7 +1017,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "if this keeps happening")
         return _fail(
             f"bot-chat delivery to profile '{profile_label}' timed out "
-            f"after {_get_bot_chat_delivery_timeout()}s ({tail}; raise "
+            f"after {timeout_s}s ({hint}; raise "
             "cron.bot_chat_delivery_timeout_seconds if this recurs)")
     except Exception as e:
         logger.warning(
@@ -1483,8 +1518,12 @@ def _live_send_text(
         platform=t.platform, chat_id=str(t.chat_id), thread_id=route_thread_id, is_explicit=True)
     # Thread routing goes via the target, not a bare metadata "thread_id": the router only applies
     # its Telegram DM-topic detection when thread_id/message_thread_id are absent from metadata.
+    # Send through the already-authorized transport: re-resolving from the plain target_adapters
+    # dict cannot re-derive the SharedRouteAdapters satellite grant (the satellite owned
+    # platforms.<p> block is disabled), yields None, and drops the delivery (#115656).
     future = safe_schedule_threadsafe(
-        router._deliver_to_platform(route_target, text_to_send, route_metadata), t.loop)
+        router._deliver_to_platform(
+            route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
     if future is None:
         target_errors.append("live adapter event loop scheduling failed")
         return False, False, None
@@ -1686,10 +1725,14 @@ def _standalone_send(
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
-    def _send():
-        return _send_to_platform(
+    send_timeout = _get_standalone_send_timeout()
+
+    async def _send():
+        # The bound lives inside the coroutine: the running-loop fallback below closes ``coro``
+        # unstarted, and a wait_for wrapper created out here would be left never awaited.
+        return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+            media_files=media_files), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1711,6 +1754,13 @@ def _standalone_send(
     coro = _send()
     try:
         return asyncio.run(coro), None
+    except TimeoutError:
+        # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
+        # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).
+        msg = (f"standalone send to {t.where} timed out after {send_timeout}s "
+               "(the send may still be in flight)")
+        logger.error("Job '%s': %s", job["id"], msg)
+        return None, msg
     except RuntimeError as run_err:
         # asyncio.run() refuses inside a running loop; close the unstarted coro, retry in a thread.
         coro.close()

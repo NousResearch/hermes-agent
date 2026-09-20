@@ -288,6 +288,13 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, current_entries=_previews(self._entries_for(target)), usage=self._usage(target)))
 
+    def _batch_failure(self, target: str, message: str) -> Dict[str, Any]:
+        """Batch-abort failure WITHOUT ``current_entries``: the store did not change and the
+        caller already holds the inventory, so echoing it made each consolidation retry
+        grow the context it was invoked to shrink (#97316)."""
+        return self._consolidation_failure(
+            _error(message + " No operations were applied (batch is all-or-nothing).", usage=self._usage(target)))
+
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or ``(new_entries, message, extra)`` or an error dict, then persist and return the
@@ -446,7 +453,8 @@ class MemoryStore:
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
-        an over-limit result writes NOTHING and returns the first failure plus live state."""
+        an over-limit result writes NOTHING and returns the first failure. Aborts do not
+        echo ``current_entries`` — the store is unchanged and the model already has it."""
         if not operations:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]
@@ -471,21 +479,20 @@ class MemoryStore:
                     skipped.append(skip_info)
                     continue
                 if msg:
-                    return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
+                    return self._batch_failure(target, msg)
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single
                 # remove() is the deliberate-wipe path.
                 label = self._path_for(target).name
-                return self._failure_with_entries(target, (
+                return self._batch_failure(target, (
                     f"Refusing to empty {label}: this batch would remove every entry from a "
-                    f"previously non-empty store. Nothing was applied (batch is all-or-nothing). "
-                    f"Keep at least one entry — merge overlapping entries into a shorter one instead "
-                    f"of removing the last one (see current_entries below). To delete the final entry "
-                    f"deliberately, use single remove() calls."))
+                    f"previously non-empty store. Keep at least one entry — merge overlapping "
+                    f"entries into a shorter one instead of removing the last one. To delete the "
+                    f"final entry deliberately, use single remove() calls."))
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
             if new_total > limit:
-                return self._failure_with_entries(target, (
+                return self._batch_failure(target, (
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over by {new_total - limit:,}. Remove or shorten "
                     f"more entries in the same batch (see current_entries below), then retry."))

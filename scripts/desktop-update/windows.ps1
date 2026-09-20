@@ -48,6 +48,7 @@ param(
     [string]$RelaunchExe = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
+    [switch]$NoGateway,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
@@ -1597,7 +1598,18 @@ try {
         Write-HandoffLog $finalMsg
         exit $finalCode
     }
-    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    # --gateway restarts the local messaging gateway after the update. The
+    # Desktop passes -NoGateway when it is served by a remote gateway
+    # (#117529): restarting a local one there is never wanted, and with the
+    # same channel credentials as the remote host it becomes a competing
+    # long-poll consumer (e.g. Telegram rejects one of the two getUpdates
+    # callers).
+    $gatewayArg = @("--gateway")
+    if ($NoGateway) {
+        $gatewayArg = @()
+        Write-HandoffLog "update requested without --gateway (remote-served Desktop)"
+    }
+    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes") + $gatewayArg + @("--force", "--branch", $Branch)
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which

@@ -4373,7 +4373,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       // immediately, so child.pid is NOT the script's pid — the script
       // claims the update marker itself with its own $PID as its first
       // action, and a relaunched Desktop parks on that.
-      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
+      const wrappedArgs = [
         '-InstallRoot',
         updateRoot,
         '-Branch',
@@ -4382,7 +4382,14 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         String(process.pid),
         '-RelaunchExe',
         process.execPath
-      ])
+      ]
+      // Same remote-ownership rule as the posix hand-off (#117529): a
+      // remote-served Desktop must not let the update (re)start a local
+      // messaging gateway that competes with the remote host's polling.
+      if (globalRemoteActive()) {
+        wrappedArgs.push('-NoGateway')
+      }
+      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, wrappedArgs)
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: HERMES_HOME,
@@ -4766,6 +4773,13 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
+  // A remote-served Desktop owns no local messaging gateway: `hermes update
+  // --gateway` would (re)start one here anyway, and with the same channel
+  // credentials as the remote host it becomes a competing long-poll consumer
+  // (#117529). Keep --gateway for the local-ownership default.
+  if (globalRemoteActive()) {
+    args.push('--no-gateway')
+  }
   const updateStartedAt = Math.floor(Date.now() / 1000)
 
   // Relaunch target: the running .app bundle on mac (script swaps the

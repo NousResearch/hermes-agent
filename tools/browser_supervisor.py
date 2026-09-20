@@ -263,12 +263,21 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
-    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+    def focus_page(
+        self,
+        origin: str,
+        *,
+        accept: Optional[str] = None,
+        url_accept: Optional[Callable[[str], bool]] = None,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
         """Re-attach the supervisor's page session to an open page target on ``origin``
         (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
         ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
-        so a login and a checkout tab on one site resolve to the right one. Returns
+        so a login and a checkout tab on one site resolve to the right one. ``url_accept`` can
+        further restrict candidate URLs before attachment when the caller owns a broader origin
+        policy. Returns
         ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
         loop = self._loop
         if loop is None or not loop.is_running():
@@ -290,7 +299,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 try:
                     # origin="" = any http(s) page (used to FIND the login tab before its origin is known)
                     if t.get("type") == "page" and url.startswith(("http://", "https://")) \
-                            and (not origin or normalize_origin(url) == origin):
+                            and (not origin or normalize_origin(url) == origin) \
+                            and (url_accept is None or url_accept(url)):
                         candidates.append((t["targetId"], url))
                 except Exception:
                     continue

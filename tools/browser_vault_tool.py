@@ -11,8 +11,9 @@ tools):
 - ``browser_vault_fill``  → server-side fill of the CURRENT page from a vault
   handle: the password field for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
-  resolved locally, the page origin must EXACTLY match the item's bound
-  origin (pre-checked AND re-asserted synchronously inside the fill script),
+  resolved locally, the page origin must match the item's explicit scope
+  (exact by default, or HTTPS registrable-domain when opted in; pre-checked
+  AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
   exclusively over the supervisor CDP WebSocket (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
@@ -29,7 +30,7 @@ from __future__ import annotations
 import json
 import secrets
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +189,13 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(
+    task_id: str,
+    origin: str,
+    kind: str,
+    *,
+    url_accept: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
@@ -198,8 +205,20 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         supervisor = None
     if supervisor is None:
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    kwargs: Dict[str, Any] = {"accept": _TAB_PROBES.get(kind)}
+    if url_accept is not None:
+        kwargs["url_accept"] = url_accept
+    focused = supervisor.focus_page(origin, **kwargs)
+    if not focused.get("ok"):
+        return None
+    if origin:
+        return origin
+    try:
+        from agent.vault_store import normalize_origin
+
+        return normalize_origin(str(focused.get("url") or ""))
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +248,8 @@ def browser_vault_list() -> str:
         for meta in metas:
             entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
                      "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
+            if meta.origin_match != "exact":
+                entry["origin_match"] = meta.origin_match
             if len(meta.allowed_origins) > 1:
                 entry["allowed_origins"] = list(meta.allowed_origins)
             if meta.has_otp or backend.needs_unlock:
@@ -305,7 +326,8 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
     try:
         meta = get_vault_store().add_item("login", site, {"identifier_type": id_type, "identifier": identifier,
-                                                        "password": str(answer["password"])}, origin=origin)
+                                                        "password": str(answer["password"])}, origin=origin,
+                                              origin_match=str(answer.get("origin_match") or "exact"))
     except Exception as exc:
         return json.dumps({"success": False, "error_type": "save_failed", "error": str(exc)[:200]})
     finally:
@@ -406,7 +428,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         select_password_fill,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
-    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
+    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, origin_matches, scrub_secret_from_text
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
@@ -441,20 +463,41 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
     # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);
-    # every saved origin is a valid fill target. Matching stays exact-origin —
-    # nothing wildcard/parent-domain is ever inferred.
+    # every saved origin is a valid fill target. Local logins may additionally carry an explicit
+    # registrable-domain scope; manager items retain their exact saved-origin set.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
     page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
+    if meta.origin_match == "registrable_domain":
+        page_origin = _focus_bound_origin(
+            effective_task_id,
+            "",
+            meta.kind,
+            url_accept=lambda url: any(origin_matches(candidate, url, meta.origin_match) for candidate in allowed),
+        )
+    else:
+        for candidate in allowed:
+            page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
+            if page_origin:
+                break
     page_origin = page_origin or _current_page_origin(effective_task_id)
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
         )
-    if page_origin not in allowed:
+    matched = page_origin in allowed
+    if not matched and meta.origin_match == "registrable_domain":
+        matched = any(origin_matches(candidate, page_origin, meta.origin_match) for candidate in allowed)
+    if not matched:
+        scope = (
+            "the explicitly selected HTTPS registrable-domain scope"
+            if meta.origin_match == "registrable_domain"
+            else "the exact origin(s) the credential was saved for"
+        )
+        remedy = (
+            " Re-save the login with registrable-domain matching if you trust HTTPS subdomains of the same site."
+            if meta.kind == "login" and meta.origin_match == "exact"
+            else ""
+        )
         return json.dumps(
             {
                 "success": False,
@@ -462,7 +505,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 "error": (
                     f"Refused: current page origin ({page_origin}) does not match "
                     f"the vault item's bound origin(s) ({', '.join(allowed)}). Vault fills "
-                    "only run on the exact origin(s) the credential was saved for."
+                    f"only run within {scope}.{remedy}"
                 ),
             }
         )
@@ -614,8 +657,9 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "the password field (type the identifier/username yourself first with the browser's input tool); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
         "fills the address fields. Values are resolved server-side and never appear in the conversation. "
-        "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
-        "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
+        "Refused unless the page origin matches the item's visible origin scope (exact by default; an explicitly "
+        "enabled HTTPS registrable-domain scope may include subdomains), re-checked atomically at fill time. If a "
+        "password manager is locked the user is prompted to unlock first. Never retry a "
         "payment_declined result."
     ),
     "parameters": {

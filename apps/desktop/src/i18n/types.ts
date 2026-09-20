@@ -541,6 +541,9 @@ export interface Translations {
       originPlaceholder: string
       originPlaceholderCheckout: string
       originInvalid: string
+      registrableDomainLabel: string
+      registrableDomainHint: string
+      registrableDomainBadge: string
       identifierTypeField: string
       identifierTypes: Record<'email' | 'phone' | 'username', string>
       identifierField: string
@@ -3742,6 +3745,8 @@ export interface Translations {
     vaultSaveIdentifierLabel: string
     vaultSaveIdentifierPlaceholder: string
     vaultSavePasswordPlaceholder: string
+    vaultSaveRegistrableDomain: string
+    vaultSaveRegistrableDomainHint: string
     vaultSaveFootnote: string
     vaultSaveDecline: string
     vaultSaveConfirm: string

@@ -604,6 +604,10 @@ export const en: Translations = {
       originPlaceholder: 'https://github.com',
       originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: 'Enter a valid URL like https://example.com.',
+      registrableDomainLabel: 'Allow HTTPS subdomains',
+      registrableDomainHint:
+        'Fill on this site’s registrable domain and its HTTPS subdomains. Leave off unless you trust every subdomain.',
+      registrableDomainBadge: 'HTTPS subdomains',
       identifierTypeField: 'Identifier type',
       identifierTypes: { email: 'Email', phone: 'Phone', username: 'Username' },
       identifierField: 'Identifier',
@@ -4392,6 +4396,9 @@ export const en: Translations = {
     vaultSaveIdentifierLabel: 'Email or username',
     vaultSaveIdentifierPlaceholder: 'you@example.com',
     vaultSavePasswordPlaceholder: 'Password',
+    vaultSaveRegistrableDomain: 'Allow HTTPS subdomains',
+    vaultSaveRegistrableDomainHint:
+      'Explicitly widen this login to the same registrable domain. Leave off unless you trust every subdomain.',
     vaultSaveFootnote: 'Manage saved logins in Settings → Passwords & Logins.',
     vaultSaveDecline: "Don't save",
     vaultSaveConfirm: 'Save & sign in',

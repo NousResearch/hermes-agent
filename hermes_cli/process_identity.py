@@ -158,8 +158,39 @@ def _read_ledger(path: Path) -> Optional[list[dict]]:
     return [e for e in parsed if isinstance(e, dict)] if isinstance(parsed, list) else None
 
 
+def _reap_abandoned_tmpfiles(path: Path) -> int:
+    """Sweep atomic-write tempfiles ``atomic_json_write`` left behind on SIGKILL/OOM/power-loss.
+
+    ``utils._atomic_write`` cleans up on ``BaseException`` but not when the whole process is
+    killed between ``mkstemp`` and ``os.replace`` — so a noisy spawner accumulates ~300 ``.tmp``
+    files/day. Caller holds ``_LEDGER_LOCK`` so this can't race a concurrent ``register_self``.
+    Strict prefix match scopes the sweep to atomic-write temps of THIS ledger (other writers
+    use different stems). Returns count of files removed; logs only when non-zero so the hot
+    path stays quiet.
+    """
+    parent = path.parent
+    prefix = f".{path.stem}_"  # mirrors atomic_json_write default in utils.py
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        return 0
+    removed = 0
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(".tmp")):
+            continue
+        try:
+            os.unlink(parent / name)
+            removed += 1
+        except OSError as exc:
+            logger.debug("spawn ledger tmpfile reap skipped: %s (%s)", name, exc)
+    if removed:
+        logger.info("spawn ledger tmpfile reaper removed %d stale files", removed)
+    return removed
+
+
 def _read_ledger_or_quarantine(path: Path) -> Optional[list[dict]]:
     """Ledger entries; ``None`` after parking a corrupt file. Caller holds ``_LEDGER_LOCK``."""
+    _reap_abandoned_tmpfiles(path)
     entries = _read_ledger(path)
     if entries is None:
         parked = path.with_suffix(path.suffix + ".corrupt")

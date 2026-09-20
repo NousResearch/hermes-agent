@@ -35,12 +35,20 @@ const PAGE_THEME = EditorView.theme({
   // `.cm-line` carries, so a margin held by either of those two would have the
   // highlight run the full width of the window. The margin is still writable —
   // `caretFromMargin` below hands a click there to the line beside it.
+  // The gutter is reserved before there is anything to scroll, so the column
+  // does not move when the page first outgrows the window. Without it a scroll
+  // bar appears, the content box narrows by its width, and every line re-wraps —
+  // which is how a command being read out loud broke across `rm -` / `rf`.
+  // `both-edges` rather than the plain `stable` used elsewhere in the app: this
+  // column is centred in its box, so a gutter on one side alone would hold the
+  // writing permanently off-centre.
   '.cm-scroller': {
     cursor: 'text',
     fontFamily: 'var(--bw-hand)',
     lineHeight: '1.5',
     overflowY: 'auto',
-    paddingInline: 'max(2rem, calc((100% - var(--bw-measure)) / 2))'
+    paddingInline: 'max(2rem, calc((100% - var(--bw-measure)) / 2))',
+    scrollbarGutter: 'stable both-edges'
   },
   // `drawSelection` paints its own caret and selection, and CodeMirror's base
   // theme colours them for a light page (a black caret, invisible here). Both

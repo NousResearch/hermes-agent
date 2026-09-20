@@ -719,7 +719,10 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         result = kbd.dispatch_once(conn, spawn_fn=spawn)
 
     assert task_id in [task[0] for task in result.spawned]
-    assert captured == [["domain-specific-review", "sdlc-review"]]
+    # An explicitly selected review skill is authoritative. The dispatcher must
+    # not silently add its generic sdlc-review policy on top; operators use this
+    # to select stricter domain/release gates for sensitive tuples.
+    assert captured == [["domain-specific-review"]]
 
 
 def test_review_dispatch_honors_global_and_per_profile_caps(

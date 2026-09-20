@@ -396,7 +396,7 @@ def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     )
     blocked = kb.get_task(conn, task_id)
     assert blocked is not None
-    assert blocked.status == "blocked"
+    assert blocked.status == "needs_user_action"
     gave_up = _event(kb.list_events(conn, task_id), "gave_up")
     assert gave_up.payload is not None
     assert gave_up.payload["retry_status"] == "review"
@@ -415,7 +415,7 @@ def test_review_escalation_unblocks_back_to_review(conn) -> None:
         kind="needs_input",
         expected_run_id=review.current_run_id,
     )
-    blocked_event = _event(kb.list_events(conn, task_id), "blocked")
+    blocked_event = _event(kb.list_events(conn, task_id), "needs_user_action")
     assert blocked_event.payload is not None
     assert blocked_event.payload["source_status"] == "review"
     assert kb.unblock_task(conn, task_id)
@@ -704,7 +704,7 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
     )
     assert tripped is True
     assert _failures(conn, task_id) == 2
-    assert kb.get_task(conn, task_id).status == "blocked"
+    assert kb.get_task(conn, task_id).status == "needs_user_action"
 
     # Sanity: complete_task's success path still clears the counter.
     ok_id = kb.create_task(conn, title="healthy", assignee="builder")

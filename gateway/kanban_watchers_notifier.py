@@ -33,10 +33,10 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "needs_user_action", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "needs_user_action", "review_requested", "changes_requested", "block_loop_detected")
 
 
 def diagnostic_event(ev) -> bool:
@@ -427,12 +427,26 @@ def _fmt_timed_out(ev, n) -> tuple:
     return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
 
 
+def _fmt_needs_user_action(ev, n) -> tuple:
+    action = (ev.payload or {}).get("user_action") or {}
+    labels = (
+        ("Incomplete status", "incomplete_status"), ("Reason", "reason"),
+        ("Execution location", "execution_location"), ("Action", "action"),
+        ("Expected success", "expected_success"),
+        ("Automatic continuation", "automatic_continuation"),
+    )
+    lines = [f"⚠ {n.head} needs user action"]
+    lines.extend(f"{label}: {action.get(key, '')}" for label, key in labels)
+    return "\n".join(lines), None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
+    "needs_user_action": _fmt_needs_user_action,
     "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (
         f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
@@ -641,16 +655,63 @@ class _KanbanNotification:
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
         _send_res = None
+        action_delivery = None
+        if ev.kind == "needs_user_action":
+            fingerprint = (ev.payload or {}).get("material_fingerprint")
+            if not fingerprint:
+                raise RuntimeError("user-action event has no material fingerprint")
+            action_delivery = await _to_thread_process_service(partial(
+                self.runner._kanban_sub_op, self.board_slug, "claim_user_action_delivery", sub,
+                fingerprint=fingerprint,
+            ))
+            if action_delivery is None:
+                return True
         async def send_ping():
             nonlocal _send_res
             _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
-        if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
+        try:
+            presented = await present_notification(
+                send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev),
+            )
+        except Exception as exc:
+            if action_delivery:
+                await _to_thread_process_service(partial(
+                    self.runner._kanban_sub_op, self.board_slug, "record_user_action_delivery", sub,
+                    delivery_id=action_delivery["id"], acknowledged=False, error=str(exc),
+                ))
+            raise
+        if not presented:
+            if action_delivery:
+                await _to_thread_process_service(partial(
+                    self.runner._kanban_sub_op, self.board_slug, "record_user_action_delivery", sub,
+                    delivery_id=action_delivery["id"], acknowledged=False,
+                    error="notification presentation declined delivery",
+                ))
             return False
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the
         # "no exception == delivered" contract.
         if getattr(_send_res, "success", True) is False:
+            if action_delivery:
+                await _to_thread_process_service(partial(
+                    self.runner._kanban_sub_op, self.board_slug, "record_user_action_delivery", sub,
+                    delivery_id=action_delivery["id"], acknowledged=False,
+                    error=getattr(_send_res, "error", None),
+                ))
             raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
+        if action_delivery:
+            message_id = getattr(_send_res, "message_id", None)
+            if not message_id:
+                await _to_thread_process_service(partial(
+                    self.runner._kanban_sub_op, self.board_slug, "record_user_action_delivery", sub,
+                    delivery_id=action_delivery["id"], acknowledged=False,
+                    error="provider returned no delivery message identifier",
+                ))
+                raise RuntimeError("provider did not acknowledge user-action delivery")
+            await _to_thread_process_service(partial(
+                self.runner._kanban_sub_op, self.board_slug, "record_user_action_delivery", sub,
+                delivery_id=action_delivery["id"], acknowledged=True, message_id=message_id,
+            ))
         logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
                      ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
         # Upload artifact paths from the handoff payload / legacy result as

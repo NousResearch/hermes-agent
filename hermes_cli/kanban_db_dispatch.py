@@ -1300,12 +1300,32 @@ def _record_task_failure(
         # Spawn path (release_claim) is still running and also clears claim
         # state; the timeout/crash path already did.
         conn.execute(
-            "UPDATE tasks SET status = 'blocked', "
+            "UPDATE tasks SET status = 'needs_user_action', "
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
             "WHERE id = ? AND status IN ('running', 'ready', 'review')",
             (failures, error, task_id),
+        )
+        from hermes_cli.kanban_user_action import classify_capability_failure, persist_user_action
+        classification = classify_capability_failure(error)
+        action_state = persist_user_action(
+            conn, task_id, error,
+            {
+                "incomplete_status": (
+                    "The worker could not continue and exhausted its retry budget "
+                    f"({classification['class']})."
+                ),
+                "reason": error,
+                "execution_location": "The Hermes host or the affected provider/tool account.",
+                "action": "Fix the reported prerequisite, then unblock this Kanban task.",
+                "expected_success": "The prerequisite check succeeds and the worker can start normally.",
+                "automatic_continuation": (
+                    "No continue response is needed; the persisted task_unblocked trigger "
+                    "automatically resumes and dispatches the task."
+                ),
+            },
+            {"kind": "task_unblocked", "task_id": task_id},
         )
         payload = {
             "failures": failures,
@@ -1314,6 +1334,8 @@ def _record_task_failure(
             "error": error,
             "trigger_outcome": outcome,
             "retry_status": retry_status,
+            "user_action": action_state.payload,
+            "material_fingerprint": action_state.fingerprint,
         }
         run_id = None
         if end_run:
@@ -1331,6 +1353,17 @@ def _record_task_failure(
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
+        _kb._append_event(
+            conn, task_id, "needs_user_action",
+            {
+                "reason": error,
+                "source": outcome,
+                "retry_status": retry_status,
+                "user_action": action_state.payload,
+                "material_fingerprint": action_state.fingerprint,
+            },
+            run_id=run_id,
+        )
         return True
 
 
@@ -1903,7 +1936,7 @@ def _dispatch_lane_task(
             }
             with _kb.write_txn(conn):
                 conn.execute(
-                    "UPDATE tasks SET status = 'blocked', consecutive_failures = consecutive_failures + 1, "
+                    "UPDATE tasks SET status = 'needs_user_action', consecutive_failures = consecutive_failures + 1, "
                     "last_failure_error = ? WHERE id = ? AND status IN ('ready', 'review')",
                     (error[:500], task_id),
                 )
@@ -1913,6 +1946,20 @@ def _dispatch_lane_task(
                 )
                 _kb._append_event(conn, task_id, "spawn_failed",
                                   {"error": error, **metadata, "terminal": True}, run_id=run_id)
+                from hermes_cli.kanban_user_action import persist_user_action
+                action_state = persist_user_action(conn, task_id, error, None, None)
+                _kb._append_event(
+                    conn, task_id, "needs_user_action",
+                    {
+                        "reason": error,
+                        "source": "preclaim_capability",
+                        "retry_status": lane,
+                        **metadata,
+                        "user_action": action_state.payload,
+                        "material_fingerprint": action_state.fingerprint,
+                    },
+                    run_id=run_id,
+                )
             result.auto_blocked.append(task_id)
             return False
     # Per-profile cap: one profile's local model / API quota / browser pool
@@ -2005,8 +2052,9 @@ def _dispatch_lane_task(
     claimed.skills = effective_skills
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
-        if pid:
-            _set_worker_pid(conn, claimed.id, int(pid))
+        if not pid:
+            raise RuntimeError("worker spawn returned no live process identity")
+        _set_worker_pid(conn, claimed.id, int(pid))
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
         _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
         # consecutive_failures is deliberately NOT reset here: resetting on
@@ -2065,6 +2113,9 @@ def _run_reclaim_phase(
     board: Optional[str] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
+    from hermes_cli.kanban_user_action import supervise_user_actions
+
+    supervise_user_actions(conn)
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)

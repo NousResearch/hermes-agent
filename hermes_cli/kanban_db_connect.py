@@ -946,6 +946,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     ):
         conn.execute("UPDATE task_events SET kind = ? WHERE kind = ?", (new, old))
 
+    # Human-dependent legacy rows become the canonical first-class status and
+    # receive the same actionable fallback as a new legacy needs_input call.
+    legacy_user_actions = conn.execute(
+        "SELECT id, COALESCE(last_failure_error, '') AS reason FROM tasks "
+        "WHERE status = 'blocked' AND block_kind IN ('needs_input', 'capability')"
+    ).fetchall()
+    conn.execute(
+        "UPDATE tasks SET status = 'needs_user_action' "
+        "WHERE status = 'blocked' AND block_kind IN ('needs_input', 'capability')"
+    )
+    if legacy_user_actions:
+        from hermes_cli.kanban_user_action import persist_user_action
+        for row in legacy_user_actions:
+            persist_user_action(conn, row["id"], row["reason"] or "Legacy human prerequisite", None, None)
+
     _rebuild_drifted_tables(conn)
 
 

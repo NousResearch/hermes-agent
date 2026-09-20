@@ -690,7 +690,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
 
     def spawn(task, workspace):
         captured.append(list(task.skills or []))
-        return None
+        return os.getpid()
 
     with kbc.connect() as conn:
         task_id = kb.create_task(
@@ -776,7 +776,7 @@ def test_review_dispatch_validates_forced_skill_before_claim_without_residue(
 
     assert validated == [["domain-specific-review", "sdlc-review"]]
     assert spawned == [] and result.spawned == []
-    assert task is not None and task.status == "blocked"
+    assert task is not None and task.status == "needs_user_action"
     assert task.current_run_id is None and task.claim_lock is None and task.worker_pid is None
     failure_run = runs[-1]
     assert failure_run.status == "spawn_failed" and failure_run.ended_at is not None
@@ -786,7 +786,8 @@ def test_review_dispatch_validates_forced_skill_before_claim_without_residue(
         "effective_skills": ["domain-specific-review", "sdlc-review"],
         "lane": "review",
     }
-    assert events[-1].kind == "spawn_failed"
+    assert events[-1].kind == "needs_user_action"
+    assert events[-1].payload["source"] == "preclaim_capability"
     assert events[-1].payload["effective_skills"] == ["domain-specific-review", "sdlc-review"]
 
 

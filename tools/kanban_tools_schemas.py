@@ -73,7 +73,7 @@ KANBAN_LIST_SCHEMA = _schema(
         "status": {
             "type": "string",
             "enum": [
-                "triage", "todo", "ready", "running",
+                "triage", "todo", "ready", "running", "needs_user_action",
                 "blocked", "done", "archived",
             ],
             "description": "Optional task status filter.",
@@ -194,6 +194,40 @@ KANBAN_BLOCK_SCHEMA = _schema(
                 "if no parent is open it is recorded as needs_input instead. "
                 "The others surface to a human. Omit only if none apply."
             ),
+        },
+        "user_action": {
+            "type": "object",
+            "description": "Structured instructions for a human-dependent transition.",
+            "properties": {
+                "incomplete_status": _prop("string", "What remains incomplete."),
+                "reason": _prop("string", "Why user action is required."),
+                "execution_location": _prop("string", "Exact place where the action must be performed."),
+                "action": _prop("string", "Exact command or natural-language action."),
+                "expected_success": _prop("string", "Observable successful result."),
+                "automatic_continuation": _prop(
+                    "string", "No-continue instruction naming the persisted readiness probe or trigger."),
+            },
+            "required": [
+                "incomplete_status", "reason", "execution_location", "action",
+                "expected_success", "automatic_continuation",
+            ],
+            "additionalProperties": False,
+        },
+        "readiness_probe": {
+            "type": "object",
+            "description": "Persisted non-destructive readiness probe or trigger evaluated by supervision.",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["env_present", "path_exists", "task_unblocked", "task_status"],
+                },
+                "name": _prop("string", "Environment variable name for env_present."),
+                "path": _prop("string", "Path for path_exists."),
+                "task_id": _prop("string", "Task identity for task triggers."),
+                "status": _prop("string", "Expected task status for task_status."),
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
         },
     },
     ["reason"],

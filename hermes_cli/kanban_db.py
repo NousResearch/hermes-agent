@@ -100,7 +100,7 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 
 # --- Constants ---
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "needs_user_action", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
@@ -1064,6 +1064,30 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+CREATE TABLE IF NOT EXISTS kanban_user_actions (
+    task_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    readiness_probe TEXT NOT NULL,
+    material_fingerprint TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS kanban_user_action_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    destination_key TEXT NOT NULL,
+    material_fingerprint TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    result TEXT NOT NULL,
+    provider_message_id TEXT,
+    delivered_at INTEGER,
+    error_metadata TEXT,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(task_id, destination_key, material_fingerprint)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
@@ -1073,6 +1097,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_user_action_delivery_task ON kanban_user_action_deliveries(task_id, result);
 """
 
 
@@ -2101,7 +2126,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     row = conn.execute(
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind IN ("
-        "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
+        "'blocked', 'needs_user_action', 'block_loop_detected', 'dependency_wait', 'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
         "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
@@ -2719,7 +2744,7 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
-    """``running|ready|blocked|review -> done``; records ``result``.
+    """``running|ready|blocked|needs_user_action|review -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
     approval. A ``running`` task under a live claim is only completed with
@@ -2773,7 +2798,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND status IN ('running', 'ready', 'blocked', 'needs_user_action', 'review')
                 """
         params: tuple = (result, now, task_id)
         if expected_run_id is not None:
@@ -3125,6 +3150,7 @@ def edit_completed_task_result(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    user_action: Optional[dict] = None, readiness_probe: Optional[dict] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3164,6 +3190,15 @@ def block_task(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
         )
+        if kind in {"needs_input", "capability"}:
+            from hermes_cli.kanban_user_action import persist_user_action
+            action_state = persist_user_action(
+                conn, task_id, reason or "", user_action, readiness_probe,
+            )
+            if new_status != "triage":
+                new_status, event_kind = "needs_user_action", "needs_user_action"
+            payload["user_action"] = action_state.payload
+            payload["material_fingerprint"] = action_state.fingerprint
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
@@ -3529,11 +3564,11 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         resume_status = (
             _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
+            if _task_status(conn, task_id) in {"blocked", "needs_user_action"}
             else "ready"
         )
         _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
+            conn, task_id, statuses=("blocked", "needs_user_action", "scheduled"), now=now,
             note="invariant recovery on unblock",
         )
         # Re-gate on parent completion before restoring the source phase.
@@ -3551,7 +3586,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+            "WHERE id = ? AND status IN ('blocked', 'needs_user_action', 'scheduled')", (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False

@@ -162,7 +162,7 @@ def test_connected_dag_rejects_cycles_and_orchestrator_descendant_wait_atomicall
     claimed = kb.claim_task(conn, root)
     assert claimed is not None
     descendant_blocked = kb.block_task(conn, root, kind="dependency", reason=f"waiting for child {child}")
-    assert _task(conn, root).status == "blocked"
+    assert _task(conn, root).status == "needs_user_action"
     assert kb.unblock_task(conn, root)
     assert kb.claim_task(conn, root) is not None
 
@@ -225,7 +225,7 @@ def test_dead_worker_is_reclaimed_with_bounded_retry_and_never_projected_running
     _expire(conn, task_id)
     assert kbd.detect_crashed_workers(conn) == [task_id]
     final = _task(conn, task_id)
-    assert final.status == "blocked" and final.consecutive_failures == 2
+    assert final.status == "needs_user_action" and final.consecutive_failures == 2
     assert kb.claim_task(conn, task_id) is None, "terminal breaker must remain sticky"
     assert projected_before["status"] == "running"
     assert projected_before["operational_status"] == "recovering"

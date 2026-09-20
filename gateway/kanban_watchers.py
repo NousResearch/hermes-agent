@@ -120,13 +120,23 @@ class GatewayKanbanWatchersMixin:
                 logger.warning("kanban notifier tick failed: %s", exc)
             await self._sleep_between_ticks(interval)
 
-    def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:
+    def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> Any:
         """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription on its board."""
         from hermes_cli import kanban_db_connect as _kbc
         from hermes_cli import kanban_db_notify as _kbn
         conn = _kbc.connect(board=board)
         try:
-            getattr(_kbn, op)(
+            if op == "claim_user_action_delivery":
+                from hermes_cli.kanban_user_action import claim_delivery
+                return claim_delivery(
+                    conn, sub["task_id"], sub["platform"], sub["chat_id"], extra["fingerprint"])
+            if op == "record_user_action_delivery":
+                from hermes_cli.kanban_user_action import record_delivery_result
+                return record_delivery_result(
+                    conn, extra["delivery_id"], acknowledged=extra["acknowledged"],
+                    provider=sub["platform"], message_id=extra.get("message_id"), error=extra.get("error"),
+                )
+            return getattr(_kbn, op)(
                 conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "", **extra,
             )

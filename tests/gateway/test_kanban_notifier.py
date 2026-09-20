@@ -21,10 +21,18 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return None
 
     async def handle_message(self, event):
         self.handled.append(event)
         event._gateway_accepted = True
+
+
+class AcknowledgingAdapter(RecordingAdapter):
+    async def send(self, chat_id, text, metadata=None):
+        from gateway.platforms.base import SendResult
+        self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SendResult(success=True, message_id="provider-message-1")
 
 
 class DisconnectedAdapters(dict):
@@ -169,6 +177,81 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+
+
+def test_needs_user_action_telegram_delivery_is_acknowledged_and_deduplicated(tmp_path, monkeypatch):
+    db_path = tmp_path / "user-action-delivery.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="operator action", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="opaque-chat")
+        assert kb.claim_task(conn, tid)
+        kb.block_task(conn, tid, kind="needs_input", reason="approve access")
+    finally:
+        conn.close()
+
+    adapter = AcknowledgingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert len(adapter.sent) == 1
+    for label in (
+        "Incomplete status", "Reason", "Execution location", "Action",
+        "Expected success", "Automatic continuation",
+    ):
+        assert label in adapter.sent[0]["text"]
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert len(adapter.sent) == 1
+    conn = kbc.connect()
+    try:
+        ledger = conn.execute(
+            "SELECT provider, provider_message_id, result, delivered_at "
+            "FROM kanban_user_action_deliveries WHERE task_id=?", (tid,),
+        ).fetchone()
+        assert tuple(ledger) == ("telegram", "provider-message-1", "acknowledged", ledger["delivered_at"])
+        assert ledger["delivered_at"] is not None
+    finally:
+        conn.close()
+
+
+def test_needs_user_action_failed_delivery_is_recorded_and_retried(tmp_path, monkeypatch):
+    db_path = tmp_path / "user-action-retry.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="operator retry", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="opaque-chat")
+        assert kb.claim_task(conn, tid)
+        kb.block_task(conn, tid, kind="needs_input", reason="approve access")
+    finally:
+        conn.close()
+
+    failing = FailingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(failing)))
+    conn = kbc.connect()
+    try:
+        failed = conn.execute(
+            "SELECT attempts, result, error_metadata FROM kanban_user_action_deliveries WHERE task_id=?",
+            (tid,),
+        ).fetchone()
+        assert failed["attempts"] == 1
+        assert failed["result"] == "delivery_failed"
+        assert "simulated send failure" in failed["error_metadata"]
+    finally:
+        conn.close()
+
+    acknowledging = AcknowledgingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(acknowledging)))
+    conn = kbc.connect()
+    try:
+        delivered = conn.execute(
+            "SELECT attempts, result FROM kanban_user_action_deliveries WHERE task_id=?", (tid,),
+        ).fetchone()
+        assert tuple(delivered) == (2, "acknowledged")
+    finally:
+        conn.close()
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(

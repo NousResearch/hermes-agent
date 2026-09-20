@@ -676,7 +676,14 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+        user_action = args.get("user_action")
+        readiness_probe = args.get("readiness_probe")
+        _check(user_action is None or isinstance(user_action, dict), "user_action must be an object")
+        _check(readiness_probe is None or isinstance(readiness_probe, dict), "readiness_probe must be an object")
+        ok = kb.block_task(
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
+            user_action=user_action, readiness_probe=readiness_probe,
+        )
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}

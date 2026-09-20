@@ -41,8 +41,6 @@ from cron.jobs import (
     pause_job,
     remove_job,
     resolve_job_ref,
-    resnapshot_all_unpinned,
-    resnapshot_job,
     resume_job,
     update_job)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
@@ -612,6 +610,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
+            pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
@@ -759,6 +758,8 @@ def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[st
         updates["model"] = _normalize_optional_job_value(a["model"])
     if a["provider"] is not None:
         updates["provider"] = _normalize_optional_job_value(a["provider"])
+    if a["pinned"] is not None:
+        updates["pinned"] = bool(a["pinned"])
     if a["base_url"] is not None:
         updates["base_url"] = _normalize_optional_job_value(a["base_url"], strip_trailing_slash=True)
     if a["reasoning_effort"] is not None:
@@ -859,50 +860,7 @@ def _action_update(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         {"success": True, "job": _format_job(updated)}, updated, _normalize_deliver_param(a["deliver"])))
 
 
-def _action_resnap(a: Dict[str, Any]) -> str:
-    """Adopt the current global inference resolution without pinning (#44585).
-
-    Bulk (``all=true``) refreshes every unpinned job; single-job resolves
-    ``job_id`` and refreshes just that job. Refuses to guess scope.
-    """
-    if bool(a["all"]):
-        updated = resnapshot_all_unpinned()
-        _notify_provider_jobs_changed_safe()
-        return _dumps({
-            "success": True,
-            "message": (
-                f"Refreshed inference snapshots on {len(updated)} unpinned "
-                "job(s) to the current global resolution. Jobs remain "
-                "unpinned and will track future global changes."),
-            "updated_jobs": [_format_job(j) for j in updated],
-        })
-    job_id = a["job_id"]
-    if not job_id:
-        return tool_error(
-            "resnap requires either `job_id=<id>` (single job) or `all=true` "
-            "(refresh every unpinned job). Refusing to guess scope.",
-            success=False,
-        )
-    job, error = _resolve_job_or_error(job_id)
-    if error is not None:
-        return error
-    assert job is not None  # error is None ⇔ job resolved
-    updated = resnapshot_job(job["id"])
-    if not updated:
-        return tool_error(f"Failed to resnap job '{job_id}'", success=False)
-    _notify_provider_jobs_changed_safe()
-    return _dumps({
-        "success": True,
-        "message": (
-            f"Cron job '{updated['name']}' refreshed to the current "
-            "global inference resolution. It remains unpinned and will "
-            "track future global changes."),
-        "job": _format_job(updated),
-    })
-
-
-# Actions that need no job_id, and job-bound actions (job resolved first).
-_JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list, "resnap": _action_resnap}
+_JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list}
 _JOB_ACTIONS = {
     "remove": _action_remove, "update": _action_update,
     "run": _action_run, "run_now": _action_run, "trigger": _action_run,
@@ -957,11 +915,11 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
-    all: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
-    paused_reason: Optional[str] = None) -> str:
+    paused_reason: Optional[str] = None,
+    pinned: Optional[bool] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1004,9 +962,9 @@ CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
-'resnap' adopts the CURRENT global inference resolution for an unpinned job (job_id) or all unpinned jobs (all=true) WITHOUT pinning it, so it keeps tracking future global changes — use after deliberately changing the default model.
+Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless pinned.
 
-Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
+Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless the user pins one. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1014,15 +972,15 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run, resnap. When action=create, the 'schedule' and 'prompt' fields are REQUIRED. When action=resnap, pass either job_id (single job) or all=true (every unpinned job)."
+                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run. For resnap: the job to adopt the current global inference resolution (omit if all=true)."
+                "description": "Required for update/pause/resume/remove/run."
             },
-            "all": {
+            "pinned": {
                 "type": "boolean",
-                "description": "Only for action='resnap'. all=true refreshes the inference snapshot of EVERY unpinned agent job to the current global resolution (bulk 'make everything follow my new default'). Must be explicitly set to true — never implied. Omit (or false) to resnap a single job via job_id."
+                "description": "For create/update. ONLY set when the user explicitly asks to pin (or unpin) a job's model. pinned=true locks the CURRENT main agent model (and its provider) onto the job so later `hermes model` / `/model` changes never touch it; pinned=false releases the lock so the job follows the main agent model again. Never set it on your own initiative: by default jobs follow the main model."
             },
             "prompt": {
                 "type": "string",
@@ -1117,7 +1075,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "all")
+    "paused_reason", "pinned")
 
 
 def _cronjob_handler(args, **kw):

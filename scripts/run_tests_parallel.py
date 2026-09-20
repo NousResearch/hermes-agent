@@ -414,6 +414,10 @@ def _run_one_file(
         file, pytest_args, repo_root, file_timeout
     )
     attempt = 0
+    # A worker killed by signal (OOM, SIGKILL) or the file timeout is a runaway, not a flake:
+    # relaunching it doubles the damage while the first tree is still being reaped.
+    if rc < 0 or rc == 124:
+        retries = 0
     while rc != 0 and attempt < retries:
         attempt += 1
         first_output = output

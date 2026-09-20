@@ -30,7 +30,7 @@ import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
-import { setMainModelAssignment } from '@/store/cron-model-impact'
+import { setMainModelAssignment } from '@/store/model-assignment'
 import { notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 

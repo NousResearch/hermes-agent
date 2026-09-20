@@ -106,7 +106,8 @@ word sits next to its @mention (`stop @bot`, `@bot please pause`); the same word
 elsewhere in the sentence is read as ordinary prose, so a German `halt` no longer
 silences the bot it was sent to — but such a message does not release a held
 member either (`@bot please just stop now` never wakes it; repeat the stop next
-to the mention to hold it). A member that is visibly still working keeps its turn for up to three
+to the mention to hold it). Stop words inside fenced code, inline code, quotes or
+blockquote lines are content, not directives, and never hold anyone. A member that is visibly still working keeps its turn for up to three
 hours (a member that stops reporting work expires after three minutes of silence regardless); a quiet
 room then watches timed-out members for another three hours after the foreground wait ends, and this
 observation window does not extend the turn itself.

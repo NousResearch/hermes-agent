@@ -1092,7 +1092,7 @@ describe('member holds (#93129)', () => {
 
   // #117040: proximity is measured on what the user directs at the room, not
   // on content they quote or paste. A stop word inside a fenced block, inline
-  // code span, straight-quoted span or blockquote line is content — reporting
+  // code span, quoted span (straight or typographic) or blockquote line is content — reporting
   // or debugging a hold must not re-hold the addressed member.
   it('holds nobody when the stop word sits inside quoted or pasted content', async () => {
     const { rounds } = await loadRoom()
@@ -1101,6 +1101,7 @@ describe('member holds (#93129)', () => {
       '```text\nstop @impl\n```',
       'The log printed `@impl pause` here',
       'Why did "pause @impl" hold the bot?',
+      'Why did “pause @impl” hold the bot?',
       // A cut-short paste leaves the fence unclosed; the rest is still content.
       'look what the docs say:\n```js\nstop @impl\n',
       '> stop @impl'

@@ -304,7 +304,9 @@ function maskQuotedAndCodeSpans(value: string): string {
       continue
     }
 
-    kept.push(line.replace(/`[^`\n]*`/g, mentionsOnly).replace(/"[^"\n]*"/g, mentionsOnly))
+    // Typographic quotes too: macOS smart-quote substitution rewrites the
+    // straight ones as the user types into the composer.
+    kept.push(line.replace(/`[^`\n]*`/g, mentionsOnly).replace(/["“”][^"“”\n]*["“”]/g, mentionsOnly))
   }
 
   return kept.join('\n')

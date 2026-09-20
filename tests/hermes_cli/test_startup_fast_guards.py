@@ -155,3 +155,28 @@ def test_normalize_hermes_home_env_rewrites_tilde_and_leaves_absolute_alone(tmp_
     monkeypatch.delenv("HERMES_HOME")
     _startup_fast.normalize_hermes_home_env()
     assert "HERMES_HOME" not in os.environ
+
+
+def test_read_openai_version_survives_a_deleted_cwd(tmp_path, monkeypatch):
+    """The SDK probe scans ``sys.path``; a ``''`` entry means cwd, and a deleted cwd must not end
+    the scan.
+
+    ``python -c`` launchers, the REPL, and embedded CLI hosts leave ``''`` at ``sys.path[0]``.
+    ``os.getcwd()`` then raises FileNotFoundError, which killed the whole ``--version`` fast path
+    before it printed anything — the fast path runs pre-argparse, so nothing degrades gracefully
+    after it. The unresolvable entry is skipped and the next one still yields the version
+    (#102941 is the sibling defect in ``ensure_project_root_on_path``).
+    """
+    from hermes_cli import _startup_fast
+
+    site = tmp_path / "site"
+    (site / "openai").mkdir(parents=True)
+    (site / "openai" / "_version.py").write_text('__version__ = "9.9.9"\n', encoding="utf-8")
+
+    def _deleted_cwd():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "getcwd", _deleted_cwd)
+    # Keep the real tail behind the '' probe so nothing else in this process loses its imports.
+    monkeypatch.setattr(sys, "path", ["", str(site), *sys.path])
+    assert _startup_fast.read_openai_version() == "9.9.9"

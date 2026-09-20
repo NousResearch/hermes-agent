@@ -121,7 +121,16 @@ def container_mode_may_be_active() -> bool:
 def read_openai_version() -> str | None:
     """Read OpenAI SDK version without importing ``importlib.metadata``."""
     for base in sys.path:
-        version_file = os.path.join(base or os.getcwd(), "openai", "_version.py")
+        if not base:
+            # '' is cwd, and os.getcwd() raises once the directory the process started in has
+            # been deleted (a `python -c` launcher, an embedded CLI, the REPL — launches that
+            # leave '' at sys.path[0]). There is no directory to probe then, so skip it instead
+            # of taking the version fast path down: this module runs before argparse.
+            try:
+                base = os.getcwd()
+            except OSError:
+                continue
+        version_file = os.path.join(base, "openai", "_version.py")
         try:
             with open(version_file, encoding="utf-8") as handle:
                 for line in handle:

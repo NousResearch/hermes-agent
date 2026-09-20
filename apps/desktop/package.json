@@ -2,7 +2,7 @@
   "name": "hermes",
   "productName": "Hermes",
   "private": true,
-  "version": "0.17.3",
+  "version": "0.17.6",
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
   "repository": {
@@ -213,7 +213,7 @@
     ],
     "beforeBuild": "scripts/before-build.mjs",
     "beforePack": "scripts/before-pack.mjs",
-    "afterPack": "scripts/after-pack.mjs",
+    "afterExtract": "scripts/after-extract.mjs",
     "extraResources": [
       {
         "from": "build/install-stamp.json",

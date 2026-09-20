@@ -133,6 +133,17 @@ def test_unknown_tier_normalizes_to_community(mod, tmp_path):
     assert entries[0]["tier"] == "community"
 
 
+def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mod, tmp_path):
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "labelled", version="1.4.0", image="https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/banner.png")
+    _write_entry(catalog, "offhost", version="1.4.0", image="https://cdn.example.com/banner.png")
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["labelled"]["version"] == "1.4.0" and entries["labelled"]["image"] == "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/banner.png"
+    assert entries["offhost"]["image"] == "" and entries["offhost"]["version"] == "1.4.0"
+
+
 # --------------------------------------------------------------------------
 # Full run: outputs + graceful degradation
 # --------------------------------------------------------------------------
@@ -143,7 +154,7 @@ def test_main_writes_catalog_and_meta(mod, tmp_path):
     _write_entry(catalog, "alpha", tier="official", category="memory")
     _write_entry(catalog, "beta")  # no category → default "desktop" shelf
     _write_entry(catalog, "gamma")
-    # Star cache from fetch-plugin-stars.py: gamma outranks beta within the community tier.
+    # Star cache from fetch-plugin-stars.py: ranking is stars only; the official tier gets no boost.
     (tmp_path / "api").mkdir()
     (tmp_path / "api" / "plugin-stars.json").write_text(json.dumps({
         "fetched_at": "2026-09-15T00:00:00+00:00",
@@ -158,7 +169,7 @@ def test_main_writes_catalog_and_meta(mod, tmp_path):
     assert rc == 0
     plugins = json.loads((out_dir / "plugins.json").read_text(encoding="utf-8"))
     meta = json.loads((out_dir / "plugins-meta.json").read_text(encoding="utf-8"))
-    assert [p["name"] for p in plugins] == ["alpha", "gamma", "beta"]  # official first, then stars desc
+    assert [p["name"] for p in plugins] == ["gamma", "beta", "alpha"]  # stars desc, unknown stars last
     assert {p["name"]: p["stars"] for p in plugins} == {"alpha": None, "gamma": 50, "beta": 3}
     assert meta["total"] == 3
     assert meta["byTier"] == {"official": 1, "community": 2}

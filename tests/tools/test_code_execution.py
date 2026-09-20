@@ -593,7 +593,12 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             os.environ["HERMES_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
-            self.assertEqual(child_env.get("TZ"), "America/New_York")
+            if sys.platform == "win32":
+                # The MSVC runtime only parses POSIX-form TZ; an IANA name yields a wrong
+                # offset (#112233), so Windows children keep the OS zone instead.
+                self.assertNotIn("TZ", child_env)
+            else:
+                self.assertEqual(child_env.get("TZ"), "America/New_York")
         finally:
             os.environ.clear()
             os.environ.update(env_backup)

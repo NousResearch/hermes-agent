@@ -69,6 +69,9 @@ full peer window without switching the source window. The desktop default
 applies at startup and to generic new chats; explicit profile/project actions
 and profile-specific windows keep their own destinations. Changing the default
 does not move existing sessions or replace the active conversation.
+Ordinary **New Window** (`⌘⇧N` / `Ctrl+Shift+N`) inherits its opener's device and
+profile only at startup, not as a window-specific default. Later device/profile
+selections remain authoritative for new chats unless a desktop default is set.
 
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
@@ -109,7 +112,11 @@ represented execution rows appear only when explicitly expanded. Empty text
 continuations must not introduce paragraph gaps. Keep inline approvals beside
 the conversation and let genuine content scroll normally; do not inject padding
 or write scroll offsets to pin the decision. Preview this order with delayed
-start and completion events, not pre-created tool rows.
+start and completion events, not pre-created tool rows. Final approval removal
+retires both the painted card and its measured layout footprint; restoring tool
+rows must not insert their full height before the outgoing stack can settle.
+No completion callback may clear the measurement of a newly arrived card.
+Reduced motion settles immediately without retaining empty clearance.
 
 ## Window glass
 
@@ -224,8 +231,7 @@ blurred backdrop.
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
-  pill rows. `iconOnly` renders compact icon buttons with label tooltips and
-  accessible names; use `codiconIcon()` for Codicon options.
+  pill rows.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
 - **`FanMenu`** (`src/components/ui/fan-menu.tsx`) — one hub control that
   fans sibling toggles out on hover: `direction` `vertical` | `horizontal`
@@ -241,6 +247,17 @@ blurred backdrop.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
   `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
   shell.
+- **Settings subpages:** `OverlayNav` keeps navigation and disclosure separate:
+  labels navigate; the shared `DisclosureCaret` button opens a branch without
+  changing the page. Active paths reveal automatically, inactive paths stay
+  folded unless manually opened. General comes first wherever present; parent
+  labels and parent URLs open the first ordered subpage, never an overview or
+  the last visited child. Explicit child links retain their destination;
+  every parent and child uses the same Settings breadcrumb, without a duplicate
+  icon-and-title heading. Page-level `SectionHeading page` retains actions and
+  counts under breadcrumb-owned chrome; embedded callers keep their headings.
+  Narrow windows keep every destination available in the shared navigation dropdown.
+  Search and saved field links resolve to the owning child before highlighting.
 - **Rows:** `ListRow` (settings `primitives.tsx`) for label/description/action
   rows. Flat, flush-left; no per-row indentation that fights flush headers.
 - **No dividers between rows** unless the list genuinely needs them; prefer
@@ -335,8 +352,12 @@ so glass and message-bubble transparency do not reveal scrolling text.
   queues stay session-owned. Docking restores the individual pane composers.
   In either placement, moving into a chat pane gives its editor typing focus
   immediately and preserves its caret. Layout-only hover events and delayed
-  focus callbacks cannot replace that choice. Movement within the same pane
+  focus callbacks cannot replace that choice, and a live transcript selection
+  is never cleared by focus-follow. Movement within the same pane
   must not flush React; deliberate Tab navigation and clicked controls still work.
+  An inline message edit is a typing target of its own: opening one keeps focus
+  in the edit editor, and neither its mount-time focus nor mouse movement while
+  it is open hands the caret back to the pane composer.
   Active dictation or voice conversation pins the recipient until capture ends,
   keeping the microphone's stop controls and shortcut attached to its owner.
 - Status-stack rows use `StatusRow` with a leading `dismiss` action, a state
@@ -347,7 +368,8 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - `status-stack.css` owns the shared columns and `0.25rem` nesting step. Rows
   own their padding and full-width hover fill. `StatusControlRow` uses the same
   columns for goal/loop/heartbeat details; `StatusPendingIcon` supplies the
-  dashed marker for tasks and criteria. The first row has `0.5rem` top inset.
+  dashed marker for tasks and criteria. The first row keeps its normal padding;
+  the stack adds no extra top inset.
 - Keep the rounded status card stationary, with the bounded scroll viewport
   inside it. The outer scroll boundary uses `overscroll-behavior-y: contain`;
   nested rosters and transcripts use `auto` so wheel input can hand off at an

@@ -24,7 +24,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 from tools.bot_mode_probe import _default_home, _hermes_root
 from utils import atomic_json_write
@@ -77,6 +77,18 @@ _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 # One turn in a profile's canonical Bot Chat: ``hermes -p <profile> *BOT_CHAT_TURN_ARGS``.
 # ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
 BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
+
+# Set by a dispatcher on the ONE policy-gated re-run of a failed delivery turn (``tools.bot_mode_dm``,
+# ``tui_gateway.methods_bot_relay``). The failed attempt's turn-start persist already left the DM as the
+# Bot Chat's unanswered tail row, and a fresh process cannot tell that from a new message on its own — so
+# the re-run is told to adopt that row instead of appending a second copy
+# (``hermes_cli.quiet_single_query.adopt_unanswered_turn``, which consumes the variable before the turn).
+RESUME_UNANSWERED_TURN_ENV = "HERMES_RESUME_UNANSWERED_TURN"
+
+
+def retry_turn_env(env: Optional[Mapping[str, str]]) -> dict[str, str]:
+    """The re-run's child env: the first attempt's env plus the resume marker."""
+    return {**(os.environ if env is None else env), RESUME_UNANSWERED_TURN_ENV: "1"}
 
 
 def relay_root(root: Path | str) -> Path:
@@ -229,6 +241,8 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     reply so the sender's waiter resolves (best effort). Unreadable envelopes are left for the claim."""
     try:
         env = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(env, dict):
+            raise ValueError(f"expected a JSON object, got {type(env).__name__}")
         created = float(env.get("created_at") or path.stat().st_mtime)
     except (OSError, ValueError):
         return False
@@ -240,6 +254,15 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
             f"expired after {ttl}s waiting for the Desktop to drain it — it was NOT delivered. "
             "Resend once the Desktop reconnects."))
     return True
+
+
+def _queued_at(path: Path) -> tuple[float, str]:
+    """Claim order for one outbox entry: oldest first. ``mtime`` is what ``_sweep_stale`` already
+    treats as an envelope's age, and unlike the whole-second ``created_at`` field it separates two
+    DMs sent in the same second. The name only breaks ties."""
+    with contextlib.suppress(OSError):
+        return (path.stat().st_mtime, path.name)
+    return (0.0, path.name)
 
 
 def claim_pending_envelopes(root: Path | str) -> list[dict]:
@@ -255,7 +278,10 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     ttl = _envelope_ttl_seconds()
     now = time.time()
     out: list[dict] = []
-    for path in sorted((base / OUTBOX_DIR).glob("*.json")):
+    # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
+    # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
+    # by filename ordered them by ``uuid4().hex`` — at random.
+    for path in sorted((base / OUTBOX_DIR).glob("*.json"), key=_queued_at):
         if ttl > 0 and _expire_if_stale(root, path, ttl, now):
             with contextlib.suppress(OSError):
                 path.unlink()
@@ -263,7 +289,10 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         claimed = base / CLAIMED_DIR / path.name
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
-            out.append(json.loads(claimed.read_text(encoding="utf-8")))
+            envelope = json.loads(claimed.read_text(encoding="utf-8"))
+            if not isinstance(envelope, dict):
+                raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
+            out.append(envelope)
     return out
 
 
@@ -316,42 +345,24 @@ def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:
 def waiter_command(root: Path | str, envelope: dict) -> str:
     """Shell command that blocks until the reply file appears, then prints it; spawned
     via ``terminal_tool(background=True, notify_on_complete=True)`` so its stdout arrives
-    as the same completion notification local DMs use. Stdlib-only."""
+    as the same completion notification local DMs use.
+
+    A ``tools/bot_mode_dm.py --wait-reply`` entrypoint, like the local delivery runner — not
+    ``python -c``. The approval gate flags inline interpreter code ("script execution via -e/-c
+    flag"), and ``approvals.single_query_mode`` defaults to ``deny`` for the one-shot ``-Q`` turn a
+    bot replies from, so the reply waiter was refused exactly when a bot answered a teammate: the
+    message was delivered, the reply never woke the sender. Roster fields ride as argv (``shlex``
+    quoted), never as source text, so a hostile handle or connection id stays data.
+    """
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
     label = f"@{envelope.get('target_handle', '')} on {envelope.get('target_connection', '')}"
-    # !r keeps roster fields from breaking out of the generated python -c source.
-    # The r-prefix keeps Windows paths viable: the Windows execution layer folds
-    # repr's "\\" back to "\", turning "\U" into an invalid unicode escape; a
-    # raw literal parses the folded backslash literally. No-op on POSIX, and \'
-    # still cannot terminate a raw literal, so the injection defense holds.
-    code = (
-        # Encode label with !r so roster fields cannot break out of the generated python -c source (quotes,
-        # parens, or extra statements in connection_id). See #93590.
-        "import json,os,sys,time\n"
-        f"p = r{reply_path!r}\n"
-        f"label = r{label!r}\n"
-        f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
-        "while time.time() < deadline:\n"
-        "    if os.path.exists(p):\n"
-        "        d = json.load(open(p, encoding='utf-8'))\n"
-        "        if d.get('error'):\n"
-        # Typed reason code rides ahead of the free text so the sender can
-        # branch on it without parsing provider prose.
-        # See #93091.
-        "            code = str(d.get('reason') or '').strip()\n"
-        "            tag = ' [reason: ' + code + ']' if code else ''\n"
-        "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
-        "            sys.exit(1)\n"
-        "        print('Reply from ' + label + ':')\n"
-        "        print(d.get('reply') or '(empty reply)')\n"
-        "        sys.exit(0)\n"
-        # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
-        "    time.sleep(0.25)\n"
-        f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
-        "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
-        "sys.exit(1)\n"
-    )
-    return f"{shlex.quote(sys.executable or 'python3')} -c {shlex.quote(code)}"
+    runner = str(Path(__file__).resolve().with_name("bot_mode_dm.py"))
+    argv = [sys.executable or "python3", runner, "--wait-reply", reply_path, label, str(REPLY_WAIT_SECONDS)]
+    if sys.platform == "win32":
+        # Same rewrite as the delivery runner: the tracked local backend uses Git Bash on native
+        # Windows, where forward-slash drive paths run and backslash paths parse as command names.
+        argv = [part.replace("\\", "/") for part in argv]
+    return shlex.join(argv)
 
 
 def _hermes_cli() -> str:

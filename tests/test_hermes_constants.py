@@ -55,6 +55,17 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 
+    def test_expanded_custom_profile_returns_custom_root(self, tmp_path, monkeypatch):
+        custom_root = tmp_path / "deployment"
+        home_token = "$" + "HOME"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(
+            "HERMES_HOME", f"{home_token}/deployment/profiles/research"
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "native-home")
+
+        assert get_default_hermes_root() == custom_root
+
     @pytest.mark.windows_only
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
@@ -69,9 +80,8 @@ class TestGetDefaultHermesRoot:
         """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
 
         get_default_hermes_root() resolves HERMES_HOME against the native
-        home (~80us of path resolution) and is called at 31+ sites — every
-        _load_global_auth_store() (per provider row in the /model picker),
-        kanban, backup, gateway, update. The memo is keyed on
+        home (~80us of path resolution) and is called at 31+ sites — kanban,
+        backup, gateway, update, profile enumeration. The memo is keyed on
         (native home, HERMES_HOME) compared for free each call.
         """
         # HERMES_HOME set to a Docker-profile path: every call resolves the
@@ -152,6 +162,26 @@ class TestGetProcessHermesHome:
         home = tmp_path / "launch-home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         assert get_process_hermes_home() == home
+
+    def test_process_and_context_homes_expand_environment_and_user_syntax(
+        self, tmp_path, monkeypatch
+    ):
+        home_token = "$" + "HOME"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        for syntax in (home_token, "~"):
+            process_home = tmp_path / "process-home"
+            monkeypatch.setenv("HERMES_HOME", f"{syntax}/process-home")
+            assert get_process_hermes_home() == process_home
+
+            override_home = tmp_path / "override-home"
+            token = set_hermes_home_override(f"{syntax}/override-home")
+            try:
+                assert get_hermes_home() == override_home
+                assert get_process_hermes_home() == process_home
+            finally:
+                reset_hermes_home_override(token)
 
 
 
@@ -474,8 +504,23 @@ class TestResolvePerModelReasoningEffort:
         result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
         assert result == {"enabled": True, "effort": "high"}
 
+    def test_prefixed_key_matches_bare_model(self):
+        """A custom-provider prefixed key (``ollama-local/qwen3.6:27b``) applies to the bare runtime slug.
 
+        Fallback entries and named custom providers feed ``agent.model`` without the provider
+        prefix while the documented key spelling keeps ``provider/model``; a key for a different
+        model must still miss.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"ollama-local/qwen3.6:27b-q4_k_m": "low"}
+        assert resolve_per_model_reasoning_effort("qwen3.6:27b-q4_k_m", overrides) == {"enabled": True, "effort": "low"}
+        assert resolve_per_model_reasoning_effort("llama3.2:3b", overrides) is None
 
+    def test_direct_match_wins_over_reverse_lookup(self):
+        """A direct/variant key match keeps priority over a prefixed reverse match."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"qwen3.6:27b": "medium", "ollama-local/qwen3.6:27b": "low"}
+        assert resolve_per_model_reasoning_effort("qwen3.6:27b", overrides) == {"enabled": True, "effort": "medium"}
 
 
 class TestResolveReasoningConfig:
@@ -528,6 +573,23 @@ class TestResolveReasoningConfig:
         from hermes_constants import resolve_reasoning_config
         cfg = self._cfg(effort="medium", overrides={"gpt-5": "turbo-max"})
         assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
+
+    def test_dict_form_passes_bespoke_tier_verbatim_globally_and_per_model(self):
+        """#93238: providers with custom tiers (fast/thinking) need the dict form to send their
+        real level; a bare non-ladder string stays rejected so typos never reach the wire."""
+        from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+        cfg = self._cfg(effort={"enabled": True, "effort": "thinking"},
+                        overrides={"lumo-max": {"enabled": True, "effort": "fast"}})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "thinking"}
+        assert resolve_reasoning_config(cfg, "my-relay/lumo-max") == {"enabled": True, "effort": "fast"}
+        assert parse_reasoning_effort("thinking") is None
+
+    def test_dict_form_disabled_or_empty_effort(self):
+        """enabled:false disables regardless of level; a dict without a level is 'unset'."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort({"enabled": False, "effort": "low"}) == {"enabled": False}
+        assert parse_reasoning_effort({"enabled": True}) is None
+        assert parse_reasoning_effort({"effort": 0}) is None
 
 
 class TestReasoningOverridesDefaultConfig:

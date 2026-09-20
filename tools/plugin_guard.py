@@ -10,29 +10,30 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
+from tools.plugin_guard_context import (
+    STEP_DOWN, is_agent_facing, is_base64_media, is_data_decode, is_doc_prose, is_inert_fixture_line,
+    is_regex_alternation_token, is_self_uninstall_doc, is_test_tree, prose_cap)
 from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v3"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v7"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox"}
 
-# Top-level test trees ARE scanned (``plugins_loader`` sets ``submodule_search_locations``
-# to the plugin root, so ``from .tests import evil`` runs whatever lives there), but a
-# critical found under one is capped at ``high``: fixtures deliberately hold hostile
-# strings to prove the plugin rejects them, and an un-overridable ``dangerous`` made
-# such plugins uninstallable and taught authors to obfuscate their own tests (#89610).
-# The cap keeps the verdict at ``caution`` — blocked by default, ``--force`` overridable.
-# Root-level names only: ``src/spec/handler.py`` is runtime code and gets no cap.
-TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
+# Test trees ARE scanned (``plugins_loader`` sets ``submodule_search_locations`` to the
+# plugin root, so ``from .tests import evil`` runs whatever lives there), but findings under
+# them step down one severity (``plugin_guard_context.is_test_tree``): fixtures deliberately
+# hold hostile strings to prove the plugin rejects them, and an un-overridable ``dangerous``
+# made such plugins uninstallable and taught authors to obfuscate their own tests (#89610).
 
 # Code files, where "reads an env secret" / "HTTP call with a key" is normal (requires_env).
 CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php"}
@@ -75,9 +76,9 @@ JS_CAPABILITY_REMAP = {"dns_exfil": "high", "ssh_backdoor": "high"}
 
 # Plugin scans gate a HOST install: what matters is what executes on the host. Two critical
 # families describe the author's own dev workflow when they appear in documentation files, so
-# they are demoted one tier (critical -> high) there instead of hard-blocking an otherwise
-# auditable plugin; the same content in runtime code keeps its critical severity.
-DOC_PROSE_EXTENSIONS = {".md", ".txt", ".rst", ".html"}
+# they land at high (caution) there instead of hard-blocking an otherwise auditable plugin; the
+# same content in runtime code keeps its critical severity. The generic one-step prose cap for
+# command/path-shaped findings lives in ``plugin_guard_context`` (``DOC_PROSE_EXTENSIONS``).
 DOC_PROSE_DEMOTIONS = {
     # Prose modification bullets ("- Modify: `CLAUDE.md`") in plan/design docs describe the
     # repo's own files; only executable intent (shell writes, code) stays critical.
@@ -86,6 +87,15 @@ DOC_PROSE_DEMOTIONS = {
     # literals (sk-, ghp_, AKIA, glpat-, private keys) keep their own critical patterns.
     "hardcoded_secret": "high",
 }
+
+# A root-level ``if __name__ == "__main__":`` block is the module's own self-test harness:
+# ``plugins_loader`` imports plugins and never runs them as scripts, so a sample credential
+# quoted there is a fixture, not a shipped secret — the test-tree reasoning applied where a
+# root-level runtime file has no ``tests/`` to hold it (#112139). Narrower than the
+# test-tree cap because the block is still directly executable code: only the generic
+# sample-token pattern is demoted; destructive/persistence/exfil findings and the
+# provider-signature patterns (``sk-``, ``AKIA``, ``ghp_`` ...) keep full severity there.
+MAIN_GUARD_DEMOTIONS = {"hardcoded_secret": "high"}
 
 # Structural limits — plugins are real codebases, far larger than skills.
 MAX_PLUGIN_FILE_COUNT = 400
@@ -108,12 +118,49 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
     return Finding(pattern_id, severity, category, file, 0, match, description)
 
 
-def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
+def _is_main_guard(node: ast.If) -> bool:
+    """Return whether an ``if`` node is the conventional module self-test guard."""
+    test = node.test
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    if len(test.comparators) != 1:
+        return False
+    left, right = test.left, test.comparators[0]
+    return (
+        isinstance(left, ast.Name) and left.id == "__name__"
+        and isinstance(right, ast.Constant) and right.value == "__main__"
+    ) or (
+        isinstance(right, ast.Name) and right.id == "__name__"
+        and isinstance(left, ast.Constant) and left.value == "__main__"
+    )
+
+
+def _main_guard_body_lines(file_path: Path) -> set[int]:
+    """Return lines executed only by ``if __name__ == '__main__'`` blocks.
+
+    Invalid Python deliberately returns no lines so its findings retain the
+    conservative severity.
+    """
+    try:
+        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):  # ValueError: UnicodeDecodeError, NUL bytes
+        return set()
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If) or not _is_main_guard(node):
+            continue
+        for statement in node.body:
+            lines.update(range(statement.lineno, getattr(statement, "end_lineno", statement.lineno) + 1))
+    return lines
+
+
+def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
-    in_test_tree = Path(rel_path).parts[0] in TEST_TREE_DIRS
+    main_guard_lines = _main_guard_body_lines(file_path) if file_path.suffix.lower() == ".py" else set()
     is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
-    is_doc_prose = Path(rel_path).suffix.lower() in DOC_PROSE_EXTENSIONS
+    doc_prose = is_doc_prose(rel_path)
+    lines = _file_lines(file_path) if findings else []
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
@@ -122,17 +169,68 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
             (JS_CAPABILITY_REMAP.get(f.pattern_id) if is_js else None)
             or SEVERITY_REMAP.get(f.pattern_id) or f.severity
         )
-        if is_doc_prose and f.pattern_id in DOC_PROSE_DEMOTIONS:
+        if doc_prose and f.pattern_id in DOC_PROSE_DEMOTIONS:
             f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
-        if in_test_tree and f.severity == "critical":
-            f.severity = "high"
+        line = lines[f.line - 1] if 0 < f.line <= len(lines) else f.match
+        f.severity = _context_severity(f, rel_path, line, doc_prose, is_code)
+        if _is_defensive_documentation(f, rel_path):
+            f.severity = _comment_severity(f)
+        # Last and critical-only: a one-step cap that can never re-raise a finding an
+        # earlier remap already lowered.
         if (
-            _is_defensive_documentation(f, rel_path)
-            and f.severity in _COMMENT_SEVERITY_CAP
+            f.pattern_id in MAIN_GUARD_DEMOTIONS
+            and f.severity == "critical"
+            and f.line in main_guard_lines
         ):
-            f.severity = _COMMENT_SEVERITY_CAP[f.severity]
+            f.severity = MAIN_GUARD_DEMOTIONS[f.pattern_id]
         out.append(f)
     return out
+
+
+_SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
+def _at_most(severity: str, cap: str) -> str:
+    """Lower *severity* to *cap*; never raise it."""
+    return cap if _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK[cap] else severity
+
+
+def _comment_severity(f: Finding) -> str:
+    """A whole-line comment / changelog entry cannot execute: one step down for every finding,
+    a second for command/path shapes (a comment is prose); agent-facing shapes keep one step."""
+    sev = _COMMENT_SEVERITY_CAP.get(f.severity, f.severity)
+    return sev if is_agent_facing(f) else STEP_DOWN.get(sev, sev)
+
+
+def _file_lines(file_path: Path) -> List[str]:
+    """Full source lines (``Finding.match`` is truncated to 120 chars); unreadable → []."""
+    try:
+        return file_path.read_text(encoding="utf-8").split("\n")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+def _context_severity(f: Finding, rel_path: str, line: str, doc_prose: bool, is_code: bool) -> str:
+    """Severity after the inert-context demotions (``plugin_guard_context``). Each rule only
+    ever lowers, and every finding stays in the report; the order runs from the broadest
+    context (where the text lives) to the narrowest (what the token sits inside)."""
+    sev = f.severity
+    if doc_prose:
+        sev = prose_cap(f) or sev
+        if is_self_uninstall_doc(f, line):
+            sev = _at_most(sev, "medium")
+    if is_test_tree(rel_path):
+        # A key-shaped literal or quoted-only hostile string in a fixture is the corpus the
+        # plugin's own tests reject (#89610): a note. Executable test code steps down once.
+        inert = f.category == "credential_exposure" or is_inert_fixture_line(f, line, is_code)
+        sev = _at_most(sev, "medium") if inert else STEP_DOWN.get(sev, sev)
+    if f.pattern_id == "encoded_exfil" and is_base64_media(line):
+        sev = "low"
+    if is_code and is_regex_alternation_token(f, line):
+        sev = STEP_DOWN.get(sev, sev)
+    if f.pattern_id == "base64_decode_pipe" and is_data_decode(line):
+        sev = STEP_DOWN.get(sev, sev)
+    return sev
 
 
 def _is_defensive_documentation(finding: Finding, rel_path: str) -> bool:
@@ -212,7 +310,7 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
         all_findings.extend(_check_plugin_structure(plugin_dir))
         for f, rel in sorted(_walk(plugin_dir)):
             if f.is_file() and not f.is_symlink():
-                all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel))
+                all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel, f))
     verdict = _determine_verdict(all_findings)
     if all_findings:
         categories = sorted({f.category for f in all_findings})

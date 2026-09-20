@@ -103,6 +103,30 @@ def test_catalog_detection_is_opt_in_and_preserves_profile_state(catalog_client,
         assert data == old.json()
         assert len(calls) == before + 1
     assert {directory: (directory / "config.yaml").read_bytes() for directory in snapshots} == snapshots
+    future = tmp_path / "catalog" / "fixture-paint"
+    future.mkdir()
+    manifest = future / "manifest.yaml"
+    manifest.write_text(yaml.safe_dump({
+        "manifest_version": 1, "name": "fixture-paint", "description": "Create illustrations in Fixture Paint",
+        "transport": {"type": "stdio", "command": "must-not-run"},
+    }), encoding="utf-8")
+    fresh = client.get("/api/mcp/catalog?detect_apps=true").json()
+    added = next(entry for entry in fresh["entries"] if entry["name"] == "fixture-paint")
+    assert added["suggest"] is None
+    assert added["detected_apps"] == ["fixture paint"]
+    unusual_names = ("_fixture-paint", "fixture-paint-", "x" * 81)
+    for name in unusual_names:
+        directory = tmp_path / "catalog" / name
+        directory.mkdir()
+        (directory / "manifest.yaml").write_text(yaml.safe_dump({
+            "manifest_version": 1, "name": name, "description": "Valid catalog name, unusable inferred app label",
+            "transport": {"type": "stdio", "command": "must-not-run"},
+        }), encoding="utf-8")
+    mixed = {entry["name"]: entry for entry in client.get("/api/mcp/catalog?detect_apps=true").json()["entries"]}
+    assert mixed["fixture-paint"]["detected_apps"] == ["fixture paint"]
+    assert all(mixed[name]["detected_apps"] == [] for name in unusual_names)
+    manifest.unlink()
+    assert all(entry["name"] != "fixture-paint" for entry in client.get("/api/mcp/catalog?detect_apps=true").json()["entries"])
     assert client.get("/api/mcp/catalog", params={"profile": "missing", "detect_apps": True}).status_code == 404
 
 

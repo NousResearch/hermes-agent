@@ -26,11 +26,6 @@ suggest:
     - crash report
   hosts:
     - sentry.io
-  applications: []
-  examples:
-    - Investigate a production error from Sentry
-    - Explain the stack trace on a Sentry issue
-    - Find recurring errors in my Sentry project
 
 post_install: |
   On first connection Hermes opens a browser to authorize with

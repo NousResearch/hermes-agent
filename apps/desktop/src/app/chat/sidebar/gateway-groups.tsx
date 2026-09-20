@@ -192,8 +192,8 @@ function GatewayProfileGroup({
         // glyph only reveals its grabber on hover, so a press anywhere on the
         // row must start the reorder too. The ⋯/caret cluster and the handle
         // keep their own gestures; a sub-threshold press on the label is still
-        // the click that folds the group.
-        {...sortable.dragHandleProps}
+        // the click that folds the group. Pointer activator only (forwarded
+        // below); the full handle stays on the grabber (see useSortableBindings).
         actions={
           <div className="flex items-center">
             {group.profile && (

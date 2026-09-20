@@ -310,3 +310,65 @@ class TestAssistantMessageIds:
                    side_effect=lambda c, s, l, u: sent.append(u)):
             cb("text")
         assert sent[0].message_id is None
+
+
+class TestToolCallsAlwaysReachATerminalStatus:
+    """A tool call left ``in_progress`` makes a finished turn look like it ran nothing.
+
+    Two invariants: every call is closed exactly once from its own ``tool.completed``
+    (the ``prev_tools`` step closer stands down once completions arrive), and whatever
+    is still open at turn end is failed with BOTH per-turn dicts drained together."""
+
+    def _patch(self):
+        return patch("acp_adapter.events.asyncio.run_coroutine_threadsafe")
+
+    def test_tool_completed_closes_the_call_once_and_the_step_closer_stands_down(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        ids, meta, turn_state = {"read": deque(["tc-1", "tc-2"])}, {"tc-1": {"args": {"path": "a"}}}, {}
+        progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, meta, turn_state=turn_state)
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta, turn_state)
+        with self._patch() as rcts, patch("acp_adapter.events.build_tool_complete") as btc:
+            rcts.return_value = MagicMock(spec=Future)
+            progress("tool.completed", "read", None, None, result="file body")
+            step(2, [{"name": "read", "result": "file body", "arguments": '{"path": "a"}'}])
+        btc.assert_called_once_with(
+            "tc-1", "read", result="file body", function_args={"path": "a"}, snapshot=None, is_error=False,
+        )
+        assert list(ids["read"]) == ["tc-2"] and "tc-1" not in meta
+
+    def test_step_fallback_coerces_wire_arguments_and_turn_end_flush_fails_what_is_still_open(
+        self, mock_conn, event_loop_fixture,
+    ):
+        """No completion projected: the step closer must survive the JSON-string ``arguments``
+        the wire carries (a real ``write_file`` close raised on ``.get`` and was swallowed);
+        a denied edit is then failed at turn end, draining ``tool_call_ids`` AND ``tool_call_meta``."""
+        from collections import deque
+
+        from acp_adapter.events import flush_open_tool_calls
+
+        ids = {"write_file": deque(["tc-1"]), "edit": deque(["tc-denied"])}
+        meta = {"tc-1": {"args": {"path": "a"}, "snapshot": None}, "tc-denied": {"args": {}}}
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta, {})
+        with self._patch() as rcts:
+            rcts.return_value = MagicMock(spec=Future)
+            step(2, [{"name": "write_file", "result": "ok", "arguments": '{"path": "a", "content": "x"}'}])
+            assert [c.args[1].status for c in mock_conn.session_update.call_args_list] == ["completed"]
+            assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta) == 1
+            assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta) == 0
+        statuses = [c.args[1].status for c in mock_conn.session_update.call_args_list]
+        assert statuses == ["completed", "failed"]
+        assert ids == {} and meta == {}
+
+    def test_tool_completed_is_error_flag_closes_the_call_as_failed(self, mock_conn, event_loop_fixture):
+        """``tool.completed`` carries the executor's ``is_error``; a cancelled tool's plain-text
+        result trips no heuristic, so dropping the flag showed an interrupted call green."""
+        from collections import deque
+
+        ids = {"terminal": deque(["tc-1"])}
+        progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, {})
+        with self._patch() as rcts:
+            rcts.return_value = MagicMock(spec=Future)
+            progress("tool.completed", "terminal", None, None, is_error=True,
+                     result="[Tool execution cancelled — terminal was skipped due to user interrupt]")
+        assert [c.args[1].status for c in mock_conn.session_update.call_args_list] == ["failed"]

@@ -150,7 +150,7 @@ describe('actionAllowedInInput', () => {
     expect(actionAllowedInInput('session.prev', 'ctrl+shift+tab')).toBe(true)
     expect(actionAllowedInInput('nav.commandPalette', 'mod+k')).toBe(true)
     expect(actionAllowedInInput('view.findInPage', 'mod+f')).toBe(true)
-    expect(actionAllowedInInput('nav.skills', 'mod+k')).toBe(true)
+    expect(actionAllowedInInput('nav.capabilities', 'mod+k')).toBe(true)
     expect(actionAllowedInInput('view.showTerminal', 'ctrl+`')).toBe(true)
     expect(actionAllowedInInput('profile.next', 'mod+shift+]')).toBe(true)
 

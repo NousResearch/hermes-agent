@@ -21,7 +21,7 @@ Generate flat, minimal educational SVG visuals as HTML.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `diagrams`, `svg`, `visualization`, `education`, `physics`, `chemistry`, `engineering` |
-| Related skills | [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram), [`excalidraw`](/docs/user-guide/skills/optional/creative/creative-excalidraw) |
+| Related skills | [`architecture-diagram`](../../bundled/creative/creative-architecture-diagram.md), [`excalidraw`](./creative-excalidraw.md) |
 
 ## Reference: full SKILL.md
 

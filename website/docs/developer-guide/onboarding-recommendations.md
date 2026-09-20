@@ -15,7 +15,9 @@ Otherwise the guide favors relevant app-backed tasks, with a connection-free alt
 
 ## Catalog metadata
 
-Extend the reviewed `optional-mcps/<name>/manifest.yaml`, not a product-name switch in the renderer:
+Read the actual catalog at runtime. An entry does not need new recommendation metadata: detection falls back to its catalog name (with slug separators treated as spaces), and the model derives tasks from its description. Removing an entry removes it from future snapshots. No product-specific entry, package or install recipe belongs in the onboarding change.
+
+Catalog owners may optionally provide richer hints:
 
 ```yaml
 suggest:
@@ -39,7 +41,7 @@ The managed-app picker keeps its curated leaders while making other enabled rows
 
 `GET /api/mcp/catalog?detect_apps=true` adds:
 
-- `entries[].detected_apps`: matching reviewed application labels only.
+- `entries[].detected_apps`: matching catalog-derived application names or optional explicit aliases only.
 - `discovery`: `{scope: "backend", status: "ok" | "unavailable", platform: string}`.
 
 The default catalog request performs no app discovery. The optional scan checks standard application locations and exact safe PATH candidates on the **backend machine**, where its MCP processes run. It never launches apps, starts MCPs, installs packages, reads application documents or contacts the network. It returns neither a full inventory nor filesystem paths.
@@ -78,4 +80,4 @@ There is one intentional product-policy overlap in the onboarding runbooks and t
 
 Contract tests cover catalogue parsing, opt-in read-only discovery, A/B/A profile isolation, missing metadata, ranking, backend-pinned seed creation, legal MCP setup actions and preservation of fresh-machine/Spark priority.
 
-Live inference over synthetic onboarding turns can verify the recommended outcome and generated setup action. Native discovery can verify a real installed app signal. Neither is proof of OAuth completion or execution inside Blender: that still requires the application's add-on/server, the user's approval and a harmless live tool check. See the Blender catalog entry's setup notes for its prerequisites.
+Live inference over synthetic onboarding turns can verify the recommended outcome and generated setup action. Native discovery can verify a real installed app signal. Neither is proof of OAuth completion or execution inside Blender: that still requires the application's add-on/server, the user's approval and a harmless live tool check. Read the actual returned entry's setup notes; onboarding does not supply its own integration recipe.

@@ -15,11 +15,7 @@ from hermes_startup_watchdog import report_startup_progress
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
-_LAST_ACTIVE_SQL = """COALESCE(
-                       (SELECT MAX(m.timestamp) FROM messages m
-                        WHERE m.session_id = s.id),
-                       s.started_at
-                   )"""
+_LAST_ACTIVE_SQL = _sql_session_last_active("s")
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
 _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
 
@@ -207,21 +203,21 @@ class SessionMaintenanceMixin:
         """Translate the legacy age window into the shared activity filter, then build WHERE."""
         if (older_than_days is not None and filters.get("last_active_before") is None
                 and filters.get("started_before") is None):
+            if older_than_days < 0:
+                raise ValueError(
+                    f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
+                    "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
         return self._prune_filter_where(source=source, **filters)
 
     def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None,
                               **filters) -> List[Dict[str, Any]]:
         """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
-        = inactivity threshold: latest message, else ``started_at``)."""
+        = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
         where, params = self._prune_where(older_than_days, source, filters)
         return [dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
-                           COALESCE(
-                               (SELECT MAX(m.timestamp) FROM messages m
-                                WHERE m.session_id = s.id),
-                               s.started_at
-                           ) AS last_active,
+                           {_LAST_ACTIVE_SQL} AS last_active,
                            s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
@@ -261,7 +257,7 @@ class SessionMaintenanceMixin:
               AND COALESCE(s.end_reason, '') <> 'compression'
               {pin_clause}
               AND NOT (COALESCE(s.hidden, 0) <> 0 AND COALESCE(s.title, '') = ?)
-              AND {_sql_session_last_active("s")} < ?
+              AND {_LAST_ACTIVE_SQL} < ?
             ORDER BY s.started_at ASC
             """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:
@@ -390,6 +386,15 @@ class SessionMaintenanceMixin:
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        if retention_days is None or retention_days < 0:
+            # A negative retention would build a future cutoff and match every ended
+            # session; auto_prune=false is the disable switch, not a negative bound.
+            logger.warning(
+                "state.db auto-maintenance skipped: sessions.retention_days=%r is outside the allowed "
+                "range (a whole number of days >= 0); set sessions.auto_prune: false to disable pruning",
+                retention_days)
+            result["skipped"] = True
+            return result
         maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)
         if maintenance_lock is None:
             result["skipped"] = True

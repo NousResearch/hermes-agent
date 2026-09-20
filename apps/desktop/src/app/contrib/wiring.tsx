@@ -142,12 +142,14 @@ import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
+  TITLEBAR_CHROME_CHANGED_EVENT,
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarToolsRightCss,
   titlebarToolsWidthCss
 } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
+import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
@@ -1122,7 +1124,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onArchiveSession: sessionId => void archiveSession(sessionId),
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
-    onAttachPrCommentUrl: composer.attachPrCommentUrl,
     onAttachPastedText: composer.attachPastedText,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
     onBranchSession: sessionId => void branchStoredSession(sessionId),
@@ -1272,6 +1273,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
+  // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
+  // renderer paints its own min/max/close (main decides via customWindowControls).
+  const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
   const appActionsSide = useStore($titlebarAppActionsSide)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden).length
@@ -1282,6 +1286,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
 
   const leftToolsWidth = titlebarToolsWidthCss(clusters.left)
+
+  // Native caption reservations can translate chrome without resizing it.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
+  }, [controlsPos.left, controlsPos.top, titlebarToolsRight])
 
   return (
     <ContribWiringContext.Provider value={api}>
@@ -1308,6 +1317,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onOpenSettings={() => navigate(SETTINGS_ROUTE)}
             tools={rightTitlebarTools}
           />
+        )}
+        {!isHudWindow() && customWindowControls && (
+          <WslgWindowControls isFullscreen={Boolean(connection?.isFullscreen)} isMaximized={Boolean(connection?.isMaximized)} />
         )}
         {children}
       </div>

@@ -625,7 +625,10 @@ describe('GatewayClient websocket attach mode', () => {
       )
       await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
       expect(socket.readyState).toBe(FakeWebSocket.OPEN)
-      expect(socket.sent).toEqual([])
+      // The one frame on the wire is the client.capabilities advertisement every gateway.ready triggers.
+      const methods = socket.sent.map(text => (JSON.parse(text) as { method: string }).method)
+
+      expect(methods).toEqual(['client.capabilities'])
       expect(FakeWebSocket.instances).toHaveLength(1)
     } finally {
       gw.kill()

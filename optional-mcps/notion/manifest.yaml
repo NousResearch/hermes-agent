@@ -25,11 +25,6 @@ suggest:
   hosts:
     - notion.so
     - notion.site
-  applications: []
-  examples:
-    - Turn meeting notes into a Notion project page
-    - Find decisions across my Notion workspace
-    - Create a Notion database to track research
 
 post_install: |
   On first connection Hermes opens a browser to authorize with

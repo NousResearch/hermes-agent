@@ -39,10 +39,6 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "no new content was produced this turn; showing recovered "
         "prior context. Send `continue` to retry."
     ),
-    "interrupted_during_api_call": (
-        "the request was interrupted mid-call before a reply was "
-        "received. Send `continue` to retry."
-    ),
     "redirect_restart_limit_exceeded": (
         "the request was cancelled by a new correction on every attempt, "
         "so the turn stopped instead of retrying forever. Your last "
@@ -70,6 +66,11 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
 
 # Parameterised reasons (``max_iterations_reached(3/3)`` …) matched by prefix.
 _EXIT_REASON_PREFIX_EXPLANATIONS = (
+    # ``interrupted_during_api_call(<issuer>)`` names a system watchdog (#112647).
+    ("interrupted_during_api_call", (
+        "the request was interrupted mid-call before a reply was "
+        "received. Send `continue` to retry."
+    )),
     ("max_iterations_reached", (
         "the maximum tool-iteration limit was reached before a "
         "final answer. Send `continue` to keep going, or raise "
@@ -252,9 +253,11 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                for _p in landed_paths:
-                    with suppress(Exception):
-                        mgr.record_agent_write(_p)
+                from tools.file_tools_paths import container_backend_for_task
+                if container_backend_for_task(task_id or "default") is None:  # container paths carry no host ledger entry
+                    for _p in landed_paths:
+                        with suppress(Exception):
+                            mgr.record_agent_write(_p)
         if is_error and not landed:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)

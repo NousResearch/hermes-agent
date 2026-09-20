@@ -32,31 +32,13 @@ auth:
 # toolsets. Leave default_enabled unset — the install-time probe lists whatever
 # the live editor exposes and pre-checks all of it; users prune from there.
 
-# Editor presence is relevance, not proof that its MCP plugin is enabled.
-suggest:
-  keywords:
-    - unreal
-    - unreal engine
-    - level design
-  hosts:
-    - unrealengine.com
-  applications:
-    - UnrealEditor
-    - Unreal Editor
-  requires_app: true
-  examples:
-    - Block out a level in Unreal Engine
-    - Set up lighting in an Unreal scene
-    - Create material instances in Unreal Engine
-
 post_install: |
   This entry connects to Epic's official Unreal MCP plugin, which runs INSIDE
   the Unreal Editor. Before Hermes can connect:
 
     1. Open your project in Unreal Editor 5.8+.
-    2. Edit > Plugins, enable "Unreal MCP" and "All Toolsets" (or only the
-       individual toolsets you need), then restart the editor.
-       The Toolset Registry dependency enables automatically.
+    2. Edit > Plugins, search "Unreal MCP", enable it, restart the editor
+       (the Toolset Registry dependency enables automatically).
     3. Edit > Editor Preferences > General > Model Context Protocol, turn on
        "Auto Start Server" (or run `ModelContextProtocol.StartServer` in the
        editor console). It binds to http://127.0.0.1:8000/mcp by default.

@@ -1346,7 +1346,9 @@ class TestAnthropicStreamCallbacks:
         agent._anthropic_client.messages.stream.side_effect = lambda **kwargs: attempts.pop(0)
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
         emitted = []
-        agent._fire_stream_delta = lambda text: emitted.append(text)
+        # A real consumer: delivered text is recorded, so the second attempt counts as
+        # partial delivery (a bare _fire_stream_delta override records nothing).
+        agent.stream_delta_callback = emitted.append
 
         response = agent._interruptible_streaming_api_call(
             {"model": agent.model, "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}]})
@@ -1516,40 +1518,31 @@ class TestPartialToolCallWarning:
         )
 
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_empty_partial_stream_stub_stays_empty_for_loop_guard(
-        self, mock_close, mock_create,
-    ):
-        """Stream dies with 0 recovered chars and no tool call → the stub
-        keeps its empty content ON PURPOSE.
-
-        The conversation loop's truncation path detects an EMPTY
-        partial-stream stub (PARTIAL_STREAM_STUB_ID + no content) and skips
-        appending it to history entirely — only the continuation nudge is
-        sent (the #68041 class fix).  An earlier iteration substituted
-        '[response interrupted]' placeholder text HERE, which defeated that
-        guard: the stub no longer looked empty, entered history, and the
-        placeholder leaked into the stitched final response.  Transcripts
-        that already carry a persisted empty turn are healed at the send
-        boundary by repair_empty_non_final_messages instead.
-        """
+    @staticmethod
+    def _zero_char_agent(mock_create, attempts_that_die: int):
+        """Real streaming helper; the stream dies after a whitespace-only delta (nothing
+        visible reaches the consumer) on the first ``attempts_that_die`` attempts."""
         from run_agent import AIAgent
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        import httpx
 
-        class _StallError(RuntimeError):
-            pass
+        calls = {"n": 0}
 
-        def _stalling_stream():
-            yield _make_stream_chunk(content="partial token")
-            raise _StallError("simulated upstream stall after a delta")
+        def _create(*a, **kw):
+            calls["n"] += 1
+            attempt = calls["n"]
+
+            def _stream():
+                if attempt <= attempts_that_die:
+                    yield _make_stream_chunk(content=" \n")
+                    raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+                yield _make_stream_chunk(content="Recovered answer.")
+                yield _make_stream_chunk(finish_reason="stop")
+
+            return _stream()
 
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = (
-            lambda *a, **kw: _stalling_stream()
-        )
+        mock_client.chat.completions.create.side_effect = _create
         mock_create.return_value = mock_client
-
         agent = AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
@@ -1560,32 +1553,39 @@ class TestPartialToolCallWarning:
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
-        agent._fire_stream_delta = lambda text: None
-        # Empty recovered text — the exact "0 chars recovered, no tool call"
-        # production condition.
-        agent._current_streamed_assistant_text = ""
+        agent.stream_delta_callback = lambda text: None  # a real consumer; the delta is whitespace-only
+        return agent, calls
 
-        import os as _os
-        _prev = _os.environ.get("HERMES_STREAM_RETRIES")
-        _os.environ["HERMES_STREAM_RETRIES"] = "0"
-        try:
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_zero_char_partial_stream_retries_instead_of_empty_stub(self, mock_close, mock_create):
+        """A stream that dies before any VISIBLE text reached the user is undelivered, not
+        "partial delivery": the same request is retried (nothing to duplicate) instead of
+        returning an empty length stub that makes the loop ask the model to continue from
+        nowhere — which repeated the lost step (#112419)."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        agent, calls = self._zero_char_agent(mock_create, attempts_that_die=1)
+        with patch.dict("os.environ", {"HERMES_STREAM_RETRIES": "1"}):
             response = agent._interruptible_streaming_api_call({})
-        finally:
-            if _prev is None:
-                _os.environ.pop("HERMES_STREAM_RETRIES", None)
-            else:
-                _os.environ["HERMES_STREAM_RETRIES"] = _prev
 
-        # The stub must be RECOGNIZABLY empty so the loop guard can skip it.
-        assert getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
-        content = response.choices[0].message.content
-        assert not content, (
-            f"Empty-partial-stream stub must keep empty content so the "
-            f"conversation loop's empty-stub guard can detect and skip it — "
-            f"substituted text defeats the guard and leaks into the final "
-            f"response. Got content={content!r}"
-        )
-        assert response.choices[0].message.tool_calls is None
+        assert calls["n"] == 2
+        assert getattr(response, "id", "") != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "Recovered answer."
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_zero_char_partial_stream_exhausted_raises_to_main_loop(self, mock_close, mock_create):
+        """Retries exhausted with still 0 visible chars: the stream error propagates so the
+        conversation loop's fallback/backoff owns it — never an empty stub, never
+        placeholder text (#68041) that would leak into the stitched response."""
+        import httpx
+
+        agent, calls = self._zero_char_agent(mock_create, attempts_that_die=99)
+        with patch.dict("os.environ", {"HERMES_STREAM_RETRIES": "0"}), pytest.raises(httpx.RemoteProtocolError):
+            agent._interruptible_streaming_api_call({})
+        assert calls["n"] == 1
 
 
 class TestSilentRetryMidToolCall:

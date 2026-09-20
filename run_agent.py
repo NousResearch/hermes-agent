@@ -35,7 +35,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
     stable host cwd for the agent's tools.
     """
-    if source != "cli" or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in CLI_FAMILY_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
     try:
         return os.getcwd()
@@ -43,14 +43,32 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
+# Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
+# one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
+# session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
+# in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
+# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
+_UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
+
+# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
+# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
+ONESHOT_SOURCE = "oneshot"
+CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
+
+
 def _session_source_for_agent(platform: Optional[str]) -> str:
     try:
         from gateway.session_context import get_session_env
-
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
     except Exception:
-        source = os.environ.get("HERMES_SESSION_SOURCE", "")
-    return str(source or "").strip() or platform or "cli"
+        get_session_env = os.environ.get
+    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
+    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
+    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
+        source = ""
+    if single_query and not source and (platform or "cli") == "cli":
+        return ONESHOT_SOURCE
+    return source or platform or "cli"
 
 
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
@@ -404,6 +422,8 @@ class AIAgent(
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        # The drifted-prompt compaction INFO is once per session, so a /new or /resume re-arms it.
+        self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
@@ -503,7 +523,10 @@ class AIAgent(
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
-        return {key: getattr(self, key, "") or "" for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode")}
+        return {
+            key: getattr(self, key, "") or ""
+            for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
+        }
 
     _check_compression_model_feasibility = _forward("agent.conversation_compression", "check_compression_model_feasibility")
     _replay_compression_warning = _forward("agent.conversation_compression", "replay_compression_warning")
@@ -563,14 +586,19 @@ class AIAgent(
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import estimate_request_context_tokens
+        from agent.chat_completion_helpers import _high_effort_silence_floor, estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
+        explicit = self._stale_timeout_is_explicit()
+        # High-effort Codex reasoning (#112909) floors the IMPLICIT stale timeout before the run-budget
+        # cap below, so the floor can never outlive the run budget.
+        if self.api_mode == "codex_responses" and not explicit:
+            timeout = max(timeout, _high_effort_silence_floor(self))
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         run_budget = getattr(self, "run_budget_seconds", None)
         started = getattr(self, "_run_budget_started_at", None)
-        if run_budget and started and not self._stale_timeout_is_explicit():
+        if run_budget and started and not explicit:
             remaining = float(run_budget) - (time.time() - started)
             timeout = min(timeout, max(60.0, remaining * 0.5))
         return timeout
@@ -599,7 +627,7 @@ class AIAgent(
             "on chatgpt.com/backend-api/codex (no stream events, no error). "
             "This is a known backend-side pattern that has affected ChatGPT "
             "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, "
             "or switch to a different model/provider in your fallback chain. "
             "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See hermes-agent#21444 for symptom history."
@@ -641,6 +669,13 @@ class AIAgent(
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
         if normalized_provider in ("nous", "custom") or is_actual_route(provider):
+            return False
+        # ACP facades expose the OpenAI-compatible chat.completions shape regardless of model
+        # family and have no ``responses`` attribute, so neither primary routing nor GPT-5
+        # fallback activation may upgrade them. Keyed on the profile's auth_type: every
+        # external-process provider, not one vendor's names.
+        from hermes_cli.runtime_provider_backends import _is_external_process_provider
+        if _is_external_process_provider(normalized_provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -914,6 +949,9 @@ class AIAgent(
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
         self._close_request_clients("cache_evict")
+        # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
+        # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
+        _quietly(self._close_codex_session)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never

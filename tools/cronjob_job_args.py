@@ -11,10 +11,15 @@ logger = logging.getLogger("tools.cronjob_tools")
 
 
 def _origin_from_env() -> Optional[Dict[str, str]]:
-    from gateway.session_context import get_session_env
+    from gateway.session_context import async_delivery_supported, get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if not (origin_platform and origin_chat_id):
+        return None
+    # A non-push surface (api_server: request/response, ``send()`` is a stub) cannot receive a
+    # fire-time report, so an origin stamp would make ``deliver=origin`` fail silently on every
+    # fire (#69304). No origin => the home-channel fallback + creation-time notice apply.
+    if not async_delivery_supported():
         return None
     thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
     # Slack stamps every TOP-LEVEL message's own id as the session thread (a per-message
@@ -58,7 +63,16 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
         return None
     try:
         from cron.scheduler import _resolve_delivery_targets
-        if _resolve_delivery_targets(job):
+        targets = _resolve_delivery_targets(job)
+        if targets:
+            # _origin_from_env() dropped a non-push origin (api_server) and the job rerouted to a
+            # home channel: tell the creating client where the report goes (#69304).
+            from gateway.session_context import async_delivery_supported, get_session_env
+            fallback = [t for t in targets if t.get("_resolved_from") == "origin_fallback"]
+            if fallback and get_session_env("HERMES_SESSION_PLATFORM") and not async_delivery_supported():
+                return ("Note: this stateless HTTP API session cannot receive cron delivery, so this "
+                        f"job will report to the home channel {fallback[0]['platform']}:"
+                        f"{fallback[0]['chat_id']} instead of back here.")
             return None
     except Exception:  # resolution unavailable — fall back to the origin signal
         if job.get("origin"):
@@ -66,7 +80,7 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     return (
         "This is a local-only cron job: its output is saved (view it with "
         "cronjob(action='list')) but will NOT be delivered back into this "
-        "session — CLI/TUI sessions have no live-delivery channel. To be "
+        "session — CLI/TUI and stateless HTTP API sessions have no live-delivery channel. To be "
         "notified when it runs, recreate or update the job with deliver set to "
         "a gateway-connected platform, e.g. deliver='telegram' or deliver='all'.")
 

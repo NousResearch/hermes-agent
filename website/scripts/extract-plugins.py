@@ -32,6 +32,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -45,10 +46,29 @@ _GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.g
 CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# Keep in sync with scripts/validate_plugin_catalog.py (cosmetic fields attached to the pin).
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
+IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
+IMAGE_HOST_SUFFIX = ".githubusercontent.com"
 
 
 def _log(msg: str) -> None:
     print(f"[extract-plugins] {msg}", file=sys.stderr)
+
+
+def _is_allowed_image_url(url: str) -> bool:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
+
+
+def _cosmetic(value, accept, file_name: str, entry: str, key: str) -> str:
+    """A cosmetic field is dropped, never fatal: the site must not lose an entry a reviewer merged."""
+    text = str(value or "").strip()
+    if text and not accept(text):
+        _log(f"{file_name} ({entry}): dropping invalid {key} {text!r}")
+        return ""
+    return text
 
 
 def _str_list(value) -> list[str]:
@@ -145,12 +165,14 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None)
             "platforms": _str_list(raw.get("platforms")),
             "capabilities": _normalize_capabilities(raw.get("capabilities")),
             "docsUrl": str(raw.get("docs_url") or "").strip(),
+            "version": _cosmetic(raw.get("version"), VERSION_RE.match, path.name, name, "version"),
+            "image": _cosmetic(raw.get("image"), _is_allowed_image_url, path.name, name, "image"),
             "installCommand": f"hermes plugins install {name}",
             "stars": _repo_stars(repo, stars),
         })
 
-    # Official first, then by stars (unknown = 0), then name so the order is stable.
-    entries.sort(key=lambda e: (0 if e["tier"] == "official" else 1, -(e["stars"] or 0), e["name"]))
+    # Most-starred first (unknown = 0), then name so the order is stable; tier does not rank.
+    entries.sort(key=lambda e: (-(e["stars"] or 0), e["name"]))
     return entries
 
 

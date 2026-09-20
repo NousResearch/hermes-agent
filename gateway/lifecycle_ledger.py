@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, get_process_hermes_home
 
-    val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else get_hermes_home()
+    # get_process_hermes_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
+    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
 
 
 def _home_path(home: Optional[Path], *relative: str) -> Path:
@@ -213,7 +213,8 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
-        "VM death). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
+        "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
+        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
     )

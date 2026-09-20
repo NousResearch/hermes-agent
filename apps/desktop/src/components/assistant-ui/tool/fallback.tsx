@@ -2,6 +2,7 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
+import { motion, useReducedMotion } from 'motion/react'
 import {
   Children,
   createContext,
@@ -18,6 +19,7 @@ import {
 
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
+import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -30,7 +32,6 @@ import {
   SCAFFOLD_META_CLASS,
   ScaffoldRow
 } from '@/components/chat/scaffold-row'
-import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -51,7 +52,13 @@ import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
-import { $anyToolDisclosureOpen, $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
+import {
+  $anyToolDisclosureOpen,
+  $hideCodeDiffs,
+  $toolDisclosureOpen,
+  $toolViewMode,
+  setToolDisclosureOpen
+} from '@/store/tool-view'
 
 import { isApprovalActivity, isCurrentTurnMessage } from './approval-activity'
 import {
@@ -347,6 +354,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const embedded = useContext(ToolEmbedContext)
   const runDisclosureId = useContext(ToolRunDisclosureContext)
   const toolViewMode = useStore($toolViewMode)
+  const hideCodeDiffs = useStore($hideCodeDiffs)
 
   // `ToolFallback` rebuilds the `part` wrapper each render, defeating the memos
   // below and re-running buildToolView (full JSON.stringify of result) on every
@@ -377,8 +385,8 @@ function ToolEntry({ part }: ToolEntryProps) {
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
-  const defaultOpen = Boolean(inlineDiff)
-  const open = useDisclosureOpen(disclosureId, defaultOpen)
+  const defaultOpen = Boolean(inlineDiff) && !hideCodeDiffs
+  const disclosureOpen = useDisclosureOpen(disclosureId, defaultOpen)
   const canDismiss = !isPending && !embedded
   // Only animate entries that mount while their message is actively
   // streaming — historical sessions mount with `messageRunning === false`,
@@ -395,6 +403,13 @@ function ToolEntry({ part }: ToolEntryProps) {
 
     return buildToolView(p, inlineDiff)
   }, [inlineDiff, isPending, result, stablePart])
+
+  // Keep counts and saved disclosure intent, but never mount code while hidden.
+  // Failed edits still expose their explanation.
+  const summaryOnly = hideCodeDiffs && isFileEdit && view.status !== 'error'
+  const open = disclosureOpen && !summaryOnly
+  const showInlineDiff = Boolean(view.inlineDiff) && !hideCodeDiffs
+  const showPayload = toolViewMode === 'technical' && !(hideCodeDiffs && isFileEdit)
 
   // Surface a previewable artifact (HTML file / localhost URL) as a compact link
   // in the composer status stack rather than a bulky inline card. Uses the same
@@ -448,7 +463,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const detailMatchesTitle = useMemo(() => looksRedundant(view.title, view.detail), [view.title, view.detail])
 
   const showDetail =
-    !view.inlineDiff &&
+    (!view.inlineDiff || (hideCodeDiffs && view.status === 'error')) &&
     (Boolean(view.stdout || view.stderr) ||
       (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
       (view.status === 'notice' && Boolean(view.detail)) ||
@@ -461,17 +476,19 @@ function ToolEntry({ part }: ToolEntryProps) {
   const hasSearchHits = Boolean(view.searchHits?.length)
   const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
 
-  const hasExpandableContent = Boolean(
-    view.imageUrl ||
-    view.inlineDiff ||
-    showDetail ||
-    hasSearchHits ||
-    view.stdout ||
-    view.stderr ||
-    view.terminalCommand ||
-    view.terminalExitCode !== undefined ||
-    toolViewMode === 'technical'
-  )
+  const hasExpandableContent =
+    !summaryOnly &&
+    Boolean(
+      view.imageUrl ||
+      showInlineDiff ||
+      showDetail ||
+      hasSearchHits ||
+      view.stdout ||
+      view.stderr ||
+      view.terminalCommand ||
+      view.terminalExitCode !== undefined ||
+      showPayload
+    )
 
   // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
   // what's painted, so the row's Copy button still yields the full output.
@@ -625,7 +642,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
+              <MarkdownImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
             </div>
           )}
           {hasSearchHits && view.searchHits && (
@@ -640,11 +657,11 @@ function ToolEntry({ part }: ToolEntryProps) {
               <SearchResultsList hits={view.searchHits} />
             </div>
           )}
-          {view.inlineDiff && (
+          {showInlineDiff && (
             <FileDiffPanel className="-mt-1.5" diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />
           )}
           {showDetail &&
-            toolViewMode !== 'technical' &&
+            !showPayload &&
             (view.status === 'error' ? (
               detailSections.summary || detailSections.body ? (
                 <div className="max-w-full text-xs leading-relaxed text-destructive">
@@ -714,7 +731,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                 )}
               </div>
             ))}
-          {toolViewMode === 'technical' && <ToolPayloadDisclosure args={part.args} result={part.result} />}
+          {showPayload && <ToolPayloadDisclosure args={part.args} result={part.result} />}
         </div>
       )}
     </div>
@@ -964,20 +981,24 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
   const representedByApproval = !!approval && currentTurn && approvalActivity
   const expanded = count < 2 || (persistedOpen ?? rowOpen)
+  const collapsed = representedByApproval && !rowOpen && !persistedOpen
+  const reduced = useReducedMotion()
 
-  // Pending command activity is summarized by the persistent approval host.
-  // An explicit result disclosure still uses the original tool runtime.
-  if (representedByApproval && !rowOpen && !persistedOpen) {
-    return null
-  }
-
+  // The original runtime stays mounted while its summary owns the activity.
+  // Reveal its footprint gradually when the last approval clears, instead of
+  // inserting all represented rows in the outgoing card's first exit frame.
   return (
     <ToolRunDisclosureContext.Provider value={disclosureId}>
-      <div
+      <motion.div
+        animate={{ height: collapsed ? 0 : 'auto' }}
+        aria-hidden={collapsed || undefined}
         className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
         data-slot="tool-block"
         data-tool-group=""
+        inert={collapsed}
+        initial={currentTurn && approvalActivity && messageRunning && !reduced ? { height: 0 } : false}
         ref={enterRef}
+        transition={{ duration: reduced ? 0 : 0.22, ease: 'easeInOut' }}
       >
         {count > 1 && !representedByApproval && (
           <ToolRunHeader
@@ -991,7 +1012,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
         )}
         {count > 1 && live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
         {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
-      </div>
+      </motion.div>
     </ToolRunDisclosureContext.Provider>
   )
 }

@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.plugin_catalog import (
-    PluginCatalogEntry, entry_capability_summary, filter_entries, find_removed, get_live_catalog_entry,
-    load_catalog_live, load_removed_list, _NAME_RE,
+    PluginCatalogEntry, RemovedEntry, entry_capability_summary, filter_entries, find_removed,
+    get_live_catalog_entry, load_catalog_live, load_removed_list, match_removed, resolved_removed_entries,
+    _NAME_RE,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,11 +94,16 @@ def catalog_annotation(dir_path) -> Optional[str]:
     return f"catalog:{sidecar.get('tier') or 'community'}@{str(sidecar.get('sha') or '')[:8]}"
 
 
-def removed_annotation(name: str, dir_path) -> Optional[str]:
-    """Kill-list reason when an INSTALLED plugin matches by name, catalog name or repo, else ``None``."""
+def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry]) -> Optional[str]:
+    """Kill-list reason when an INSTALLED plugin matches by name, catalog name or repo, else ``None``.
+
+    ``removed_entries`` is required: callers annotating many rows (``plugins list``, the dashboard hub)
+    resolve the kill list once with :func:`plugin_catalog.resolved_removed_entries` and pass it in.
+    Resolving per row cost one live-catalog fetch — one network timeout, offline — per plugin.
+    """
     sidecar = read_catalog_sidecar(dir_path) or {}
     for candidate in (name, sidecar.get("catalog_name"), sidecar.get("repo")):
-        removed = find_removed(str(candidate)) if candidate else None
+        removed = match_removed(str(candidate), removed_entries) if candidate else None
         if removed is not None:
             return removed.reason or "no reason recorded"
     return None
@@ -106,14 +112,15 @@ def removed_annotation(name: str, dir_path) -> Optional[str]:
 # ── Catalog-aware install / update ───────────────────────────────────────────
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
-                          allow_removed: bool = False, scan_decision_cb=None) -> tuple:
+                          allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance sidecar.
     Returns the core's ``(target, manifest, installed_name)``."""
     from hermes_cli.plugins_cmd import _install_plugin_core
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
     target, manifest, installed_name = _install_plugin_core(
-        entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb)
+        entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
+        reviewed_pin=entry.sha, python_deps=python_deps)
     write_catalog_sidecar(target, entry)
     return target, manifest, installed_name
 
@@ -146,6 +153,9 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console) -> None:
         raise SystemExit(1)
     verb = "updated to" if changed else "is already at catalog pin"
     console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] {verb} {sha[:8]}.")
+    if changed:
+        from hermes_cli.plugins_cmd import _install_python_dependencies
+        _install_python_dependencies(target, console)
 
 
 # ── search / browse / info / validate ────────────────────────────────────────
@@ -160,6 +170,11 @@ def _capability_counts(entry: PluginCatalogEntry) -> str:
     return ", ".join(parts) or "—"
 
 
+def pin_label(entry: PluginCatalogEntry) -> str:
+    """``1.4.0 @ abcd1234`` when the entry carries a version label, else the short sha."""
+    return f"{entry.version} @ {entry.sha[:8]}" if entry.version else entry.sha[:8]
+
+
 def _render_entries(entries: List[PluginCatalogEntry], console) -> None:
     from hermes_cli.plugins_cmd import _table
     table = _table(((("Name", "bold")), ("Category", None), ("Tier", None), ("Description", None),
@@ -167,7 +182,7 @@ def _render_entries(entries: List[PluginCatalogEntry], console) -> None:
     for e in sorted(entries, key=lambda e: (e.category, e.tier != "official", e.name)):
         tier = "[cyan]official[/cyan]" if e.tier == "official" else "[magenta]community[/magenta]"
         desc = e.description if len(e.description) <= 60 else e.description[:57] + "..."
-        table.add_row(e.name, e.category, tier, desc, e.sha[:8], _capability_counts(e))
+        table.add_row(e.name, e.category, tier, desc, pin_label(e), _capability_counts(e))
     console.print()
     console.print(table)
     console.print()
@@ -203,7 +218,8 @@ def cmd_info(name: str) -> None:
     if entry.description:
         console.print(entry.description)
     console.print()
-    rows = [("Repo", entry.repo), ("Subdir", entry.subdir), ("Pinned SHA", entry.sha),
+    rows = [("Repo", entry.repo), ("Subdir", entry.subdir), ("Version", entry.version), ("Pinned SHA", entry.sha),
+            ("Image", entry.image),
             ("Maintainer", entry.maintainer), ("Requires", f"hermes {entry.requires_hermes}" if entry.requires_hermes else ""),
             ("Platforms", ", ".join(entry.platforms)), ("Docs", entry.docs_url)]
     for label, value in rows:
@@ -223,10 +239,16 @@ def cmd_info(name: str) -> None:
     console.print()
 
 
-def cmd_validate(path: str, as_json: bool = False) -> None:
-    """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1."""
+def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -> None:
+    """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1. *install_deps*
+    installs the declared Python deps first so the capability probe imports what an install would."""
     from hermes_cli.plugin_validate import validate_plugin_dir
     from hermes_cli.plugins_cmd import _console
+    if install_deps:
+        from hermes_cli.plugin_python_deps import install_for_plugin_dir
+        outcome = install_for_plugin_dir(Path(path))
+        if outcome.status in ("failed", "invalid"):
+            print(outcome.message, file=sys.stderr)
     report = validate_plugin_dir(Path(path))
     if as_json:
         print(json.dumps(report.to_dict(), indent=2))
@@ -274,9 +296,11 @@ def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, A
     }
 
 
-def catalog_row_fields(dir_path, pins: Dict[str, str]) -> Dict[str, Any]:
+def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Provenance fields for one installed-plugin row (TUI/desktop ``plugins.manage list``): catalog
-    name/tier/installed SHA and, when *pins* has the entry, the current pin + ``update_available``."""
+    name/tier/installed SHA and, when *pins* has the entry, the current pin (+ its version label from
+    *versions*) and ``update_available``."""
+    versions = versions or {}
     sidecar = read_catalog_sidecar(dir_path)
     if not sidecar:
         return {}
@@ -287,6 +311,7 @@ def catalog_row_fields(dir_path, pins: Dict[str, str]) -> Dict[str, Any]:
     pin = pins.get(str(sidecar["catalog_name"]))
     if pin:
         row["catalog_sha"] = pin
+        row["catalog_version"] = versions.get(str(sidecar["catalog_name"])) or None
         row["update_available"] = bool(installed_sha) and installed_sha != pin
     return row
 
@@ -295,5 +320,13 @@ def catalog_pins() -> Dict[str, str]:
     """``{catalog_name: pinned_sha}`` from the live catalog; empty on failure (best effort)."""
     try:
         return {e.name: e.sha for e in load_catalog_live()}
+    except Exception:
+        return {}
+
+
+def catalog_versions() -> Dict[str, str]:
+    """``{catalog_name: version_label}`` for entries that carry one; empty on failure (best effort)."""
+    try:
+        return {e.name: e.version for e in load_catalog_live() if e.version}
     except Exception:
         return {}

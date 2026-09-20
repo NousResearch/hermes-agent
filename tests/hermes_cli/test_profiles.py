@@ -163,6 +163,25 @@ class TestCreateProfile:
         assert cfg["model"]["default"] == "some/model"
 
 
+    def test_fresh_profile_inherits_its_custom_provider_gateway(self, profile_env):
+        """The inherited model may point at a custom `providers:` gateway (self-hosted / local
+        endpoint). Copying `model` alone left the new bot with `model.provider: my-gateway` and
+        "Unknown provider 'my-gateway'" on its first turn (#101885 / #94071 class); the provider
+        definition must travel with the model it backs, and nothing else from `providers:` does.
+        """
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: my-gateway\n  default: my-finetune\n"
+            "providers:\n  my-gateway:\n    api: https://llm.internal.example.com/v1\n    key_env: GW_KEY\n"
+            "  unrelated:\n    api: https://other.example.com/v1\n"
+        )
+
+        profile_dir = create_profile("coder", no_alias=True)
+
+        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cfg["model"] == {"provider": "my-gateway", "default": "my-finetune"}
+        assert cfg["providers"] == {"my-gateway": {"api": "https://llm.internal.example.com/v1", "key_env": "GW_KEY"}}
+
     def test_fresh_profile_model_is_copied_not_linked(self, profile_env):
         """Profiles stay independent islands.
 
@@ -222,6 +241,60 @@ class TestCreateProfile:
         # Editing the source afterwards does not reach the clone: still an independent island.
         (default_home / "config.yaml").write_text("model: changed")
         assert yaml.safe_load((synced / "config.yaml").read_text())["model"] == "test"
+
+    @staticmethod
+    def _home_with_linked_skill(profile_env):
+        """Source home: ``skills/foo`` links into an ``external_dirs`` root, ``skills/local`` is physical."""
+        default_home = profile_env / ".hermes"
+        external = profile_env / "agents-skills"
+        (external / "foo").mkdir(parents=True)
+        (external / "foo" / "SKILL.md").write_text("# external foo\n", encoding="utf-8")
+        (default_home / "skills" / "local").mkdir(parents=True)
+        (default_home / "skills" / "local" / "SKILL.md").write_text("# local\n", encoding="utf-8")
+        (default_home / "config.yaml").write_text(f"model: test\nskills:\n  external_dirs:\n    - {external}\n")
+        return default_home, external
+
+    @pytest.mark.parametrize("clone_kwargs", [{"clone_config": True}, {"clone_all": True}])
+    def test_clone_recreates_skill_junctions_and_skips_dangling_ones(self, profile_env, monkeypatch, clone_kwargs):
+        """A junctioned skill stays a link (one candidate with its external original), a dangling
+        junction is skipped without failing the clone. The reparse-point predicate and CreateJunction
+        are Windows-only; simulate both so the copy/re-create contract runs on every host."""
+        default_home, external = self._home_with_linked_skill(profile_env)
+        # copytree sees plain directories (what a junction looks like to os.stat on Windows).
+        (default_home / "skills" / "foo").mkdir()
+        (default_home / "skills" / "foo" / "SKILL.md").write_text("# a physical copy would come from here\n")
+        (default_home / "skills" / "gone").mkdir()
+        targets = {str(default_home / "skills" / "foo"): str(external / "foo"),
+                   str(default_home / "skills" / "gone"): str(profile_env / "nowhere")}
+        monkeypatch.setattr(profiles, "_junction_target", lambda path: targets.get(path), raising=False)
+
+        def _create_junction(target, dst):
+            if not os.path.isdir(target):
+                raise OSError("target missing")  # what _winapi.CreateJunction does for a dangling junction
+            os.symlink(target, dst, target_is_directory=True)
+        monkeypatch.setitem(sys.modules, "_winapi", types.SimpleNamespace(CreateJunction=_create_junction))
+
+        clone = create_profile("clone", no_alias=True, **clone_kwargs)
+        foo = clone / "skills" / "foo"
+        assert foo.is_symlink() and foo.resolve() == (external / "foo").resolve()
+        assert (foo / "SKILL.md").read_text(encoding="utf-8") == "# external foo\n"
+        assert (clone / "skills" / "local" / "SKILL.md").is_file()
+        assert not (clone / "skills" / "gone").exists()
+        from tools.skills_tool import _collect_skill_candidates
+        assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
+
+    @pytest.mark.windows_only
+    def test_clone_keeps_real_ntfs_junction(self, profile_env):
+        import _winapi
+        default_home, external = self._home_with_linked_skill(profile_env)
+        _winapi.CreateJunction(str(external / "foo"), str(default_home / "skills" / "foo"))
+
+        clone = create_profile("clone", clone_config=True, no_alias=True)
+        foo = clone / "skills" / "foo"
+        assert os.lstat(foo).st_reparse_tag == profiles.stat.IO_REPARSE_TAG_MOUNT_POINT
+        assert foo.resolve() == (external / "foo").resolve()
+        from tools.skills_tool import _collect_skill_candidates
+        assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
     def test_sync_imports_requires_a_clone_source(self, profile_env):
         with pytest.raises(ValueError, match="--sync-imports requires"):
@@ -388,7 +461,99 @@ class TestDeleteProfile:
         assert profile_dir.is_dir()
         assert get_active_profile() == "default"
 
+    def test_delete_purges_profile_keyed_identity(self, profile_env):
+        """A deleted profile must not keep routing/heartbeat/delivery identity (#111926, delete side).
 
+        The name is baked into ``agent:<name>:*`` routing keys, ``gateway_heartbeats.profile`` and
+        ``delivery_obligations``. Left behind, a later event on a chat keyed to the deleted name
+        enters the routing index, resolves a profile whose directory is gone, and logs
+        ``Profile '<name>' does not exist`` on every subsequent event.
+        """
+        from hermes_state import SessionDB
+        import time
+
+        tmp_path = profile_env
+        create_profile("gone", no_alias=True)
+        create_profile("keepme", no_alias=True)
+        scope = str(tmp_path / ".hermes" / "sessions")
+        db = SessionDB(tmp_path / ".hermes" / "state.db")
+        db.save_gateway_routing_entry(
+            "agent:gone:feishu:dm:chatA",
+            json.dumps({"session_key": "agent:gone:feishu:dm:chatA",
+                        "origin": {"platform": "feishu", "chat_id": "chatA",
+                                   "profile": "gone"}}),
+            scope=scope)
+        db.save_gateway_routing_entry(
+            "agent:keepme:feishu:dm:chatB",
+            json.dumps({"session_key": "agent:keepme:feishu:dm:chatB",
+                        "origin": {"platform": "feishu", "chat_id": "chatB",
+                                   "profile": "keepme"}}),
+            scope=scope)
+        db.register_backend_heartbeat(
+            backend_id="be-gone", pid=1, started_at=time.time(), profile="gone", host="h")
+        db.register_backend_heartbeat(
+            backend_id="be-keep", pid=2, started_at=time.time(), profile="keepme", host="h")
+        db.close()
+
+        # No live multiplexer: nothing else owns the store, so this process purges the durable rows.
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+            delete_profile("gone", yes=True)
+
+        check = SessionDB(tmp_path / ".hermes" / "state.db")
+        try:
+            assert set(check.load_gateway_routing_entries(scope=scope)) == {
+                "agent:keepme:feishu:dm:chatB"}
+            assert check._read_one(
+                "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
+                ("gone",))["n"] == 0
+            assert check._read_one(
+                "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
+                ("keepme",))["n"] == 1
+        finally:
+            check.close()
+
+    def test_delete_reports_pending_settlement_for_a_live_multiplexer(self, profile_env, capsys):
+        """With a live multiplexer the owner process purges, so the CLI must not race it (#111926).
+
+        That process holds the routing index in memory and writes it back, so a CLI-side DELETE
+        would be undone by its next save. When it cannot be reached the delete is NOT a clean
+        success: the identity settlement is reported as pending, with the retry named.
+        """
+        from hermes_state import SessionDB
+        from hermes_cli.profiles import ProfileIdentitySettlementPending
+
+        tmp_path = profile_env
+        create_profile("gone", no_alias=True)
+        scope = str(tmp_path / ".hermes" / "sessions")
+        db = SessionDB(tmp_path / ".hermes" / "state.db")
+        db.save_gateway_routing_entry(
+            "agent:gone:feishu:dm:chatA",
+            json.dumps({"session_key": "agent:gone:feishu:dm:chatA"}),
+            scope=scope)
+        db.close()
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True):
+            with pytest.raises(ProfileIdentitySettlementPending,
+                               match="identity settlement is still pending") as ei:
+                delete_profile("gone", yes=True)
+
+        # Typed partial success: the filesystem delete completed, the identity did not, and the
+        # payload carries what a surfacing caller needs to report it and retry.
+        assert ei.value.profile == "gone"
+        assert ei.value.retry_command == "hermes profile purge-identity gone"
+        assert not ei.value.path.exists()
+        assert isinstance(ei.value, RuntimeError)  # the CLI handler catches RuntimeError
+
+        assert "hermes profile purge-identity gone" in capsys.readouterr().err
+        check = SessionDB(tmp_path / ".hermes" / "state.db")
+        try:
+            # The CLI left the identity alone rather than racing the live owner.
+            assert set(check.load_gateway_routing_entries(scope=scope)) == {
+                "agent:gone:feishu:dm:chatA"}
+        finally:
+            check.close()
 
     def test_backend_scan_only_matches_this_profile(self, profile_env, monkeypatch):
         """The backend PID scan binds by --profile selector and skips self."""
@@ -591,6 +756,108 @@ class TestListProfiles:
         names = [p.name for p in profiles]
         assert "alpha" in names
         assert "beta" in names
+
+    def test_lazy_skill_count_never_walks_in_the_polled_request(self, profile_env, monkeypatch):
+        """Polled surfaces (``profiles.list`` RPC, ``GET /api/profiles``) must render
+        ``skill_count`` without any skill-tree walk on the request thread; the count arrives
+        from one background refresh per profile per recheck window (#114041). Control: the
+        synchronous ``list_profiles()`` still walks and reports the fresh number."""
+        import threading
+        import tui_gateway.server as srv
+
+        skills = profile_env / ".hermes" / "skills" / "cat"
+        for i in range(3):
+            (skills / f"s{i}").mkdir(parents=True)
+            (skills / f"s{i}" / "SKILL.md").write_text("# s\n", encoding="utf-8")
+        profiles._SKILL_COUNT_CACHE.clear()
+        profiles._SKILL_COUNT_NEXT_CHECK.clear()
+
+        walks: list[str] = []
+        real_walk = profiles._walk_skill_count
+
+        def spy(skills_dir):
+            walks.append(threading.current_thread().name)
+            return real_walk(skills_dir)
+
+        monkeypatch.setattr(profiles, "_walk_skill_count", spy)
+
+        def _rpc():
+            return srv._methods["profiles.list"](1, {"include_sessions": False})["result"]["profiles"]
+
+        first = _rpc()
+        assert walks == [] or set(walks) == {"hermes-skill-count"}
+        assert first[0]["skill_count"] in (0, 3)  # 0 until the refresh lands, never a stall
+        for t in threading.enumerate():
+            if t.name == "hermes-skill-count":
+                t.join(timeout=10)
+        assert walks == ["hermes-skill-count"]
+        assert _rpc()[0]["skill_count"] == 3
+        assert list_profiles(lazy_skill_count=True)[0].skill_count == 3
+        assert walks == ["hermes-skill-count"]  # a second poll inside the window schedules nothing
+
+        # GET /api/profiles (the router's own ``lazy_skill_count=True`` call) and the per-keystroke
+        # ``@<profile>`` completion must be just as walk-free: same spy, still one background walk.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_routers import profiles as profiles_router
+        from tui_gateway import methods_complete
+        app = FastAPI()
+        app.include_router(profiles_router.router)
+        # Cold cache: a synchronous list_profiles() in either caller would walk on the request thread.
+        profiles._SKILL_COUNT_CACHE.clear()
+        resp = TestClient(app).get("/api/profiles")
+        assert resp.status_code == 200
+        assert resp.json()["profiles"][0]["name"] == "default"
+        assert walks == ["hermes-skill-count"]
+        assert any(i["text"] == "@default" for i in methods_complete._profile_mention_items("def"))
+        assert walks == ["hermes-skill-count"]
+
+        # Control: the detail/CLI path counts synchronously on the caller's thread.
+        profiles._SKILL_COUNT_CACHE.clear()
+        assert list_profiles()[0].skill_count == 3
+        assert walks[-1] == threading.current_thread().name
+
+    def test_skill_count_survives_subtree_vanishing_mid_walk(self, profile_env, monkeypatch):
+        """A skill removed while the tree is being counted (concurrent install/update) must
+        degrade the count, not abort profile enumeration with ``FileNotFoundError``."""
+        skills = profile_env / ".hermes" / "skills" / "cat"
+        for i in range(4):
+            (skills / f"s{i}" / "references").mkdir(parents=True)
+            (skills / f"s{i}" / "SKILL.md").write_text("# s\n", encoding="utf-8")
+        profiles._SKILL_COUNT_CACHE.clear()
+        real_scandir = os.scandir
+
+        class _Listing:
+            """A pre-read scandir result (context manager + iterator, like the real one)."""
+            def __init__(self, entries):
+                self._it = iter(entries)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self._it)
+
+            def close(self):
+                pass
+
+        def vanishing_scandir(path=".", *args, **kwargs):
+            with real_scandir(path, *args, **kwargs) as listing:
+                entries = list(listing)
+            if not isinstance(path, int) and os.fspath(path) == str(skills):
+                # Listed, then gone before the walk descends into it.
+                shutil.rmtree(skills / "s3", ignore_errors=True)
+            return _Listing(entries)
+
+        monkeypatch.setattr(os, "scandir", vanishing_scandir)
+        assert profiles._count_skills(profile_env / ".hermes") == 3
+        assert [p.name for p in list_profiles()] == ["default"]
 
 
 # ===================================================================
@@ -1360,10 +1627,10 @@ class TestResolveProfileEnvSpelling:
         never fall back to the platform default.
         """
         root = tmp_path / "configured-root"
-        (root / "profiles" / "beta").mkdir(parents=True)
-        (root / "profiles" / "coder").mkdir(parents=True)
         custom = tmp_path / "custom-hermes"
-        (custom / "profiles" / "beta").mkdir(parents=True)
+        for profile_dir in (root / "profiles" / "beta", root / "profiles" / "coder", custom / "profiles" / "beta"):
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.yaml").write_text("{}\n")  # identity marker: a bare dir does not resolve
         cases = [
             (root, "coder", root / "profiles" / "coder"),
             (root / "profiles" / "alpha", "beta", root / "profiles" / "beta"),

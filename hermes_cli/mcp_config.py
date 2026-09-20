@@ -434,6 +434,13 @@ def _probe_single_server(
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
         except (TypeError, ValueError):
             connect_timeout = 30.0
+    # Deep transport code (tools/mcp_tool_transport.py::_negotiate_session) reads its OWN
+    # session.initialize() bound straight off config["connect_timeout"], independent of the
+    # `connect_timeout` param above. Callers that extend the param to give a user time to finish
+    # an OAuth browser flow (e.g. `hermes mcp login`'s 315s) left that inner bound at the
+    # (unrelated) 60s default, so the still-pending OAuth callback wait got cancelled mid-flow —
+    # surfacing as a retry that re-opens a second authorization against the same callback port.
+    config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []
@@ -759,11 +766,16 @@ def _probe_failure_next_step(name: str, exc: BaseException) -> str:
 
 
 def cmd_mcp_test(args):
-    """Test connection to an MCP server."""
+    """Test connection to an MCP server.
+
+    Returns the process exit code so health probes and watchdogs can branch on ``$?`` instead of
+    parsing the output: 0 connected, 1 connection failed, 3 server not in the config (argparse
+    already owns 2 for usage errors, so "no such server" stays distinguishable from "bad flags").
+    """
     name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
-        return
+        return 3
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
@@ -790,13 +802,14 @@ def cmd_mcp_test(args):
         elapsed = time.monotonic() - start
         _error(f"Connection failed ({elapsed:.1f}s): {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
-        return
+        return 1
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
     if tools:
         print()
         _print_tools(tools, 36, 55)
     print()
+    return 0
 
 
 def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
@@ -822,7 +835,13 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     try:
         from tools.mcp_oauth_manager import get_manager
         if selected_flow == "browser":
-            get_manager().remove(name)
+            # Tokens, client registration and the CIMD refusal go; the cached authorization-server
+            # metadata stays. A fresh discovery still overwrites it, but when the metadata document
+            # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
+            # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
+            from tools.mcp_oauth import HermesTokenStorage
+            get_manager().evict(name)
+            HermesTokenStorage(name).remove(keep_metadata=True)
     except Exception as exc:
         _warning(f"Could not clear existing OAuth state: {exc}")
 
@@ -1080,8 +1099,8 @@ def mcp_command(args):
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
     }.get(action)
     if handler:
-        handler(args)
-        return
+        # A handler's int return is the process exit code (``main()`` exits non-zero on it).
+        return handler(args)
     # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
     from hermes_cli.mcp_picker import run_picker
     run_picker()

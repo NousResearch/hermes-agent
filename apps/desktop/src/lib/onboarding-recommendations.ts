@@ -7,6 +7,7 @@ export interface OnboardingInterests {
 
 export interface OnboardingRecommendation {
   name: string
+  description: string
   examples: string[]
   detectedApps: string[]
   readiness: 'configured_unverified' | 'setup_required'
@@ -17,7 +18,7 @@ export interface OnboardingRecommendation {
 
 const words = (text: string): string => text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(' ')
 
-/** Rank evidence, not a fixed list of products. The model personalizes these reviewed outcomes later. */
+/** Rank evidence, not a fixed list of products. The model derives outcomes from catalog descriptions; curated examples are optional. */
 export function onboardingRecommendations(
   entries: readonly McpCatalogEntry[],
   { apps = [], context = '' }: OnboardingInterests = {}
@@ -27,10 +28,6 @@ export function onboardingRecommendations(
 
   const candidates = entries.flatMap(entry => {
     const examples = [...new Set(entry.suggest?.examples ?? [])].filter(text => text.trim())
-
-    if (!examples.length) {
-      return []
-    }
 
     const terms = [entry.name, ...(entry.suggest?.keywords ?? []), ...(entry.suggest?.applications ?? [])].map(words).filter(Boolean)
     const preferred = terms.some(term => selected.has(term))
@@ -53,6 +50,7 @@ export function onboardingRecommendations(
 
     const recommendation: OnboardingRecommendation = {
       name: entry.name,
+      description: entry.description,
       examples: examples.slice(0, preferred || topical ? 3 : 1),
       detectedApps,
       readiness: configured ? 'configured_unverified' : 'setup_required',

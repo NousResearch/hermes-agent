@@ -92,6 +92,35 @@ describe('turn arc', () => {
     expect(events.find(event => event.kind === 'replied')?.member).toBe('research')
   })
 
+  it('records source-scoped members by member key and labels them through their owner meta', async () => {
+    // #94869 / #102294: bot meta lives under `connectionId::profile`, so an
+    // activity row recorded by bare name could neither find the title nor
+    // tell two same-named connections apart.
+    const room = await loadRoom({ turn: () => 'on it' })
+
+    const scoped: GroupMember = {
+      connectionId: 'local',
+      connectionKind: 'local',
+      connectionLabel: 'This device',
+      name: 'research',
+      route: { connectionId: 'local', mode: 'local', profile: 'research', targetProfile: 'research' },
+      sourceScoped: true,
+      title: ''
+    }
+
+    room.data.$botMeta.set({ 'local::research': { title: 'Radar' } })
+    room.data.$lastRoster.set([scoped])
+
+    room.rounds.sendToGroupChat('Scoped', [scoped], 'status?')
+    await drain(() => Boolean(room.chat.$groupChats.get().Scoped?.running))
+
+    const events = feed(room, 'Scoped').filter(event => event.member && event.member !== 'You')
+
+    expect(events.length).toBeGreaterThan(0)
+    expect(events.every(event => event.member === 'local::research')).toBe(true)
+    expect(events.map(event => room.activity.groupActivityLabel(event))).toContain('Radar replied')
+  })
+
   it('a failed member turn records failed instead of a phantom reply', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {

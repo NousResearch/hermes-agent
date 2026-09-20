@@ -29,6 +29,14 @@ _HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
 # Demoting — not excluding — keeps cron content reachable when it's the only match, while interactive
 # sessions always win when both match.
 _DEMOTED_SESSION_SOURCES = ("cron",)
+
+# Read-shape per-message content cap. #69334 capped discovery bookends (1200) and
+# scroll windows (4000) but left ``_read_session`` returning whole messages, so a
+# single archived tool result stored as a message could come back verbatim - one
+# read returned 74K chars and took a request from ~50K to ~89K tokens in a step.
+# Bounding message COUNT (head/tail) is not enough when content per message is
+# unbounded; the agent can scroll around a message for detail (#114344).
+_READ_MAX_CONTENT = 2000
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
@@ -286,14 +294,17 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
         "get_anchored_view failed for title match %s/%s", session_id, anchor_id)
     title = session_meta.get("title") or title_query
-    def shape(key, fallback, anchor=None):
-        return [_shape_message(m, anchor_id=anchor) for m in (view.get(key) or fallback)]
+    # Same caps as FTS hits (_bookend / _hydrate_hit): a title match is a discovery entry too.
+    def shape(key, fallback, anchor=None, max_content_len=1200):
+        return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
+                for m in (view.get(key) or fallback)]
     return {**_discovery_entry(
         lineage_root, session_id=session_id, when=_format_timestamp(session_meta.get("started_at")),
         source=session_meta.get("source", "unknown"), model=session_meta.get("model") or "unknown",
         title=title, matched_role="session_title", match_message_id=anchor_id,
         snippet=f"Session title matched: {title}",
-        bookend_start=shape("bookend_start", messages[:3]), messages=shape("window", messages[:5], anchor_id),
+        bookend_start=shape("bookend_start", messages[:3]),
+        messages=shape("window", messages[:5], anchor_id, max_content_len=4000),
         bookend_end=shape("bookend_end", messages[-3:]), messages_before=view.get("messages_before", 0),
         messages_after=view.get("messages_after", max(len(messages) - 5, 0)), detail="full"),
         "_lineage_root": lineage_root}
@@ -441,7 +452,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
                       session_id)
     if err:
         return err
-    shaped = [_shape_message(m) for m in rows]
+    shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
     total, truncated = len(shaped), len(shaped) > head + tail
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
                session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,

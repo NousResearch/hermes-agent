@@ -28,28 +28,22 @@ class GeminiProfile(ProviderProfile):
         The base implementation sends ``Authorization: Bearer <key>`` to
         ``{base_url}/models``. That works for OpenAI-compatible providers, but
         the native ``/v1beta`` endpoint rejects Bearer auth with HTTP 401 — it
-        requires the key as a ``?key=`` query param. Left to the base path, the
-        probe 401s and the picker silently falls back to the static list
-        (#62259). Hit the native endpoint with query-param auth (the same auth
-        the native inference client already uses) and strip the ``models/``
-        prefix each entry's ``name`` carries so IDs match what inference expects.
+        requires an API key via ``x-goog-api-key`` (or the equivalent query
+        parameter). Left to the base path, the probe 401s and the picker silently
+        falls back to the static list (#62259). Hit the native endpoint with
+        header auth and keep only models that support conversational generation.
 
-        Gemini's OpenAI-compatibility base URL (``.../openai``) *does* speak
-        Bearer + OpenAI-style ``data[].id``, so this native override is gated to
-        native endpoints only; the compat base URL delegates to the base
-        implementation.
+        Non-native endpoints, including Gemini's OpenAI-compatibility URL and
+        custom relays, keep the base implementation's Bearer + ``data[].id``
+        contract.
         """
         effective_base = (base_url or self.base_url or "").rstrip("/")
         if not (effective_base and api_key):
             return None
 
-        # The OpenAI-compat endpoint speaks Bearer + data[].id — let the base
-        # ProviderProfile handle it rather than forcing native query-param auth.
-        from agent.transports.chat_completions import (
-            _is_gemini_openai_compat_base_url,
-        )
+        from agent.gemini_native_adapter import is_native_gemini_base_url
 
-        if _is_gemini_openai_compat_base_url(effective_base):
+        if not is_native_gemini_base_url(effective_base):
             return super().fetch_models(
                 api_key=api_key, base_url=base_url, timeout=timeout
             )
@@ -58,29 +52,57 @@ class GeminiProfile(ProviderProfile):
         import urllib.parse
         import urllib.request
 
-        url = f"{effective_base}/models?key={urllib.parse.quote(api_key)}"
-        req = urllib.request.Request(url)
-        req.add_header("Accept", "application/json")
-        req.add_header("User-Agent", _profile_user_agent())
-        for k, v in self.default_headers.items():
-            req.add_header(k, v)
+        from agent.models_dev import _NOISE_PATTERNS, _should_hide_from_provider_catalog
+        from hermes_cli.urllib_security import open_credentialed_url
 
+        ids: list[str] = []
+        page_token = ""
+        seen_page_tokens: set[str] = set()
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
-            items = data.get("models", []) if isinstance(data, dict) else []
-            ids = [
-                str(m["name"]).removeprefix("models/")
-                for m in items
-                if isinstance(m, dict) and m.get("name")
-            ]
-            return ids or None
+            while True:
+                query = {"pageSize": "1000"}
+                if page_token:
+                    query["pageToken"] = page_token
+                req = urllib.request.Request(
+                    f"{effective_base}/models?{urllib.parse.urlencode(query)}"
+                )
+                req.add_header("x-goog-api-key", api_key)
+                req.add_header("Accept", "application/json")
+                req.add_header("User-Agent", _profile_user_agent())
+                for key, value in self.default_headers.items():
+                    req.add_header(key, value)
+                with open_credentialed_url(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode())
+                if not isinstance(data, dict):
+                    return None
+                for entry in data.get("models") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    if "generateContent" not in (entry.get("supportedGenerationMethods") or []):
+                        continue
+                    model_id = str(entry.get("name") or "").removeprefix("models/")
+                    if model_id:
+                        ids.append(model_id)
+                next_page_token = str(data.get("nextPageToken") or "")
+                if not next_page_token:
+                    break
+                if next_page_token in seen_page_tokens:
+                    logger.debug("fetch_models(gemini) failed: repeated page token")
+                    return None
+                seen_page_tokens.add(next_page_token)
+                page_token = next_page_token
         except Exception as exc:
-            # Never log the exception value: urllib errors embed the request
-            # URL, which carries the api_key in the ``?key=`` query param. Log
-            # the exception type only.
             logger.debug("fetch_models(gemini) failed: %s", type(exc).__name__)
             return None
+
+        conversational = [
+            model_id
+            for model_id in ids
+            if not _NOISE_PATTERNS.search(model_id)
+            and not _should_hide_from_provider_catalog("gemini", model_id)
+            and not any(family in model_id.lower() for family in _NON_CHAT_FAMILIES)
+        ]
+        return conversational or None
 
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Native: ``thinking_config``; OpenAI-compat /openai subpath:
@@ -98,6 +120,9 @@ class GeminiProfile(ProviderProfile):
             thinking_config = _snake_case_gemini_thinking_config(raw)
             return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
         return {"thinking_config": raw}
+
+
+_NON_CHAT_FAMILIES = ("lyria", "veo-", "imagen", "nano-banana", "transcribe", "robotics")
 
 
 gemini = GeminiProfile(

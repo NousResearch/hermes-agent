@@ -728,6 +728,8 @@ export interface ModelOptionProvider {
   warning?: string | null
   featured_models?: string[] | null
   capabilities?: Record<string, ModelCapabilities> | null
+  /** Local/Ollama details.quantization_level keyed by model id. */
+  quantization?: Record<string, string> | null
   pricing?: Record<string, ModelPricing> | null
   pricing_pending?: boolean | null
   free_tier?: boolean | null

@@ -67,9 +67,26 @@ function prettifyBase(base: string): string {
   return titleCase(base.replace(/-/g, ' '))
 }
 
+/** Compact a raw GGUF/Ollama level (`Q4_K_M`, `IQ3_XXS`) to `Q4` / `IQ3`.
+ *  Unknown soup (`unknown`, `fp32-…`) yields an empty string — never dump it. */
+export function compactQuantizationLabel(raw?: string): string {
+  const value = String(raw || '').trim()
+
+  if (!value) {
+    return ''
+  }
+
+  const match = value.match(/^(?:UD-)?(Q\d+|IQ\d+|F16|BF16)(?:[_-].*)?$/i)
+
+  return match ? match[1].toUpperCase() : ''
+}
+
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
+export function modelDisplayParts(
+  model: string,
+  options?: { quantization?: string }
+): { name: string; tag: string } {
   let base = modelBaseId(model)
   let tag = ''
 
@@ -94,6 +111,12 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
         break
       }
     }
+  }
+
+  // Inventory metadata only fills a missing tag (Ollama `qwen3.5:9b` + Q4_K_M).
+  // A cloud `-fast` / GGUF suffix already parsed above wins.
+  if (!tag) {
+    tag = compactQuantizationLabel(options?.quantization)
   }
 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.

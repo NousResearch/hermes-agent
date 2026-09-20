@@ -29,7 +29,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 # Must precede repo-level imports: standalone invocations (e.g. module reload after
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
@@ -3621,11 +3621,14 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
 
 
 # Dead-owner reap is throttled (opens the executions ledger). Tests may reset
-# _last_dead_owner_reap_at to None to force a reap next tick.
+# _last_dead_owner_reap_at to {} to force a reap next tick.
 # Dead-owner claim reclaim throttle (#86721): recover_interrupted_executions opens the executions ledger, so
 # the per-tick reap is rate-limited rather than run on every idle 60s cycle.
+# The throttle is keyed by profile home: under multiplex_profiles the ticker
+# ticks every profile each cycle, and a process-global slot would let the
+# first profile starve all the others.
 _DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
-_last_dead_owner_reap_at: Optional[float] = None
+_last_dead_owner_reap_at: Dict[str, float] = {}
 
 # Worktree prune throttle: the cron tick is the only reliably periodic process on gateway boxes.
 _WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
@@ -3743,6 +3746,14 @@ def _release_tick_lock(lock_fd) -> None:
     lock_fd.close()
 
 
+def _reap_throttle_key() -> str:
+    """Profile scope for the dead-owner reap throttle (multiplex-safe)."""
+    try:
+        return str(_get_hermes_home().resolve())
+    except Exception:
+        return "default"
+
+
 def _maybe_reap_dead_owners() -> None:
     """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Only
     rows whose owner process is proved gone are touched (_owner_is_live). Throttled."""
@@ -3752,14 +3763,15 @@ def _maybe_reap_dead_owners() -> None:
     # the long-lived gateway ticker kept running — blocking every future run of that job. Reap provably-dead
     # owners periodically so stale claims auto-clear without a gateway restart. Throttled so idle 60s ticks
     # don't pay a ledger connection every cycle (#33612).
-    global _last_dead_owner_reap_at
+    _reap_key = _reap_throttle_key()
     _reap_now = time.monotonic()
+    _last_reap = _last_dead_owner_reap_at.get(_reap_key)
     if (
-        _last_dead_owner_reap_at is not None
-        and _reap_now - _last_dead_owner_reap_at < _DEAD_OWNER_REAP_INTERVAL_SECONDS
+        _last_reap is not None
+        and _reap_now - _last_reap < _DEAD_OWNER_REAP_INTERVAL_SECONDS
     ):
         return
-    _last_dead_owner_reap_at = _reap_now
+    _last_dead_owner_reap_at[_reap_key] = _reap_now
     try:
         from cron.executions import recover_interrupted_executions
 

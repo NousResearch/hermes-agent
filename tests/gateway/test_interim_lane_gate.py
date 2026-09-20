@@ -9,6 +9,7 @@ inside ``interim_assistant_cb`` is removed — a completed message must never be
 sent outside the delivery ledger.
 """
 
+import logging
 from types import SimpleNamespace
 
 from gateway.config import StreamingConfig
@@ -54,14 +55,17 @@ def _turn_runner(adapter):
     return TurnRunner(_Runner(adapter), ctx)
 
 
-def test_non_editable_platform_disables_interim_lane():
+def test_non_editable_platform_disables_interim_lane(caplog):
     """No consumer (non-editable platform, streaming off) => no interim lane: the
     callback would otherwise send the final answer invisibly to the turn-final
-    dedup (#117272)."""
+    dedup (#117272). The gate leaves a debug trace for duplicate-delivery
+    investigations."""
     tr = _turn_runner(_NonEditableAdapter())
-    stream_consumer, _, _, want_interim = tr._setup_stream_consumer("weixin")
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        stream_consumer, _, _, want_interim = tr._setup_stream_consumer("weixin")
     assert stream_consumer is None
     assert want_interim is False
+    assert any("interim lane gated off" in record.message for record in caplog.records)
 
 
 def test_interim_callback_never_plain_sends_without_consumer():

@@ -974,7 +974,13 @@ class TurnRunner:
         # plain-send fallback here would deliver completed messages — the turn's final answer
         # included — outside the delivery ledger, so the turn-final dedup would send them twice
         # (#117272).
-        want_interim_messages = want_interim_messages and stream_consumer is not None
+        if want_interim_messages and stream_consumer is None:
+            logger.debug(
+                "interim lane gated off for %s: no stream consumer (no message editing, no "
+                "native streaming); completed messages go through the delivery ledger only",
+                platform_key,
+            )
+            want_interim_messages = False
         return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
 
     # ── agent resolution (cache reuse vs fresh build) ───────────────────────────────────────

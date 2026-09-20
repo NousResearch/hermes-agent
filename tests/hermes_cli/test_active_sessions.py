@@ -50,6 +50,26 @@ def test_resolve_max_concurrent_sessions_values(caplog):
     )
 
 
+def test_inspect_active_session_is_read_only_and_distinguishes_the_requester(tmp_path):
+    home = tmp_path / ".hermes"
+    assert active_sessions.inspect_active_session("stored", registry_home=home) == {
+        "state": "available", "writable": True, "owner_surface": None,
+    }
+    assert not active_sessions._state_path(home).exists()
+    assert not active_sessions._lock_path(home).exists()
+
+    lease, error = active_sessions.try_acquire_active_session(
+        session_id="stored", surface="cli", config={},
+        metadata={"live_session_id": "live-1"}, registry_home=home,
+    )
+    assert error is None
+    assert active_sessions.inspect_active_session("stored", registry_home=home)["state"] == "owned_elsewhere"
+    assert active_sessions.inspect_active_session(
+        "stored", requester_live_session_id="live-1", registry_home=home,
+    )["state"] == "owned_by_requester"
+    lease.release()
+
+
 
 
 

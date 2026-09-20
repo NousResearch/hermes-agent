@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -2943,6 +2944,11 @@ def test_history_to_messages_renders_multimodal_content():
 
     assert server._history_to_messages(history) == [
         {"role": "user", "text": "look here\ndata:image/png;base64,abc"},
+        {"role": "assistant", "text": "saw it"},
+    ]
+
+    assert server._history_to_messages(history, inline_images=False) == [
+        {"role": "user", "text": "look here\n[image]"},
         {"role": "assistant", "text": "saw it"},
     ]
 
@@ -17203,6 +17209,45 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
 
 
 # ── active live TUI sessions ─────────────────────────────────────────
+
+
+def test_session_access_reports_registry_owner_and_current_process_run(monkeypatch):
+    from hermes_cli import active_sessions
+
+    class _DB:
+        def resolve_resume_session_id(self, key):
+            return "stored" if key == "stored" else None
+
+        def get_session(self, key):
+            return {"id": key} if key == "stored" else None
+
+    @contextlib.contextmanager
+    def profile_db(_params=None, *, writer=False):
+        assert writer is False
+        yield _DB()
+
+    monkeypatch.setattr(server, "_profile_db", profile_db)
+    monkeypatch.setattr(active_sessions, "inspect_active_session", lambda *args, **kwargs: {
+        "state": "owned_by_requester", "writable": True, "owner_surface": "tui",
+    })
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    server._sessions["live-1"] = _session(
+        history=[], running=True, session_key="stored", profile_home=None,
+    )
+    try:
+        response = server.handle_request({
+            "id": "access-1", "method": "session.access",
+            "params": {"session_id": "stored", "live_session_id": "live-1"},
+        })
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert response["result"] == {
+        "state": "owned_by_requester", "writable": True, "owner_surface": "tui",
+        "session_key": "stored", "running": True,
+    }
 
 
 def test_session_active_list_reports_live_sessions(monkeypatch):

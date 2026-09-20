@@ -170,7 +170,7 @@ _LONG_HANDLERS = frozenset({
     "bot_relay.deliver", "bot_relay.reply", "image.generate", "projects.discover_repos",
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
-    "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
+    "wake.status", "session.access", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
 })
@@ -2802,7 +2802,8 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
 
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
-    transport: Transport | None = None, omit_messages: bool = False) -> dict:
+    transport: Transport | None = None, omit_messages: bool = False,
+    inline_images: bool = True) -> dict:
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
@@ -2824,7 +2825,7 @@ def _live_session_payload(
             history = _live_visible_history(session, db, in_memory_history)
     # message_count follows _resume_response: the stored size when messages are omitted, else the wire count
     # (a hidden seed row is in ``history`` but never on the wire).
-    messages = [] if omit_messages else _history_to_messages(history)
+    messages = [] if omit_messages else _history_to_messages(history, inline_images=inline_images)
     payload = {
         "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
         "messages": messages,

@@ -528,11 +528,28 @@ def _project_for_display(messages: list) -> list:
     return projected_messages
 
 
+def _without_inline_images(value):
+    """Copy a JSON-like message value, replacing only inline data-image payloads."""
+    if isinstance(value, list):
+        return [_without_inline_images(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    projected = {key: _without_inline_images(item) for key, item in value.items()}
+    image_url = projected.get("image_url")
+    if isinstance(image_url, str) and image_url.startswith("data:image/"):
+        projected["image_url"] = "[image]"
+    elif isinstance(image_url, dict):
+        url = image_url.get("url")
+        if isinstance(url, str) and url.startswith("data:image/"):
+            projected["image_url"] = {**image_url, "url": "[image]"}
+    return projected
+
+
 @manage_router.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
-    include_compacted: bool = Query(False)):
+    include_compacted: bool = Query(False), inline_images: bool = Query(True)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
 
@@ -555,6 +572,8 @@ async def get_session_messages(
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
     projected_messages = _project_for_display(messages)
+    if not inline_images:
+        projected_messages = _without_inline_images(projected_messages)
     return {
         "session_id": sid,
         # The same stamp list rows carry, so the Desktop keys a page under the

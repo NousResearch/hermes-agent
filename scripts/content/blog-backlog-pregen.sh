@@ -75,10 +75,20 @@ rc=0
   # which differs between the gateway service context (venv-first) and manual/CLI
   # runs (system python3, no hermes_constants on the editable path) — the exact
   # split that produced ModuleNotFoundError on 2026-09-15 22:35.
-  # Also include the repo root so runtime provider paths that import repo-level
-  # packages (tools.*) resolve — the gap behind the 2026-09-16 02:56
-  # "No module named 'tools.threat_patterns'" chain failure.
-  PYTHONPATH=.:/home/kensei/repos/KenseiAgent /home/kensei/repos/KenseiAgent/.venv/bin/python -m blog.backlog_pregen
+  # `python -m blog.backlog_pregen` unconditionally inserts cwd ($ROOT, i.e.
+  # content_engine/) at sys.path[0] *ahead of PYTHONPATH*, so content_engine's
+  # own `tools/` package (no `threat_patterns` submodule) shadowed the repo-root
+  # `tools/` package that agent.prompt_builder needs — the real cause behind the
+  # 2026-09-16 02:56 and 2026-09-20 09:55 "No module named 'tools.threat_patterns'"
+  # failures (PYTHONPATH ordering can't fix this; `-m`'s cwd insertion always wins).
+  # runpy.run_module() does not do that implicit insertion, so pin the repo root
+  # first via explicit sys.path surgery before ever running the module.
+  PYTHONPATH=/home/kensei/repos/KenseiAgent:. /home/kensei/repos/KenseiAgent/.venv/bin/python -c "
+import sys
+sys.path.insert(0, '/home/kensei/repos/KenseiAgent')
+import runpy
+runpy.run_module('blog.backlog_pregen', run_name='__main__')
+"
   rc=$?
   echo "[$(date -Is)] finished backlog pregen rc=$rc"
   exit "$rc"

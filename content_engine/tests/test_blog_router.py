@@ -20,6 +20,7 @@ def _isolate_reservations(tmp_path, monkeypatch):
     across runs. Isolating the path keeps the suite deterministic.
     """
     monkeypatch.setattr(br, "TOPIC_RESERVATIONS_PATH", tmp_path / "reservations.jsonl")
+    monkeypatch.setattr(br, "FAILED_GENERATOR_PATH", tmp_path / "failed_generator.jsonl")
 
 
 def _fake_topic(tid, priority=5, summary="a topic", tags=None, source=None):
@@ -32,6 +33,49 @@ def _fake_topic(tid, priority=5, summary="a topic", tags=None, source=None):
         "priority": priority,
     }
     return t
+
+
+def test_track_failed_generator_increments_attempts():
+    """Repeated failures for the same topic_id accumulate, not duplicate rows."""
+    assert br.track_failed_generator("t1", "ai", "gate fail") == 1
+    assert br.track_failed_generator("t1", "ai", "gate fail again") == 2
+    assert br.track_failed_generator("t1", "ai", "gate fail third") == 3
+    entries = br._read_failed_generator_entries()
+    assert len(entries) == 1
+    assert entries[0]["attempts"] == 3
+    assert entries[0]["last_error"] == "gate fail third"
+
+
+def test_choose_excludes_quarantined_topic_after_threshold(monkeypatch):
+    """A topic that has failed generation >= GENERATOR_FAILURE_THRESHOLD times
+    is excluded from choose() so it stops being re-burned every cron cycle."""
+    monkeypatch.setattr(br, "_recent_used", lambda stream: [])
+    monkeypatch.setattr(br, "_gather_candidates",
+                         lambda stream: [_fake_topic("bad-topic", 9), _fake_topic("good-topic", 5)])
+    for _ in range(br.GENERATOR_FAILURE_THRESHOLD):
+        br.track_failed_generator("bad-topic", "ai", "quality gate rejected")
+    result = br.choose("ai")
+    assert result is not None
+    assert result["topic_id"] == "good-topic"
+
+
+def test_choose_still_returns_topic_below_threshold(monkeypatch):
+    """A topic with fewer failures than the threshold is still eligible (retries as designed)."""
+    monkeypatch.setattr(br, "_recent_used", lambda stream: [])
+    monkeypatch.setattr(br, "_gather_candidates", lambda stream: [_fake_topic("t1", 7)])
+    br.track_failed_generator("t1", "ai", "quality gate rejected")
+    result = br.choose("ai")
+    assert result is not None
+    assert result["topic_id"] == "t1"
+
+
+def test_record_clears_failed_generator_tracking(monkeypatch):
+    """A topic that eventually succeeds has its failure history wiped."""
+    br.track_failed_generator("t1", "ai", "quality gate rejected")
+    assert br.get_quarantined_generator_topics(threshold=1)
+    monkeypatch.setattr(br.db, "log_topic_usage", lambda **kw: None)
+    br.record("ai", "t1", "A Title")
+    assert br._read_failed_generator_entries() == []
 
 
 def test_choose_returns_topic_dict_or_none(monkeypatch):

@@ -780,7 +780,8 @@ def write_with_gate(plan: dict, stream: str = "ai",
                     max_retries: int = 1,
                     verification: Optional[dict] = None,
                     strict_review: bool = False,
-                    case_study_exempt: bool = False) -> Optional[dict]:
+                    case_study_exempt: bool = False,
+                    diagnostics: Optional[dict] = None) -> Optional[dict]:
     """Generate a draft, run deterministic gate + editorial reviewer, retry once.
 
     Pipeline:
@@ -804,6 +805,11 @@ def write_with_gate(plan: dict, stream: str = "ai",
     """
     from blog.blog_reviewer import review as _review
 
+    def _fill_diag(reason: str, issues: Optional[list] = None) -> None:
+        if diagnostics is not None:
+            diagnostics["reason"] = reason
+            diagnostics["issues"] = list(issues or [])
+
     def _check_strict(verdict: dict, title: str) -> None:
         if strict_review and verdict.get("degraded"):
             raise ReviewUnavailable(
@@ -814,6 +820,7 @@ def write_with_gate(plan: dict, stream: str = "ai",
     draft = write(plan, stream=stream, max_retries=max_retries,
                   verification=verification)
     if not draft:
+        _fill_diag("write() returned no draft (LLM chain exhausted)")
         return None
 
     post_title = draft.get("title", "(untitled)")
@@ -885,6 +892,7 @@ def write_with_gate(plan: dict, stream: str = "ai",
     draft2 = write(plan, stream=stream, max_retries=max_retries,
                    retry_feedback=feedback, verification=verification)
     if not draft2:
+        _fill_diag("retry write() returned no draft", all_issues)
         return None
     if verified_evidence:
         # Make the verified sourcing visible to the second review.
@@ -918,8 +926,13 @@ def write_with_gate(plan: dict, stream: str = "ai",
                 retry_score, post_title, strict_review,
             )
             if strict_review:
+                _fill_diag(f"retry reviewer score {retry_score} < 6 under strict_review")
                 return None
         _redact_draft(draft2)
         return draft2
 
+    _fill_diag(
+        "retry draft still failed gate/review",
+        list(gate_issues2) + list(review_result2.get("issues") or []),
+    )
     return None

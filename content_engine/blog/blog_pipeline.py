@@ -13,7 +13,10 @@ Status values:
   - "skipped_disabled"    - BLOG_ENABLED is False
   - "skipped_router"      - router returned None
   - "skipped_excluded"    - exclusion-list policy blocked the item
-  - "skipped_generator"   - generator returned None (LLM dead or gate fail)
+  - "skipped_generator"   - generator returned None (LLM dead or gate fail);
+                            reason/issues/attempts included; topic is
+                            quarantined out of choose() after
+                            GENERATOR_FAILURE_THRESHOLD consecutive failures
   - "ok"                  - draft staged + topic recorded
   - "failed_images"       - all images failed; post set aside for retry
 """
@@ -27,7 +30,10 @@ from pathlib import Path
 from typing import Optional
 
 from config import BLOG_ENABLED, BLOG_STREAMS, SAHILBLOG_REPO
-from blog.blog_router import choose, record, reserve, release
+from blog.blog_router import (
+    choose, record, reserve, release,
+    track_failed_generator, GENERATOR_FAILURE_THRESHOLD,
+)
 from blog.blog_generator import write_with_gate
 from blog.blog_illustrator import illustrate
 from blog.blog_assembler import assemble
@@ -225,11 +231,23 @@ def run_stream(stream: str, repo: Optional[str] = None,
     reservation_token = reserve(stream, plan.get("topic_id", ""), plan.get("title_hint", ""))
 
     # 2. Generator (with gate + retry).
-    draft = write_with_gate(plan, stream=stream, case_study_exempt=case_study_exempt)
+    diagnostics: dict = {}
+    draft = write_with_gate(plan, stream=stream, case_study_exempt=case_study_exempt,
+                             diagnostics=diagnostics)
     if not draft:
         release(reservation_token)
+        topic_id = plan.get("topic_id", "")
+        reason = diagnostics.get("reason", "rejected by quality gate")
+        attempts = track_failed_generator(topic_id, stream, reason)
+        if attempts >= GENERATOR_FAILURE_THRESHOLD:
+            import logging
+            logging.getLogger("blog_pipeline").warning(
+                "Topic %s quarantined after %d generator failures (stream=%s, reason=%s)",
+                topic_id, attempts, stream, reason,
+            )
         return {"status": "skipped_generator", "stream": stream,
-                "topic_id": plan.get("topic_id")}
+                "topic_id": topic_id, "reason": reason,
+                "issues": diagnostics.get("issues", []), "attempts": attempts}
 
     # 3. Illustrator.
     images = illustrate(draft)

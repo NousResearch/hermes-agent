@@ -16,6 +16,18 @@ def no_real_approval_tracker(monkeypatch):
     monkeypatch.setattr(bpl, "_maybe_request_approval", lambda *args, **kwargs: None)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_failed_generator_tracking(tmp_path, monkeypatch):
+    """run_stream calls the real track_failed_generator on generator failure.
+
+    Without isolation, every test run permanently pollutes the production
+    failed_generator.jsonl with a fake "t1" topic (found accumulating to 12+
+    attempts in production — this fixture is the fix).
+    """
+    import blog.blog_router as br
+    monkeypatch.setattr(br, "FAILED_GENERATOR_PATH", tmp_path / "failed_generator.jsonl")
+
+
 _DRAFT = {
     "title": "Token-Maxing at the Edge",
     "description": "A counterintuitive claim.",
@@ -128,6 +140,33 @@ def test_run_stream_skips_when_generator_returns_none(monkeypatch, tmp_path):
     monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: None)
     result = bpl.run_stream("ai", repo=str(repo))
     assert result["status"] == "skipped_generator"
+
+
+def test_run_stream_tracks_generator_failure_reason(monkeypatch, tmp_path):
+    """skipped_generator now carries a reason and increments attempts via the tracker."""
+    repo = _setup_tmp_repo(tmp_path)
+    plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
+            "signals": [{"signal_id": "t1", "summary": "s"}]}
+    monkeypatch.setattr(bpl, "choose", lambda stream: plan)
+
+    def fake_write(p, stream, **kw):
+        diag = kw.get("diagnostics")
+        if diag is not None:
+            diag["reason"] = "retry draft still failed gate/review"
+            diag["issues"] = ["too much hype"]
+        return None
+    monkeypatch.setattr(bpl, "write_with_gate", fake_write)
+
+    tracked = []
+    monkeypatch.setattr(bpl, "track_failed_generator",
+                         lambda topic_id, stream, reason: tracked.append((topic_id, stream, reason)) or 1)
+
+    result = bpl.run_stream("ai", repo=str(repo))
+    assert result["status"] == "skipped_generator"
+    assert result["reason"] == "retry draft still failed gate/review"
+    assert result["issues"] == ["too much hype"]
+    assert result["attempts"] == 1
+    assert tracked == [("t1", "ai", "retry draft still failed gate/review")]
 
 
 def test_run_stream_does_not_record_on_generator_failure(monkeypatch, tmp_path):

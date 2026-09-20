@@ -242,6 +242,29 @@ def test_write_with_gate_retry_uses_feedback_not_double_spend(monkeypatch):
         "retry prompt must contain the gate feedback"
 
 
+def test_write_with_gate_populates_diagnostics_on_permanent_gate_failure(monkeypatch):
+    """When the retry also fails gate/review, diagnostics carries reason + issues
+    so the caller (blog_pipeline) can track and surface why, instead of a bare None."""
+    plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
+            "signals": [{"signal_id": "t1", "summary": "s"}]}
+    monkeypatch.setattr(bg, "_call_llm_first", lambda sp, up: _FAKE_BODY)
+    monkeypatch.setattr(bg, "_load_voice_skill", lambda brand: "VOICE")
+    monkeypatch.setattr(bg, "enrich_signal", lambda s: "CTX")
+    monkeypatch.setattr(bg, "retrieve_kb", lambda t, limit=3: [])
+
+    import blog.blog_reviewer as br
+    monkeypatch.setattr(br, "_call_review_llm", lambda *a, **k: None)
+
+    # Gate fails on every attempt (initial and retry).
+    monkeypatch.setattr(bg, "gate_check", lambda d: ("fail", ["persistent slop issue"]))
+
+    diagnostics: dict = {}
+    result = bg.write_with_gate(plan, stream="ai", diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics.get("reason"), "diagnostics must explain why write_with_gate gave up"
+    assert "persistent slop issue" in diagnostics.get("issues", [])
+
+
 def test_write_with_gate_runs_reviewer_and_retries(monkeypatch):
     """write_with_gate runs the editorial reviewer and retries on its issues."""
     plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",

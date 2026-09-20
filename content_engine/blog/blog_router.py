@@ -13,6 +13,83 @@ TOPIC_RESERVATIONS_PATH = Path(__file__).resolve().parent.parent / "blog_topics"
 RESERVATION_TTL_MINUTES = 180
 from blog.blog_streams import STREAMS, tags_for
 
+# Generator-gate failures (skipped_generator) were previously untracked: no
+# reason logged, no attempt count, and no quarantine — a topic sitting at the
+# top of choose()'s priority order got re-selected and re-burned every single
+# cron cycle forever with zero visibility (unlike failed_images, which has
+# full tracking + a retry cron). This mirrors that same pattern for the
+# generator/quality-gate path.
+FAILED_GENERATOR_PATH = Path(__file__).resolve().parent.parent / "blog_topics" / "failed_generator.jsonl"
+GENERATOR_FAILURE_THRESHOLD = 3
+
+
+def _read_failed_generator_entries() -> list[dict]:
+    if not FAILED_GENERATOR_PATH.exists():
+        return []
+    out: list[dict] = []
+    for line in FAILED_GENERATOR_PATH.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def track_failed_generator(topic_id: str, stream: str, reason: str) -> int:
+    """Record a generator/quality-gate rejection for a topic; return the new attempt count.
+
+    Keyed by topic_id (a draft/slug may not exist yet when write() itself fails).
+    Appends-or-increments, same shape as blog_pipeline's failed_images tracking.
+    """
+    if not topic_id:
+        return 0
+    today = datetime.now(UTC).date().isoformat()
+    existing = _read_failed_generator_entries()
+    attempts = 0
+    found = False
+    for e in existing:
+        if e.get("topic_id") == topic_id:
+            e["attempts"] = e.get("attempts", 0) + 1
+            e["last_error"] = reason
+            e["last_stream"] = stream
+            e["date"] = today
+            attempts = e["attempts"]
+            found = True
+            break
+    if not found:
+        existing.append({
+            "topic_id": topic_id, "stream": stream, "attempts": 1,
+            "last_error": reason, "first_failure": today, "date": today,
+        })
+        attempts = 1
+    FAILED_GENERATOR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(FAILED_GENERATOR_PATH, "w", encoding="utf-8") as f:
+        for e in existing:
+            f.write(json.dumps(e) + "\n")
+    return attempts
+
+
+def clear_failed_generator(topic_id: str) -> None:
+    """Drop a topic's generator-failure tracking (called on eventual success)."""
+    if not FAILED_GENERATOR_PATH.exists():
+        return
+    existing = [e for e in _read_failed_generator_entries() if e.get("topic_id") != topic_id]
+    with open(FAILED_GENERATOR_PATH, "w", encoding="utf-8") as f:
+        for e in existing:
+            f.write(json.dumps(e) + "\n")
+
+
+def get_quarantined_generator_topics(threshold: int = GENERATOR_FAILURE_THRESHOLD) -> list[dict]:
+    """Entries that have hit the failure threshold — for audit/escalation, not silent retry."""
+    return [e for e in _read_failed_generator_entries() if e.get("attempts", 0) >= threshold]
+
+
+def _quarantined_generator_topic_ids(threshold: int = GENERATOR_FAILURE_THRESHOLD) -> set[str]:
+    return {e.get("topic_id", "") for e in _read_failed_generator_entries()
+            if e.get("attempts", 0) >= threshold and e.get("topic_id")}
+
 
 def _recent_used(stream: str) -> list[str]:
     """Topic ids used by any blog stream within the recency window.
@@ -260,7 +337,7 @@ def choose(stream: str) -> Optional[dict]:
     """
     if stream not in STREAMS:
         return None
-    blocked = set(_recent_used(stream)) | _reserved_topic_ids()
+    blocked = set(_recent_used(stream)) | _reserved_topic_ids() | _quarantined_generator_topic_ids()
     cands = [c for c in _gather_candidates(stream)
              if c.get("topic_id") and c["topic_id"] not in blocked]
     if not cands:
@@ -306,3 +383,4 @@ def record(stream: str, topic_id: str, title: str,
         )
     except Exception:
         pass
+    clear_failed_generator(topic_id)

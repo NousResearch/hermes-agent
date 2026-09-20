@@ -221,12 +221,13 @@ jobs:
           NOUS_API_KEY: ""
 
   # ─────────────────────────────────────────────────────────────────────
-  # Idea Box coverage gate (t_fefd8933). Runs the Idea Box unit +
-  # integration + canary suites under coverage and fails the build if the
-  # ideabox plugin modules fall below the 80% acceptance threshold. This
-  # is the self-validation deliverable for the test-suite task: it proves
-  # the suite runs headless in CI with no manual steps and enforces the
-  # coverage acceptance criterion.
+  # Idea Box coverage gate (t_fefd8933). Runs the entire Idea Box test suite
+  # (root idea_box/ unit tests + ideabox plugin unit/integration tests + the
+  # Discord intake hook + the end-to-end canaries) under coverage and fails the
+  # build if either source tree falls below the 80% acceptance threshold. This
+  # is the self-validation deliverable for the test-suite task: it proves the
+  # suite runs headless in CI with no manual steps and enforces the coverage
+  # acceptance criterion.
   # ─────────────────────────────────────────────────────────────────────
   ideabox-coverage:
     runs-on: ubuntu-latest
@@ -259,11 +260,13 @@ jobs:
         run: |
           source .venv/bin/activate
           python -m coverage run \
-            --source=plugins/platforms/discord/ideabox \
+            --source=idea_box,plugins/platforms/discord/ideabox \
             -m pytest \
+            tests/idea_box/ \
             tests/ideabox/test_ideabox.py \
             tests/ideabox/test_ideabox_acceptance.py \
             tests/gateway/test_discord_ideabox_intake.py \
+            tests/e2e/test_ideabox_canaries.py \
             -q
           python -m coverage report -m --fail-under=80
         env:

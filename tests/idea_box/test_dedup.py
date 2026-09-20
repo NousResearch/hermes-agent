@@ -25,6 +25,18 @@ from idea_box.dedup import (
 from idea_box.models import DedupResult
 
 
+def _recent_iso_date(days_ago: int = 5) -> str:
+    """Return an ISO date a fixed number of days in the past.
+
+    Keeps mock session ``when`` fields inside the dedup 30-day window so
+    the tests don't rot as real time advances (the ``when`` field must be
+    recent for ``_check_session_search`` to include it).
+    """
+    from datetime import datetime, timezone, timedelta
+
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).date().isoformat()
+
+
 # ---------------------------------------------------------------------------
 # Similarity helpers
 # ---------------------------------------------------------------------------
@@ -151,7 +163,7 @@ class TestDedupCheckerSessionSearch:
                     "session_id": "s_001",
                     "title": "Build dashboard feature",
                     "snippet": "Discussed building a dashboard feature for analytics",
-                    "when": "2026-07-20",
+                    "when": _recent_iso_date(),
                 }
             ],
             "count": 1,
@@ -177,7 +189,7 @@ class TestDedupCheckerSessionSearch:
                     "session_id": "s_002",
                     "title": "Unrelated topic",
                     "snippet": "Discussed something completely different",
-                    "when": "2026-07-20",
+                    "when": _recent_iso_date(),
                 }
             ],
             "count": 1,
@@ -346,7 +358,7 @@ class TestDedupCheckerAggregation:
                         "session_id": "s_001",
                         "title": "Build dashboard feature",
                         "snippet": "Build dashboard feature discussion",
-                        "when": "2026-07-20",
+                        "when": _recent_iso_date(),
                     }
                 ],
                 "count": 1,

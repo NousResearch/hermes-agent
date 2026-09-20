@@ -142,12 +142,14 @@ export type GatewayEventPayload = {
   // tour.request (tour tool — agent-guided driver.js walkthrough). `action`
   // and `steps` name the tour verb and step list; `surface` picks the app's
   // own DOM vs the preview pane's guest page. tip.show (tip tool — one accent
-  // bubble with an arrow, no overlay) adds no fields of its own: it reuses
-  // `selector`/`side` here plus `text`/`title`, and carries no request_id
-  // because a tip is fire-and-forget.
+  // bubble with an arrow, no overlay) reuses `selector`/`side` here plus
+  // `text`/`title`, carries no request_id (fire-and-forget), and adds
+  // `tip_id` — the stable content id the seen/retired ledgers key on, so a
+  // ✕-closed agent tip stays closed across conversations (issue #117216).
   surface?: string
   selector?: string
   side?: string
+  tip_id?: string
   steps?: unknown
   step_index?: number
   // preview.act.request (drive_preview tool — agent clicking/typing/scrolling in

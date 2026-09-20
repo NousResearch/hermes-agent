@@ -64,8 +64,45 @@ def test_rejects_an_unknown_side(emitted):
 def test_emits_the_renderer_event_omitting_unset_fields(emitted):
     result = json.loads(tt.tip_tool(text="  The model name is a button  ", selector="  #model  "))
 
-    assert result == {"success": True, "selector": "#model"}
-    assert emitted == [("tip.show", {"selector": "#model", "text": "The model name is a button"})]
+    assert result == {"success": True, "selector": "#model",
+                      "tip_id": tt.agent_tip_id("#model", "The model name is a button")}
+    (event, payload), = emitted
+    assert event == "tip.show"
+    assert payload["selector"] == "#model"
+    assert payload["text"] == "The model name is a button"
+    # Issue #117216: the stable content id is what lets the renderer's
+    # seen/retired ledgers recognize the same agent tip across conversations.
+    assert payload["tip_id"] == tt.agent_tip_id("#model", "The model name is a button")
+
+
+def test_the_content_id_is_stable_and_content_addressed(emitted):
+    """Same content → same id (so a ✕ outlives the conversation); different
+    content → a different id (so a genuinely new bubble is not swallowed)."""
+    first = json.loads(tt.tip_tool(text="Hello", selector="#a"))["tip_id"]
+
+    emitted.clear()
+    tt.tip_tool(text="Hello", selector="#a")
+
+    assert emitted[0][1]["tip_id"] == first
+
+    emitted.clear()
+    tt.tip_tool(text="Hello", selector="#b")
+
+    assert emitted[0][1]["tip_id"] != first
+
+    emitted.clear()
+    tt.tip_tool(text="Hello there", selector="#a")
+
+    assert emitted[0][1]["tip_id"] != first
+
+
+def test_content_id_is_namespaced_for_the_renderer(emitted):
+    """The ``agent-`` prefix keeps agent ids out of the catalog's id space."""
+    tt.tip_tool(text="Hello", selector="#a")
+    (event, payload), = emitted
+
+    assert event == "tip.show"
+    assert payload["tip_id"].startswith("agent-")
 
 
 def test_carries_title_and_side_when_given(emitted):
@@ -74,6 +111,7 @@ def test_carries_title_and_side_when_given(emitted):
     assert emitted[0][1] == {
         "selector": "#composer",
         "text": "Type here",
+        "tip_id": tt.agent_tip_id("#composer", "Type here", "Composer"),
         "title": "Composer",
         "side": "top",
     }

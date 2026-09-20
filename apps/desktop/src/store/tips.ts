@@ -49,7 +49,9 @@ export interface ActiveTip {
    *  tip follows an element that re-renders and leaves when it goes away. */
   targets: readonly string[]
   text: string
-  /** Catalog id. Absent for an agent-authored tip, which has nothing to retire. */
+  /** Content id. Catalog tips carry their catalog id; agent tips carry a
+   *  stable content id derived from what they say and point at, so the same
+   *  bubble is the same tip everywhere it shows. */
   tipId?: string
   title?: string
 }
@@ -118,8 +120,15 @@ export const $spentTipCount = computed([$retiredTips, $tipShownAt], (retired, sh
   return TIP_CATALOG.filter(def => ids.has(def.id)).length
 })
 
-/** Put a tip on screen, replacing whatever was there. */
+/** Put a tip on screen, replacing whatever was there. A tip the user has
+ *  ✕-closed is dropped here: retirement is the one hard "never again", and it
+ *  has to bind agent tips too — their ids now travel with the event (the
+ *  tool derives a stable content id), so the ledger can actually see them. */
 export function showTip(tip: ActiveTip): void {
+  if (tip.tipId && $retiredTips.get().includes(tip.tipId)) {
+    return
+  }
+
   if (tip.tipId) {
     // The cursor belongs to the rotation's walk. A campaign tip (an id the
     // catalog doesn't hold) records when it showed but must not move the
@@ -142,8 +151,9 @@ export function dismissTip(): void {
   $activeTip.set(null)
 }
 
-/** Hard close (the ✕): retire the catalog tip behind the bubble for good. An
- *  agent tip has no catalog entry, so it just closes. */
+/** Hard close (the ✕): retire the tip behind the bubble for good. Catalog
+ *  tips are retired by id; an agent tip carries its own stable content id,
+ *  so a ✕ on it lands here too — the same bubble never comes back. */
 export function retireActiveTip(): void {
   const tipId = $activeTip.get()?.tipId
 

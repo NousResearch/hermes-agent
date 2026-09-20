@@ -3982,6 +3982,7 @@ export interface TipShowPayload {
   text: string
   title?: string | null
   side?: string | null
+  tip_id?: string | null
 }
 /** ``server._hydrate_resume_history``. */
 export interface SessionResumeProgressPayload {

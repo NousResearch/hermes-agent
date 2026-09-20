@@ -7,6 +7,7 @@ import json
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
+from tools.tip_identity import agent_tip_id
 
 SIDES = ("top", "right", "bottom", "left")
 
@@ -24,13 +25,17 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
         return tool_error(f"side must be one of: {', '.join(SIDES)}.")
     payload = {"selector": selector, "text": text,
                **{k: v for k, v in (("title", title), ("side", side)) if v}}
+    # A stable content id: the renderer's seen/retired ledgers key on it, so a
+    # tip the user ✕-closed stays closed across conversations instead of
+    # resurfacing with every new session.
+    payload["tip_id"] = tip_id = agent_tip_id(selector, text, title)
     try:
         ok = desktop_ui.emit("tip.show", payload)
     except Exception as exc:
         return tool_error(f"Failed to show the tip: {exc}")
     if not ok:
         return tool_error("tip is only available in the Hermes desktop app.")
-    return json.dumps({"success": True, "selector": selector}, ensure_ascii=False)
+    return json.dumps({"success": True, "selector": selector, "tip_id": tip_id}, ensure_ascii=False)
 
 
 TIP_SCHEMA = {

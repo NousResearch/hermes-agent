@@ -30318,6 +30318,18 @@
             ],
             "default": null,
             "title": "Side"
+          },
+          "tip_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tip Id"
           }
         },
         "required": [

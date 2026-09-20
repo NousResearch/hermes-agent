@@ -334,6 +334,7 @@ class TipShowPayload(Payload):
     text: str
     title: str | None = None
     side: str | None = None
+    tip_id: str | None = None
 
 
 event("tip.show", TipShowPayload, doc="Point at a desktop element with a one-line tip bubble.")

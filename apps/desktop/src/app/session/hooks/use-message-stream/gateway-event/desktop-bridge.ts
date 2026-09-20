@@ -47,6 +47,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
         side: (payload?.side as ActiveTip['side']) ?? 'top',
         targets: [selector],
         text,
+        tipId: typeof payload?.tip_id === 'string' ? payload.tip_id : undefined,
         title: typeof payload?.title === 'string' ? payload.title : undefined
       })
     }

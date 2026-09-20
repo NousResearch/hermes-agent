@@ -154,41 +154,25 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         selected = [key for key in _core._servers if selected_key(key)]
         lazy_selected = [key for key in _core._lazy_server_configs if selected_key(key)]
         servers_snapshot = [_core._servers[key] for key in selected]
-        if names is not None:
-            selected_status = set(selected)
-        elif wildcard:
-            ledgers = (
-                _core._servers,
-                _core._server_scope_keys,
-                _core._server_tool_scopes,
-                _core._server_connecting,
-                _core._server_connect_errors,
-                _core._server_connect_retry_after,
-                _core._server_connect_failures,
-                _core._server_error_counts,
-                _core._server_breaker_opened_at,
-                _core._server_errors_all_application,
-                _core._server_trust_levels,
-                _core._tool_read_only_hints,
-                _core._parallel_safe_servers,
-            )
-            selected_status = {key for ledger in ledgers for key in ledger}
-        else:
-            ledgers = (
-                _core._server_scope_keys,
-                _core._server_tool_scopes,
-                _core._server_connecting,
-                _core._server_connect_errors,
-                _core._server_connect_retry_after,
-                _core._server_connect_failures,
-                _core._server_error_counts,
-                _core._server_breaker_opened_at,
-                _core._server_errors_all_application,
-                _core._server_trust_levels,
-                _core._tool_read_only_hints,
-                _core._parallel_safe_servers,
-            )
-            selected_status = {key for ledger in ledgers for key in ledger if selected_key(key)}
+        ledgers = (
+            _core._servers,
+            _core._server_scope_keys,
+            _core._server_tool_scopes,
+            _core._server_connecting,
+            _core._server_connect_errors,
+            _core._server_connect_retry_after,
+            _core._server_connect_failures,
+            _core._server_error_counts,
+            _core._server_breaker_opened_at,
+            _core._server_errors_all_application,
+            _core._server_trust_levels,
+            _core._tool_read_only_hints,
+            _core._parallel_safe_servers,
+        )
+        selected_status = {
+            key for ledger in ledgers for key in ledger
+            if wildcard or selected_key(key)
+        }
         # Adopters of the connections being torn down lose their overlays with the tasks' own
         # ``_deregister_tools``; remember them so the next discovery pass re-registers them
         # (``_reregister_orphaned_adopters``).

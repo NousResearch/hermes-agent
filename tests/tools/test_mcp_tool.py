@@ -407,6 +407,28 @@ class TestMCPStatus:
                 assert mcp_tool._server_connect_failures == {
                     "other-failed": 2
                 }
+
+            with mcp_tool._lock:
+                mcp_tool._server_scope_keys.update({
+                    "work-named": "profile:work",
+                    "work-unnamed": "profile:work",
+                    "other-named": "profile:other",
+                })
+                mcp_tool._server_connect_errors.update({
+                    "work-named": "selected",
+                    "work-unnamed": "different name",
+                    "other-named": "different owner",
+                })
+
+            mcp_tool_lifecycle.shutdown_mcp_servers(
+                scope="profile:work", names={"work-named"}
+            )
+
+            with mcp_tool._lock:
+                assert "work-named" not in mcp_tool._server_scope_keys
+                assert "work-named" not in mcp_tool._server_connect_errors
+                assert mcp_tool._server_connect_errors["work-unnamed"] == "different name"
+                assert mcp_tool._server_connect_errors["other-named"] == "different owner"
         finally:
             with mcp_tool._lock:
                 mcp_tool._servers.clear()

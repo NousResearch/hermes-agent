@@ -68,6 +68,44 @@ def write_turn_report(path: str | None, *, exit_code: int, error: str = "", repl
         atomic_json_write(path, record, indent=None, mode=0o600)
 
 
+# A Bot Chat a Desktop/TUI holds open cannot be claimed by a second process, but its owner accepts
+# mail: bot DMs and cron's ``deliver: bot-chat`` hand the message to that owner through
+# ``tools.bot_live_delivery`` and read the reply back. ``hermes chat -c <chat> -Q`` takes the same
+# lane instead of the SESSION_NOT_OWNED refusal, so an external agent's turn lands in the chat the
+# operator is looking at. Same budget as the DM lane (tools.bot_mode_dm._LIVE_WAIT_SECONDS).
+LIVE_OWNER_WAIT_SECONDS = 300.0
+
+
+def live_owner_for_quiet_turn(home: "str | os.PathLike", session_id: str) -> dict | None:
+    """The live Desktop/TUI owner of *session_id* when that is the profile's Bot Chat; None otherwise
+    (another session, no owner, or an owner that does not consume the mailbox — those keep the
+    claim-or-refuse path)."""
+    from tools.bot_live_delivery import find_canonical_live_owner
+
+    try:
+        owner = find_canonical_live_owner(home)
+    except Exception:
+        return None
+    return owner if owner and owner.get("session_id") == session_id else None
+
+
+def run_quiet_turn_via_live_owner(
+    home: "str | os.PathLike", owner: dict, message: str, *, author: dict | None = None,
+    wait_seconds: float | None = None,
+) -> dict:
+    """Hand *message* to the live owner and wait for its terminal receipt. Returns the record
+    (``status`` plus ``reply``/``error``/``reason``); a delivery still ``queued``/``claimed`` at the
+    deadline is returned as is — the receipt is retained, the caller must not resend."""
+    from tools.bot_live_delivery import deliver_to_live_owner, read_delivery_result
+
+    record = deliver_to_live_owner(home, owner, message, author=author)
+    deadline = time.monotonic() + (LIVE_OWNER_WAIT_SECONDS if wait_seconds is None else wait_seconds)
+    while record.get("status") in ("queued", "claimed") and time.monotonic() < deadline:
+        time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+        record = read_delivery_result(home, record["delivery_id"]) or record
+    return record
+
+
 def read_turn_report(path: str, pid: int) -> dict | None:
     """The child's turn report, or None while absent, unreadable, or written by another process."""
     try:

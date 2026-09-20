@@ -430,6 +430,49 @@ def _configure_quiet_agent(agent) -> None:
     agent.tool_progress_mode = "off"
 
 
+def _quiet_turn_via_live_owner(cli, query) -> None:
+    """``hermes chat -c <chat> -Q`` into the Bot Chat a live Desktop/TUI holds: hand the message to
+    that owner and print its reply, rather than refuse SESSION_NOT_OWNED — the lane bot DMs and
+    cron's Bot Chat delivery already use. Returns when the target is not such a chat; otherwise
+    prints, reports and exits like a normal one-shot turn."""
+    from cli import _hermes_home
+    from agent.turn_author import take_turn_author_from_env
+    from hermes_cli.quiet_single_query import (
+        exit_single_query, live_owner_for_quiet_turn, run_quiet_turn_via_live_owner, take_turn_report_path,
+        write_turn_report,
+    )
+
+    owner = live_owner_for_quiet_turn(_hermes_home, cli.session_id)
+    if owner is None:
+        return
+    # A dispatcher's author (a bot DM re-run) wins; otherwise the turn is signed by the caller's
+    # ``--source`` tag so the operator can tell an external agent's message from their own.
+    source = (os.environ.get("HERMES_SESSION_SOURCE") or "cli").strip() or "cli"
+    author = take_turn_author_from_env() or {"id": f"cli:{source}", "name": source, "is_bot": False}
+    turn_report_path = take_turn_report_path()
+    record = run_quiet_turn_via_live_owner(_hermes_home, owner, query, author=author)
+    status = record.get("status")
+    reply = ""
+    if status == "settled":
+        reply = record.get("reply") or ""
+        print(reply)
+        code, error = 0, ""
+    elif status in ("queued", "claimed"):
+        code = 1
+        error = (f"No reply from the open chat within the wait budget; the message stays queued for it "
+                 f"(delivery {record.get('delivery_id')}). Do not resend.")
+    else:
+        code = 1
+        error = str(record.get("error") or record.get("reason") or f"delivery {status}")
+    if error:
+        print(error, file=sys.stderr)
+    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+    # ``reply`` is the report's record of what this run printed, so a spawner relaying from the
+    # report gets the owner's answer rather than an empty string.
+    write_turn_report(turn_report_path, exit_code=code, error=error, reply=reply)
+    exit_single_query(code)
+
+
 def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
     ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
@@ -463,6 +506,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             # No exit trailer: the task log now belongs to the run that replaced this one.
             print("kanban: this worker's run was reclaimed before it started; exiting", file=sys.stderr)
             sys.exit(0)
+    if quiet and not stream_json and not image and getattr(cli, "_resumed", False):
+        _quiet_turn_via_live_owner(cli, query)  # exits when a live Desktop/TUI holds the target Bot Chat
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(1)
     try:

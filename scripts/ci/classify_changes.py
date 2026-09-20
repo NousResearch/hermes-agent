@@ -178,7 +178,7 @@ def _py_test_only(p: str) -> bool:
     NOT test-only: they are runner infrastructure, and a bad edit there can
     mask real failures, so they stay conservative (python_prod=true).
     """
-    return p.startswith("tests/")
+    return p.startswith("tests/") or p.startswith("content_engine/tests/")
 
 
 def _is_scan(p: str) -> bool:

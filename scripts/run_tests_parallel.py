@@ -74,8 +74,12 @@ def _runner_scratch_root() -> str:
 
 
 
-# Default test discovery roots.
-_DEFAULT_ROOTS = ["tests"]
+# Default test discovery roots. ``tests/`` is the main suite;
+# ``content_engine/tests`` is the content-engine suite — adding it to the
+# default discovery (2026-09-20) so its ~1125 tests gate CI like everything
+# else. Before that they were only run when named explicitly, which let two
+# files stay red for 17 days unnoticed (94630568d4).
+_DEFAULT_ROOTS = ["tests", "content_engine/tests"]
 
 # Directories to skip during discovery — these suites require real
 # external services (a model gateway, a docker daemon with a prebuilt

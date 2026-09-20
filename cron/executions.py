@@ -1,8 +1,8 @@
 """Profile-local durable audit ledger for cron execution attempts.
 
 The ledger records what is known about each attempt; it is not a retry queue. Interrupted attempts
-become ``unknown`` only after their exact owner process is proved gone. Terminal states are
-immutable.
+become ``unknown`` only after their owner process is proved gone — a start-time reading that fails
+to match the claim-time fingerprint is not proof of death. Terminal states are immutable.
 """
 
 from __future__ import annotations
@@ -30,6 +30,12 @@ MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
+# Same-host start-time readings can drift by ~1 s between the claim-time and recovery-time reads
+# (macOS ``kern.boottime`` adjustment, #117505). Both fingerprint scales are ×100 (Linux /proc
+# ticks, psutil centiseconds), so 200 means 2 s on either platform — a recycled PID is essentially
+# never that close to the original's start time, and a live misread is still bounded by the
+# stale-claim sweep above.
+_OWNER_START_TIME_DRIFT_TOLERANCE = 200
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -136,7 +142,9 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     if started_at is None:
         return pid == os.getpid()
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    if current is None:
+        return True  # cannot compare -> cannot prove death; a misread must not rewrite state
+    return abs(current - started_at) <= _OWNER_START_TIME_DRIFT_TOLERANCE
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:

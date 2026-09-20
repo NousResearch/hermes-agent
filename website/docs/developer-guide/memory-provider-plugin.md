@@ -255,7 +255,7 @@ own directory, so a provider installed from the plugin catalog keeps all of them
 
 | Surface | What the provider ships |
 |---|---|
-| Desktop → Capabilities → Tools → Memory (config panel) | `config_schema.py` (below) |
+| Desktop → Settings → Memory | `config_schema.py` (below) |
 | `hermes memory setup` wizard | `get_config_schema()` declares the fields the wizard prompts for, `save_config(config, hermes_home)` persists them, `post_setup(hermes_home, config)` runs afterwards for anything interactive (OAuth, first sync); `get_status_config()` feeds `hermes memory status` |
 | `hermes <provider> …` subcommands | `cli.py` with `register_cli(subparser)` ([Adding CLI Commands](#adding-cli-commands)) |
 | Python dependencies | `pyproject.toml` `[project] dependencies` (or `python_dependencies` in `plugin.yaml`); installed under Hermes' own pins at install time and re-applied across `hermes update` |
@@ -312,6 +312,22 @@ def save_config(self, values: dict, hermes_home: str) -> None:
 ```
 
 For env-var-only providers, leave the default no-op.
+
+### Desktop settings
+
+Desktop reads and writes `/api/memory/providers/{name}/config?surface=declared`,
+which serves the provider's sibling `config_schema.py`. Saves are partial: only
+submitted fields change, a blank secret keeps the stored value, and the request
+carries `activate: false` so saving never selects the provider. **Use provider**
+is a separate call. The payload's `capabilities` say whether the storage takes
+partial saves (host-owned) or needs the full form (a provider's own `save_config`).
+
+### OAuth status
+
+Desktop calls `/oauth/start` and `/oauth/status` with `surface=declared`. A
+provider without an `oauth_flow.py` answers `supported: false`. Otherwise the
+hook's dict is reduced to `state`, `connected`, and `auth` with fixed detail text
+before it reaches the client.
 
 ## Plugin Entry Point
 

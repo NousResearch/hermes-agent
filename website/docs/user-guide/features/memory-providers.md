@@ -470,6 +470,8 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
+| `reflect_tags` | — | Tags to filter on reflect. Opt-in: empty (default) reflects over the whole bank. Applies to the `hindsight_reflect` tool and to `recall_prefetch_method=reflect` |
+| `reflect_tags_match` | `any` | Tag matching mode for reflect: `any` / `all` / `any_strict` / `all_strict`. Only sent when `reflect_tags` is set |
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 

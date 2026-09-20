@@ -286,6 +286,15 @@ async def test_short_tagged_bot_chunk_waits_for_followup_window(adapter, monkeyp
         mentions=[bot_user],
     )
     tagged.author.bot = True
+    # Keep the debounce deadline and its later eligibility check on the same
+    # pinned instant; under full-suite load the real 80 ms window can expire
+    # before _handle_message reaches the check.
+    clock = [1000.0]
+    monkeypatch.setattr(
+        discord_platform,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock[0], time=time.time),
+    )
     adapter._record_bot_tag_debounce(tagged)
 
     # Assert the selected quiet period without a wall-clock race on busy CI.

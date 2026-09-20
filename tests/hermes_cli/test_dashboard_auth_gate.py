@@ -143,6 +143,9 @@ def _stub_uvicorn_run(monkeypatch):
 
     monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
     monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
+    # The fake server never binds, so isolate its startup path from unrelated
+    # listeners on the production default port.
+    monkeypatch.setattr(web_server, "_port_bind_conflict", lambda *_args: False)
     return captured
 
 

@@ -27,10 +27,14 @@ def isolated_snapshot_threshold(tmp_path, monkeypatch):
 
 
 def _write_threshold(hermes_home, value):
-    (hermes_home / "config.yaml").write_text(
+    # Match config's atomic write path so a same-size edit is observable even
+    # when the filesystem reports both writes in the same clock tick.
+    replacement = hermes_home / "config.next.yaml"
+    replacement.write_text(
         f"browser:\n  snapshot_threshold: {value}\n",
         encoding="utf-8",
     )
+    replacement.replace(hermes_home / "config.yaml")
 
 
 def _long_snapshot(chars: int) -> str:

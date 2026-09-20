@@ -467,7 +467,8 @@ def _settle_prewarm(provider):
     provider to a clean 'nothing fired yet' state so cadence/first-turn/
     trivial-prompt tests can assert from a known baseline."""
     if provider._prefetch_thread:
-        provider._prefetch_thread.join(timeout=3.0)
+        provider._prefetch_thread.join(timeout=30.0)
+        assert not provider._prefetch_thread.is_alive(), "prewarm did not settle"
     with provider._prefetch_lock:
         provider._prefetch_result = ""
         provider._prefetch_result_fired_at = -999
@@ -820,8 +821,10 @@ class TestDialecticCadenceAdvancesOnSuccess:
         provider._last_dialectic_turn = 0
 
         provider.queue_prefetch("what changed in the repo today")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
+        assert provider._prefetch_thread is not None
+        # Completion, not a short scheduler deadline, gates the cadence assertion.
+        provider._prefetch_thread.join(timeout=30.0)
+        assert not provider._prefetch_thread.is_alive(), "dialectic did not complete"
 
         assert provider._last_dialectic_turn == 5
 

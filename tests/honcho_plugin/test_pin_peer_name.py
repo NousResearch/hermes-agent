@@ -16,6 +16,7 @@ chosen ``user_peer_id`` can be asserted without touching the network.
 
 import hashlib
 import json
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -578,9 +579,13 @@ class TestPinTransition:
         base = {"apiKey": "k", "peerName": "Igor", "aiPeer": "hermes"}
         provider = HonchoMemoryProvider()
 
-        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "old"}}}))
+        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "old"}}}), encoding="utf-8")
         sig_old = provider.identity_signature()["workspace"]
-        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "new"}}}))
+        previous = cfg_path.stat()
+        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "new"}}}), encoding="utf-8")
+        # This cache intentionally keys on mtime/size. Make the later edit's
+        # timestamp explicit rather than relying on a filesystem clock tick.
+        os.utime(cfg_path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
         sig_new = provider.identity_signature()["workspace"]
 
         assert (sig_old, sig_new) == ("old", "new")

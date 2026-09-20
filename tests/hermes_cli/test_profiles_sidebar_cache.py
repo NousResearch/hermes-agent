@@ -3,7 +3,6 @@
 import inspect
 import tempfile
 import threading
-import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -72,6 +71,7 @@ class SidebarCacheTests(unittest.TestCase):
 
     def test_coalesces_concurrent_identical_scans(self):
         workers = 12
+        start = threading.Barrier(workers + 1)
         entered = threading.Event()
         release = threading.Event()
         calls = 0
@@ -83,15 +83,19 @@ class SidebarCacheTests(unittest.TestCase):
             with calls_lock:
                 calls += 1
             entered.set()
-            self.assertTrue(release.wait(timeout=2))
+            self.assertTrue(release.wait(timeout=30))
             return {"profile": profile, "rows": []}
 
+        def invoke():
+            start.wait(timeout=30)
+            return scan("default")
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(scan, "default") for _ in range(workers)]
-            self.assertTrue(entered.wait(timeout=1))
-            time.sleep(0.05)
+            futures = [pool.submit(invoke) for _ in range(workers)]
+            start.wait(timeout=30)
+            self.assertTrue(entered.wait(timeout=30))
             release.set()
-            results = [future.result(timeout=2) for future in futures]
+            results = [future.result(timeout=30) for future in futures]
 
         self.assertEqual(calls, 1)
         self.assertEqual(results, [{"profile": "default", "rows": []}] * workers)
@@ -177,6 +181,7 @@ class SidebarCacheTests(unittest.TestCase):
         # background sync + sidebar refreshes overlap identical requests. One scan must
         # serve the whole burst, and no two callers may share the same payload object.
         workers = 8
+        start = threading.Barrier(workers + 1)
         entered = threading.Event()
         release = threading.Event()
         scans = 0
@@ -187,17 +192,21 @@ class SidebarCacheTests(unittest.TestCase):
             with scans_lock:
                 scans += 1
             entered.set()
-            self.assertTrue(release.wait(timeout=2))
+            self.assertTrue(release.wait(timeout=30))
             return None
+
+        def invoke():
+            start.wait(timeout=30)
+            return profiles.get_profiles_projects_tree()
 
         with mock.patch.object(profiles, "_profile_targets", return_value=[("default", Path("/nonexistent"))]), \
                 mock.patch.object(profiles, "_read_profile_db", side_effect=fake_read), \
                 ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(profiles.get_profiles_projects_tree) for _ in range(workers)]
-            self.assertTrue(entered.wait(timeout=1))
-            time.sleep(0.05)
+            futures = [pool.submit(invoke) for _ in range(workers)]
+            start.wait(timeout=30)
+            self.assertTrue(entered.wait(timeout=30))
             release.set()
-            results = [future.result(timeout=2) for future in futures]
+            results = [future.result(timeout=30) for future in futures]
 
         self.assertEqual(scans, 1)
         self.assertEqual(len({id(r) for r in results}), workers)

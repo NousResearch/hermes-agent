@@ -12,7 +12,8 @@ Guard design rules (to stay CI-stable):
    over time at N — never absolute wall-clock.  Linear paths give ~4 (with
    allocator noise), quadratic paths give ~16.  Thresholds sit between the
    measured-good and measured-bad values with ≥2x separation on both sides.
-3. min-of-K timing samples to reject scheduler noise.
+3. Use process CPU time for CPU-bound scaling, excluding time descheduled
+   behind other test workers; min-of-K samples reduce allocator noise.
 
 Baseline measurements (2026-08-28, macOS arm64, Python 3.12):
 - streamed-text accumulation on main: 4N/N ratio ≈ 9.6 (superlinear —
@@ -36,12 +37,12 @@ import pytest
 
 
 def _min_time(fn, *, repeat: int = 5) -> float:
-    """Best-of-``repeat`` wall time for ``fn()`` — rejects scheduler noise."""
+    """Best-of-``repeat`` CPU time for these CPU-bound functions."""
     best = float("inf")
     for _ in range(repeat):
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         fn()
-        best = min(best, time.perf_counter() - t0)
+        best = min(best, time.process_time() - t0)
     return best
 
 

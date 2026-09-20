@@ -1373,7 +1373,10 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        # Advance beyond the exact baseline value; utime(None) can land in the
+        # same filesystem clock tick and leave the poll gate closed.
+        mtime = bridge._state_db_mtime + 1
+        os.utime(db_path, (mtime, mtime))
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
@@ -1411,7 +1414,10 @@ class TestEventBridgePollE2E:
             "id": 1, "role": "user", "content": "hello after baseline",
             "timestamp": "2026-03-29T15:10:00",
         }]
-        os.utime(db_path, None)
+        # Advance beyond the exact baseline value; utime(None) can land in the
+        # same filesystem clock tick and leave the poll gate closed.
+        mtime = bridge._state_db_mtime + 1
+        os.utime(db_path, (mtime, mtime))
         bridge._poll_once(DB())
 
         events = bridge.poll_events(after_cursor=0)["events"]

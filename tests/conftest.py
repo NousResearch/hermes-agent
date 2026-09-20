@@ -663,8 +663,18 @@ def _close_leaked_session_dbs():
     on those ``close()`` releases a refcount rather than closing, so a sweep
     would silently retire a shared generation that a wider-scoped fixture
     still holds. The registry owns that lifecycle (``close_all()``).
+
+    Before the sweep, the auto-title upgrade threads a turn spawned are joined
+    (bounded): they hold the turn's SessionDB and write to it (and print to
+    ``sys.stdout``) after the turn returns, so left running they race this
+    close (``_reopen_after_close_locked`` on a daemon thread), the next test's
+    capture, and interpreter finalization — the ``Fatal Python error`` /
+    SIGSEGV shape of #113186, seen from ``tests/gateway/test_timestamp_sidecar_replay.py``.
     """
     yield
+    title_generator = sys.modules.get("agent.title_generator")  # never imported = nothing spawned
+    if title_generator is not None:
+        title_generator.wait_for_title_upgrades()
     try:
         from hermes_state_guard import _test_instance_registry as registry
     except Exception:

@@ -268,6 +268,7 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // like the composer's, and are listed so the panel can teach them.
   { id: 'backworkspace.ask', category: 'view', keys: ['mod+enter'] },
   { id: 'backworkspace.mention', category: 'view', keys: ['@'] },
+  { id: 'backworkspace.approval', category: 'view', keys: ['mod+shift+a'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
   { id: 'composer.slash', category: 'composer', keys: ['/'] },

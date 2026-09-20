@@ -4,8 +4,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
+import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { clearAllPrompts, clearApprovalRequest, setApprovalRequest } from '@/store/prompts'
+import { rememberServerRequest } from '@/store/server-requests'
 
+import { $backworkspaceWaiting } from './ask'
 import { BackworkspacePage } from './back-page'
 import { $backworkspaceOpen, toggleBackworkspace } from './store'
 
@@ -16,7 +20,10 @@ vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   requestGatewayForAgent: (...args: unknown[]) => request(...args)
 }))
-vi.mock('./ask', () => ({ askBackworkspace: (...args: unknown[]) => askAgent(...args) }))
+vi.mock('./ask', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  askBackworkspace: (...args: unknown[]) => askAgent(...args)
+}))
 vi.mock('./store', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   toggleBackworkspace: vi.fn()
@@ -34,6 +41,9 @@ function renderPage() {
 
 afterEach(() => {
   cleanup()
+  clearAllPrompts()
+  $gateway.set(null)
+  $backworkspaceWaiting.set({})
   $backworkspaceOpen.set(false)
   request.mockReset()
   askAgent.mockReset()
@@ -198,5 +208,174 @@ describe('BackworkspacePage', () => {
 
     expect(editor).not.toBeNull()
     expect(editor).toBe(line.ownerDocument.activeElement)
+  })
+})
+
+describe('BackworkspacePage approvals', () => {
+  const MOD = /Mac/i.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }
+
+  // As a browser sends it: the shifted letter in `key`, and `keyCode` set.
+  // CodeMirror looks a character chord up by the shifted name first and only
+  // falls back to the base letter through `keyCode`, so an event without one
+  // resolves Ctrl+Shift+A to plain Ctrl+A — which is Select All.
+  const openCard = (view: EditorView) =>
+    fireEvent.keyDown(view.contentDOM, { key: 'A', keyCode: 65, shiftKey: true, ...MOD })
+
+  /**
+   * Park an approval on the session the page is waiting on, as the gateway
+   * does. The session id is deliberately a bot's, not the window profile's:
+   * the page has to carry the approval of whichever agent it asked.
+   */
+  function waitingApproval(profile: string, command = 'rm -rf build') {
+    const answered = vi.fn()
+
+    // A page with no socket cannot answer at all: the reply to an approval is
+    // the response frame on the connection the request arrived over.
+    $gateway.set({ request: vi.fn() } as never)
+    $backworkspaceWaiting.set({ [`:${profile}`]: 'a-bot-session' })
+    rememberServerRequest({ id: 'srq-1', respond: answered } as never)
+    setApprovalRequest({
+      command,
+      description: 'dangerous command',
+      requestId: 'req-1',
+      serverRequestId: 'srq-1',
+      sessionId: 'a-bot-session'
+    })
+
+    return answered
+  }
+
+  /** The card owns the keyboard while it is up, so its keys go to the card. */
+  const approvalCard = () => screen.getByRole('menu', { name: 'Approval needed' })
+
+  async function pageEditor() {
+    const host = await screen.findByLabelText('Back workspace', { selector: '.cm-content' })
+
+    return EditorView.findFromDOM(host as HTMLElement)!
+  }
+
+  it('says an approval is waiting without putting anything on the page', async () => {
+    request.mockResolvedValue({ page: { content: 'a note', id: '20260920_101010_abcdef', path: '/p.md' } })
+    $activeGatewayProfile.set('waiting-ok')
+    waitingApproval('waiting-ok')
+
+    renderPage()
+
+    const view = await pageEditor()
+
+    expect((await screen.findByRole('status')).textContent).toMatch(/waiting for your ok/i)
+    // The command is not on the page and not in the document: a line that
+    // announces, a card that asks.
+    expect(screen.queryByText('rm -rf build')).toBeNull()
+    expect(view.state.doc.toString()).toBe('a note')
+  })
+
+  it('opens the card on the chord, shows the whole command, and answers with Enter', async () => {
+    request.mockResolvedValue({ page: { content: 'a note', id: '20260920_101010_abcdef', path: '/p.md' } })
+    $activeGatewayProfile.set('answering')
+
+    const answered = waitingApproval('answering', 'rm -rf build --force --everything')
+
+    renderPage()
+
+    const view = await pageEditor()
+
+    await screen.findByRole('status')
+    openCard(view)
+
+    // The whole command, never an abbreviation of it.
+    expect(await screen.findByText('rm -rf build --force --everything')).toBeTruthy()
+
+    fireEvent.keyDown(approvalCard(), { key: 'Enter' })
+
+    await vi.waitFor(() => expect(answered).toHaveBeenCalledWith({ choice: 'once' }))
+    // Enter answered the card; it did not also open a line in the page.
+    expect(view.state.doc.toString()).toBe('a note')
+  })
+
+  it('puts the card down on Escape without answering and without turning the window back', async () => {
+    request.mockResolvedValue({ page: { content: 'a note', id: '20260920_101010_abcdef', path: '/p.md' } })
+    $activeGatewayProfile.set('escaping')
+
+    const answered = waitingApproval('escaping')
+
+    renderPage()
+
+    const view = await pageEditor()
+
+    await screen.findByRole('status')
+    openCard(view)
+    await screen.findByText('rm -rf build')
+
+    fireEvent.keyDown(approvalCard(), { key: 'Escape' })
+
+    expect(screen.queryByText('rm -rf build')).toBeNull()
+    expect(answered).not.toHaveBeenCalled()
+    expect(toggleBackworkspace).not.toHaveBeenCalled()
+  })
+
+  it('goes away with the request it was opened for, rather than showing the next one', async () => {
+    request.mockResolvedValue({ page: { content: 'a note', id: '20260920_101010_abcdef', path: '/p.md' } })
+    $activeGatewayProfile.set('swapping')
+
+    waitingApproval('swapping', 'the one that was read')
+
+    renderPage()
+
+    const view = await pageEditor()
+
+    await screen.findByRole('status')
+    openCard(view)
+    await screen.findByText('the one that was read')
+
+    // The first request leaves (timed out, or answered from the OS
+    // notification) and another arrives behind it.
+    act(() => {
+      clearApprovalRequest('a-bot-session', 'req-1')
+      setApprovalRequest({
+        command: 'the one that was never read',
+        description: 'dangerous command',
+        requestId: 'req-2',
+        serverRequestId: 'srq-2',
+        sessionId: 'a-bot-session'
+      })
+    })
+
+    // The card is down and the notice is back: the second command needs its
+    // own chord, so Enter can never answer something nobody read.
+    await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    expect(screen.queryByText('the one that was never read')).toBeNull()
+    expect((await screen.findByRole('status')).textContent).toMatch(/waiting for your ok/i)
+  })
+
+  it('asks twice before allowing a command for good', async () => {
+    request.mockResolvedValue({ page: { content: 'a note', id: '20260920_101010_abcdef', path: '/p.md' } })
+    $activeGatewayProfile.set('forever')
+
+    const answered = waitingApproval('forever')
+
+    renderPage()
+
+    const view = await pageEditor()
+
+    await screen.findByRole('status')
+    openCard(view)
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Always allow' }))
+
+    // The row asks again rather than writing to config.yaml on one press.
+    expect(answered).not.toHaveBeenCalled()
+
+    const confirm = await screen.findByRole('menuitem', { name: /press again/i })
+
+    // Straight away is the same gesture, not a second decision: a double-click
+    // and a held key both land here.
+    fireEvent.click(confirm)
+    expect(answered).not.toHaveBeenCalled()
+
+    await new Promise(resolve => setTimeout(resolve, 400))
+    fireEvent.click(confirm)
+
+    await vi.waitFor(() => expect(answered).toHaveBeenCalledWith({ choice: 'always' }))
   })
 })

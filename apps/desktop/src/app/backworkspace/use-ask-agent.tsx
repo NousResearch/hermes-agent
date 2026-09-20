@@ -119,7 +119,7 @@ export function useAskAgent(pagePath: null | string): { extension: Extension; no
       asking.current = true
       lastAsked.set(owner, handle)
       setState({ handle, status: 'asking' })
-      void askBackworkspace({ handle, route }, question, current.pagePath)
+      void askBackworkspace({ asker: self, handle, route }, question, current.pagePath)
         .then(text => {
           writeReply(view, question, replyBlock(handle, text, new Date()))
           setState(null)

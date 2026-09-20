@@ -18,6 +18,7 @@ import {
 } from './page'
 import { quoteDecorationPlugin, quoteTheme } from './quote-decorations'
 import { $backworkspaceOpen, toggleBackworkspace } from './store'
+import { useApprovalCard } from './use-approval-card'
 import { useAskAgent } from './use-ask-agent'
 import { useMentionPopup } from './use-mention-popup'
 import { usePasteImage } from './use-paste-image'
@@ -54,7 +55,11 @@ function BackworkspaceSheet() {
   const mention = useMentionPopup()
   const ask = useAskAgent(page?.path ?? null)
   const paste = usePasteImage()
-  const notice = ask.notice ?? paste.notice ?? noticeFor(page, t.backworkspace)
+  const approval = useApprovalCard()
+  // The approval speaks first: it is the only line that is waiting on the
+  // reader rather than reporting on the page.
+  // Only while there is an editor to press the chord on.
+  const notice = (ready ? approval.notice : null) ?? ask.notice ?? paste.notice ?? noticeFor(page, t.backworkspace)
 
   // While this is mounted styles.css hides the shell. Tying the attribute to
   // this component's life means anything that unmounts it — turning back, or
@@ -111,6 +116,7 @@ function BackworkspaceSheet() {
           autoFocus
           extensions={[
             mention.extension,
+            approval.extension,
             ask.extension,
             paste.extension,
             imagePreviews(page.path),
@@ -126,6 +132,7 @@ function BackworkspaceSheet() {
         <div className="min-h-0 flex-1" />
       )}
       {mention.popover}
+      {approval.card}
       {notice && (
         <p className={cn(TEXT_COLUMN_CLASS, 'pb-4 text-xs text-(--ui-text-tertiary)')} role="status">
           {notice}

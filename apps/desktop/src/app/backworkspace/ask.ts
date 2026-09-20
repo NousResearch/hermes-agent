@@ -1,16 +1,24 @@
 import type { GatewayEvent } from '@hermes/shared'
+import { atom } from 'nanostores'
 
 import { onGatewayEvent } from '@/contrib/events'
 import { requestGatewayForAgent, retainGatewayForAgent } from '@/store/gateway'
+import { sessionApprovalRequests } from '@/store/prompts'
 
-import type { BackworkspaceRoute } from './page'
+import { backworkspaceOwnerKey, type BackworkspaceRoute } from './page'
 
 // One hidden session per profile answers this page, found by NAME. A title
 // cannot dangle the way a stored id can (see Bot Mode in src/AGENTS.md), and
 // reusing it is what gives the page a memory across questions.
 const SESSION_TITLE = 'Back Workspace'
 const SESSION_LIST_LIMIT = 200
+// How long the page waits with no news before it gives up. An approval waiting
+// on the reader buys the longer deadline instead: the agent is not late, it is
+// waiting for a person, and `approvals.timeout` (300s by default) is longer
+// than the short one on its own. It is a longer deadline rather than none, so a
+// queue entry the backend never resolves cannot hold the page forever.
 const REPLY_TIMEOUT_MS = 180_000
+const REPLY_TIMEOUT_WAITING_MS = 600_000
 // JSON-RPC 4001: the runtime session is gone (reaped, or the backend restarted).
 const SESSION_GONE = 4001
 
@@ -26,17 +34,53 @@ interface MessageCompletePayload {
   text?: string
 }
 
-/** Runtime session id per owner — the id a turn is submitted against. */
-const runtimeSessions = new Map<string, string>()
+/**
+ * Runtime session id per owner — the id a turn is submitted against.
+ *
+ * Observable, because it is also the id the approval queue files its requests
+ * under: the page has to watch for an approval addressed to the session it is
+ * talking to, and the titlebar has to know one is waiting while the window is
+ * turned to the front.
+ */
+export const $backworkspaceSessions = atom<Readonly<Record<string, string>>>({})
+
+function rememberSession(key: string, sessionId: string) {
+  $backworkspaceSessions.set({ ...$backworkspaceSessions.get(), [key]: sessionId })
+}
+
+function forgetSession(key: string) {
+  const { [key]: _gone, ...rest } = $backworkspaceSessions.get()
+
+  $backworkspaceSessions.set(rest)
+}
+
+/**
+ * The session the page belonging to each owner is waiting on, while a question
+ * of its own is in flight.
+ *
+ * Keyed by the ASKING page, not by the agent: the question may have gone to a
+ * bot on another profile, and it is the page in front of the reader that has to
+ * carry that bot's approval. Emptied when the exchange settles, because an
+ * approval only ever arrives inside a turn.
+ */
+export const $backworkspaceWaiting = atom<Readonly<Record<string, string>>>({})
+
+function markWaiting(owner: string, sessionId: string) {
+  $backworkspaceWaiting.set({ ...$backworkspaceWaiting.get(), [owner]: sessionId })
+}
+
+function clearWaiting(owner: string) {
+  const { [owner]: _done, ...rest } = $backworkspaceWaiting.get()
+
+  $backworkspaceWaiting.set(rest)
+}
 
 export interface AskTarget {
+  /** The page that is asking, so its own approvals find their way back to it. */
+  asker: BackworkspaceRoute
   /** `@handle` as it appears in the page. */
   handle: string
   route: BackworkspaceRoute
-}
-
-function ownerKey(route: BackworkspaceRoute): string {
-  return `${route.connectionId ?? ''}:${route.profile}`
 }
 
 function request<T>(route: BackworkspaceRoute, method: string, params: Record<string, unknown>): Promise<T> {
@@ -81,8 +125,8 @@ async function resumeSession(route: BackworkspaceRoute, row: SessionRow): Promis
 
 /** The live session for `route`, resolved by title and created only when there is none. */
 async function ensureSession(route: BackworkspaceRoute): Promise<string> {
-  const key = ownerKey(route)
-  const cached = runtimeSessions.get(key)
+  const key = backworkspaceOwnerKey(route)
+  const cached = $backworkspaceSessions.get()[key]
 
   if (cached) {
     return cached
@@ -104,7 +148,7 @@ async function ensureSession(route: BackworkspaceRoute): Promise<string> {
         return resumeSession(route, winner)
       })
 
-  runtimeSessions.set(key, runtime)
+  rememberSession(key, runtime)
 
   return runtime
 }
@@ -160,13 +204,26 @@ function replyFor(sessionId: string, route: BackworkspaceRoute): { cancel: () =>
       reject(new Error(String((event.payload as { error?: string } | undefined)?.error || 'turn failed')))
     })
 
-    const timer = setTimeout(() => {
-      stop()
-      reject(new Error('the agent did not answer in time'))
-    }, REPLY_TIMEOUT_MS)
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    // An approval parked on the page restarts the clock on the longer
+    // deadline, and answering it restarts the short one, so a command allowed
+    // in the fifth minute still has its reply written in.
+    const waiting = sessionApprovalRequests(sessionId).subscribe(requests => {
+      clearTimeout(timer)
+
+      timer = setTimeout(
+        () => {
+          stop()
+          reject(new Error('the agent did not answer in time'))
+        },
+        requests.length ? REPLY_TIMEOUT_WAITING_MS : REPLY_TIMEOUT_MS
+      )
+    })
 
     stop = () => {
       clearTimeout(timer)
+      waiting()
       complete()
       failed()
     }
@@ -203,11 +260,12 @@ function framed(question: string, pagePath: null | string): string {
  * reap the session mid-question.
  */
 export async function askBackworkspace(target: AskTarget, question: string, pagePath: null | string): Promise<string> {
-  const { route } = target
+  const { asker, route } = target
+  const owner = backworkspaceOwnerKey(asker)
   const release = await retainGatewayForAgent(route.connectionId, route.profile, { spawnPriority: 'foreground' })
 
   try {
-    return await submit(route, question, pagePath)
+    return await submit(route, question, pagePath, owner)
   } catch (error) {
     if (!isSessionGone(error)) {
       throw error
@@ -215,17 +273,25 @@ export async function askBackworkspace(target: AskTarget, question: string, page
 
     // The session went away (backend restart, idle reap). Resolve it again and
     // ask once more before giving up.
-    runtimeSessions.delete(ownerKey(route))
+    forgetSession(backworkspaceOwnerKey(route))
 
-    return await submit(route, question, pagePath)
+    return await submit(route, question, pagePath, owner)
   } finally {
+    clearWaiting(owner)
     release()
   }
 }
 
-async function submit(route: BackworkspaceRoute, question: string, pagePath: null | string): Promise<string> {
+async function submit(
+  route: BackworkspaceRoute,
+  question: string,
+  pagePath: null | string,
+  owner: string
+): Promise<string> {
   const sessionId = await ensureSession(route)
   const reply = replyFor(sessionId, route)
+
+  markWaiting(owner, sessionId)
 
   try {
     // Subscribed before submitting: a fast turn can complete before an await
@@ -238,5 +304,5 @@ async function submit(route: BackworkspaceRoute, question: string, pagePath: nul
     throw error
   }
 
-  return reply.promise
+  return await reply.promise
 }

@@ -1,8 +1,9 @@
 import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
+import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { $backworkspaceSessionId, backworkspaceApprovalQueue } from '@/app/backworkspace/approvals'
 import { toggleBackworkspace } from '@/app/backworkspace/store'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
@@ -142,6 +143,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
+  const pageSessionId = useStore($backworkspaceSessionId)
+  // The page's agent can be waiting on the reader while the window is turned
+  // to the front, where the page itself says nothing. The button it is behind
+  // carries the count, the way the sidebar's carries unread sessions.
+  const pageApprovals = useStore(useMemo(() => backworkspaceApprovalQueue(pageSessionId), [pageSessionId]))
   const appActionsSide = useStore($titlebarAppActionsSide)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
@@ -177,9 +183,14 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const backworkspaceTool: TitlebarTool = {
     actionId: 'view.toggleBackworkspace',
+    badge: pageApprovals.length,
     icon: <TitlebarIcon name="note" />,
     id: 'backworkspace',
-    label: t.titlebar.turnToBackworkspace,
+    // The count is a glyph overlay, which no screen reader reads: the name
+    // carries it too, the way the sidebar's unread hint does.
+    label: pageApprovals.length
+      ? `${t.titlebar.turnToBackworkspace} · ${t.backworkspace.approvalBadge(pageApprovals.length)}`
+      : t.titlebar.turnToBackworkspace,
     onSelect: () => {
       triggerHaptic('open')
       void toggleBackworkspace()

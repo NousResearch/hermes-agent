@@ -410,6 +410,10 @@ export interface Translations {
     askPending: (name: string) => string
     askFailed: (name: string) => string
     askUnreachable: (name: string) => string
+    approvalBadge: (count: number) => string
+    approvalWaiting: (shortcut: string) => string
+    approvalWaitingMany: (count: number, shortcut: string) => string
+    approvalConfirm: string
     label: string
     mentionSelf: string
     unsupported: string

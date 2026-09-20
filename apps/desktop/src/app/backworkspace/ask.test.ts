@@ -61,13 +61,13 @@ describe('askBackworkspace', () => {
       return Promise.resolve(method === 'session.create' ? { session_id: 'runtime-1' } : {})
     })
 
-    const first = ask.askBackworkspace({ handle: '@hermes', route: ROUTE }, 'what is this?', PAGE_PATH)
+    const first = ask.askBackworkspace({ asker: ROUTE, handle: '@hermes', route: ROUTE }, 'what is this?', PAGE_PATH)
 
     await vi.waitFor(() => expect(submitted()).toHaveLength(1))
     emit('message.complete', { payload: { text: 'an answer' }, session_id: 'runtime-1' })
     await expect(first).resolves.toBe('an answer')
 
-    const second = ask.askBackworkspace({ handle: '@hermes', route: ROUTE }, 'and this?', PAGE_PATH)
+    const second = ask.askBackworkspace({ asker: ROUTE, handle: '@hermes', route: ROUTE }, 'and this?', PAGE_PATH)
 
     await vi.waitFor(() => expect(submitted()).toHaveLength(2))
     emit('message.complete', { payload: { text: 'a second answer' }, session_id: 'runtime-1' })
@@ -106,7 +106,7 @@ describe('askBackworkspace', () => {
         : Promise.resolve({})
     })
 
-    const answer = ask.askBackworkspace({ handle: '@hermes', route: ROUTE }, 'still there?', PAGE_PATH)
+    const answer = ask.askBackworkspace({ asker: ROUTE, handle: '@hermes', route: ROUTE }, 'still there?', PAGE_PATH)
 
     await vi.waitFor(() => expect(submits).toBe(2))
     emit('message.complete', { payload: { text: 'still here' }, session_id: 'runtime-2' })

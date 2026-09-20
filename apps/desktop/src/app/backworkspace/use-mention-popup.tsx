@@ -10,6 +10,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { $activeGatewayProfile } from '@/store/profile'
 
+import { caretRect } from './caret'
 import { mentionInsertion, mentionTokenAt } from './mention'
 
 interface MentionAnchor {
@@ -104,17 +105,6 @@ export function resolveMentionRoute(
   }
 
   return null
-}
-
-/** Where the caret sits, for placing the list. A position that has no
- *  rectangle — not laid out yet, or a test environment without layout — falls
- *  back to the editor's own box, so the list still opens on the page. */
-function caretRect(view: EditorView, pos: number): { bottom: number; left: number } {
-  try {
-    return view.coordsAtPos(pos) ?? view.dom.getBoundingClientRect()
-  } catch {
-    return view.dom.getBoundingClientRect()
-  }
 }
 
 /**

@@ -74,6 +74,68 @@ class TestPolicyFromExtra:
 
 
 # ---------------------------------------------------------------------------
+# command_denied_message — operator-facing refusal text override (#117217)
+# ---------------------------------------------------------------------------
+
+
+class TestDeniedMessage:
+    def test_unset_denied_message_is_none(self):
+        # None => callers render the built-in refusal text.
+        p = policy_from_extra({"allow_admin_from": ["111"]}, "dm")
+        assert p.denied_message is None
+
+    def test_custom_denied_message_passthrough(self):
+        p = policy_from_extra(
+            {
+                "allow_admin_from": ["111"],
+                "command_denied_message": "Not available — ask the desk.",
+            },
+            "dm",
+        )
+        assert p.denied_message == "Not available — ask the desk."
+
+    def test_empty_denied_message_is_silent(self):
+        # "" is the silent sentinel: deny, but send nothing back.
+        p = policy_from_extra(
+            {"allow_admin_from": ["111"], "command_denied_message": ""}, "dm"
+        )
+        assert p.denied_message == ""
+
+    def test_silent_literal_is_silent(self):
+        for spelling in ("silent", "Silent", " SILENT "):
+            p = policy_from_extra(
+                {"allow_admin_from": ["111"], "command_denied_message": spelling}, "dm"
+            )
+            assert p.denied_message == ""
+
+    def test_non_string_denied_message_is_stringified(self):
+        # YAML scalars (ints, bools) reach extra as-is; stringifying keeps policy frozen-typed.
+        p = policy_from_extra(
+            {"allow_admin_from": ["111"], "command_denied_message": 404}, "dm"
+        )
+        assert p.denied_message == "404"
+
+    def test_policy_for_source_reads_platform_extra(self):
+        cfg = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "allow_admin_from": ["111"],
+                        "command_denied_message": "🚫 Restricted command.",
+                    },
+                )
+            }
+        )
+        src = SessionSource(
+            platform=Platform.DISCORD, chat_id="A", chat_type="dm", user_id="111"
+        )
+        p = policy_for_source(cfg, src)
+        assert p.enabled is True
+        assert p.denied_message == "🚫 Restricted command."
+
+
+# ---------------------------------------------------------------------------
 # policy_for_source — wires GatewayConfig + SessionSource together
 # ---------------------------------------------------------------------------
 

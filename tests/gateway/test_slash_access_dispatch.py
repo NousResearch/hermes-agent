@@ -170,6 +170,69 @@ async def test_non_admin_with_empty_user_commands_gets_floor_only():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Refusal text override (#117217): command_denied_message replaces the
+# built-in refusal (which names internal config keys to end users); the
+# silent spelling must deny the command without sending anything back.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_custom_denied_message_reaches_non_admin():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+            "command_denied_message": "🚫 That command is not available on this channel.",
+        }
+    )
+    result = await runner._handle_message(
+        _make_event("/stop", _make_source(user_id="999"))
+    )
+    assert result == "🚫 That command is not available on this channel."
+    # The built-in refusal leaks internal config key names; the override must not.
+    assert "allow_admin_from" not in result
+    assert "user_allowed_commands" not in result
+    assert "admin-only" not in result
+
+
+@pytest.mark.asyncio
+async def test_silent_denied_message_drops_the_reply():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+            "command_denied_message": "silent",
+        }
+    )
+    result = await runner._handle_message(
+        _make_event("/stop", _make_source(user_id="999"))
+    )
+    # "" = handled-and-denied but nothing to send; None would mean the /stop
+    # fell through to a live agent turn instead of being refused.
+    assert result == ""
+    # The always-allowed floor is unaffected by the silent spelling.
+    whoami = await runner._handle_message(
+        _make_event("/whoami", _make_source(user_id="999"))
+    )
+    assert "Tier: user" in whoami
+
+
+@pytest.mark.asyncio
+async def test_denied_message_does_not_affect_admin():
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+            "command_denied_message": "silent",
+        }
+    )
+    whoami = await runner._handle_message(
+        _make_event("/whoami", _make_source(user_id="111"))
+    )
+    assert "**admin**" in whoami
+
+
 @pytest.mark.asyncio
 async def test_group_only_gating_leaves_dm_unrestricted():
     runner = _make_runner(

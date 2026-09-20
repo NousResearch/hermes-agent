@@ -1056,7 +1056,9 @@ class GatewayBusySessionMixin:
 
     def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
         """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
-        use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
+        use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None).
+        An empty-string return denies silently: the dispatch sites treat a falsy reply as
+        "handled, nothing to send" (``command_denied_message: ""``/``silent``, #117217)."""
         from gateway.slash_access import policy_for_source as _policy_for_source
         if not canonical_cmd:
             return None
@@ -1067,6 +1069,10 @@ class GatewayBusySessionMixin:
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd, source.platform.value if source.platform else "?", source.user_id,
         )
+        if policy.denied_message is not None:
+            # Operator override replaces the whole refusal so client-facing deployments
+            # don't leak internal config key names; "" drops the reply entirely.
+            return policy.denied_message
         allowed_preview = sorted(policy.user_allowed_commands)
         if allowed_preview:
             suffix = (

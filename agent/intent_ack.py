@@ -34,9 +34,12 @@ _ACK_WORKSPACE_RE = re.compile(
     r"projects?|folders?|filesystem|file tree|files?|paths?)\b"
 )
 _EDIT_REQUEST_RE = re.compile(
-    r"^(?:please\s+)?(?:go ahead and\s+)?"
-    r"(?:implement|fix|change|update|edit|build|add|remove)\b"
+    r"^(?:please\s+)?(?:(?:proceed|continue)\s+with\s+|go ahead and\s+)?"
+    r"(?:implement(?:ing)?|fix(?:ing)?|chang(?:e|ing)|updat(?:e|ing)|"
+    r"edit(?:ing)?|build(?:ing)?|add(?:ing)?|remov(?:e|ing))\b"
 )
+_RESUME_REQUEST_RE = re.compile(r"\b(?:proceed|continue|go ahead)[.!\s]*$")
+_REPORTED_REQUEST_RE = re.compile(r"\b(?:said|says|told|reported|quote|quoted|example)\b")
 _CLARIFIED_ACTION_RE = re.compile(
     _ACK_LEAD + r"(?:implement|change|update|edit|add|remove|show|hide|keep)\b"
 )
@@ -68,6 +71,62 @@ def _answered_clarification(content: Any) -> bool:
         ):
             return False
     return True
+
+
+def _unquoted_prose(text: str) -> str:
+    return re.sub(
+        r'''`[^`]*`|"[^"]*"|“[^”]*”|(?<!\w)'[^\n]*?'(?!\w)|‘[^\n]*?’(?!\w)|(?m:^>.*$)''',
+        "", text,
+    )
+
+
+def _clarification_task_request(user_text: str, messages: List[Dict[str, Any]]) -> str:
+    """Resolve a direct request or its adjacent, still-unstarted continuation.
+
+    This selects context for a bounded re-query, not permission to execute. Never
+    mine tool output or assistant prose for authority, or jump over performed work
+    to resurrect a stale request. A quoted/reported 'proceed' is not a continuation.
+    """
+    from agent.conversation_compression import _is_real_user_message, _message_text
+
+    text = _unquoted_prose(user_text).strip()
+    if "?" in text or _DECLINED_RE.search(text) or _REPORTED_REQUEST_RE.search(text):
+        return ""
+    if _EDIT_REQUEST_RE.search(text):
+        return text
+    if not _RESUME_REQUEST_RE.search(text):
+        return ""
+    latest = next((i for i in range(len(messages) - 1, -1, -1)
+                   if isinstance(messages[i], dict) and messages[i].get("role") == "user"), 0)
+    for row in reversed(messages[:latest]):
+        if not isinstance(row, dict):
+            continue
+        if row.get("role") == "tool" or row.get("tool_calls"):
+            return ""
+        if row.get("role") == "user":
+            if not _is_real_user_message(row):
+                return ""
+            request = _unquoted_prose(_message_text(row).lower()).strip()
+            return request if (
+                _EDIT_REQUEST_RE.search(request) and "?" not in request
+                and not _DECLINED_RE.search(request) and not _REPORTED_REQUEST_RE.search(request)
+            ) else ""
+    return ""
+
+
+def has_current_turn_clarification(messages: List[Dict[str, Any]]) -> bool:
+    """Route even denied clarification through the same visible-ack safety gate."""
+    for row in reversed(messages):
+        if not isinstance(row, dict):
+            continue
+        if row.get("role") == "user":
+            break
+        if row.get("role") == "tool" and row.get("name") == "clarify":
+            return True
+        if any(call.get("function", {}).get("name") == "clarify"
+               for call in row.get("tool_calls") or [] if isinstance(call, dict)):
+            return True
+    return False
 
 
 def _clarification_only_turn(messages: List[Dict[str, Any]]):
@@ -137,20 +196,24 @@ def looks_like_codex_intermediate_ack(
         return False
     from agent.codex_responses_adapter import _summarize_user_message_for_log
     user_text = _summarize_user_message_for_log(user_message).strip().lower()
-    # Clarification refines an existing execution request; it is not approval.
-    if _DECLINED_RE.search(user_text) or (clarifications and not _EDIT_REQUEST_RE.search(user_text)):
+    if _DECLINED_RE.search(user_text):
         return False
+    if clarifications:
+        user_text = _clarification_task_request(user_text, messages)
+        if not user_text:
+            return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:
         return False
     if "?" in assistant_text or _ACK_TERMINAL_RE.search(assistant_text):
         return False
     # Quoted examples and code are content, not the assistant's own commitment.
-    prose = re.sub(
-        r'''`[^`]*`|"[^"]*"|“[^”]*”|(?<!\w)'[^\n]*?'(?!\w)|‘[^\n]*?’(?!\w)|(?m:^>.*$)''',
-        "", assistant_text,
-    )
-    if not (_ACK_ANNOUNCE_RE.search(prose) or (clarifications and _CLARIFIED_ACTION_RE.search(prose))):
+    prose = _unquoted_prose(assistant_text)
+    from agent.agent_runtime_helpers import trailing_continue_intent
+
+    if not (_ACK_ANNOUNCE_RE.search(prose) or (clarifications and (
+        _CLARIFIED_ACTION_RE.search(prose) or trailing_continue_intent(prose)
+    ))):
         return False
     if not require_workspace:
         return True

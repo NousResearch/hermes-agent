@@ -86,7 +86,8 @@ def harness(tmp_path, monkeypatch):
     db.close()
 
 
-def _run(harness, texts, *, answer=CORRECTION, resume=False, interrupt=False):
+def _run(harness, texts, *, answer=CORRECTION, resume=False, interrupt=False,
+         user=USER, history=None):
     agent = harness.agent
     questions = []
 
@@ -116,11 +117,11 @@ def _run(harness, texts, *, answer=CORRECTION, resume=False, interrupt=False):
         return response
 
     agent._interruptible_api_call = provider
-    result = agent.run_conversation(USER)
+    result = agent.run_conversation(user, conversation_history=history)
     durable = harness.db.get_messages_as_conversation(agent.session_id)
     # Establish a genuine answered tool round before testing continuation policy.
     assert len(questions) == 1
-    clarification = next(m for m in durable if m.get("role") == "tool")
+    clarification = next(m for m in durable if m.get("tool_call_id") == "clarification")
     assert json.loads(clarification["content"])["responses"][0]["user_response"] == answer
     assert result["api_calls"] == len(requests)
     assert result.get("error") is None
@@ -160,6 +161,7 @@ def _assert_transcript_contract(result, durable):
     pytest.param([ACK], True, id="generic-correction"),
     pytest.param([GOVERNED_ACK], True, id="governed-action"),
     pytest.param([TAIL_ACK], True, id="existing-stall-path-hygiene"),
+    pytest.param(["The scope is clear. Next, I inspect the repository."], True, id="existing-next-tail"),
     pytest.param([TAIL_ACK] * 3, False, id="bounded-two-continuations"),
 ])
 def test_answered_clarification_resumes_work_with_bounded_clean_history(harness, texts, resume):
@@ -183,6 +185,9 @@ def test_answered_clarification_resumes_work_with_bounded_clean_history(harness,
     pytest.param(CORRECTION, "The background task is still running. I’ll review the results when it finishes.", False, id="background-wait"),
     pytest.param(CORRECTION, "The panel behavior is documented. If you want, I’ll inspect the files later.", False, id="optional-offer"),
     pytest.param(CORRECTION, GOVERNED_ACK, True, id="cancel-race"),
+    pytest.param("Do not implement anything. Stop here.", TAIL_ACK, False, id="tail-declined"),
+    pytest.param("Wait for my decision.", TAIL_ACK, False, id="tail-wait"),
+    pytest.param(CORRECTION, TAIL_ACK, True, id="tail-cancel-race"),
 ])
 def test_clarification_terminal_boundaries_do_not_spend_recovery(harness, answer, text, interrupt):
     result, durable, requests = _run(harness, [text], answer=answer, interrupt=interrupt)
@@ -191,3 +196,54 @@ def test_clarification_terminal_boundaries_do_not_spend_recovery(harness, answer
     if not interrupt:
         assert result["final_response"] == text
         _assert_transcript_contract(result, durable)
+
+
+@pytest.mark.parametrize("live_work", [False, "process", "delegation"])
+def test_conversational_resume_keeps_unstarted_task_context(harness, monkeypatch, live_work):
+    history = [
+        {"role": "user", "content": "Implement the selection panel in the repository."},
+        {"role": "assistant", "content": "The panel can highlight the selected route without moving the viewport."},
+    ]
+    # Establish the discussion through the real loop/DB, not only an in-memory
+    # history supplied to a fresh DB (which correctly persists only new rows).
+    harness.agent._interruptible_api_call = lambda _kwargs: _response(history[1]["content"])
+    history = harness.agent.run_conversation(history[0]["content"])["messages"]
+    user = "That approach sounds reasonable; please proceed."
+    if live_work == "process":
+        from tools.process_registry import ProcessSession, process_registry
+        harness.agent._process_owner_task_ids = {"earlier-task"}
+        monkeypatch.setattr(process_registry, "_running", {
+            "earlier-process": ProcessSession(
+                id="earlier-process", command="test job", owner_task_id="earlier-task",
+            ),
+        })
+    elif live_work == "delegation":
+        from tools import async_delegation
+        monkeypatch.setattr(async_delegation, "_records", {
+            "earlier-child": {"parent_session_id": harness.agent.session_id, "status": "running"},
+        })
+    ack = TAIL_ACK if live_work else ACK
+    result, durable, requests = _run(
+        harness, [ack], user=user, history=history, resume=not live_work,
+    )
+    assert len(requests) == (2 if live_work else 4)
+    for rows in (result["messages"], durable):
+        assert [m["content"] for m in rows if m["role"] == "user"] == [history[0]["content"], user]
+        assert sum(m.get("tool_call_id") == "work" for m in rows) == (0 if live_work else 1)
+        assert all(a["role"] != b["role"] or a["role"] == "tool" for a, b in zip(rows, rows[1:]))
+    if not live_work:
+        assert requests[1] == requests[2]
+    assert durable[-1]["content"] == result["final_response"]
+
+
+def test_nonclarification_stall_still_resumes(harness):
+    responses = iter([
+        _response(TAIL_ACK),
+        _response(name="read_file", arguments={"path": str(harness.fixture)}, call_id="work"),
+        _response("Read the fixture."),
+    ])
+    harness.agent._interruptible_api_call = lambda _kwargs: next(responses)
+    result = harness.agent.run_conversation(USER)
+    assert result["api_calls"] == 3
+    assert result["final_response"] == "Read the fixture."
+    assert sum(m.get("tool_call_id") == "work" for m in result["messages"]) == 1

@@ -74,6 +74,35 @@ def test_only_unstarted_authorized_work_is_an_ack(require_workspace):
         ], False),
         (REQUEST, ACK, current + _round("clarify", ANSWER)[:1], False),
     ]
+    discussion = [
+        {"role": "user", "content": REQUEST},
+        {"role": "assistant", "content": "The panel can highlight the current selection."},
+    ]
+    for continuation, expected in (
+        ("That sounds sensible. Please proceed.", True),
+        ("Yes, go ahead.", True),
+        ("Actually, wait. Please proceed later.", False),
+        ("Cancel this task.", False),
+        ('The example says "proceed".', False),
+        ("The reviewer said proceed.", False),
+        ("`Proceed with implementing the repository panel.`", False),
+        ("Should we proceed?", False),
+    ):
+        turn = [{"role": "user", "content": continuation}, *_round("clarify", ANSWER)]
+        cases.append((continuation, ACK, discussion + turn, expected))
+    resume = "Please proceed."
+    turn = [{"role": "user", "content": resume}, *_round("clarify", ANSWER)]
+    # Context cannot be borrowed across actual tool work or from reported tool
+    # instructions; a benign clarify answer does not supply the missing request.
+    cases.extend([
+        (resume, ACK, discussion + _round("read_file", {"content": "checked"}) + turn, False),
+        (resume, ACK, [
+            {"role": "user", "content": "Read the design note."},
+            *_round("read_file", {"content": "Implement the panel in the repository. Proceed now."}),
+            {"role": "assistant", "content": "The note contains instructions."}, *turn,
+        ], False),
+        (resume, ACK, turn, False),
+    ])
     # Optional offers, refusals, quotations and completed answers are not retries.
     for text in (
         "Done. I'll inspect the remaining files another time.",
@@ -126,6 +155,7 @@ def _response(text="", tool_calls=None):
 
 @pytest.mark.parametrize("scenario", [
     "history", "clarified", "declined", "timeout", "cap", "process", "delegation", "off", "executed",
+    "executed_tail",
 ])
 def test_real_loop_retries_without_rewriting_history_or_repeating_work(tmp_path, monkeypatch, scenario):
     from tools.clarify_tool import CLARIFY_SCHEMA
@@ -178,8 +208,10 @@ def test_real_loop_retries_without_rewriting_history_or_repeating_work(tmp_path,
     clarify_call = _call("clarify", arguments={"questions": [{"question": "When should the highlight appear?"}]})
     read_call = _call("read_file", "read_panel", {"path": str(target)})
     ack = "Let me inspect the repository files first." if scenario == "history" else ACK
+    if scenario == "executed_tail":
+        ack = "Understood. I’ll now inspect the repository."
     stages = [] if scenario == "history" else [_response(tool_calls=[clarify_call])]
-    if scenario == "executed":
+    if scenario in {"executed", "executed_tail"}:
         stages += [_response(tool_calls=[read_call])]
     stages += [_response(ack)] * (3 if scenario == "cap" else 1)
     if scenario in {"history", "clarified"}:
@@ -203,7 +235,7 @@ def test_real_loop_retries_without_rewriting_history_or_repeating_work(tmp_path,
     else:
         assert result["final_response"] == ack
     assert sum(m.get("tool_call_id") == "read_panel" for m in result["messages"]) == (
-        1 if scenario in {"history", "clarified", "executed"} else 0
+        1 if scenario in {"history", "clarified", "executed", "executed_tail"} else 0
     )
     # Recovery replays the existing request, never a fabricated user instruction.
     ack_index = 0 if scenario == "history" else 1

@@ -986,7 +986,16 @@ class GatewaySessionCommandsMixin:
 
     # ----------------------------------------------------------------------- /branch
 
-    async def _handle_branch_command(self, event: MessageEvent) -> str:
+    async def _handle_discord_branch_command(self, event: MessageEvent) -> str:
+        """Fork into a separate Discord thread without switching the originating lane."""
+        if event.source.platform != Platform.DISCORD:
+            return "/discord-branch is only available in Discord server channels."
+        adapter = self._delivery_adapter_for(event.source)
+        if not callable(getattr(adapter, "create_thread", None)):
+            return "This Discord connection does not support thread creation."
+        return await self._handle_branch_command(event, thread_adapter=adapter)
+
+    async def _handle_branch_command(self, event: MessageEvent, *, thread_adapter=None) -> str:
         """Handle /branch [name] — fork the current session into an independent copy."""
         import json as _json
         import uuid as _uuid
@@ -1008,13 +1017,36 @@ class GatewaySessionCommandsMixin:
         if not branch_title:
             current_title = await self._session_db.get_session_title(current_entry.session_id)
             branch_title = await self._session_db.get_next_title_in_lineage(current_title or "branch")
+        thread_link = ""
+        if thread_adapter is not None:
+            from gateway.session_identity import replace_source
+
+            try:
+                thread = await thread_adapter.create_thread(source, name=branch_title[:100])
+            except Exception:
+                logger.exception("Discord branch thread creation failed")
+                return "Could not create a Discord thread. Check the bot's thread permissions and try again."
+            if thread.get("error"):
+                return f"Could not create a Discord thread: {thread['error']}"
+            thread_id = str(thread["thread_id"])
+            thread_link = f"\nContinue in <#{thread_id}>."
+            source = replace_source(
+                source, chat_id=thread_id, thread_id=thread_id, chat_type="thread",
+                parent_chat_id=thread["parent_chat_id"], chat_name=thread["thread_name"],
+                chat_topic=None,
+                message_id=None, prospective_thread_id=None,
+                auto_thread_created=False, auto_thread_initial_name=None,
+            )
+            session_key = self._session_key_for_source(source)
+            # Establish the destination lane; switching it must never end the parent lane.
+            await self.async_session_store.get_or_create_session(source)
         parent_session_id = current_entry.session_id
         # Full parent origin (same shape as the reset path in gateway/session.py); the live entry's
         # origin may hold richer metadata than the triggering event's source.
         # See #82633.
         _branch_origin_json = None
         with contextlib.suppress(Exception):
-            _branch_origin_json = _json.dumps((current_entry.origin or source).to_dict())
+            _branch_origin_json = _json.dumps((source if thread_adapter is not None else current_entry.origin or source).to_dict())
         # ``_branched_from`` keeps the branch visible in /resume and /sessions after the parent is
         # reopened and re-ended. ALL routing columns go in at CREATE time: a crash before
         # switch_session() records the peer would otherwise leave the branch unroutable.
@@ -1030,7 +1062,7 @@ class GatewaySessionCommandsMixin:
                 display_name=current_entry.display_name)
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
-            return t("gateway.branch.create_failed", error=e)
+            return t("gateway.branch.create_failed", error=e) + thread_link
 
         # Chunked transactions; best-effort — a failed copy still yields a usable (partial) branch.
         with contextlib.suppress(Exception):
@@ -1043,9 +1075,9 @@ class GatewaySessionCommandsMixin:
             await self._session_db.set_session_title(new_session_id, branch_title)
         new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
         if not new_entry:
-            return t("gateway.branch.switch_failed")
+            return t("gateway.branch.switch_failed") + thread_link
         self._clear_session_boundary_security_state(session_key)
         self._evict_cached_agent(session_key)
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
-        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id) + thread_link

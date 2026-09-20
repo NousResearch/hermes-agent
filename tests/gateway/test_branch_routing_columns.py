@@ -153,3 +153,104 @@ class TestBranchRoutingColumns:
 
         _ = real_switch_session  # silence unused
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command,title,in_thread", [
+    ("discord-branch", "Alternate path", False),
+    ("branch-thread", "", False),
+    ("thread-branch", "Sibling path", True),
+])
+async def test_discord_branch_dispatch_keeps_parent_and_routes_child(store, monkeypatch, command, title, in_thread):
+    """#116433: aliases fork history into a distinct, durable thread lane."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import discord
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_cli.commands import resolve_command, should_bypass_active_session
+    from gateway.session_identity import replace_source
+
+    source = SessionSource(platform=Platform.DISCORD, user_id="42", chat_id="200" if in_thread else "100",
+                           thread_id="200" if in_thread else None, chat_type="thread" if in_thread else "channel",
+                           parent_chat_id="100" if in_thread else None, guild_id="10")
+    parent = store.get_or_create_session(source)
+    store._db.append_message(parent.session_id, role="user", content="Explore this")
+    store._db.append_message(parent.session_id, role="assistant", content="Original answer")
+    runner = _make_branch_runner(store)
+    thread = SimpleNamespace(id=300, name=title or "branch")
+    create_thread = AsyncMock(return_value=thread)
+    class TextChannel(SimpleNamespace):
+        pass
+
+    monkeypatch.setattr(discord, "TextChannel", TextChannel)
+    monkeypatch.setattr(discord, "DMChannel", type("DMChannel", (), {}))
+    channel = TextChannel(id=100, parent=None, create_thread=create_thread)
+    if command == "branch-thread":
+        create_thread.side_effect = RuntimeError("Direct creation denied")
+        channel.send = AsyncMock(return_value=SimpleNamespace(create_thread=AsyncMock(return_value=thread)))
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = SimpleNamespace(get_channel=lambda channel_id: (
+        SimpleNamespace(parent=channel) if in_thread else channel))
+    monkeypatch.setattr(runner, "_delivery_adapter_for", lambda src: adapter)
+    event = MessageEvent(text=f"/{command} {title}".strip(), source=source, message_id="m1")
+    definition = resolve_command(event.get_command())
+    assert definition is not None and definition.gateway_only
+    assert should_bypass_active_session(command)
+    busy = await runner._dispatch_busy_slash_command(event, definition, parent.session_key, source)
+    assert "can't run" in busy
+    create_thread.assert_not_awaited()
+
+    handled, reply = await runner._hm_dispatch_canonical_command(event, source, parent.session_key, definition.name)
+    assert handled and "<#300>" in reply
+    create_thread.assert_awaited_once()
+    assert create_thread.call_args.kwargs["type"] == discord.ChannelType.public_thread
+    if title:
+        assert create_thread.call_args.kwargs["name"] == title
+    else:
+        assert create_thread.call_args.kwargs["name"]
+    destination = replace_source(source, chat_id="300", thread_id="300", chat_type="thread", parent_chat_id="100")
+    child = store.get_or_create_session(destination)
+    assert child.session_id != parent.session_id
+    assert store.get_or_create_session(source).session_id == parent.session_id
+    row = store._db.get_session(child.session_id)
+    assert row["parent_session_id"] == parent.session_id
+    assert row["chat_id"] == row["thread_id"] == "300"
+    assert row["session_key"] == runner._session_key_for_source(destination)
+    assert json.loads(row["origin_json"])["thread_id"] == "300"
+    assert store._db.get_session(parent.session_id)["ended_at"] is None
+    assert [(m["role"], m["content"]) for m in store.load_transcript(child.session_id)] == [
+        ("user", "Explore this"), ("assistant", "Original answer")]
+    # Fresh routing-store load proves subsequent thread messages recover the same child.
+    restored = SessionStore(sessions_dir=store.sessions_dir, config=GatewayConfig())
+    assert restored.get_or_create_session(destination).session_id == child.session_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["platform", "unsupported", "permission", "exception", "empty"])
+async def test_discord_branch_failure_leaves_parent_untouched(store, monkeypatch, failure):
+    """Unsupported contexts and failed thread creation must never fork/switch the parent."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    source = SessionSource(platform=Platform.TELEGRAM if failure == "platform" else Platform.DISCORD,
+                           user_id="42", chat_id="100", chat_type="channel")
+    parent = store.get_or_create_session(source)
+    if failure != "empty":
+        store._db.append_message(parent.session_id, role="user", content="Keep me")
+    runner = _make_branch_runner(store)
+    create_thread = AsyncMock(return_value={"error": "Missing thread permissions"})
+    if failure == "exception":
+        create_thread.side_effect = RuntimeError("transport unavailable")
+    adapter = SimpleNamespace() if failure == "unsupported" else SimpleNamespace(create_thread=create_thread)
+    monkeypatch.setattr(runner, "_delivery_adapter_for", lambda src: adapter)
+    before = [entry.session_id for entry in store.list_sessions()]
+    reply = await runner._handle_discord_branch_command(MessageEvent(text="/discord-branch", source=source))
+    assert reply
+    assert store.get_or_create_session(source).session_id == parent.session_id
+    assert [entry.session_id for entry in store.list_sessions()] == before
+    assert store._db.get_session(parent.session_id)["ended_at"] is None
+    if failure in {"platform", "unsupported", "empty"}:
+        create_thread.assert_not_awaited()
+    else:
+        create_thread.assert_awaited_once()

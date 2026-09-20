@@ -256,6 +256,7 @@ except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
 from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
@@ -5194,18 +5195,46 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception:
             return None
 
+    async def create_thread(self, source: SessionSource, *, name: str) -> Dict[str, Any]:
+        """Create a public sibling thread for a gateway conversation branch."""
+        name = (name or "").strip()
+        if not 1 <= len(name) <= 100:
+            return {"error": "Discord thread names must contain 1–100 characters."}
+        channel = await self._resolve_channel(source.chat_id)
+        parent_channel = self._thread_parent_channel(channel)
+        if not isinstance(parent_channel, discord.TextChannel):
+            return {"error": "Discord branches require a server text channel or one of its threads."}
+        result = await self._create_thread_in_channel(
+            channel, name=name,
+            reason=f"Requested by {source.user_name or source.user_id} via /discord-branch",
+            public=True,
+        )
+        if result.get("success"):
+            result["parent_chat_id"] = str(parent_channel.id)
+        return result
+
     async def _create_thread(
         self, interaction: discord.Interaction, *, name: str, message: str = "",
         auto_archive_duration: int = 1440,
     ) -> Dict[str, Any]:
         """Create a thread in the current channel; falls back to seed message + create_thread on rejection (e.g. permissions)."""
+        channel = await self._resolve_interaction_channel(interaction)
+        display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
+        return await self._create_thread_in_channel(
+            channel, name=name, message=message, auto_archive_duration=auto_archive_duration,
+            reason=f"Requested by {display_name} via /thread",
+        )
+
+    async def _create_thread_in_channel(
+        self, channel: Any, *, name: str, reason: str, message: str = "",
+        auto_archive_duration: int = 1440, public: bool = False,
+    ) -> Dict[str, Any]:
         name = (name or "").strip()
         if not name:
             return {"error": "Thread name is required."}
         if auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
             allowed = ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES))
             return {"error": f"auto_archive_duration must be one of: {allowed}."}
-        channel = await self._resolve_interaction_channel(interaction)
         if channel is None:
             return {"error": "Could not resolve the current Discord channel."}
         if isinstance(channel, discord.DMChannel):
@@ -5213,12 +5242,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         parent_channel = self._thread_parent_channel(channel)
         if parent_channel is None:
             return {"error": "Could not determine a parent text channel for the new thread."}
-        display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
-        reason = f"Requested by {display_name} via /thread"
         starter_message = (message or "").strip()
         try:
             thread = await parent_channel.create_thread(
                 name=name, auto_archive_duration=auto_archive_duration, reason=reason,
+                **({"type": discord.ChannelType.public_thread} if public else {}),
             )
             if starter_message:
                 await thread.send(starter_message)

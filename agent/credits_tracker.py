@@ -393,6 +393,19 @@ def _hydrate_seed_state(agent, state) -> None:
         emit()
 
 
+def _warm_nous_pricing_cache() -> None:
+    """Fill the in-process Nous pricing catalog so :func:`is_free_tier_model`'s peek can answer.
+    The peek never fetches and nothing else warms it during session start, so a cold process reads
+    an EMPTY catalog and a subscription-billed model — which spends no credits — still draws the
+    depleted banner. Fail-open: a miss leaves the peek exactly as it was."""
+    try:
+        from hermes_cli.models_pricing import get_pricing_for_provider
+
+        get_pricing_for_provider("nous")
+    except Exception:
+        logger.debug("credits ▸ nous pricing warm failed", exc_info=True)
+
+
 def seed_credits_at_session_start(agent) -> bool:
     """Hydrate agent._credits_state from the portal account (or a dev fixture) and fire the notice policy so
     warnings show at session OPEN (TUI/desktop "ready" and plain-CLI first-turn setup). Idempotent once a seed
@@ -411,9 +424,18 @@ def seed_credits_at_session_start(agent) -> bool:
         def _bg_seed() -> None:  # FIRE-AND-FORGET: a slow portal must never delay "ready"
             try:
                 from hermes_cli.nous_account import get_nous_portal_account_info
+                # BEFORE the policy runs (either branch below): the free-model gate only PEEKS the
+                # pricing cache, and this thread is the first thing a chat session runs that can
+                # afford to fill it.
+                _warm_nous_pricing_cache()
                 info = get_nous_portal_account_info(force_fresh=True)
                 if getattr(agent, "_credits_state", None) is not None:
-                    return  # a live inference header beat us — don't clobber it
+                    # A live inference header beat us — don't clobber it, but DO re-run the policy:
+                    # it evaluated against the cold cache and may be showing a banner the warm
+                    # catalog now suppresses.
+                    if callable(emit := getattr(agent, "_emit_credits_notices", None)):
+                        emit()
+                    return
                 if (state := _credits_state_from_account(info)) is not None:
                     _hydrate_seed_state(agent, state)
             except Exception:

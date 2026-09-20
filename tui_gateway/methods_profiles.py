@@ -217,17 +217,25 @@ def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
-    db_path = Path(profile_path) / "state.db"
-    db = None
-    if _try(db_path.exists, False):
-        db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
-    try:
-        row["last_session"], row["worker_session"] = _latest_profile_session_rows(db)
-        # Resolved server-side on every listing so no client carries a session pointer.
-        row["canonical_session"] = _canonical_session_row(db, profile_path)
-    finally:
-        if db is not None:
-            _best_effort(db.close)
+    def _read() -> dict:
+        db_path = Path(profile_path) / "state.db"
+        db = None
+        if _try(db_path.exists, False):
+            db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
+        try:
+            last, worker = _latest_profile_session_rows(db)
+            # Resolved server-side on every listing so no client carries a session pointer.
+            return {"last_session": last, "worker_session": worker,
+                    "canonical_session": _canonical_session_row(db, profile_path)}
+        finally:
+            if db is not None:
+                _best_effort(db.close)
+
+    # These three are a pure function of the profile's session store, and the roster re-asks every
+    # 5s per connection — so they are reused while that store has not moved (#117257).
+    from tui_gateway.profile_roster_cache import cached_session_fields
+
+    row.update(cached_session_fields(profile_path, _read))
 
 
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:

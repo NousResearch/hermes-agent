@@ -205,7 +205,16 @@ export function useDesktopIntegrations({
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
     }
-  }, [activeProfile, diskPluginsScanPending, locationPathname, navigate, profileReady, resumeLastSession, routedSessionId, sessions])
+  }, [
+    activeProfile,
+    diskPluginsScanPending,
+    locationPathname,
+    navigate,
+    profileReady,
+    resumeLastSession,
+    routedSessionId,
+    sessions
+  ])
 
   useEffect(() => {
     if (!profileReady || !resumeExhaustedSessionId) {

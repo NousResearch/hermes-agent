@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { $transcriptTailBySessionId, clearTranscriptTailPaging, recordTranscriptTail } from './transcript-tail'
 
-const page = (count: number, limit = 10) => ({
-  messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
-  pagination: { limit, offset: 0 }
-}) as never
+const page = (count: number, limit = 10) =>
+  ({
+    messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
+    pagination: { limit, offset: 0 }
+  }) as never
 
 describe('recordTranscriptTail no-op suppression', () => {
   beforeEach(() => {

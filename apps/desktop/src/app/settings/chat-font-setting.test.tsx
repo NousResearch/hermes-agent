@@ -127,6 +127,8 @@ describe('resolveChatFontFamily', () => {
     expect(resolveChatFontFamily('', theme)).toBe(theme)
     expect(resolveChatFontFamily('  ', theme)).toBe(theme)
     expect(resolveChatFontFamily('OpenDyslexic', theme)).toBe(`'OpenDyslexic', ${theme}`)
-    expect(resolveChatFontFamily("'Atkinson Hyperlegible', serif", theme)).toBe(`'Atkinson Hyperlegible', serif, ${theme}`)
+    expect(resolveChatFontFamily("'Atkinson Hyperlegible', serif", theme)).toBe(
+      `'Atkinson Hyperlegible', serif, ${theme}`
+    )
   })
 })

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const STORAGE_KEY = 'hermes.desktop.readingWidth'
 
@@ -20,6 +20,7 @@ describe('reading width preference', () => {
 
   it('falls back to wide for an unknown stored value', async () => {
     window.localStorage.setItem(STORAGE_KEY, 'extra-wide')
+    vi.resetModules()
 
     const store = await import('./reading-width')
 

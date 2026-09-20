@@ -80,12 +80,19 @@ def publish(service, index=1):
     return item, event_id
 
 
-def test_authority_claim_lookup_stays_bounded_after_index_repair(tmp_path, monkeypatch):
+@pytest.mark.parametrize('missing', [('cursor',), ('authority_claim',), ('cursor', 'authority_claim')])
+def test_authority_claim_lookup_stays_bounded_after_index_repair(tmp_path, monkeypatch, missing):
     db, _store = _create_catalog(tmp_path)
     _seed_events(db, total_events=2000, records={1: ["oldest.md"]})
     with sqlite3.connect(db) as conn:
-        conn.execute("DROP INDEX idx_hosted_room_events_cursor")
+        before = conn.execute('SELECT * FROM hosted_room_events ORDER BY seq').fetchall()
+        for suffix in missing:
+            conn.execute('DROP INDEX IF EXISTS idx_hosted_room_events_' + suffix)
     assert hosted_rooms.room_state(db, room_id=ROOM_ID)["latest_seq"] == 2000
+    with sqlite3.connect(db) as conn:
+        assert conn.execute('SELECT * FROM hosted_room_events ORDER BY seq').fetchall() == before
+        assert {'idx_hosted_room_events_cursor', 'idx_hosted_room_events_authority_claim'} <= {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     original = hosted_rooms._transaction
     steps = 0
 

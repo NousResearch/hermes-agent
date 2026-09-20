@@ -949,6 +949,44 @@ describe('member holds (#93129)', () => {
     expect([...rounds.classifyGroupHoldDirective('@impl please halt', ['conn::impl'], false).hold]).toEqual(['conn::impl'])
   })
 
+  // #117040: proximity is measured on what the user directs at the room, not
+  // on content they quote or paste. A stop word inside a fenced block, inline
+  // code span, straight-quoted span or blockquote line is content — reporting
+  // or debugging a hold must not re-hold the addressed member.
+  it('holds nobody when the stop word sits inside quoted or pasted content', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of [
+      '```text\nstop @impl\n```',
+      'The log printed `@impl pause` here',
+      'Why did "pause @impl" hold the bot?',
+      // A cut-short paste leaves the fence unclosed; the rest is still content.
+      'look what the docs say:\n```js\nstop @impl\n',
+      '> stop @impl'
+    ]) {
+      const action = rounds.classifyGroupHoldDirective(text, ['impl'], false)
+
+      expect([...action.hold]).toEqual([])
+      // The mention itself still reaches the member: quoting AT the bot is a
+      // direct address, which releases a held member like any other mention.
+      expect([...action.release]).toEqual(['impl'])
+    }
+  })
+
+  it('still holds on the plain directive forms once masking is active', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['stop @impl', '@impl stop', '@impl please halt', '@all stop']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['impl'], text.startsWith('@all'))
+
+      expect([...action.hold]).toEqual(['impl'])
+    }
+
+    // A masked span collapses to one word, so a genuine directive with pasted
+    // content between the stop word and the mention keeps its proximity.
+    expect([...rounds.classifyGroupHoldDirective('stop `service` @impl', ['impl'], false).hold]).toEqual(['impl'])
+  })
+
   // A genuine stop whose stop word sits 3+ tokens from the mention may miss the
   // hold, but it must never RELEASE (re-dispatch) the member it tells to stop.
   it('never releases the addressed member on a distant genuine stop', async () => {

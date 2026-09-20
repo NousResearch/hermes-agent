@@ -9,7 +9,7 @@ test('quit interrupts an update-gated wait instead of waiting for the next poll'
   let slept = false
 
   const waiting = waitForUpdateClearance(
-    { hasLiveMarker: () => true, isUpdateInFlight: () => false },
+    { hasLiveMarker: () => true, isUpdateInFlight: () => false, isHandoffLaunched: () => false },
     {
       signal: controller.signal,
       pollMs: 1000,

@@ -2411,16 +2411,23 @@ const UPDATE_WAIT_POLL_MS = 1000
 const UPDATE_HANDOFF_DWELL_MS = 2500
 
 // Gate deps shared by the primary-window boot path and the pool-backend
-// spawn path. Consulting BOTH the on-disk marker and the in-process
-// updateInFlight flag is load-bearing (#73822): applyUpdates kills its own
-// backend BEFORE the Windows venv-blocker scan but only writes the marker
-// AFTER it, so a marker-only gate lets the renderer's ~1s reconnect respawn
-// a backend inside the update's own critical section — which the scan then
-// reports as a blocker, aborting every update attempt.
+// spawn path. Consulting all THREE signals is load-bearing (#73822, #116375):
+// applyUpdates kills its own backend BEFORE the Windows venv-blocker scan but
+// only writes the marker AFTER it, so a marker-only gate lets the renderer's
+// ~1s reconnect respawn a backend inside the update's own critical section —
+// which the scan then reports as a blocker, aborting every update attempt.
+// And on Windows the marker pre-write plus updateInFlight both lapse ~50 ms
+// after the hand-off launches (the `cmd start` wrapper exits immediately, so
+// the placeholder self-heals and observeUpdaterHandoff settles ok), leaving a
+// gap where a backend spawn keeps this process alive past the hand-off
+// script's 30s "wait for the Desktop to exit" — the reported exit-4 abort.
+// isQuittingForHandoff covers exactly that gap. Full analysis in
+// update-gate.ts.
 function updateGateDeps() {
   return {
     hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
-    isUpdateInFlight: () => updateInFlight
+    isUpdateInFlight: () => updateInFlight,
+    isHandoffLaunched: () => isQuittingForHandoff
   }
 }
 
@@ -4349,6 +4356,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       // dead pid makes the marker read as stale and self-delete (no wedge).
       // The `hermes update` child adopts the SCRIPT's claim via
       // update_lock.py's process-ancestry rule; no mtime heuristics needed.
+      //
+      // Nothing depends on this placeholder bridging the wrapper→script gap:
+      // it demonstrably cannot (the wrapper is already dead by the next read).
+      // The gate holds itself shut across that gap via isHandoffLaunched —
+      // see update-gate.ts.
       if (Number.isInteger(child.pid)) {
         writeUpdateMarker(HERMES_HOME, child.pid, { startedAt: updateStartedAt })
       }

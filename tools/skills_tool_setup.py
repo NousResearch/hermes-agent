@@ -87,7 +87,7 @@ def _capture_result(missing_names, setup_skipped=False, gateway_setup_hint=None)
 def _capture_required_environment_variables(
     skill_name: str, missing_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Prompt for missing secrets via the registered capture callback (if any)."""
-    from tools import skills_tool as _st
+    from tools.secret_capture_tool import get_secret_capture_callback
     if not missing_entries:
         return _capture_result([])
     missing_names = [entry["name"] for entry in missing_entries]
@@ -101,7 +101,7 @@ def _capture_required_environment_variables(
             hint = (f"Secure secret entry is not available. Load this skill in the local CLI to be "
                     f"prompted, or add the key to {display_hermes_home()}/.env manually.")
         return _capture_result(missing_names, gateway_setup_hint=hint)
-    if (callback := _st._secret_capture_callback) is None:
+    if (callback := get_secret_capture_callback()) is None:
         return _capture_result(missing_names)
     remaining_names: List[str] = []
     for entry in missing_entries:

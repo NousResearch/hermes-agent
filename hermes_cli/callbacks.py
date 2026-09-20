@@ -33,13 +33,31 @@ def _skipped(var_name: str, reason: str, message: str) -> dict:
         "validated": False, "skipped": True, "message": message}
 
 
-def _secret_result(var_name: str, value: str) -> dict:
+def _secret_destination_label(metadata=None) -> str:
+    if (metadata or {}).get("destination") == "bitwarden_sm":
+        return "the configured Bitwarden Secrets Manager project"
+    return "the active profile .env"
+
+
+def _secret_result(var_name: str, value: str, metadata=None) -> dict:
     """Store ``value`` (or report a skip when empty) and build the callback result dict."""
     if not value:
         cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
         return _skipped(var_name, "cancelled", "Secret setup was skipped.")
-    stored = save_env_value_secure(var_name, value)
-    cprint(f"\n{_DIM}  ✓ Stored secret in {display_hermes_home()}/.env as {var_name}{_RST}")
+    destination = (metadata or {}).get("destination", "profile_env")
+    if destination == "bitwarden_sm":
+        try:
+            from agent.secret_sources.bitwarden_write import store_bitwarden_secret
+            stored = store_bitwarden_secret(var_name, value)
+        except Exception:
+            cprint(f"\n{_DIM}  ✗ Bitwarden secret storage failed{_RST}")
+            return {"success": False, "stored_as": var_name, "validated": False,
+                    "skipped": False, "error": "Bitwarden secret storage failed."}
+        location = "the configured Bitwarden Secrets Manager project"
+    else:
+        stored = save_env_value_secure(var_name, value)
+        location = f"{display_hermes_home()}/.env"
+    cprint(f"\n{_DIM}  ✓ Stored secret in {location} as {var_name}{_RST}")
     return {
         **stored,
         "skipped": False,
@@ -58,10 +76,14 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         if not hasattr(cli, "_secret_deadline"):
             cli._secret_deadline = 0
         try:
-            value = masked_secret_prompt(f"{prompt} (hidden, ESC or empty Enter to skip): ")
+            destination = _secret_destination_label(metadata)
+            value = masked_secret_prompt(
+                f"{prompt}\nStorage destination: {destination}\n"
+                "Enter secret (hidden, ESC or empty Enter to skip): "
+            )
         except (EOFError, KeyboardInterrupt):
             value = ""
-        return _secret_result(var_name, value)
+        return _secret_result(var_name, value, metadata)
 
     response_queue = queue.Queue()
     cli._secret_state = {
@@ -86,7 +108,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         cli._secret_state = None
         cli._secret_deadline = 0
         _invalidate(cli)
-        return _secret_result(var_name, value)
+        return _secret_result(var_name, value, metadata)
 
     cli._secret_state = None
     cli._secret_deadline = 0

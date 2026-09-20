@@ -22,7 +22,8 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
+    SECRET_CAPTURE_GUIDANCE, SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE,
+    TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
 from agent import prompt_builder as _pb
@@ -558,6 +559,8 @@ def _guidance_parts(agent: Any) -> List[str]:
                 ("_parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE),
             ) if getattr(agent, flag, True)
         ]
+        if "secret_capture" in agent.valid_tool_names:
+            parts.append(SECRET_CAPTURE_GUIDANCE)
     parts.append(_tool_guidance_block(agent))  # None/empty entries are dropped by _join_tier
     if not agent.valid_tool_names:
         return parts

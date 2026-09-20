@@ -268,11 +268,12 @@ const sudo: Handler = ctx => {
 
 const secret: Handler = ctx => {
   const p = ctx.request.params
+  const destination = str(p.destination) || 'profile_env'
   const envVar = str(p.env_var)
   const promptText = str(p.prompt)
 
   rememberServerRequest(ctx.request)
-  setSecretRequest({ envVar, prompt: promptText, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
+  setSecretRequest({ destination, envVar, prompt: promptText, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
   markNeedsInput(ctx)
   notifyInput(ctx, promptText || envVar || translateNow('notifications.native.inputBody'))
 }

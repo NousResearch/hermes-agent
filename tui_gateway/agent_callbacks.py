@@ -198,12 +198,32 @@ def _wire_callbacks(sid: str):
     from tools.project_tools import set_project_workspace_callback
 
     def secret_cb(env_var, prompt, metadata=None):
-        pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
+        destination = (metadata or {}).get("destination", "profile_env")
+        pl = {
+            "prompt": prompt,
+            "env_var": env_var,
+            "destination": destination,
+            **({"metadata": metadata} if metadata else {}),
+        }
         val = _ask("secret", sid, pl)
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
-        from hermes_cli.config import save_env_value_secure
-        return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
+        if destination == "bitwarden_sm":
+            try:
+                from agent.secret_sources.bitwarden_write import store_bitwarden_secret
+                stored = store_bitwarden_secret(env_var, val)
+            except Exception:
+                return {
+                    "success": False,
+                    "stored_as": env_var,
+                    "validated": False,
+                    "skipped": False,
+                    "error": "Bitwarden secret storage failed.",
+                }
+        else:
+            from hermes_cli.config import save_env_value_secure
+            stored = save_env_value_secure(env_var, val)
+        return {**stored, "skipped": False, "message": "ok"}
 
     set_sudo_password_callback(lambda: _ask(
         "sudo", sid, {"command": _redact_approval_command(get_sudo_prompt_command())}, timeout=120))

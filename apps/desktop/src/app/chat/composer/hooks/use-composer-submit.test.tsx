@@ -583,7 +583,13 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
   })
 
   it('queues while a secret prompt is pending', () => {
-    setSecretRequest({ envVar: 'API_KEY', prompt: 'key?', requestId: 'sec-1', sessionId: 'runtime-session' })
+    setSecretRequest({
+      destination: 'profile_env',
+      envVar: 'API_KEY',
+      prompt: 'key?',
+      requestId: 'sec-1',
+      sessionId: 'runtime-session'
+    })
 
     const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'next thing' })
 

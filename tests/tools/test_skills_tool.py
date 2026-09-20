@@ -480,10 +480,8 @@ class TestSkillViewSecureSetupOnLoad:
             }
 
         monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fake_secret_callback,
-            raising=False,
+            "tools.secret_capture_tool.get_secret_capture_callback",
+            lambda: fake_secret_callback,
         )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -529,10 +527,8 @@ class TestSkillViewSecureSetupOnLoad:
             }
 
         monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fake_secret_callback,
-            raising=False,
+            "tools.secret_capture_tool.get_secret_capture_callback",
+            lambda: fake_secret_callback,
         )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -771,24 +767,21 @@ class TestSkillViewPrerequisites:
                 "skipped": False,
             }
 
-        monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fake_secret_callback,
-            raising=False,
-        )
-
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "gif-search",
-                frontmatter_extra=(
-                    "required_environment_variables:\n"
-                    "  - name: TENOR_API_KEY\n"
-                    "    prompt: Tenor API key\n"
-                ),
-            )
-            raw = skill_view("gif-search")
+        skills_tool_module.set_secret_capture_callback(fake_secret_callback)
+        try:
+            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+                _make_skill(
+                    tmp_path,
+                    "gif-search",
+                    frontmatter_extra=(
+                        "required_environment_variables:\n"
+                        "  - name: TENOR_API_KEY\n"
+                        "    prompt: Tenor API key\n"
+                    ),
+                )
+                raw = skill_view("gif-search")
+        finally:
+            skills_tool_module.set_secret_capture_callback(None)
 
         result = json.loads(raw)
         assert result["success"] is True
@@ -850,27 +843,24 @@ Do the legacy thing.
                 "skipped": False,
             }
 
-        monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fake_secret_callback,
-            raising=False,
-        )
+        skills_tool_module.set_secret_capture_callback(fake_secret_callback)
+        try:
+            with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+                _make_skill(
+                    tmp_path,
+                    "gif-search",
+                    frontmatter_extra=(
+                        "required_environment_variables:\n"
+                        "  - name: TENOR_API_KEY\n"
+                        "    prompt: Tenor API key\n"
+                    ),
+                )
+                from hermes_cli.config import save_env_value
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "gif-search",
-                frontmatter_extra=(
-                    "required_environment_variables:\n"
-                    "  - name: TENOR_API_KEY\n"
-                    "    prompt: Tenor API key\n"
-                ),
-            )
-            from hermes_cli.config import save_env_value
-
-            save_env_value("TENOR_API_KEY", "")
-            raw = skill_view("gif-search")
+                save_env_value("TENOR_API_KEY", "")
+                raw = skill_view("gif-search")
+        finally:
+            skills_tool_module.set_secret_capture_callback(None)
 
         result = json.loads(raw)
         assert result["success"] is True

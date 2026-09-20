@@ -170,7 +170,7 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 | Problem | Solution |
 |---------|----------|
 | `hermes: command not found` | Reload your shell (`source ~/.bashrc`) or check PATH |
-| `API key not set` | Run `hermes model` to configure your provider, or `hermes config set OPENROUTER_API_KEY your_key` |
+| `API key not set` | Run `hermes model`, or ask Hermes in a local CLI/TUI/desktop chat to store the named key with its masked secret prompt. Never paste it into chat or pass it on the command line. |
 | Missing config after update | Run `hermes config check` then `hermes config migrate` |
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.

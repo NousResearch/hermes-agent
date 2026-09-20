@@ -112,6 +112,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.supermemory": ("supermemory==3.50.0",),
     "memory.mem0": ("mem0ai==2.0.10",),
 
+    # Bitwarden Secrets Manager writes. The bws CLI accepts secret values only
+    # on argv, so masked capture uses the in-process SDK instead.
+    "secret.bitwarden": ("bitwarden-sdk==2.0.0",),
+
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
     # brotlicffi: aiohttp needs its 2-arg Decompressor for Discord CDN Brotli attachments

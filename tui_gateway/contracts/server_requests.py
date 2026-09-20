@@ -115,11 +115,12 @@ server_request("sudo", params=SudoRequestParams, result=ValueResult,
 class SecretRequestParams(ServerRequestParams):
     env_var: str
     prompt: str
+    destination: str = "profile_env"
     metadata: dict[str, JsonValue] | None = None
 
 
 server_request("secret", params=SecretRequestParams, result=ValueResult,
-               doc="Masked value for a named env var (skills / setup flows).")
+               doc="Masked value for a named env var (agent capture, skills, and setup flows).")
 
 
 class VaultUnlockRequestParams(ServerRequestParams):

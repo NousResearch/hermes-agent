@@ -49,8 +49,9 @@ fal-client = false
 asyncpg = false
 boto3 = false
 ruamel-yaml = false
-sherpa-onnx = false
+bitwarden-sdk = false
 huggingface-hub = false
+sherpa-onnx = false
 pytest-asyncio = false
 google-cloud-pubsub = false
 slack-sdk = false
@@ -617,6 +618,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7f/45/8ae61209bb9015f516102fa559a2914178da1d5868428bd86a1b4421141d/base58-2.1.1.tar.gz", hash = "sha256:c5d0cb3f5b6e81e8e35da5754388ddcc6d0d14b6c6a132cb93d69ed580a7278c", size = 6528, upload-time = "2021-10-30T22:12:17.858Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/45/ec96b29162a402fc4c1c5512d114d7b3787b9d1c2ec241d9568b4816ee23/base58-2.1.1-py3-none-any.whl", hash = "sha256:11a36f4d3ce51dfc1043f3218591ac4eb1ceb172919cebe05b52a5bcc8d245c2", size = 5621, upload-time = "2021-10-30T22:12:16.658Z" },
+]
+
+[[package]]
+name = "bitwarden-sdk"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/66/177264df153e6714fa3d18fcac45374cc7ff481dd347acb5b02592f9d45a/bitwarden_sdk-2.0.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:054ccdda8fbf615d0e582e1e75c7c316bf291ed03b27efd774325ecc3b0fb0b8", size = 3593062, upload-time = "2026-02-05T23:00:22.595Z" },
+    { url = "https://files.pythonhosted.org/packages/42/b1/88c0d624b16d974bbcc3636d68cee15d9908980dc05c881b1ff46a19509d/bitwarden_sdk-2.0.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:3cc41cae078d086b1eaeb9e4f781454cfba7b77119f70908d074bed259dce8a6", size = 3397507, upload-time = "2026-02-05T23:00:24.683Z" },
+    { url = "https://files.pythonhosted.org/packages/77/93/8905bd312f40a0c1c7fabd939a3271380ccad959b9f99eda452f254fabfa/bitwarden_sdk-2.0.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a49739ebe37103df677e263637fdabc61682f10a5f4518fb22b130d530fffbcd", size = 3192519, upload-time = "2026-02-05T23:00:26.342Z" },
+    { url = "https://files.pythonhosted.org/packages/55/03/55ea33d637e74bf7e50f39c361b82c8f03630d6f35ae8944d3a4a8399585/bitwarden_sdk-2.0.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1c0e2dd8d8a3db2f0cb29d6dcd55fd578bd66839f666b8e1712712b6e9791021", size = 3397007, upload-time = "2026-02-05T23:00:28.572Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/17/a96033bc9a55521a9d2a4022d69f72da302df4ac83eb182379fec9df102c/bitwarden_sdk-2.0.0-cp39-abi3-win_amd64.whl", hash = "sha256:9b9a523dab81cca56151481bd0dce07bd58695fd14b4c5bcab520c7a24fc16c3", size = 3347145, upload-time = "2026-02-05T23:00:30.569Z" },
 ]
 
 [[package]]
@@ -1800,6 +1816,9 @@ azure-identity = [
 bedrock = [
     { name = "boto3" },
 ]
+bitwarden = [
+    { name = "bitwarden-sdk" },
+]
 computer-use = [
     { name = "httpx2" },
     { name = "mcp" },
@@ -1997,6 +2016,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.87.0" },
     { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
+    { name = "bitwarden-sdk", marker = "extra == 'bitwarden'", specifier = "==2.0.0" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.2" },
     { name = "certifi", specifier = "==2026.5.20" },
@@ -2129,7 +2149,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "bitwarden", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"

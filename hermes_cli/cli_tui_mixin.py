@@ -758,8 +758,18 @@ class CLITuiMixin:
         if not state:
             return []
         prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
-        help_text = (state.get("metadata") or {}).get("help")
-        content_lines = [prompt, 'Enter secret below (hidden), ESC or Ctrl+C to skip']
+        metadata = state.get("metadata") or {}
+        help_text = metadata.get("help")
+        destination = (
+            'the configured Bitwarden Secrets Manager project'
+            if metadata.get("destination") == "bitwarden_sm"
+            else 'the active profile .env'
+        )
+        content_lines = [
+            prompt,
+            f'Storage destination: {destination}',
+            'Enter secret below (hidden), ESC or Ctrl+C to skip',
+        ]
         if help_text:
             content_lines.insert(1, str(help_text))
         return self._render_sudo_style_panel('🔑 Skill Setup Required', content_lines)

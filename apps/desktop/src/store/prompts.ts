@@ -108,6 +108,7 @@ export interface SudoRequest extends KeyedPrompt {
 }
 
 export interface SecretRequest extends KeyedPrompt {
+  destination: string
   envVar: string
   prompt: string
   requestId: string

@@ -291,7 +291,8 @@ def _check_bubblewrap_backend(issues: list[str]) -> None:
         return _fail_and_issue("bwrap not found", "(required for TERMINAL_ENV=bubblewrap)",
                                "Install the bubblewrap package (apt, dnf or pacman: bubblewrap) or change TERMINAL_ENV", issues)
     try:
-        _ver = subprocess.run([bwrap_path, "--version"], capture_output=True, text=True, timeout=5)
+        _ver = subprocess.run([bwrap_path, "--version"], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=5)
         bwrap_version = (_ver.stdout or _ver.stderr).strip() or "version unknown"
     except (OSError, subprocess.TimeoutExpired):
         bwrap_version = "version unknown"

@@ -32,11 +32,8 @@ const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 /** Text or attachments in the composer: Ctrl+D must not exit over an unsent draft (#116443). */
-export const composerHasDraft = (cState: {
-  input: string
-  inputBuf: string[]
-  tokens?: unknown[]
-}): boolean => Boolean(cState.input || cState.inputBuf.length || cState.tokens?.length)
+export const composerHasDraft = (cState: { input: string; inputBuf: string[]; tokens?: unknown[] }): boolean =>
+  Boolean(cState.input || cState.inputBuf.length || cState.tokens?.length)
 
 export function handleInputSelectionClipboard(
   selection: ReturnType<typeof getInputSelection>,

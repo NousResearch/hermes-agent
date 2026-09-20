@@ -2285,18 +2285,20 @@ class MatrixAdapter(BasePlatformAdapter):
         for room_id, invited_room in invites.items():
             if room_id in self._joined_rooms:
                 continue
-            # A pending invite reconciled here (e.g. after a gateway
-            # restart) never fires _on_invite, so the DM signal must be
-            # read from the stripped invite state instead. Without it, a
-            # direct invite joined via reconciliation is never recorded in
-            # m.direct and gets misclassified as a group.
+            # This reconcile pass runs after _dispatch_sync and sees every
+            # rooms.invite entry, whether _on_invite joined it, rejected
+            # it, or (for invites that arrived while the gateway was down)
+            # is only now seeing it. The invite event object is gone by
+            # this point, so the DM signal must be read from the stripped
+            # invite state; without it a direct invite joined here is never
+            # recorded in m.direct and gets misclassified as a group.
             is_direct, inviter = self._extract_invite_dm_signal(invited_room)
-            # The inviter allowlist gate from _on_invite applies here too.
-            # Without it, an invite from an arbitrary federated user that
-            # arrives while the gateway is down would be auto-joined on
-            # restart, bypassing the gate. An inviter missing from the
-            # stripped invite state fails closed, like an empty sender in
-            # _on_invite.
+            # The inviter allowlist gate from _on_invite must apply here
+            # too: an unconditional join would re-admit a live invite that
+            # _on_invite just rejected milliseconds earlier, and would
+            # auto-join any invite from an arbitrary federated user on
+            # restart. An inviter missing from the stripped invite state
+            # fails closed, like an empty sender in _on_invite.
             if not self._is_authorized_user(inviter):
                 logger.warning(
                     "Matrix: rejecting invite to %s from unauthorized user %s",

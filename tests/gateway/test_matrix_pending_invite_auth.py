@@ -1,11 +1,13 @@
 """Tests for the inviter allowlist gate on pending-invite reconciliation.
 
-``_on_invite`` only auto-joins when the inviter is allow-listed, but a
-pending invite reconciled from sync's ``rooms.invite`` after a gateway
-restart never fires ``_on_invite``. ``_schedule_pending_invite_joins``
+``_on_invite`` only auto-joins when the inviter is allow-listed, but the
+reconcile pass over sync's ``rooms.invite`` runs after event dispatch and
+sees every pending invite — including ones ``_on_invite`` just rejected,
+and ones that arrived while the gateway was down. An unconditional join
+there re-admitted rejected live invites milliseconds later and auto-joined
+arbitrary federated invites on restart. ``_schedule_pending_invite_joins``
 must apply the same gate, reading the inviter from the stripped invite
-state, or an invite from an arbitrary federated user that arrives while
-the gateway is down gets auto-joined on restart.
+state.
 """
 
 import time

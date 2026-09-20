@@ -1130,6 +1130,18 @@ class HostedRoomAttachmentStore:
         }
 
 
+    @contextmanager
+    def _viewer_snapshot(self) -> Iterator[sqlite3.Connection]:
+        from gateway.hosted_rooms import HostedRoomError
+        from gateway.hosted_room_viewer_state import viewer_snapshot
+
+        try:
+            with viewer_snapshot(self.db_path) as conn:
+                yield conn
+        except HostedRoomError as exc:
+            raise AttachmentNotFoundError(str(exc)) from exc
+
+
     def read_viewer(
         self,
         *,
@@ -1164,8 +1176,7 @@ class HostedRoomAttachmentStore:
             "normalized_event": normalized_event,
             "viewer": True,
         }
-        with self._transaction() as conn:
-            conn.execute("BEGIN")
+        with self._viewer_snapshot() as conn:
             self._require_viewer_room(conn, **scope)
             row = self._read_committed_row(conn, **selection, now=float(self.clock()))
 
@@ -1173,8 +1184,7 @@ class HostedRoomAttachmentStore:
         data = self._read_blob(
             blob_id=str(row["blob_id"]), size=int(row["size"]), sha256=str(row["sha256"]),
         )
-        with self._transaction() as conn:
-            conn.execute("BEGIN")
+        with self._viewer_snapshot() as conn:
             self._require_viewer_room(conn, **scope)
             current = self._read_committed_row(conn, **selection, now=float(self.clock()))
             if current["blob_id"] != row["blob_id"] or self._metadata(current) != self._metadata(row):
@@ -1190,28 +1200,16 @@ class HostedRoomAttachmentStore:
         authority_gateway_id: str,
         authority_epoch: int,
     ) -> None:
-        from gateway.hosted_rooms_common import table_exists as _table_exists
+        from gateway.hosted_rooms import HostedRoomError
+        from gateway.hosted_room_viewer_state import viewer_room_state
 
-        if not _table_exists(conn, "hosted_rooms"):
-            raise AttachmentNotFoundError("Group Chat is unavailable to viewers")
-        room = conn.execute(
-            """SELECT authority_gateway_id, authority_epoch, disbanded_at
-               FROM hosted_rooms WHERE room_id=?""",
-            (room_id,),
-        ).fetchone()
-        if (
-            room is None
-            or room["disbanded_at"] is not None
-            or room["authority_gateway_id"] != authority_gateway_id
-            or room["authority_epoch"] != authority_epoch
-        ):
+        try:
+            room = viewer_room_state(conn, room_id=room_id)
+        except (HostedRoomError, sqlite3.Error) as exc:
+            raise AttachmentNotFoundError("Group Chat viewer state is unavailable") from exc
+        if (room["authority_gateway_id"] != authority_gateway_id
+                or room["authority_epoch"] != authority_epoch):
             raise AttachmentNotFoundError("Group Chat viewer authority changed")
-        # Files-only sources need not install the optional safety/retirement schema.
-        for table in ("hosted_room_quarantine", "hosted_room_disband_fences"):
-            if _table_exists(conn, table) and conn.execute(
-                f"SELECT 1 FROM {table} WHERE room_id=?", (room_id,),
-            ).fetchone() is not None:
-                raise AttachmentNotFoundError("Group Chat is unavailable to viewers")
 
 
     @staticmethod
@@ -1225,10 +1223,13 @@ class HostedRoomAttachmentStore:
         viewer: bool,
         now: float,
     ) -> sqlite3.Row:
-        row = conn.execute(
-            "SELECT * FROM hosted_room_attachments WHERE attachment_id=? AND room_id=?",
+        rows = conn.execute(
+            "SELECT * FROM hosted_room_attachments WHERE attachment_id=? AND room_id=? LIMIT 2",
             (attachment_id, room_id),
-        ).fetchone()
+        ).fetchall()
+        if viewer and len(rows) != 1:
+            raise AttachmentNotFoundError("attachment viewer ownership is missing or ambiguous")
+        row = rows[0] if rows else None
         if row is None or str(row["state"]) != "committed":
             raise AttachmentNotFoundError("attachment is not committed for this room")
         if row["expires_at"] is not None and float(row["expires_at"]) <= now:
@@ -1247,11 +1248,14 @@ class HostedRoomAttachmentStore:
                 raise AttachmentNotFoundError(
                     "attachment is not published in this room"
                 )
-            owner = conn.execute(
+            owners = conn.execute(
                 """SELECT payload_json FROM hosted_room_events
-                       WHERE room_id=? AND event_id=? AND kind IN ('message.user', 'message.member')""",
+                       WHERE room_id=? AND event_id=? AND kind IN ('message.user', 'message.member') LIMIT 2""",
                 (room_id, str(row["event_id"] or "")),
-            ).fetchone()
+            ).fetchall()
+            if viewer and len(owners) != 1:
+                raise AttachmentNotFoundError("attachment published owner is missing or ambiguous")
+            owner = owners[0] if owners else None
             manifest = {
                 key: row[key]
                 for key in ("attachment_id", "kind", "name", "size", "mime")

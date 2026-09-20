@@ -141,6 +141,52 @@ class TestGuessCategory:
         assert dg.guess_category(p) is None
 
 
+class TestProfileUserTreesNeverCleaned:
+    """``workspace/`` (and the other per-profile user trees) hold project files, so
+    a ``test_*``/``tmp_*`` name inside them is never a disposable scratch file.
+
+    Regression for the data loss where ``workspace/<project>/tests/test_parse.py`` was
+    classified "test" on write and unlinked by ``quick()`` at session end.
+    """
+
+    def test_session_end_hook_leaves_workspace_files_alone(self, _isolate_env):
+        """End-to-end: write_file into a project tree, then session end. A scratch file at
+        the HERMES_HOME root is the control: it is still tracked and removed."""
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        keep = _isolate_env / "workspace" / "proj" / "tests" / "test_parse.py"
+        keep.parent.mkdir(parents=True)
+        keep.write_text("x")
+        scratch = _isolate_env / "tmp_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(keep) is None
+        assert dg.guess_category(scratch) == "test"
+        for p in (keep, scratch):
+            pi._on_post_tool_call(
+                tool_name="write_file",
+                args={"path": str(p), "content": "x"},
+                result="OK",
+                task_id="t_ws", session_id="s_ws",
+            )
+        pi._on_session_end(session_id="s_ws", completed=True, interrupted=False)
+        assert keep.exists(), "session-end cleanup must not touch workspace project files"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up"
+
+    def test_empty_dir_sweep_skips_workspace(self, _isolate_env):
+        """Empty dirs inside a project tree are meaningful (``data/``, ``.artifacts/``)
+        and must survive the empty-dir sweep; unprotected empty top levels are still swept."""
+        dg = _load_lib()
+        keep = _isolate_env / "workspace" / "watch-battery" / "data"
+        keep.mkdir(parents=True)
+        sweepable = _isolate_env / "pairing"
+        sweepable.mkdir()
+
+        dg._sweep_empty_dirs(_isolate_env)
+
+        assert keep.exists(), "empty dir inside workspace/ must survive the sweep"
+        assert not sweepable.exists(), "unprotected empty dirs are still swept"
+
+
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""
 

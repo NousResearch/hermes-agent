@@ -56,7 +56,14 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
-    message, code = _public_dispatch_error(exc)
+    message, code = str(exc), "invalid_room_dispatch"
+    lowered = message.lower()
+    if "execution policy" in lowered or "remote room execution requires" in lowered:
+        message = "Room execution policy changed; reauthorization is required."
+        code = "room_execution_policy_changed"
+    elif "capability catalog changed" in lowered:
+        message = "Room capability catalog changed; reauthorization is required."
+        code = "room_capability_catalog_changed"
     return _json_error(_openai_error, message, code=code, status=403)
 
 
@@ -74,11 +81,10 @@ async def _normalize_room_dispatch(
         from gateway import hosted_rooms
         from gateway.hosted_room_peer import GatewayRoomCatalog, HostedMemberDispatch, verify_room_grant
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
-        from gateway.platforms.api_server_room_grants import _effective_room_profile, _local_room_catalog
+        from gateway.platforms.api_server_room_grants import _local_room_catalog
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
         verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
-        self._room_grant_claims(request, permission="dispatch")
-        active_profile = _effective_room_profile(_api_server._api_request_profile)
+        active_profile = _api_server._api_request_profile.get() or "default"
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
             raise ValueError("room dispatch target does not match this profile")
@@ -94,66 +100,12 @@ async def _normalize_room_dispatch(
         expected_key = f"room:{dispatch.task_id}:{dispatch.execution_generation}"
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
-        from gateway.platforms.api_server_room_grants import _canonical_room_peer
-        canonical = _canonical_room_peer(self, active_profile)
-        if canonical and not catalog.text:
-            raise ValueError("Canonical Group Chat target execution is unavailable")
         session_id = await self._ensure_hosted_member_session(dispatch)
-        normalized = {
+        return {
             "input": dispatch.prompt,
             "session_id": session_id,
             "hosted_room_dispatch": dispatch.as_mapping(),
             "_room_execution_policy": policy.as_mapping(),
-        }
-        if canonical:
-            # Receiver support does not activate unsupported canonical target setup.
-            from gateway.session_peer_input import peer_input_available
-            if dispatch.attachment_manifest_digest is not None:
-                if not peer_input_available(self):
-                    raise ValueError("Canonical Group Chat file admission is unavailable")
-                self._room_grant_claims(request, permission="attachment.stage")
-                verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="attachment.stage")
-            return normalized, None
-        from gateway.platforms.api_server_room_attachments import _validate_dispatch_attachments
-        return await _validate_dispatch_attachments(normalized, _openai_error=_openai_error)
+        }, None
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)
-
-
-async def prepare_new_room_input(adapter, request, body, *, _openai_error):
-    """Only new admission needs staging; an exact accepted receipt is independent."""
-    raw = body.get('hosted_room_dispatch')
-    if not isinstance(raw, dict) or raw.get('attachment_manifest_digest') is None:
-        return body, None
-    from gateway.hosted_room_peer import HostedMemberDispatch
-    from gateway.platforms.api_server_room_attachments import _default_spool
-    from gateway.session_peer_input import retain_peer_input, peer_input_available
-    if not peer_input_available(adapter):
-        return body, None
-    try:
-        before = adapter._room_grant_claims(request, permission='attachment.stage')
-        media = await asyncio.to_thread(retain_peer_input, _default_spool(), HostedMemberDispatch.from_mapping(raw))
-        after = adapter._room_grant_claims(request, permission='attachment.stage')
-        if before != after:
-            raise ValueError('room grant changed during input preparation')
-        return {**body, '_room_input_media': media}, None
-    except Exception:
-        return body, _json_error(_openai_error, 'The Group Chat files could not be prepared.',
-                                 code='room_attachments_unavailable', status=409)
-
-
-def _public_dispatch_error(exc: Exception) -> tuple[str, str]:
-    """Map untrusted dispatch failures to a bounded public contract."""
-
-    lowered = str(exc).lower()
-    if "execution policy" in lowered or "remote room execution requires" in lowered:
-        return (
-            "Room execution policy changed; reauthorization is required.",
-            "room_execution_policy_changed",
-        )
-    if "capability catalog changed" in lowered:
-        return (
-            "Room capability catalog changed; reauthorization is required.",
-            "room_capability_catalog_changed",
-        )
-    return "Room dispatch was rejected.", "invalid_room_dispatch"

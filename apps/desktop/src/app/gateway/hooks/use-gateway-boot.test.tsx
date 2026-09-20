@@ -27,8 +27,9 @@ import {
   endGatewaySwitch,
   recoverActiveSourceAfterFailedGatewaySwitch
 } from '@/store/gateway-switch'
-import { notifyError } from '@/store/notifications'
+import { $notifications, clearNotifications, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
+import { $backendRestartRequest } from '@/store/recovery-requests'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -43,6 +44,7 @@ import {
   setSelectedStoredSessionId
 } from '@/store/session'
 import { $sessionTiles, $workingSessionIds, clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 
 import { deferred } from '../../../test/deferred'
 
@@ -52,6 +54,10 @@ import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
 vi.mock(import('@/store/notifications'), async importOriginal => ({
   ...(await importOriginal()),
   notifyError: vi.fn()
+}))
+
+vi.mock(import('@/store/terminal-backend-warning'), () => ({
+  warnIfTerminalBackendUnavailable: vi.fn(async () => false)
 }))
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
@@ -68,6 +74,7 @@ vi.mock(import('@/store/notifications'), async importOriginal => ({
 type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
 let powerResume: null | (() => void) = null
+let backendExit: null | ((payload?: unknown) => void) = null
 
 describe('primaryRuntimeConnectionId', () => {
   it('uses the registry identity when the primary connection has one', () => {
@@ -224,7 +231,13 @@ function fakeDesktop() {
     emitBootProgress(payload: Record<string, unknown>) {
       bootProgressHandler?.(payload)
     },
-    onBackendExit: vi.fn(() => () => undefined),
+    onBackendExit: vi.fn(callback => {
+      backendExit = callback
+
+      return () => {
+        backendExit = null
+      }
+    }),
     onConnectionApplied: vi.fn(callback => {
       connectionApplied = callback
 
@@ -257,6 +270,7 @@ function Harness({
   useGatewayBoot({
     beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
+    handleServerRequest: () => false,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig,
@@ -291,7 +305,10 @@ beforeEach(() => {
   FakeWebSocket.pingMode = 'pong'
   connectionApplied = null
   powerResume = null
+  backendExit = null
+  clearNotifications()
   vi.mocked(notifyError).mockReset()
+  vi.mocked(warnIfTerminalBackendUnavailable).mockClear()
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -358,6 +375,45 @@ async function advanceBackoff() {
     await vi.advanceTimersByTimeAsync(15_000)
   })
 }
+
+describe('default-route profile adoption', () => {
+  it.each([null, 'coder-remote'])(
+    'dials the saved startup route before an ambient sender can replace it (%s)',
+    async connectionId => {
+      const base = fakeDesktop()
+      const route = { connectionId, profile: 'coder' }
+      const desktop = {
+        ...base,
+        getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+        profile: { ...base.profile, getDefault: vi.fn(async () => route) }
+      }
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+
+      if (connectionId) {
+        expect(desktop.getConnectionFor).toHaveBeenCalledWith(route)
+      } else {
+        expect(desktop.getConnection).toHaveBeenCalledWith('coder')
+        expect(desktop.getConnectionFor).not.toHaveBeenCalled()
+      }
+      expect($connection.get()?.profile).toBe('coder')
+      expect($desktopBoot.get().running).toBe(false)
+    }
+  )
+
+  it('adopts the resolved backend profile rather than the old last-used preference', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, profile: 'research' })
+    desktop.profile.get.mockResolvedValue({ profile: 'old-last-used' })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect($connection.get()?.profile).toBe('research')
+    expect($activeGatewayProfile.get()).toBe('research')
+    expect($desktopBoot.get().running).toBe(false)
+  })
+})
 
 describe('primary failure foreground isolation', () => {
   it('ignores a boot snapshot superseded by a successful connection', async () => {
@@ -1710,6 +1766,46 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($desktopBoot.get().phase).toBe('renderer.ready')
   })
 
+  it('a cold boot warns about a Docker/SSH terminal that is not ready, not only a connection switch', async () => {
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().phase).toBe('renderer.ready')
+    expect(warnIfTerminalBackendUnavailable).toHaveBeenCalledTimes(1)
+  })
+
+  it('a backend exit while the boot overlay is up fails the overlay and does not add a dead-button toast', async () => {
+    // reconnectGateway() is a no-op before boot completes, so a "Restart
+    // Hermes" toast here would do nothing when clicked; the overlay's own
+    // Retry is the recovery.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(() => new Promise<never>(() => undefined))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($desktopBoot.get().visible).toBe(true)
+
+    act(() => backendExit?.({ code: 1 }))
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($notifications.get()).toHaveLength(0)
+  })
+
+  it('a backend exit after boot toasts a Restart that raises the shell restart intent', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($desktopBoot.get().visible).toBe(false)
+
+    const before = $backendRestartRequest.get()
+    act(() => backendExit?.({ code: 1 }))
+
+    const toast = $notifications.get().find(entry => entry.kind === 'error')
+    expect(toast?.action).toBeTruthy()
+    toast?.action?.onClick()
+    expect($backendRestartRequest.get()).toBe(before + 1)
+  })
+
   it('seeds the configured default project dir pre-connect — no route-resume race (#71873)', async () => {
     // The reporter's scenario: a configured default project dir must be applied
     // at boot regardless of route-resume timing. The seed now runs BEFORE the
@@ -2149,5 +2245,42 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       await vi.advanceTimersByTimeAsync(20_000)
     })
     expect($gatewayState.get()).toBe('open')
+  })
+})
+
+describe('window-state IPC before the first connection publishes (#108641)', () => {
+  it('a fullscreen toggle that lands while getConnection is still pending reaches the published connection', async () => {
+    // Main snapshots chrome state into the descriptor at mint time; a toggle
+    // that fires after the mint but before the renderer publishes it is newer
+    // than the snapshot and used to be dropped because $connection was null.
+    let windowState: ((payload: Record<string, unknown>) => void) | null = null
+    const pending = deferred<Record<string, unknown>>()
+
+    const desktop = {
+      ...fakeDesktop(),
+      getConnection: vi.fn(() => pending.promise),
+      onWindowStateChanged: vi.fn((callback: (payload: Record<string, unknown>) => void) => {
+        windowState = callback
+
+        return () => undefined
+      })
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($connection.get()).toBeNull()
+
+    act(() => windowState?.({ isFullscreen: true, nativeOverlayWidth: 0, windowButtonPosition: null }))
+    expect($connection.get()).toBeNull()
+
+    await act(async () => {
+      pending.resolve({ ...primaryConn, isFullscreen: false, windowButtonPosition: { x: 12, y: 16 } })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect($connection.get()?.isFullscreen).toBe(true)
+    expect($connection.get()?.windowButtonPosition).toBeNull()
   })
 })

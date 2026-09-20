@@ -167,3 +167,15 @@ class TestApprovalTextFallbackContract:
         assert "approve session" not in text
         assert "approve always" not in text
 
+    def test_text_fallback_says_silence_means_no(self, monkeypatch):
+        """Surfaces without buttons get the same deadline line as the button card."""
+        from gateway.run import _format_exec_approval_fallback
+
+        monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+        text = _format_exec_approval_fallback("rm -rf /", "recursive delete", "/")
+        assert "Hermes wants to run a command that needs your OK" in text
+        assert "Why it was flagged: recursive delete" in text
+        assert "If you don't answer within 5 minutes it will NOT run." in text
+        for step in ("`/approve`", "`/approve session`", "`/approve always`", "`/deny`"):
+            assert step in text
+

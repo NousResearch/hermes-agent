@@ -9,7 +9,6 @@ failures are fail-OPEN (``continue``); the turn budget is the backstop.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -347,8 +346,6 @@ class GoalGate:
     attempts: int = 0
     last_exit_code: Optional[int] = None
     last_output_tail: str = ""
-    # Workspace fingerprint at the last FAILED run — skips re-running an identical gate unchanged.
-    last_failed_fingerprint: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -364,31 +361,7 @@ class GoalGate:
             attempts=int(data.get("attempts") or 0),
             last_exit_code=(int(data["last_exit_code"]) if data.get("last_exit_code") is not None else None),
             last_output_tail=str(data.get("last_output_tail") or ""),
-            last_failed_fingerprint=str(data.get("last_failed_fingerprint") or ""),
         )
-
-
-def workspace_fingerprint(cwd: Optional[str] = None) -> str:
-    """sha256 of ``git rev-parse HEAD`` + ``git status --porcelain``; "" outside git (never matches,
-    so gates always re-run — a safe fallback)."""
-    workdir = cwd or os.getcwd()
-    try:
-        outputs = []
-        for argv, timeout in (
-            (["git", "rev-parse", "HEAD"], 10),
-            (["git", "status", "--porcelain"], 30),
-        ):
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=timeout, cwd=workdir, stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
-            )
-            if proc.returncode != 0:
-                return ""
-            outputs.append(proc.stdout)
-        blob = outputs[0].strip() + "\n" + outputs[1]
-        return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
-    except Exception:
-        return ""
 
 
 def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
@@ -1293,31 +1266,25 @@ class GoalManager:
     def _check_gates(self) -> Optional[Dict[str, Any]]:
         """Run quality gates in order; return a decision dict on failure.
 
-        An unchanged workspace since the last failure of the same gate is NOT re-run — the recorded
-        failure is replayed and the attempt count advances, so a stalled agent can't spin re-running
-        an identical red suite.
+        Every eligible boundary re-executes a failed gate. A git HEAD+porcelain fingerprint used to
+        replay the recorded failure when "nothing changed", but porcelain sees neither the contents
+        of an untracked or already-modified file nor inputs outside the repo, so a repaired input
+        was replayed as still-failing until retry exhaustion paused the goal (#110649). The
+        retry cap below still bounds a genuinely stuck red suite.
         """
         state = self._state
         if state is None or not state.gates:
             return None
 
-        fingerprint = workspace_fingerprint()
         for gate in state.gates:
-            unchanged = bool(fingerprint) and gate.last_exit_code not in (None, 0) and gate.last_failed_fingerprint == fingerprint
-            if unchanged:
-                passed, exit_code, tail = False, int(gate.last_exit_code or -1), gate.last_output_tail
-            else:
-                passed, exit_code, tail = run_gate(gate)
+            passed, exit_code, tail = run_gate(gate)
             gate.last_exit_code = exit_code
             gate.last_output_tail = tail
             if passed:
                 gate.attempts = 0
-                gate.last_failed_fingerprint = ""
                 continue
 
             gate.attempts += 1
-            gate.last_failed_fingerprint = fingerprint
-            skipped_note = " (workspace unchanged since last failure — not re-run)" if unchanged else ""
 
             if gate.attempts > gate.max_retries:
                 return self._pause_decision(
@@ -1338,7 +1305,7 @@ class GoalManager:
                 "active", True, prompt, "gate_failed",
                 f"gate failed (exit {exit_code}): $ {gate.command}",
                 f"✗ Quality gate failed ({state.turns_used}/{state.max_turns} turns, "
-                f"attempt {gate.attempts}/{gate.max_retries}){skipped_note}: $ {gate.command}",
+                f"attempt {gate.attempts}/{gate.max_retries}): $ {gate.command}",
             )
 
         self._save()
@@ -1362,6 +1329,8 @@ class GoalManager:
         pid = int(pid)
         if pid <= 0:
             raise ValueError("pid must be a positive integer")
+        if not _pid_alive(pid):
+            raise ValueError("pid is not alive on this host")
         return self._park(reason, waiting_on_pid=pid)
 
     def wait_on_session(self, session_id: str, reason: str = "") -> GoalState:
@@ -1436,13 +1405,23 @@ class GoalManager:
         reason = state.waiting_reason or tgt
         return _decision("active", False, None, "waiting", reason, f"⏳ Goal parked — waiting on {tgt}: {reason}")
 
-    def _apply_wait_directive(self, wait_directive: Dict[str, Any], reason: str, *, active_delegations: int = 0) -> Dict[str, Any]:
+    def _apply_wait_directive(self, wait_directive: Dict[str, Any], reason: str, *, active_delegations: int = 0) -> Optional[Dict[str, Any]]:
         """Judge said WAIT: set the barrier and park. The counted turn stands (the judge ran) but no
-        continuation fires; the loop resumes once the barrier clears."""
+        continuation fires; the loop resumes once the barrier clears. ``None`` = the barrier is
+        unobservable here, so the caller continues instead."""
         if wait_directive.get("session_id"):
             tgt = f"session {self.wait_on_session(str(wait_directive['session_id']), reason=reason).waiting_on_session}"
         elif wait_directive.get("pid"):
-            tgt = f"pid {self.wait_on(int(wait_directive['pid']), reason=reason).waiting_on_pid}"
+            pid = int(wait_directive["pid"])
+            try:
+                tgt = f"pid {self.wait_on(pid, reason=reason).waiting_on_pid}"
+            except ValueError:
+                # A remote or already-exited pid is a barrier this host can never observe lifting
+                # (#110826): the judge sees the same pid next turn and would re-park forever.
+                # Catching wait_on's own liveness check (rather than probing first) closes the
+                # window where the pid exits between a pre-check and the park.
+                logger.info("goal judge: wait_on_pid %s is not alive on this host; continuing", pid)
+                return None
         else:
             self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason, on_delegations=active_delegations)
             tgt = f"{wait_directive['seconds']}s"
@@ -1495,7 +1474,9 @@ class GoalManager:
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
 
         if verdict == "wait" and wait_directive:
-            return self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
+            parked = self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
+            if parked is not None:
+                return parked
 
         # BLOCKED is NOT done: pause so the user sees the judge's reason and can re-scope or override,
         # instead of burning turns on an unachievable goal or waving it through as complete.
@@ -1705,7 +1686,7 @@ def run_kanban_goal_loop(
 
 __all__ = [
     "GoalState", "GoalContract", "GoalGate", "GoalManager", "parse_contract", "draft_contract", "run_gate",
-    "workspace_fingerprint", "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "CONTINUATION_PROMPT_TEMPLATE", "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
     "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",

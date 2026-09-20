@@ -37,7 +37,8 @@ def _manifest(data=b"notes"):
              "kind": "file", "name": "notes.txt", "mime": "text/plain", "size": len(data)}]
 
 
-def _attempt(monkeypatch, tmp_path, transport, *, legacy=False, manifests=None, loader=None):
+def _attempt(monkeypatch, tmp_path, transport, *, legacy=False, manifests=None, loader=None,
+             task_status="queued", prior_generation=1):
     """Invoke the real producer with every control/lifecycle edge inert."""
     runtime = HostedRoomRuntime(
         db_path=tmp_path / "unused.db", rooms=[], turn_lock=lambda _profile: nullcontext(),
@@ -50,14 +51,14 @@ def _attempt(monkeypatch, tmp_path, transport, *, legacy=False, manifests=None, 
     runtime._mark_ambiguous = Mock()
     runtime._defer_unavailable_route = Mock(return_value=1)
     monkeypatch.setattr(state, "require_active_lease", Mock())
-    monkeypatch.setattr(state, "defer_not_admitted_task", Mock(return_value=None))
+    monkeypatch.setattr(state, "requeue_not_admitted_task", Mock(return_value=None))
     monkeypatch.setattr(state, "settle_task", Mock(side_effect=AssertionError("settlement is held")))
     attempt = state.TaskAttempt(TASK, state.DriverLease("room", "gateway-a", 1, "process", 1, 999), 2, 0)
     payload = {"target_profile": "ops", "target_member_id": "member-ops", "prompt": PROMPT}
     if manifests is not None:
         payload["attachments"] = manifests
-    runtime._execute_attempt(BINDING, {"identity": TASK, "status": "queued",
-        "execution_generation": 1, "payload": payload}, attempt)
+    runtime._execute_attempt(BINDING, {"identity": TASK, "status": task_status,
+        "execution_generation": prior_generation, "payload": payload}, attempt)
     return runtime
 
 
@@ -117,7 +118,7 @@ def test_legacy_driver_derives_complete_bound_proof_without_member_keyword(monke
         target_install_id="home-install", authority_gateway_id="gateway-a", authority_epoch=1))]
     assert rpc._artifact_scopes == {}
     assert callable(proof["_hosted_terminal_callback"])
-    state.defer_not_admitted_task.assert_not_called()
+    state.requeue_not_admitted_task.assert_not_called()
     runtime._mark_ambiguous.assert_not_called()
     runtime._settle_failure_if_current.assert_not_called()
 
@@ -157,7 +158,7 @@ def test_legacy_stages_once_and_only_proven_nonadmission_removes_bytes(monkeypat
         commit.assert_not_called()
         assert not upload.exists()
         assert rpc.server._sessions["session"]["attached_images"] == ["previous-image"]
-        state.defer_not_admitted_task.assert_called_once()
+        state.requeue_not_admitted_task.assert_called_once()
         _attempt(monkeypatch, tmp_path, rpc, legacy=True)
         assert [kind for kind, _ in calls] == ["attach", "submit", "submit"]
         assert calls[-1][1]["text"] == PROMPT
@@ -332,7 +333,7 @@ def test_legacy_submission_cannot_change_its_bound_task_or_session(monkeypatch, 
     rpc.submit = changed
     runtime = _attempt(monkeypatch, tmp_path, rpc, legacy=True)
     assert calls == []
-    state.defer_not_admitted_task.assert_called_once()
+    state.requeue_not_admitted_task.assert_called_once()
     runtime._mark_ambiguous.assert_not_called()
 
 
@@ -403,3 +404,46 @@ def test_legacy_loader_uses_the_exact_event_bound_metadata(monkeypatch, tmp_path
     else:
         expected = [{key: value for key, value in item.items() if key != "event_id"} for item in manifests]
         assert list(service._load_task_attachments(BINDING, task)) == list(zip(expected, (b"notes", b"next")))
+
+
+@pytest.mark.parametrize("status", ["stopping", "running", "queued"])
+def test_service_receipt_only_and_fresh_generation_never_stage(monkeypatch, tmp_path, status):
+    from tui_gateway.hosted_room_service import HostedRoomService
+    rpc, client, _, manifests = _peer(tmp_path, monkeypatch)
+    service = object.__new__(HostedRoomService)
+    service.db_path = tmp_path / "source.db"
+    service._load_task_attachments = Mock(side_effect=AssertionError("receipt-only/fresh work must not restage"))
+    client.recover_dispatch = Mock()
+    monkeypatch.setattr("gateway.hosted_room_link_records.room_link_retirement_started", lambda *a, **k: False)
+    task = {"identity": TASK, "status": status, "execution_generation": 2,
+            "payload": {"prompt": PROMPT, "source_event_seq": 1, "attachments": manifests}}
+    service._recover_peer_admission(BINDING, task, rpc.route, client)
+    client.stage_attachments.assert_not_called()
+    service._load_task_attachments.assert_not_called()
+    if status == "stopping":
+        client.recover_dispatch.assert_called_once()
+        assert client.recover_dispatch.call_args.kwargs["receipt_only"] is True
+    else:
+        client.recover_dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize('status,generation,fresh', [('queued', 1, True), ('queued', 2, False),
+                                                     ('running', 1, False)])
+def test_permanent_upload_failure_only_settles_fenced_fresh_generation(monkeypatch, tmp_path, status, generation, fresh):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    rpc, client, _, manifests = _peer(tmp_path, monkeypatch)
+    client.stage_attachments.side_effect = PeerRunsHTTPError('upload too large', status_code=413, retryable=False)
+    client.discard_attachments = Mock()
+    runtime = _attempt(monkeypatch, tmp_path, rpc, manifests=manifests,
+                       task_status=status, prior_generation=generation)
+    client.dispatch.assert_not_called()
+    client.discard_attachments.assert_not_called()
+    runtime._on_terminal.assert_not_called()
+    state.requeue_not_admitted_task.assert_not_called()
+    runtime._defer_unavailable_route.assert_not_called()
+    if fresh:
+        runtime._settle_failure_if_current.assert_called_once()
+        runtime._mark_ambiguous.assert_not_called()
+    else:
+        runtime._settle_failure_if_current.assert_not_called()
+        runtime._mark_ambiguous.assert_called_once()

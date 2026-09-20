@@ -14,7 +14,7 @@ import hmac
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from functools import wraps
 import logging
 import os
@@ -123,7 +123,8 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
-    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, is_network_accessible, validate_media_delivery_path)
+    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
+    validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
@@ -202,7 +203,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
-CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+# Send a comment before remote API clients' common 20-second idle deadline.
+# This constant is shared by OpenAI chat/Responses and native session SSE.
+CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
@@ -579,7 +582,7 @@ def _reap_disconnected_agent_processes(
         is_still_current = _epoch_still_current
     from gateway.run import _reap_gateway_turn_processes
     threading.Thread(
-        target=_reap_gateway_turn_processes, args=(process_task_id, process_baseline),
+        target=copy_context().run, args=(_reap_gateway_turn_processes, process_task_id, process_baseline),
         kwargs={"source": source, "is_still_current": is_still_current},
         name=f"api-turn-reaper-{process_task_id[:12]}", daemon=True).start()
 
@@ -663,7 +666,8 @@ async def _abandon_agent_task(
     agent = agent_ref[0] if agent_ref else None
     if agent is not None:
         with suppress(Exception):
-            request_hard_interrupt(agent, reason)
+            # The abandoning client/server is the issuer, not the user (#112647).
+            request_hard_interrupt(agent, reason, tool_reason=reason.lower())
         _reap_disconnected_agent_processes(agent, source=reap_source)
     if not agent_task.done():
         agent_task.cancel()
@@ -872,7 +876,12 @@ def _resolve_media_to_data_urls(text: str) -> str:
     def _repl(m: "re.Match[str]") -> str:
         return _to_data_url(m.group("path")) or m.group(0)
     try:
-        return MEDIA_TAG_CLEANUP_RE.sub(_repl, text)
+        # A leaked terminal <|eos|> glued to the last tag is not a path terminator (#111046):
+        # scan without it, and drop it (control token, never content) only when a tag resolved.
+        sentinel_start = _terminal_sentinel_start(text)
+        scan = text[:sentinel_start] if sentinel_start >= 0 else text
+        resolved = MEDIA_TAG_CLEANUP_RE.sub(_repl, scan)
+        return text if resolved == scan else resolved
     except Exception:
         return text
 
@@ -1166,7 +1175,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
         # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
-        # /v1/runs). Read from config.yaml gateway.api_server.max_concurrent_runs; 0 disables the cap.
+        # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
+        # gateway.api_server.max_concurrent_runs; 0 disables the cap.
         # Bounds CPU / memory / upstream-LLM-quota exhaustion from a request flood (#7483).
         self._inflight_agent_runs: int = 0
         # Every agent inside _run_agent() for shutdown interrupt, keyed by id() (the strong ref
@@ -1201,7 +1211,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         interrupted = 0
         for agent in agents.values():
             try:
-                if request_hard_interrupt(agent, reason):
+                if request_hard_interrupt(agent, reason, tool_reason="gateway shutdown"):
                     interrupted += 1
             except Exception as exc:
                 logger.debug("[api_server] failed interrupting active agent: %s", exc)
@@ -1565,6 +1575,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+        from gateway.platforms import api_server_room_attachments
+        routes.extend(api_server_room_attachments._http_routes(self))
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
@@ -3139,6 +3151,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        # This turn runs through _run_agent, so it already COUNTS toward the cap (#7483).
+        # Spending the budget without checking it refused every other caller while never
+        # refusing this route — and a fleet's cross-machine DMs all arrive here.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
@@ -3162,6 +3180,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
@@ -3208,27 +3229,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
-                from gateway.platforms.api_server_openai_routes import _response_status
-                status = _response_status(result)
+                # Terminal status and flags come from the result (interrupted -> cancelled,
+                # unfinished -> failed); a late steer rides along as ``pending_steer`` for replay.
+                status, fields = _api_runs.terminal_run_status(result if is_dict else {})
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, "completed": status == "completed",
-                    "partial": bool(result.get("partial")) if is_dict else False,
-                    "interrupted": status == "cancelled", "failed": status == "failed", "runtime": effective_runtime}))
-                # A steer accepted after the final reply lands in result["pending_steer"]; surface
-                # it so clients can replay it rather than lose it.
-                pending_steer = result.get("pending_steer") if is_dict else None
-                completed_payload = {
-                    "session_id": effective_session_id, "message_id": message_id, "completed": status == "completed",
-                    "status": status,
-                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}
-                if pending_steer:
-                    completed_payload["pending_steer"] = pending_steer
-                await queue.put(_event_payload("run." + status, completed_payload))
+                    "content": final_response, **fields, "runtime": effective_runtime}))
+                await queue.put(_event_payload(f"run.{status}", {
+                    "session_id": effective_session_id, "message_id": message_id, **fields,
+                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}))
                 self._set_run_status(
-                    run_id, status, session_id=effective_session_id, usage=usage,
-                    last_event="run." + status,
-                    **({"pending_steer": pending_steer} if pending_steer else {}))
+                    run_id, status, session_id=effective_session_id,
+                    # The reply text, so a caller whose stream died can still read it from
+                    # GET /v1/runs/{run_id}; POST /v1/runs already records output in `_finish`.
+                    output=final_response, usage=usage,
+                    last_event=f"run.{status}", **fields)
             except asyncio.CancelledError:
                 self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
                 raise
@@ -3537,6 +3552,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             job_id = (body or {}).get("job_id")
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
+            # `hermes pause` ESTOP: refuse the fire and ask NAS to retry later.
+            # Placed after JWT verify (don't leak pause state to unauth callers)
+            # and after the drain check (drain is transient shutdown, ESTOP is
+            # operator override). 503 + Retry-After reschedules the job via NAS
+            # retry or the misfire backstop rather than silently dropping it —
+            # matches _CRON_FIRE_RETRY_AFTER_SECONDS in web_routers/cron.py.
+            with suppress(ImportError):
+                from agent.estop import check_paused as _estop_check_paused
+                if _estop_check_paused("cron-webhook", logger):
+                    return web.json_response(
+                        {"error": "hermes is paused (ESTOP)", "job_id": job_id},
+                        status=503,
+                        headers={"Retry-After": str(60)},
+                    )
             from cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
             provider = resolve_cron_scheduler()
             loop = asyncio.get_running_loop()

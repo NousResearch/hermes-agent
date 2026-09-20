@@ -43,6 +43,7 @@ class GatewayTurnPersistenceMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+        persist_user_display_kind: Optional[str] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -58,17 +59,31 @@ class GatewayTurnPersistenceMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
-
-        # "(empty)" = the model produced no visible content after exhausting all retries.
-        if response == "(empty)" and not _intentional_silence:
-            response = (
-                "⚠️ The model returned no response after processing tool results. This can happen "
-                "with some models — try again or rephrase your question."
+        # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
+        # opened the chain: an internal follow-up may go silent, a human one must not.
+        from gateway.response_filters import is_machinery_display_kind
+        from gateway.run_turn import _UNEXPECTED_SILENCE_REPLY
+        _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
+        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+            logger.warning(
+                "silence marker rejected on a user turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
             )
+            _intentional_silence = False
+            response = _UNEXPECTED_SILENCE_REPLY
+
+        # "(empty)" = the model produced no visible content after exhausting all retries. One
+        # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
+        # reads the same words on every surface.
+        if response == "(empty)" and not _intentional_silence:
+            from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
+
+            _model = str(agent_result.get("model") or "").strip() or "The model"
+            response = "⚠️ " + EMPTY_RESPONSE_EXPLANATION.format(model=_model)
         agent_messages = agent_result.get("messages", [])
         logger.info(
-            "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-            _platform_name, source.chat_id or "unknown",
+            "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
+            _platform_name, source.chat_id or "unknown", session_key or "unknown",
             time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
         )
 
@@ -480,10 +495,13 @@ class GatewayTurnPersistenceMixin:
 
         return response
 
+    # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
+    # sign-in, `hermes auth add <provider>` the host equivalent).
     _STATUS_HINTS = {
-        401: " Check your API key or run `claude /login` to refresh OAuth credentials.",
-        402: " Your API balance or quota is exhausted. Check your provider dashboard.",
-        529: " The API is temporarily overloaded. Please try again shortly.",
+        401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
+              "Use /login here, or run `hermes auth add <provider>` on the host."),
+        402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
+        529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
     }
 
     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
@@ -496,10 +514,8 @@ class GatewayTurnPersistenceMixin:
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
-            return (
-                "⚠️ Session too large for the model's context window.\nUse /compact to "
-                "compress the conversation, or /reset to start fresh."
-            )
+            from gateway.run import _CONTEXT_OVERFLOW_REPLY
+            return _CONTEXT_OVERFLOW_REPLY
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -532,10 +548,11 @@ class GatewayTurnPersistenceMixin:
             else:
                 status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
         elif status_code == 400:
-            status_hint = " The request was rejected by the API."
+            status_hint = " The AI model service rejected the request."
         return self._hmwa_add_failed_turn_notice(
-            f"Sorry, I encountered an unexpected error.{status_hint}\n"
-            "Try again or use /reset to start a fresh session.",
+            f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
+            "Use /retry to try again, or /new to start a fresh conversation. "
+            "Technical details are in the gateway log (`hermes logs`).",
             self._PARTIAL_FAILED_TURN_NOTICE,
         )
 

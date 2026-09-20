@@ -1,19 +1,28 @@
-"""Files-only service recovery, without Bot outputs or Messaging dependencies."""
+"""Uncovered reconstruction contracts retained from the historical Files owner.
+
+Source: 691bb08a5cd310fffc5f3d01653dc93f394fc080,
+``tests/tui_gateway/test_hosted_room_file_reconstruction.py``. Existing accepted
+canonical tests cover partial batches, frozen publication, cursor races, peer
+progress, and publication rollback. These two contracts retain identity-tamper
+and bounded interrupted-migration coverage without starting a service worker.
+"""
 
 import sqlite3
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
-from gateway.hosted_room_attachments import AttachmentNotFoundError
-from tests.tui_gateway.test_hosted_room_service import _server
 from tui_gateway.hosted_room_service import HostedRoomService
+
+
+def _server():
+    return SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
 
 
 def _service(db):
@@ -120,142 +129,6 @@ def _reconstruct(service, task):
     )
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("outcome", ["cancelled", "pass", "failed", "deferred"])
-def test_nonvisible_file_turn_preserves_later_text_admission(
-    tmp_path, monkeypatch, legacy, outcome
-):
-    if legacy:
-        original = discussion.plan_next_task
-        monkeypatch.setattr(
-            discussion,
-            "plan_next_task",
-            lambda *a, **kw: original(
-                *a,
-                **{**kw, "freeze_input_context": False},
-            ),
-        )
-    service = _new(tmp_path)
-    attachment = _file(service, "input")
-    _send(service, "initial", [attachment])
-    prior = _queued(service)
-    if outcome == "cancelled":
-        assert service.stop_room("files", cancel_id="stop") == 1
-    else:
-        attempt = _start(service, prior)
-        if outcome == "deferred":
-            driver.defer_not_admitted_task(
-                service.db_path, attempt, reason="offline", clock=time.time
-            )
-        else:
-            driver.settle_task(
-                service.db_path,
-                attempt,
-                settlement_id="prior",
-                clock=time.time,
-                status="settled" if outcome == "pass" else "failed",
-                result={"text": "(pass)"} if outcome == "pass" else {"error": "failed"},
-            )
-    _tick(service)
-    _send(service, "followup")
-    task = _queued(service)
-    assert not task["payload"].get("attachments")
-    assert ("input_context" in task["payload"]) != legacy
-    _settle(service, task)
-    immutable = driver.get_task(service.db_path, task["identity"])
-    cold = _service(service.db_path)
-    _tick(cold)
-    assert _reconstruct(cold, immutable).payload == task["payload"]
-    messages = [
-        event for event in cold._events("files") if event["kind"] == "message.member"
-    ]
-    assert len(messages) == 1 and messages[0]["payload"]["text"] == "Reviewed"
-    assert (
-        driver.get_task(service.db_path, task["identity"])["result"]
-        == immutable["result"]
-    )
-    before = cold._events("files")
-    _tick(cold)
-    assert cold._events("files") == before
-    assert (
-        cold.read_attachment(
-            room_id="files",
-            attachment_id=attachment["attachment_id"],
-            recipient_member_id="builder",
-        ).data
-        == b"input"
-    )
-
-
-@pytest.mark.parametrize("migrate", [False, True])
-def test_partial_visible_reply_keeps_remaining_file_batch(
-    tmp_path, monkeypatch, migrate
-):
-    service = _new(tmp_path)
-    attachments = []
-    with monkeypatch.context() as pause:
-        pause.setattr(service, "prepare_room", lambda binding: None)
-        for batch, count in enumerate((8, 8, 1)):
-            group = [_file(service, f"file-{batch}-{index}") for index in range(count)]
-            attachments.extend(group)
-            _send(service, f"batch-{batch}", group)
-    _tick(service)
-    first = _queued(service)
-    assert first["payload"]["attachments"] == attachments[:16]
-    _settle(service, first, "First sixteen reviewed")
-    room = hosted_rooms.room_state(service.db_path, room_id="files")
-    assert service._publish_terminal_tasks(room)
-    if migrate:
-        with sqlite3.connect(service.db_path) as conn:
-            conn.execute(
-                "UPDATE hosted_room_policy_transcript_state SET schema_version=1"
-            )
-            conn.execute("UPDATE hosted_room_policy_watermarks SET seen_through_seq=4")
-    cold = _service(service.db_path)
-    _tick(cold)
-    second = _queued(cold)
-    assert second["payload"]["attachments"] == attachments[16:]
-    assert second["identity"] != first["identity"]
-    assert _reconstruct(cold, second).payload == second["payload"]
-    assert (
-        cold.policy_checkpoint.snapshot(
-            room_id="files",
-            latest_seq=hosted_rooms.room_state(service.db_path, room_id="files")[
-                "latest_seq"
-            ],
-        ).watermarks[("work", "builder")]
-        == 2
-    )
-
-
-def test_frozen_input_survives_projection_cleanup_and_rejects_missing_canonical_input(
-    tmp_path, monkeypatch
-):
-    service = _new(tmp_path)
-    _send(service, "initial", [_file(service, "input")])
-    task = _queued(service)
-    with monkeypatch.context() as pause:
-        pause.setattr(service, "prepare_room", lambda binding: None)
-        for index in range(30):
-            _send(service, f"later-{index}")
-    room = hosted_rooms.room_state(service.db_path, room_id="files")
-    service.policy_checkpoint.snapshot(room_id="files", latest_seq=room["latest_seq"])
-    with sqlite3.connect(service.db_path) as conn:
-        conn.execute("DELETE FROM hosted_room_policy_events WHERE seq=1")
-        conn.execute("DELETE FROM hosted_room_policy_transcript WHERE seq=1")
-        conn.execute("UPDATE hosted_room_policy_watermarks SET seen_through_seq=999")
-    assert _reconstruct(service, task).payload == task["payload"]
-    _settle(service, task)
-    _tick(service)
-    assert not any(
-        event["kind"] == "message.member" for event in service._events("files")
-    )
-    with sqlite3.connect(service.db_path) as conn:
-        conn.execute("DELETE FROM hosted_room_events WHERE room_id='files' AND seq=1")
-    with pytest.raises(RuntimeError, match="input event is missing"):
-        _task_events(service, task)
-
-
 @pytest.mark.parametrize("change", ["watermark", "events", "target", "attachment"])
 def test_historical_input_and_task_identity_cannot_be_retargeted(tmp_path, change):
     service = _new(tmp_path)
@@ -271,140 +144,6 @@ def test_historical_input_and_task_identity_cannot_be_retargeted(tmp_path, chang
         task["payload"]["attachments"][0]["name"] = "different.txt"
     with pytest.raises((ValueError, RuntimeError)):
         _reconstruct(service, task)
-
-
-@pytest.mark.parametrize(
-    "context",
-    [
-        {"watermark": True, "event_seqs": [1]},
-        {"watermark": 0, "event_seqs": [True]},
-        {"watermark": 0, "event_seqs": [2, 1]},
-        {"watermark": 0, "event_seqs": [2**63]},
-        {"watermark": 0, "event_seqs": list(range(1, 130))},
-    ],
-)
-def test_invalid_input_context_is_rejected_by_real_driver_admission(tmp_path, context):
-    service = _new(tmp_path)
-    _send(service, "initial")
-    task = _queued(service)
-    with pytest.raises(driver.DriverValidationError):
-        driver.admit_task(
-            service.db_path,
-            task["identity"],
-            payload={**task["payload"], "input_context": context},
-            clock=time.time,
-        )
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-def test_published_text_wins_newer_request_after_crash(tmp_path, monkeypatch, legacy):
-    service = _new(tmp_path)
-    with monkeypatch.context() as admission:
-        if legacy:
-            original = discussion.plan_next_task
-            admission.setattr(
-                discussion,
-                "plan_next_task",
-                lambda *a, **kw: original(
-                    *a,
-                    **{**kw, "freeze_input_context": False},
-                ),
-            )
-        _send(service, "initial", [_file(service, "input")])
-    task = _queued(service)
-    _settle(service, task)
-    append = hosted_rooms.append_event
-
-    def interrupt(*args, **kwargs):
-        if kwargs["kind"] == "turn.settled":
-            raise OSError("interrupted terminal append")
-        return append(*args, **kwargs)
-
-    with monkeypatch.context() as crash:
-        crash.setattr(hosted_rooms, "append_event", interrupt)
-        with pytest.raises(OSError, match="interrupted"):
-            _tick(service)
-    with monkeypatch.context() as pause:
-        pause.setattr(service, "prepare_room", lambda binding: None)
-        _send(service, "newer")
-    cold = _service(service.db_path)
-    _tick(cold)
-    own = [
-        event
-        for event in cold._events("files")
-        if event["payload"].get("task_id") == task["identity"].task_id
-    ]
-    assert [event["kind"] for event in own] == ["message.member", "turn.settled"]
-    assert _reconstruct(cold, task).payload == task["payload"]
-
-
-@pytest.mark.parametrize("same_thread", [False, True])
-def test_new_request_at_terminal_append_retries_without_rerunning_task(
-    tmp_path, monkeypatch, same_thread
-):
-    service = _new(tmp_path)
-    _send(service, "initial", [_file(service, "input")])
-    task = _queued(service)
-    _settle(service, task)
-    original = hosted_rooms.append_event
-
-    def newer(*args, **kwargs):
-        if kwargs.get("kind") != "message.member":
-            return original(*args, **kwargs)
-        other = _service(service.db_path)
-        with monkeypatch.context() as pause:
-            pause.setattr(other, "prepare_room", lambda binding: None)
-            _send(other, "newer", thread="work" if same_thread else "other")
-        return original(*args, **kwargs)
-
-    with monkeypatch.context() as pause:
-        pause.setattr(hosted_rooms, "append_event", newer)
-        _tick(service)
-    assert not any(
-        event["kind"] == "message.member" for event in service._events("files")
-    )
-    cold = _service(service.db_path)
-    _tick(cold)
-    own = [
-        event
-        for event in cold._events("files")
-        if event["payload"].get("task_id") == task["identity"].task_id
-    ]
-    assert [event["kind"] for event in own] == (
-        ["turn.cancelled"] if same_thread else ["message.member", "turn.settled"]
-    )
-    assert driver.get_task(service.db_path, task["identity"])["result"] == {
-        "text": "Reviewed"
-    }
-
-
-def test_legacy_admission_winning_prepare_race_keeps_its_original_identity(
-    tmp_path, monkeypatch
-):
-    service = _new(tmp_path)
-    with monkeypatch.context() as pause:
-        pause.setattr(service, "prepare_room", lambda binding: None)
-        _send(service, "initial", [_file(service, "input")])
-    room = hosted_rooms.room_state(service.db_path, room_id="files")
-    snapshot = service._policy_snapshot(room)
-    legacy = discussion.plan_next_task(
-        room,
-        snapshot.events,
-        local_profiles=service.local_profiles(),
-        initial_watermarks=snapshot.watermarks,
-    ).task
-    assert legacy is not None and "input_context" not in legacy.payload
-    original = driver.get_task_for_turn
-
-    def other_admission(db, identity):
-        driver.admit_task(db, legacy.identity, payload=legacy.payload, clock=time.time)
-        return original(db, identity)
-
-    monkeypatch.setattr(driver, "get_task_for_turn", other_admission)
-    _tick(service)
-    task = _queued(service)
-    assert task["identity"] == legacy.identity
-    assert task["payload"] == legacy.payload
 
 
 def test_interrupted_migration_resumes_bounded_pages_and_input_read_is_indexed(
@@ -469,81 +208,3 @@ def test_interrupted_migration_resumes_bounded_pages_and_input_read_is_indexed(
     monkeypatch.setattr(cold.policy_checkpoint, "_connect", bounded_connection)
     assert _reconstruct(cold, task).payload == task["payload"]
     assert 0 < len(steps) <= 500
-
-
-@pytest.mark.parametrize("publish_before_rollback", [False, True])
-def test_competing_input_senders_cannot_publish_revoked_files(
-    tmp_path, monkeypatch, publish_before_rollback
-):
-    first = _new(tmp_path)
-    second = _service(first.db_path)
-    attachment = _file(first, "input")
-    payload = {"text": "input", "thread_id": "work", "attachments": [attachment]}
-    actual = hosted_rooms.append_event
-    first_ready, second_ready, release = (
-        threading.Event(),
-        threading.Event(),
-        threading.Event(),
-    )
-    failures = []
-
-    def first_send():
-        try:
-            first.send(room_id="files", event_id="shared", payload=payload)
-        except OSError as exc:
-            failures.append(str(exc))
-
-    def append(*args, **kwargs):
-        if threading.current_thread().name.startswith("first-sender"):
-            first_ready.set()
-            assert release.wait(10)
-            raise OSError("sender lost before append")
-        second_ready.set()
-        if publish_before_rollback:
-            result = actual(*args, **kwargs)
-            release.set()
-            running.result(timeout=10)
-            return result
-        release.set()
-        running.result(timeout=10)
-        return actual(*args, **kwargs)
-
-    with (
-        ThreadPoolExecutor(max_workers=1, thread_name_prefix="first-sender") as pool,
-        monkeypatch.context() as pause,
-    ):
-        pause.setattr(hosted_rooms, "append_event", append)
-        pause.setattr(second, "prepare_room", lambda binding: None)
-        running = pool.submit(first_send)
-        try:
-            assert first_ready.wait(10)
-            if publish_before_rollback:
-                second.send(room_id="files", event_id="shared", payload=payload)
-            else:
-                with pytest.raises(hosted_rooms.EventAttachmentConflictError):
-                    second.send(room_id="files", event_id="shared", payload=payload)
-                assert not second._events("files")
-                with pytest.raises(AttachmentNotFoundError):
-                    second.read_attachment(
-                        room_id="files",
-                        attachment_id=attachment["attachment_id"],
-                        recipient_member_id="builder",
-                    )
-        finally:
-            release.set()
-            running.result(timeout=10)
-    assert first_ready.is_set() and second_ready.is_set() and len(failures) == 1
-    with monkeypatch.context() as pause:
-        pause.setattr(second, "prepare_room", lambda binding: None)
-        second.send(room_id="files", event_id="shared", payload=payload)
-    cold = _service(first.db_path)
-    assert len(cold._events("files")) == 1
-    assert (
-        cold.read_attachment(
-            room_id="files",
-            event_id="shared",
-            attachment_id=attachment["attachment_id"],
-            recipient_member_id="builder",
-        ).data
-        == b"input"
-    )

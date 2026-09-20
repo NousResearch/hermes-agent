@@ -52,6 +52,17 @@ def _filter_results_by_provider(results: List[SkillMeta], provider: str) -> List
     return [r for r in results if str((r.extra or {}).get("provider", "")).lower() == want]
 
 
+def _provider_filter_of(source_filter: str) -> str:
+    """Normalized provider filter when ``--source`` names one (nvidia/openai/...), else ``""``."""
+    value = source_filter.strip().lower()
+    return value if value in _PROVIDER_FILTER_VALUES else ""
+
+
+def _tap_cache_key(repo: str, path: str, bucket: Optional[str] = None) -> str:
+    """Disk-cache key for one tap's skill listing (tests seed that cache through it too)."""
+    return f"{repo}_{path}_{bucket or ''}".replace("/", "_").replace(" ", "_")
+
+
 def _is_rate_limit_response(resp: httpx.Response) -> bool:
     """403 with exhausted quota, or any 429."""
     return resp.status_code == 429 or (
@@ -224,11 +235,17 @@ class GitHubSource(SkillSource):
         parts = identifier.split("/", 2)
         return "trusted" if len(parts) >= 2 and f"{parts[0]}/{parts[1]}" in TRUSTED_REPOS else "community"
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        """Substring-match all taps; dedupe by identifier preferring higher trust."""
+    def search(self, query: str, limit: int = 10, *, provider_filter: str = "") -> List[SkillMeta]:
+        """Substring-match taps, skip taps outside a provider filter, then dedupe by identifier
+        preferring higher trust and limit."""
         results: List[SkillMeta] = []
         query_lower = query.lower()
+        want = provider_filter.strip().lower()
         for tap in self.taps:
+            # The tap repo fixes every result's provider, so wrong-provider taps can be
+            # skipped before their enumeration cost (cache reads or GitHub API calls).
+            if want and (github_provider_for(tap["repo"]) or "").lower() != want:
+                continue
             try:
                 for skill in self._list_skills_in_repo(tap["repo"], tap.get("path", ""), tap.get("bucket")):
                     if _matches_query(query_lower, skill.name, skill.description, skill.tags):
@@ -340,7 +357,7 @@ class GitHubSource(SkillSource):
         """List skill directories in a GitHub repo path, using cached index. ``bucket`` labels every
         skill from a tap whose repo ships no ``skills.sh.json`` grouping, so several repos can share one
         hub category (e.g. "science"); a sidecar grouping still wins when present."""
-        cache_key = f"{repo}_{path}_{bucket or ''}".replace("/", "_").replace(" ", "_")
+        cache_key = _tap_cache_key(repo, path, bucket)
         cached = _cached_metas(cache_key)
         if cached is not None:
             return cached

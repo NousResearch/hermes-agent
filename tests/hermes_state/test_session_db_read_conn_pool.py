@@ -627,6 +627,18 @@ def test_fd_headroom_guard_fails_open_where_it_cannot_measure(monkeypatch):
     assert readpool._fd_headroom_ok() is False
 
 
+def test_fd_soft_limit_fails_open_for_importable_resource_stub(monkeypatch):
+    """An importable ``resource`` without ``getrlimit`` (third-party Windows stub,
+    #111877) must read as "unmeasurable", not abort every session read."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "resource", types.ModuleType("resource"))
+
+    assert hermes_state_readpool._fd_soft_limit() is None
+    assert hermes_state_readpool._fd_headroom_ok() is True
+
+
 @pytest.mark.requires_wal
 def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     """Writer connections cannot be capped, so duplicates must be visible."""
@@ -647,6 +659,29 @@ def test_duplicate_handles_on_one_path_are_reported(db, caplog):
             f"{_HANDLES_PER_PATH_WARN + 1} handles on one file went unreported; "
             f"each holds a writer connection nothing bounds"
         )
+    finally:
+        for d in extra:
+            d.close()
+
+
+@pytest.mark.requires_wal
+def test_read_only_handles_do_not_count_toward_the_duplicate_writer_warning(db, caplog):
+    """The warning names the cost of WRITER handles (writer connection, write lock, close-time
+    checkpoint). Read-only attaches are the sanctioned per-request shape for dashboard routers
+    and CLI lookups, so any number of them must stay silent (#100896)."""
+    import logging
+
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _HANDLES_PER_PATH_WARN
+
+    extra = []
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            for _ in range(_HANDLES_PER_PATH_WARN + 2):
+                extra.append(SessionDB(db_path=db.db_path, read_only=True))
+        assert not any(
+            "live SessionDB handles on" in r.getMessage() for r in caplog.records
+        ), "read-only attaches were counted as duplicate writers"
     finally:
         for d in extra:
             d.close()

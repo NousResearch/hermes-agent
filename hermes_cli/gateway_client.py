@@ -124,7 +124,8 @@ async def connect_gateway():
         home = get_hermes_home().resolve()
         result = await asyncio.to_thread(ensure_gateway_runtime, home)
         if result.state != "ready" or result.endpoint is None:
-            raise GatewayClientError(f"Gateway {result.state}: {result.reason_code or 'not_ready'}")
+            detail = f" ({result.detail})" if getattr(result, "detail", None) else ""
+            raise GatewayClientError(f"Gateway {result.state}: {result.reason_code or 'not_ready'}{detail}")
         endpoint = result.endpoint
         ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
         url = endpoint.api_origin.replace("https:", "wss:").replace("http:", "ws:") + "/api/ws"

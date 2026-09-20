@@ -13,9 +13,6 @@ export interface CanonicalGroupMessages {
   unconfirmedSend: string
   restoredPendingSend: string
   groupMessage: string
-  messagePlaceholder: string
-  userSpeaker: string
-  systemSpeaker: string
   attachFiles: string
   removeAttachment: string
   uploadFailed: string
@@ -37,9 +34,6 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: 'The previous send is unconfirmed. Retry its original text before sending another message.',
     restoredPendingSend: 'An unconfirmed send was restored. Retry it before sending another message.',
     groupMessage: 'Group message',
-    messagePlaceholder: 'Message the group…',
-    userSpeaker: 'User',
-    systemSpeaker: 'System',
     attachFiles: 'Attach files',
     removeAttachment: 'Remove attachment',
     uploadFailed: 'Upload failed'
@@ -59,9 +53,6 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: '前回の送信は未確認です。別のメッセージを送信する前に、元のテキストで再試行してください。',
     restoredPendingSend: '未確認の送信を復元しました。別のメッセージを送信する前に再試行してください。',
     groupMessage: 'グループメッセージ',
-    messagePlaceholder: 'グループにメッセージを送信…',
-    userSpeaker: 'ユーザー',
-    systemSpeaker: 'システム',
     attachFiles: 'ファイルを添付',
     removeAttachment: '添付ファイルを削除',
     uploadFailed: 'アップロードに失敗しました'
@@ -81,9 +72,6 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: '上次发送尚未确认。请先重试发送原始文本，再发送其他消息。',
     restoredPendingSend: '已恢复尚未确认的发送。请先重试，再发送其他消息。',
     groupMessage: '群组消息',
-    messagePlaceholder: '向群组发送消息…',
-    userSpeaker: '用户',
-    systemSpeaker: '系统',
     attachFiles: '附加文件',
     removeAttachment: '移除附件',
     uploadFailed: '上传失败'
@@ -103,9 +91,6 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: '上次傳送尚未確認。請先重試傳送原始文字，再傳送其他訊息。',
     restoredPendingSend: '已還原尚未確認的傳送。請先重試，再傳送其他訊息。',
     groupMessage: '群組訊息',
-    messagePlaceholder: '傳送訊息至群組…',
-    userSpeaker: '使用者',
-    systemSpeaker: '系統',
     attachFiles: '附加檔案',
     removeAttachment: '移除附件',
     uploadFailed: '上傳失敗'
@@ -125,9 +110,6 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: 'الإرسال السابق غير مؤكّد. أعد المحاولة بالنص الأصلي قبل إرسال رسالة أخرى.',
     restoredPendingSend: 'تمت استعادة إرسال غير مؤكّد. أعد محاولته قبل إرسال رسالة أخرى.',
     groupMessage: 'رسالة المجموعة',
-    messagePlaceholder: 'أرسل رسالة إلى المجموعة…',
-    userSpeaker: 'المستخدم',
-    systemSpeaker: 'النظام',
     attachFiles: 'إرفاق ملفات',
     removeAttachment: 'إزالة المرفق',
     uploadFailed: 'فشل الرفع'
@@ -150,9 +132,6 @@ export const CANONICAL_GROUP_LOCALES = {
     restoredPendingSend:
       'Восстановлена неподтверждённая отправка. Повторите её, прежде чем отправлять другое сообщение.',
     groupMessage: 'Сообщение группе',
-    messagePlaceholder: 'Напишите сообщение группе…',
-    userSpeaker: 'Пользователь',
-    systemSpeaker: 'Система',
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Удалить вложение',
     uploadFailed: 'Не удалось загрузить файл'

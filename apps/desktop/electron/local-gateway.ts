@@ -3,18 +3,21 @@ import crypto from 'node:crypto'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
-export function runGatewayEnsure(backend, cwd: string, home: string): Promise<{ code: number; stdout: string }> {
+export function runGatewayEnsure(backend, cwd: string, home: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(backend.command, backend.args, hiddenWindowsChildOptions({ cwd, env: { ...process.env, HERMES_HOME: home, ...backend.env }, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
     let stdout = ''
+    let stderr = ''
     // Only the bounded ensure client is ours. Never retain/kill its detached owner.
     const timer = setTimeout(() => child.kill(), 40_000)
     child.stdout.on('data', data => { stdout += data.toString();
 
  if (stdout.length > 65536) {child.kill()} })
-    child.stderr.resume()
+    // Diagnostics only (never protocol): an older `hermes` without the subcommand, a missing
+    // profile or an import crash explain themselves here while stdout stays empty.
+    child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4096) })
     child.on('error', () => { clearTimeout(timer); reject(new Error('Could not run hermes gateway ensure')) })
-    child.on('close', code => { clearTimeout(timer); resolve({ code: code ?? 7, stdout }) })
+    child.on('close', code => { clearTimeout(timer); resolve({ code: code ?? 7, stdout, stderr }) })
   })
 }
 
@@ -30,12 +33,33 @@ export interface GatewayEndpoint {
   api_origin: string
   capabilities: string[]
   supervisor: string
+  /** Multiplexer home whose control socket answers for a served secondary; null when the profile owns its own. */
+  control_home?: string | null
 }
 
-export async function ensureLocalGateway(run: () => Promise<{ code: number; stdout: string }>, beforeEnsure?: () => Promise<void>) {
+/** The single-line JSON `hermes gateway ensure --json` prints, or a diagnosis of why there is none.
+ *
+ * Every protocol outcome (ready/starting/incompatible/...) is JSON on stdout. Empty or
+ * non-JSON stdout means the command never reached the protocol boundary: an older `hermes`
+ * on PATH that has no `ensure` subcommand, a profile that does not exist, an interpreter
+ * crash. A bare JSON.parse there surfaced as "Unexpected end of JSON input" with the real
+ * reason discarded on stderr. */
+export function parseGatewayEnsureOutput(result: { code: number; stdout: string; stderr?: string }): Record<string, any> {
+  try {
+    const payload = JSON.parse(result.stdout)
+
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {return payload}
+  } catch { /* diagnosed below */ }
+
+  const reason = String(result.stderr ?? '').trim().split(/\r?\n/).filter(Boolean).pop()
+
+  throw new Error(`hermes gateway ensure produced no result (exit ${result.code})${reason ? `: ${reason}` : ''}. Update Hermes or check the profile, then retry.`)
+}
+
+export async function ensureLocalGateway(run: () => Promise<{ code: number; stdout: string; stderr?: string }>, beforeEnsure?: () => Promise<void>) {
   await beforeEnsure?.()
   const result = await run()
-  const payload = JSON.parse(result.stdout)
+  const payload = parseGatewayEnsureOutput(result)
 
   if (result.code !== 0 || payload.state !== 'ready') {
     throw new Error(`Gateway ${payload.state || 'inaccessible'} (${payload.reason_code || 'ensure_failed'}). Use hermes gateway status for recovery.`)
@@ -169,12 +193,19 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   }
 
   const home = endpoint.profile_id
+  // A served secondary has no socket of its own: the default multiplexer's control socket
+  // mints its tickets (bound to the secondary's profile_id). Same rule as
+  // hermes_cli.gateway_runtime.control_home_for.
+  const controlHome = endpoint.control_home || home
 
-  if (await fs.realpath(home) !== home) {throw new Error('Noncanonical gateway profile')}
-  await privateNode(home, 'directory')
+  for (const dir of new Set([home, controlHome])) {
+    if (await fs.realpath(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
+    await privateNode(dir, 'directory')
+  }
+
   let socketPath: string
 
-  try { socketPath = await resolveControlSocket(home) } catch (error) {
+  try { socketPath = await resolveControlSocket(controlHome) } catch (error) {
     // `gateway stop` unlinks both the socket and its pointer: the owner is gone,
     // which the redial must treat as stale rather than as a raw filesystem error.
     if (isMissingNodeError(error)) {throw new Error('Gateway ticket control socket missing')}

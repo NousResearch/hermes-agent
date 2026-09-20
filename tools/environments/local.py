@@ -306,7 +306,13 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     provider/tool blocklist) unless ``inherit_credentials`` — pass that **only** for
     children that legitimately need LLM credentials (user-blessed claude/codex/gemini
     CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
-    env = os.environ.copy()
+    env = _scrub_credentials(os.environ.copy(), inherit_credentials=inherit_credentials)
+    env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
+    return _finalize_child_env(env)
+
+
+def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
+    """Tier 1 (always) and, unless ``inherit_credentials``, Tier 2 provider/tool credentials, in place."""
     strip = _ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()
     if not inherit_credentials:
         strip |= _HERMES_PROVIDER_ENV_BLOCKLIST
@@ -314,8 +320,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
         if (key in strip or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(key)):
             del env[key]
-    env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
-    return _finalize_child_env(env)
+    return env
 
 
 def build_subprocess_env(
@@ -337,22 +342,74 @@ def build_subprocess_env(
     return delegated_child_subprocess_env(env)
 
 
+def served_profile_child_env(
+    base: "Mapping[str, str] | None" = None, *, target_home: "str | Path | None" = None,
+    inherit_credentials: bool = False,
+) -> dict[str, str]:
+    """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
+    workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
+    target is a ROUTED home (not the launch profile's — under multiplex or a Desktop/dashboard backend
+    serving ``?profile=`` with the flag off) the launch ``.env`` residue and bridged ``TERMINAL_*`` are
+    dropped (``strip_launch_profile_env``) AND every provider/tool credential is scrubbed from the base
+    regardless of provenance: a key systemd / Compose / the shell injected into the launch process was
+    never recorded in ``.env`` or a source snapshot, so a name-based strip cannot see it and the target
+    overlay cannot remove it. ``inherit_credentials=True`` is for children that legitimately run with
+    the profile's credentials (they run the agent or mint its token): the target profile's own secrets
+    (its ``.env`` + hydrated sources, what a standalone ``hermes -p X`` loads itself) are overlaid — never
+    a sibling profile's. Under multiplex with neither a target nor a bound scope the call raises
+    (``get_secret``'s fail-closed contract): minting with the launch environ would sign in as the wrong
+    profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
+    ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
+    ``hermes_subprocess_env`` snapshot."""
+    from agent.secret_scope import (
+        UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
+    from hermes_constants import get_hermes_home_override
+    env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
+    target = str(target_home or get_hermes_home_override() or "")
+    if target:
+        env["HERMES_HOME"] = target
+        if _is_routed_home(target):
+            strip_launch_profile_env(env, target)
+            _scrub_credentials(env, inherit_credentials=False)
+    if inherit_credentials:
+        if target:
+            secrets = build_profile_secret_scope(Path(target))
+        else:
+            secrets = current_secret_scope()
+            if secrets is None and is_multiplex_active():
+                raise UnscopedSecretError(
+                    "", "served_profile_child_env(inherit_credentials=True) called with no target home and "
+                    "no profile secret scope bound while multiplexing is on; the child would inherit the "
+                    "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
+        env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
+    return env
+
+
+def _is_routed_home(target_home: "str | Path") -> bool:
+    """True when ``target_home`` is not the process's own (launch) home."""
+    from hermes_constants import get_process_hermes_home
+    try:
+        return Path(target_home).resolve() != get_process_hermes_home().resolve()
+    except OSError:
+        return True
+
+
 def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
     """Drop the LAUNCH profile's residue from a child env built for another served profile.
     ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
     the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
     ``HERMES_LANGUAGE``...), so a standalone ``hermes -p X`` worker and a served one saw different
     envs. The child re-loads X's own ``.env`` and bridges X's config itself. ``target_home``
-    defaults to the active home override; no-op outside multiplex or when the target IS the
-    launch profile."""
-    from agent.secret_scope import _is_global_env, is_multiplex_active, load_env_file
+    defaults to the active home override; no-op when there is no target or the target IS the
+    launch profile. The authority test is "does this task serve a routed home", not "is the
+    gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
+    installing a HERMES_HOME override without that flag."""
+    from agent.secret_scope import _is_global_env, load_env_file
     from hermes_constants import get_hermes_home_override, get_process_hermes_home
     target = target_home or get_hermes_home_override()
-    if not is_multiplex_active() or not target:
+    if not target or not _is_routed_home(target):
         return env
     launch_home = get_process_hermes_home()
-    if Path(target).resolve() == launch_home.resolve():
-        return env
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
         if not _is_global_env(key) or key.startswith("TERMINAL_"):
@@ -525,16 +582,33 @@ def _managed_runtime_path_entries() -> list[str]:
         return []
 
 
+def _user_local_bin_entries() -> list[str]:
+    """``~/.local/bin`` when it exists — the pip --user / pipx / uv-tool install
+    target. A backend launched by a non-interactive SSH session, systemd or a GUI
+    launcher inherits a PATH without it (only the login shell adds it), so CLIs
+    installed there were ``command not found`` from the terminal tool (#111778)."""
+    local_bin = Path.home() / ".local" / "bin"
+    try:
+        return [str(local_bin)] if local_bin.is_dir() else []
+    except OSError:
+        # HOME can point at a directory this process may not traverse (CI runs
+        # with HOME=/root as an unprivileged user); such a home has no usable
+        # ~/.local/bin either.
+        return []
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Normalised POSIX PATH with missing sane entries appended: empty entries
     dropped (shells read them as cwd), duplicates collapsed (first wins), then
-    missing ``_SANE_PATH`` / managed-runtime dirs appended so user entries keep
-    precedence. Windows is a no-op passthrough (native ``;`` PATH untouched)."""
+    missing ``_SANE_PATH`` / managed-runtime / ``~/.local/bin`` dirs appended so
+    user entries keep precedence. Windows is a no-op passthrough (native ``;``
+    PATH untouched)."""
     if _IS_WINDOWS:
         return existing_path
     # dict preserves first-occurrence order; empty entries dropped.
     ordered = dict.fromkeys(entry for entry in existing_path.split(":") if entry)
-    ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries()]))
+    ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries(),
+                                  *_user_local_bin_entries()]))
     return ":".join(ordered)
 
 

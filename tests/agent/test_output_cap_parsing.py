@@ -54,6 +54,13 @@ class TestParseDashScopeOutputCap:
     """DashScope / Alibaba Cloud (Qwen) reject an over-cap output request with
     a bounded range whose upper bound is the real max-output cap (#55546)."""
 
+    def test_anthropic_output_ceiling_format(self):
+        msg = (
+            "max_tokens: 100000 > 64000, which is the maximum allowed number "
+            "of output tokens for claude-sonnet-4-5"
+        )
+        assert parse_available_output_tokens_from_error(msg) == 64000
+
     def test_dashscope_range_format(self):
         msg = ("HTTP 400: InternalError.Algo.InvalidParameter: "
                "Range of max_tokens should be [1, 65536]")
@@ -99,6 +106,16 @@ class TestIsOutputCapError:
         assert is_output_cap_error(
             "max_tokens: 32768 > context_window: 200000 - "
             "input_tokens: 190000 = available_tokens: 10000"
+        ) is True
+
+    def test_anthropic_max_tokens_output_ceiling_is_output_cap(self):
+        # Anthropic invalid_request_error uses the same error type for bad
+        # schemas, images, and output-cap violations. This message is about the
+        # requested response budget, not input/context overflow, so it must stay
+        # out of the compression path. Port of cline/cline#12876.
+        assert is_output_cap_error(
+            "max_tokens: 100000 > 64000, which is the maximum allowed number "
+            "of output tokens for claude-sonnet-4-5"
         ) is True
 
     def test_real_input_overflow_is_not_output_cap(self):

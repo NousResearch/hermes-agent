@@ -315,11 +315,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
         if not isinstance(out.get("properties"), dict):
             out["properties"] = {}
         if isinstance(out.get("required"), list):
-            valid = [r for r in out["required"] if isinstance(r, str) and r in out["properties"]]
-            if valid:
-                out["required"] = valid
-            else:
-                del out["required"]
+            # Keep the key even when nothing survives: ``required: []`` is valid everywhere,
+            # while a missing key reads as ``null`` on strict OpenAI-compatible proxies.
+            out["required"] = [r for r in out["required"] if isinstance(r, str) and r in out["properties"]]
     return out
 
 

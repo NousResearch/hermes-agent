@@ -9,10 +9,12 @@ import — must run without opening ``SessionDB()``, which a malformed schema pr
 import json
 import os
 import shutil
+import sqlite3
 import sys
 from functools import partial
 from pathlib import Path
 
+from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
 
 
@@ -44,7 +46,7 @@ def _confirm_prompt(prompt: str) -> bool:
 
 
 def _not_found(session_id) -> int:
-    print(f"Session '{session_id}' not found.")
+    print(f"No session '{session_id}'. Run: hermes sessions list to find the id.")
     return 1
 
 
@@ -54,7 +56,7 @@ def _print_dry_run_preview(candidates, filters) -> None:
     for row in candidates[:100]:
         print(f"  {row.get('id')}  {row.get('source', '')}")
     if len(candidates) > 100:
-        print(f"  ... {len(candidates) - 100} more")
+        print_truncated(len(candidates) - 100)
 
 
 _FILTER_ARGS = (
@@ -261,7 +263,14 @@ def _default_exclude(args):
 
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
-    sessions = db.list_sessions_rich(source=args.source, exclude_sources=_default_exclude(args), limit=args.limit)
+    # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
+    # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
+    limit = args.limit
+    sessions = db.list_sessions_rich(
+        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+    )
+    truncated = limit > 0 and len(sessions) > limit
+    sessions = sessions[:limit] if truncated else sessions
 
     # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
     _ws_filter = (getattr(args, "workspace", None) or "").strip()
@@ -299,6 +308,8 @@ def _cmd_list(db, args):
     print(header + "\n" + "─" * rule)
     for s in sessions:
         print(fmt(s))
+    if truncated:
+        print_truncated(None, f"use --limit {limit * 2} to see more")
 
 
 # -- export -----------------------------------------------------------------
@@ -592,7 +603,7 @@ def _prune_never_active_keyed(db, args):
         print(f"  {s['id']}  {format_epoch(s.get('started_at')):<17} {(s.get('source') or '-'):<10} "
               f"{s.get('session_key') or '-'}")
     if len(candidates) > len(shown):
-        print(f"  … {len(candidates) - len(shown)} more")
+        print_truncated(len(candidates) - len(shown))
     if args.dry_run:
         print("Dry run — nothing deleted.")
         return
@@ -648,11 +659,7 @@ def _cmd_prune_or_archive(db, args, action):
     filters["include_pinned"] = getattr(args, "include_pinned", False)
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
-    preview = {}
-    options = {'exclude_ledger_owned': True, 'report': preview} if prune else {}
-    candidates = db.list_prune_candidates(**filters, **options)
-    if preview.get('skipped_protected'):
-        print(f"Note: {preview['skipped_protected']} session(s) with retained runtime records will be skipped.")
+    candidates = db.list_prune_candidates(**filters)
     # Archive expands each row to its compression lineage (may include open continuations), so a
     # direct-open count would misdescribe its effect.
     skipped_open = db.count_open_prune_matches(**filters) if prune else 0
@@ -661,8 +668,7 @@ def _cmd_prune_or_archive(db, args, action):
               "will be skipped because prune only deletes ended sessions. Use `hermes sessions delete <id>` "
               "to remove one explicitly.")
     if not candidates:
-        label = 'unprotected sessions' if preview.get('skipped_protected') else 'sessions'
-        print(f"No {label} match ({describe_filters(filters)}).")
+        print(f"No sessions match ({describe_filters(filters)}).")
         return
     # Candidates are oldest-activity-first; show the span so a long-lived but recently used
     # conversation cannot look old merely by creation date.
@@ -678,7 +684,7 @@ def _cmd_prune_or_archive(db, args, action):
             print(f"  {s['id']}  {format_epoch(s.get('last_active')):<17} {s['source']:<10} {model:<24} "
                   f"{s['message_count']:>4} msgs  {(s.get('title') or '')[:36]}")
         if len(candidates) > len(shown):
-            print(f"  … and {len(candidates) - len(shown)} more")
+            print_truncated(len(candidates) - len(shown))
         if args.dry_run:
             print(f"Dry run — nothing {'deleted' if prune else 'archived'}.")
             return
@@ -687,11 +693,7 @@ def _cmd_prune_or_archive(db, args, action):
         print("Cancelled.")
         return
     if prune:
-        report = {}
-        removed = db.prune_sessions(sessions_dir=_sessions_dir(), report=report, **filters)
-        print(f"Pruned {removed} session(s).")
-        if report.get('skipped_protected'):
-            print(f"Skipped {report['skipped_protected']} session(s) with retained runtime records.")
+        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), **filters)} session(s).")
     else:
         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
               "but fully recoverable (nothing was deleted).")
@@ -962,6 +964,7 @@ def _cmd_stats(db, args):
 # -- dispatch -----------------------------------------------------------------
 
 _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
@@ -972,46 +975,56 @@ _DB_HANDLERS = {
 }
 
 
+def _print_empty_store(action: str, args) -> None:
+    """A profile that never created state.db: report empty instead of opening a writer that creates it."""
+    if action == "stats":
+        print("Total sessions: 0\nTotal messages: 0")
+    elif action == "pinned":
+        print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
+    else:
+        print("No sessions found.")
+
+
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
     pre = _PRE_DB_HANDLERS.get(action)
     if pre is not None:
         return pre(args)
+    from hermes_state import SessionDB
+    from hermes_constants import get_hermes_home
+    # Verified deletion is an explicit mutation, not a read-only export.
+    deleting_export = (
+        action == "export" and getattr(args, "delete_after_verified", False)
+        and getattr(args, "yes", False) and getattr(args, "session_id", None)
+        and getattr(args, "format", None) in ("md", "qmd")
+    )
+    observational = action in _OBSERVATIONAL_DB_ACTIONS or (action == "export" and not deleting_export)
+    # A served-profile process has no single default home: pass the store path explicitly.
+    path = get_hermes_home() / "state.db"
     try:
-        from hermes_state import SessionDB
-        from hermes_constants import get_hermes_home
-        path = get_hermes_home() / "state.db"
-        empty_messages = {
-            "export": "No sessions found.",
-            "list": "No sessions found.",
-            "stats": "Total sessions: 0\nTotal messages: 0",
-            "pinned": "[]" if getattr(args, "json", False) else
-                "No pinned sessions. Pin one with: hermes sessions pin <session_id>",
-        }
-        # Verified deletion is an explicit mutation, not a read-only export.
-        deleting_export = (
-            action == "export" and getattr(args, "delete_after_verified", False)
-            and getattr(args, "yes", False) and getattr(args, "session_id", None)
-            and getattr(args, "format", None) in ("md", "qmd")
-        )
-        read_only = action in empty_messages and not deleting_export
-        if action in empty_messages and not path.exists():
-            print(empty_messages[action])
-            return
-        db = SessionDB(db_path=path, read_only=read_only) if action in empty_messages else SessionDB()
+        db = SessionDB(db_path=path, read_only=observational)
     except Exception as e:
-        print(f"Error: Could not open session database: {e}")
+        # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
+        if observational and not path.exists():
+            return _print_empty_store(action, args)
+        print("Could not open your session history database. "
+              "Run: hermes sessions repair to fix it (a backup is made first).")
+        print(f"Details: {e}")
         return 1
     try:
         handler = _DB_HANDLERS.get(action)
         if handler is None:
             sessions_parser.print_help()
             return
-        from hermes_state_raw_delete import SessionLedgerProtectedError
         try:
             return handler(db, args)
-        except SessionLedgerProtectedError as exc:
-            print(f"Refused: {exc}")
+        except sqlite3.OperationalError as e:
+            from hermes_state_repair import _schema_not_built
+
+            if not observational or not _schema_not_built(e):
+                raise
+            # A read-only opener skips schema migration, so a store from an older release can lack a column.
+            print(f"Error: session database needs migration — run any writing hermes command first ({e})")
             return 1
     finally:
         db.close()

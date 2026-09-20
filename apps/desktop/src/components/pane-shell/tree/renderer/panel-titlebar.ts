@@ -1,6 +1,17 @@
 import { type RefObject, useCallback, useLayoutEffect, useState } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { $connection } from '@/store/session'
+
+/** The window-chrome inputs that move the fixed titlebar clusters without
+ *  changing their size (macOS fullscreen hides the traffic lights → the left
+ *  cluster pins to the window edge). */
+function chromeKey(): string {
+  const connection = $connection.get()
+  const position = connection?.windowButtonPosition
+
+  return `${connection?.isFullscreen ? 1 : 0}:${position?.x ?? ''}:${position?.y ?? ''}`
+}
 
 /** Reserve actual chrome intersections, including after a neighbor becomes a rail. */
 export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: boolean, minimized: boolean) {
@@ -52,9 +63,32 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
 
     window.addEventListener('resize', measure)
 
+    // A fullscreen transition first fires `resize` (measured against the
+    // pre-transition cluster) and only then lands the window-state IPC that
+    // translates the fixed clusters — same size, new position — so neither
+    // ResizeObserver nor `resize` re-runs. Re-measure after the frame that
+    // repaints the clusters from the new chrome vars.
+    let lastChrome = chromeKey()
+    let frame = 0
+    const unsubscribeChrome = $connection.subscribe(() => {
+      const nextChrome = chromeKey()
+
+      if (nextChrome === lastChrome) {
+        return
+      }
+
+      lastChrome = nextChrome
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(measure)
+      })
+    })
+
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', measure)
+      unsubscribeChrome()
+      cancelAnimationFrame(frame)
     }
   }, [enabled, measure])
 

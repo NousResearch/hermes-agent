@@ -187,8 +187,8 @@ Flags used when spawning: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_
 ```powershell
 hermes gateway status      # Merged view: schtasks + Startup folder + running PID
 hermes gateway start       # Starts the scheduled task now
-hermes gateway stop        # Graceful SIGTERM equivalent (TerminateProcess via psutil)
-hermes gateway restart
+hermes gateway stop        # Writes the planned-stop marker, waits for the gateway to drain (≤ agent.restart_drain_timeout, capped at 30 s), then force-kills only if it is still alive
+hermes gateway restart     # Same drain-first stop, then a fresh start
 hermes gateway uninstall   # Removes schtasks entry, Startup shortcut, pid file
 ```
 

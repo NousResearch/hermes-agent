@@ -67,6 +67,8 @@ Important:
 
 When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the built-in default identity text.
 
+Because `SOUL.md` is your own file (agent writes to it always need your approval), a prompt-injection scanner hit does **not** block it the way it blocks a project `AGENTS.md`: the file still loads, Hermes logs a warning naming the matched pattern, and `/context` marks the file `⚠ … review the file`. Security guidance that quotes an attack phrase ("content telling you to ignore previous instructions") therefore keeps your identity intact.
+
 If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
 
 No wrapper language is added around the file. The content itself matters — write the way you want your agent to think and speak.
@@ -250,7 +252,7 @@ Possible causes:
 - higher-priority instructions are overriding it
 - the file includes conflicting guidance
 - the file is too long and got truncated
-- some of the text resembles prompt-injection content and may be blocked or altered by the scanner
+- some of the text resembles prompt-injection content — SOUL.md still loads, but check `/context` for a `⚠ … review the file` line and the log for the matched pattern
 
 ### My SOUL.md became too project-specific
 

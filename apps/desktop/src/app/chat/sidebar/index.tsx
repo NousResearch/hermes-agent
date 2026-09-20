@@ -82,6 +82,7 @@ import {
   normalizeProfileKey,
   sidebarProfileForScope
 } from '@/store/profile'
+import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import {
   $activeProjectId,
   $newProjectDropPlacement,
@@ -164,6 +165,7 @@ import {
   ProjectMenu,
   projectTreeCwd,
   reconcileEnteredProjectSessions,
+  sessionBucketId,
   sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
@@ -497,6 +499,7 @@ export function ChatSidebar({
   }, [])
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
+  const profileRailVisible = useStore($profileRailVisible)
 
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -1160,6 +1163,27 @@ export function ChatSidebar({
       ),
     [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
   )
+
+  // A row's "Show all" hydrates raw backend lanes, which — like the drill-in —
+  // must go through the same exclusion as the previews above (pins, filter
+  // misses, optimistic removals), or a pinned chat renders twice and a
+  // just-deleted one comes back. The per-project count of loaded sessions
+  // that exclusion hides also corrects the backend's `sessionCount` in the
+  // "Show all N" label (a pin is always loaded — it renders in Pinned).
+  const overviewHidden = useMemo(() => {
+    const isHidden = (session: SessionInfo) => isHiddenFromProjects(session) || removedSessionIds.has(session.id)
+    const counts: Record<string, number> = {}
+
+    for (const session of sessions) {
+      const projectId = isHidden(session) ? sessionBucketId(session, projects) : null
+
+      if (projectId) {
+        counts[projectId] = (counts[projectId] ?? 0) + 1
+      }
+    }
+
+    return { isHidden, counts }
+  }, [sessions, projects, isHiddenFromProjects, removedSessionIds])
 
   const onEnterProject = useCallback(
     (id: string) => {
@@ -1855,6 +1879,7 @@ export function ChatSidebar({
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}
+                projectOverviewHidden={overviewHidden}
                 projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
@@ -1930,9 +1955,13 @@ export function ChatSidebar({
 
         {!showSessionSections && <SidebarBlankState onNewProject={openProjectCreate} />}
 
-        <div className="shrink-0 px-0.5 pb-1 pt-0.5">
-          <ProfileRail />
-        </div>
+        {/* Off, the statusbar's profile dropdown (beside the gateway switcher)
+            takes over — the rail is a duplicate door for bot-only setups. */}
+        {profileRailVisible && (
+          <div className="shrink-0 px-0.5 pb-1 pt-0.5">
+            <ProfileRail />
+          </div>
+        )}
       </SidebarContent>
       <ProjectDialog />
       {/* One mount for the whole app. The header of WorktreeDialog tells why. */}

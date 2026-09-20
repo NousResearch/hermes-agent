@@ -28,6 +28,11 @@ _FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
 
 _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
+# A supervisor can report a restarted unit active before the gateway finishes its
+# bootstrap and publishes ``gateway_state.json``. Keep the readiness poll bounded,
+# but allow the default systemd startup budget plus status-publication slack.
+_FLEET_PROBE_SETTLE_TIMEOUT_SECONDS = 120.0
+
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
 _LIST_GATEWAY_UNITS = ["list-units", "hermes-gateway*", "hermes-serve*", "--plain", "--no-legend", "--no-pager"]
 
@@ -142,6 +147,30 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     )
 
 
+def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
+    """``(kind, profile)`` identities ``latest.json`` owes a current successor.
+
+    Empty when the receipt records no runtimes; ``None`` when any recorded runtime is one
+    the gateway matrix cannot vouch for (serve/dashboard, unknown profile).
+    """
+    from hermes_cli.update_receipt import read_latest_receipt
+
+    receipt = read_latest_receipt() or {}
+    plan = receipt.get("plan") or {}
+    entries: list[tuple[object, str | None]] = [(entry, None) for entry in plan.get("runtimes") or []]
+    entries.extend((entry, "gateway") for entry in receipt.get("fleet") or [])
+    owed: set[tuple[str, str]] = set()
+    for entry, default_kind in entries:
+        if not isinstance(entry, dict):
+            return None
+        kind = entry.get("kind", default_kind)
+        profile = entry.get("profile")
+        if kind != "gateway" or not profile or profile == "unknown":
+            return None
+        owed.add((kind, profile))
+    return owed
+
+
 def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """Require current successors for every recorded runtime, not just any live row.
 
@@ -151,24 +180,10 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """
     if not expected_sha:
         return False
-    from hermes_cli.update_receipt import collect_fleet_versions, read_latest_receipt
+    from hermes_cli.update_receipt import collect_fleet_versions
 
     try:
-        receipt = read_latest_receipt() or {}
-        plan = receipt.get("plan") or {}
-        runtimes = plan.get("runtimes") or []
-        recorded_fleet = receipt.get("fleet") or []
-        owed = set()
-        entries: list[tuple[object, str | None]] = [(entry, None) for entry in runtimes]
-        entries.extend((entry, "gateway") for entry in recorded_fleet)
-        for entry, default_kind in entries:
-            if not isinstance(entry, dict):
-                return False
-            kind = entry.get("kind", default_kind)
-            profile = entry.get("profile")
-            if kind != "gateway" or not profile or profile == "unknown":
-                return False
-            owed.add((kind, profile))
+        owed = _receipt_owed_gateways()
         if not owed:
             return False
         fleet = collect_fleet_versions()
@@ -183,6 +198,73 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _read_fleet_marker_expected_sha() -> str:
+    """``expected_sha`` recorded in the pending marker ("" when absent/unreadable)."""
+    with suppress(OSError):
+        for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8").splitlines():
+            if line.startswith("expected_sha="):
+                return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _marker_only_restart_obsolete() -> bool:
+    """True when the pending marker is a leftover: the fleet already runs the expected code.
+
+    A supervisor-level restart (``systemctl --user restart``, launchctl, ops scripts) never
+    goes through this module's clear path, so the marker survives a restart that DID bring
+    every live gateway to the pulled code — and every later CLI call then prints the
+    interrupted-update warning forever (false positive).
+
+    The marker is not an *unknown* obligation: it records its own ``expected_sha``, so it can
+    be checked against the live fleet directly — no receipt required. Hold it to the same
+    evidence bar ``_live_fleet_covers_receipt`` applies to one: at least one row, and every
+    row a ``current`` gateway under a known profile whose ``code_sha`` equals that
+    ``expected_sha``, with the checkout HEAD not moved past the marker.
+
+    Keep the marker on stale/down rows, on an all-``unknown`` fleet (pre-code-identity
+    gateways cannot prove currency — same conservatism as the silent-failure class
+    #88848/#74973), on a marker with no ``expected_sha``, when a newer pull moved the
+    checkout, and when the probe fails or answers empty.
+
+    A gateway the restart phase stopped and never brought back yields NO row at startup
+    (no ``pre_restart_pids`` → no ``down`` classification), so rows alone cannot prove the
+    whole fleet is back. When ``latest.json`` names the gateways the update owed, every one
+    of them must also be covered by a current row; the rows-only rule applies only when the
+    receipt names none.
+    """
+    expected_sha = _read_fleet_marker_expected_sha()
+    if not expected_sha:
+        return False  # pre-expected_sha marker: nothing to verify against
+    checkout_sha = _current_checkout_sha()
+    if checkout_sha and checkout_sha != expected_sha:
+        return False  # a newer pull moved HEAD; it owns a fresh obligation
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions()
+        owed = _receipt_owed_gateways()
+    except Exception as exc:
+        logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
+        return False
+    if not fleet:
+        return False  # probe answered empty: no proof either way
+    for row in fleet:
+        if not isinstance(row, dict):
+            return False
+        profile = row.get("profile")
+        if not profile or profile == "unknown":
+            return False  # unidentified runtime: the matrix cannot vouch for it
+        if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
+            return False  # stale / down / unknown-identity row still owes the restart
+    if owed is None or not owed <= {("gateway", row.get("profile")) for row in fleet}:
+        return False  # a gateway the receipt owes is absent (down) or unidentifiable
+    _clear_fleet_restart_pending_marker()
+    logger.debug(
+        "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",
+        len(fleet), expected_sha[:10],
+    )
+    return True
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
@@ -191,6 +273,8 @@ def _pending_fleet_restart_needed() -> bool:
     # than latest.json. An older receipt cannot discharge that unknown obligation.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
+            if _marker_only_restart_obsolete():
+                return False
             return True
     if not _receipt_reports_stale_runtime():
         return False
@@ -344,14 +428,58 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
-def _apply_pending_fleet_restart_catchup() -> None:
+def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplete: bool = False) -> None:
+    """Record a deliberately deferred fleet restart and return/exit on outcome.
+
+    ``hermes update --no-gateway-restart`` (cron running inside the gateway's
+    own cgroup) updated code and dependencies but must not restart the fleet:
+    the SIGUSR1 drain + systemd restart would kill the updater itself. The
+    ``fleet_restart_pending`` marker written before the pull is KEPT so the
+    next normal update (or ``hermes gateway restart``) catches up.
+
+    Outcome contract (same success/partial meaning as the normal path):
+    a STALE fleet caused only by this deliberate deferral is expected and
+    does NOT make the update partial — exit 0, receipt "success". The receipt
+    is "partial" (and the process exits 1, marker kept) when the update
+    itself did not complete (``update_complete`` False) or the Windows
+    pause/resume reconciliation reported incomplete.
+
+    The live interpreter still serves pre-update code here, so callers must
+    also skip stale-module purge/reload work: mutating this process's
+    sys.modules graph mid-flight risks breaking the serving gateway.
+    """
+    print()
+    print("→ Gateway restart skipped (--no-gateway-restart).")
+    print("  Code and dependencies are updated; gateways still serve pre-update code.")
+    print("  Restart them separately: `hermes gateway restart` or a daily-restart cron.")
+    print("  (fleet restart deferred — marker kept for catch-up)")
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+    partial = (not update_complete) or resume_incomplete
+    with suppress(Exception):
+        from hermes_cli.update_receipt import finalize_update_receipt
+        finalize_update_receipt("partial" if partial else "success")
+    if partial:
+        sys.exit(1)
+
+
+def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
     No-op when nothing is pending; exits 1 on incomplete catch-up so automation
-    does not treat the fleet as healthy.
+    does not treat the fleet as healthy. ``defer`` (``--no-gateway-restart``) keeps
+    the marker and warns instead: running the restart from inside the gateway's own
+    cgroup would kill the caller.
     """
     from hermes_cli.update_cmd import _run_pending_fleet_restart
     if not _pending_fleet_restart_needed():
+        return
+    if defer:
+        print()
+        _warn_pending_fleet_restart()
+        print("  (fleet restart deferred — --no-gateway-restart; marker kept)")
+        print("  Restart separately: `hermes gateway restart` or next non-cron update.")
         return
     print()
     _warn_pending_fleet_restart()
@@ -774,6 +902,23 @@ def _gateway_home_for_pid(pid: int):
     return None
 
 
+def _sudo_noninteractive_ok(targeted_probe: list) -> bool:
+    """True when this user can elevate without a prompt.
+
+    ``sudo -n true`` first; a refusal is inconclusive because a NOPASSWD sudoers entry scoped
+    to one command (the hardened shape) rejects the blanket probe, so fall back to running
+    ``sudo -n <targeted_probe>`` — callers pass a non-destructive stand-in for the argv they
+    are about to elevate.
+    """
+    try:
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0:
+            return True
+        # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
+        return subprocess.run(["sudo", "-n", *targeted_probe], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: str):
     """Resolve the command prefix for manage-units verbs (None ⇒ no privilege path).
 
@@ -789,16 +934,7 @@ def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: s
     cmd = scope_cmd_ + ["--no-ask-password"]
     if _needs_sudo(scope_):
         sudo_cmd = ["sudo", "-n"] + cmd
-        try:
-            sudo_ok = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
-            if not sudo_ok:
-                # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
-                sudo_ok = subprocess.run(
-                    sudo_cmd + ["reset-failed", svc_name_], capture_output=True, timeout=5
-                ).returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            sudo_ok = False
-        cmd = sudo_cmd if sudo_ok else None
+        cmd = sudo_cmd if _sudo_noninteractive_ok(cmd + ["reset-failed", svc_name_]) else None
     cache[scope_] = cmd
     return cmd
 
@@ -977,6 +1113,9 @@ class _GatewayRestartOutcome:
     #: the summary tells the user to restart them by hand, so the fleet probe must not expect
     #: a row for them.
     stopped_unmapped_pids: set = field(default_factory=set)
+    #: ``scope/name`` of every settled systemd unit; the fleet probe stops waiting for a state stamp
+    #: once none of them is active or activating any more (the successor died, nothing will publish).
+    restarted_scoped_units: set = field(default_factory=set)
 
     def fleet_probe_signals(self) -> tuple:
         """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
@@ -1105,6 +1244,7 @@ def _recover_after_restart_phase_abort(
     e, _pre_update_plan, out: _GatewayRestartOutcome, *, gateway_mode, restarted_scoped_units
 ) -> None:
     """Phase-abort recovery: fresh-child restart + fail-closed verdict; updates ``out`` in place."""
+    from hermes_cli.update_abort_recovery import _owed_stale_serve_rows
     from hermes_cli.update_cmd import (
         _abort_recovery_is_complete, _recover_gateway_restart_after_abort, _surviving_pre_update_serve_runtimes,
         _warn_stale_serve_runtimes, _write_gateway_update_exit_code,
@@ -1158,11 +1298,13 @@ def _recover_after_restart_phase_abort(
         stale_runtime_rows=_stale_runtime_rows,
     ):
         # Fresh child is terminal; the fleet-version matrix stays the authoritative
-        # read-back before success is declared.
+        # read-back before success is declared. Desktop-owned survivors (the only rows
+        # that can remain here) are named, not owed. See #111494.
         out.incomplete = False
+        _warn_stale_serve_runtimes(_stale_runtime_rows)
     elif (
         _restart_phase_failure_is_incomplete(_surviving, out.pre_restart_gateway_pids)
-        or _stale_runtime_rows
+        or _owed_stale_serve_rows(_stale_runtime_rows)
         or _serve_units_failed
     ):
         out.incomplete = True
@@ -1255,6 +1397,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
             e, _pre_update_plan, out, gateway_mode=gateway_mode, restarted_scoped_units=restarted_scoped_units
         )
 
+    out.restarted_scoped_units = set(restarted_scoped_units)
     return out
 
 
@@ -1286,19 +1429,61 @@ def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
     so a single 2s sleep reported "no rows" on healthy resumes. A "down" row may be a
     detached replacement still booting: poll until none remain or the deadline passes.
     Pre-restart PIDs make a gateway stopped WITHOUT verified replacement a DOWN row (exit 1)
-    instead of no row at all.
+    instead of no row at all. An ``unknown`` row whose pid is NOT a pre-restart pid is a successor
+    that has not published its code identity yet (a relaunched gateway can sit ~10s between process
+    start and its first runtime-status write, #112634) — keep polling; at the deadline it is flagged
+    ``identity_pending`` so the matrix does not call it a pre-stamping gateway.
     """
     from hermes_cli.update_receipt import collect_fleet_versions
     if not rows_expected:
         return collect_fleet_versions(pre_restart_pids=restart.pre_restart_gateway_pids)
-    _fleet_deadline = _time.monotonic() + 30.0
+    pre_pids = restart.pre_restart_gateway_pids
+    _fleet_deadline = _time.monotonic() + _FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
     while True:
         _time.sleep(2.0)
-        snapshot = collect_fleet_versions(pre_restart_pids=restart.pre_restart_gateway_pids)
-        if snapshot and not any(row.get("state") == "down" for row in snapshot):
+        snapshot = collect_fleet_versions(pre_restart_pids=pre_pids)
+        pending = [row for row in snapshot if _fleet_row_identity_pending(row, pre_pids)]
+        if snapshot and not pending and not any(row.get("state") == "down" for row in snapshot):
             return snapshot
-        if _time.monotonic() >= _fleet_deadline:
+        if _time.monotonic() >= _fleet_deadline or _restarted_units_gone(
+                getattr(restart, "restarted_scoped_units", ())):
+            for row in pending:
+                row["identity_pending"] = True
             return snapshot
+
+
+def _fleet_row_identity_pending(row: dict, pre_restart_pids) -> bool:
+    """An ``unknown`` row with no sha from a pid that did not exist at update start: a relaunched
+    gateway still booting, not a gateway that predates version stamping. A surviving pre-restart pid
+    (or no pid snapshot at all) is settled as-is — waiting cannot change what it publishes."""
+    if row.get("state") != "unknown" or row.get("code_sha"):
+        return False
+    if pre_restart_pids is None:
+        return False
+    return row.get("pid") not in {int(p) for p in pre_restart_pids if isinstance(p, int)}
+
+
+def _restarted_units_gone(scoped_units) -> bool:
+    """True when every restarted systemd unit is LOADED in its scope and neither active nor
+    activating: the successor died, nothing will publish a state stamp, so the settle poll should fail
+    closed now instead of at the deadline. Anything inconclusive keeps waiting: no units, systemctl
+    missing/slow, or ``LoadState=not-found`` — a unit name asked in a scope that does not own it
+    answers ``inactive`` exactly like a dead unit (#112466), so only a loaded unit can prove death."""
+    if not scoped_units:
+        return False
+    scope_cmds = dict(_SYSTEMD_SCOPES)
+    for scoped in scoped_units:
+        scope, _, name = scoped.partition("/")
+        try:
+            stdout = _systemctl(scope_cmds[scope] + ["show", "-p", "LoadState,ActiveState", name], timeout=5).stdout
+        except (KeyError, FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        props = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if props.get("LoadState") != "loaded":
+            return False
+        if props.get("ActiveState") in ("active", "activating", "reloading"):
+            return False
+    return True
 
 
 def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete):

@@ -77,7 +77,12 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
         forwarded["author"] = author
     resolved = 'default' if profile.lower() == 'hermes' else profile
     root = _root()
-    home = root if resolved == 'default' else root / 'profiles' / resolved
+    # Same identity predicate as `profile list`: infra dirs and tombstones under profiles/ are
+    # not teammates (#99392), so a DM never targets one.
+    from tools.bot_mode_probe import _roster
+    home = dict(_roster(root)).get(resolved)
+    if home is None:
+        return _err(rid, 4092, f"no profile '{profile}' on this gateway", data={'reason': 'unknown_profile'})
     try:
         return _ok(rid, authority_delivery(home, {**forwarded, 'profile': resolved}))
     except Exception as exc:

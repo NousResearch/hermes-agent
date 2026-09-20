@@ -1,10 +1,21 @@
-"""Files input must not prevent a later text result from reaching its group."""
+"""Stopped Files input must not block a later text result after restart.
 
+Source: 691bb08a5cd310fffc5f3d01653dc93f394fc080,
+``tests/tui_gateway/test_hosted_room_file_resume.py``. The historical assertion
+body is unchanged; the inline inert server fixture avoids importing the broad
+service test module and never starts the runtime worker.
+"""
+
+import threading
 import time
+from types import SimpleNamespace
 
 from gateway import hosted_room_driver as driver
-from tests.tui_gateway.test_hosted_room_service import _server
 from tui_gateway.hosted_room_service import HostedRoomService
+
+
+def _server():
+    return SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
 
 
 def test_text_result_publishes_after_stopping_a_file_input(tmp_path):

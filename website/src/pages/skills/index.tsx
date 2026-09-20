@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
+import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface Skill {
   name: string;
@@ -19,6 +20,7 @@ interface Skill {
   commands?: string[];
   docsPath?: string;
   identifier?: string;
+  installIdentifier?: string;
   installCmd?: string;
   /** Clickable URL to the skill's origin (repo / detail page). Synthesized
    *  in extract-skills.py for community skills that have no generated docs
@@ -300,6 +302,7 @@ function SkillCard({
 }) {
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
+  const installUrl = skillCatalogInstallUrl(skill);
 
   return (
     <div
@@ -350,6 +353,16 @@ function SkillCard({
             </span>
           ))}
         </div>
+
+        {!onPick && installUrl && (
+          <a
+            className={styles.pickBtn}
+            href={installUrl}
+            onClick={(e) => e.stopPropagation()}
+          >
+            Install in Hermes
+          </a>
+        )}
 
         {expanded && (
           <div className={styles.cardDetail}>
@@ -419,9 +432,9 @@ function SkillCard({
               </div>
             )}
             <div className={styles.installHint}>
-              <code>{skill.installCmd || `hermes skills install ${skill.name}`}</code>
+              <code>{skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`}</code>
               <CopyButton
-                text={skill.installCmd || `hermes skills install ${skill.name}`}
+                text={skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`}
               />
             </div>
             {onPick ? (
@@ -521,8 +534,8 @@ export default function SkillsDashboard() {
         {
           type: "hermes-skill-pick",
           name: skill.name,
-          identifier: skill.identifier || skill.name,
-          installCmd: skill.installCmd || `hermes skills install ${skill.name}`,
+          identifier: skillCatalogInstallIdentifier(skill) || skill.name,
+          installCmd: skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`,
           source: skill.source,
         },
         "*"
@@ -700,7 +713,7 @@ export default function SkillsDashboard() {
               <strong className={styles.heroAccent}>
                 {data ? allSkillsLocal.length.toLocaleString() : "…"}
               </strong>{" "}
-              skills across {sources.length - 1} registries
+              skills across {sources.length - 1} registries. Open in Hermes Desktop to review and install, or copy the CLI command.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})

@@ -1825,7 +1825,9 @@ class TestDockerAwareGateway:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
-        with pytest.raises(RuntimeError, match="systemctl is not available"):
+        from hermes_cli.gateway_command_errors import SystemctlUnavailableError
+
+        with pytest.raises(SystemctlUnavailableError):
             gateway_cli._run_systemctl(["start", "hermes-gateway"])
 
     def test_run_systemctl_passes_through_on_success(self, monkeypatch):
@@ -1862,6 +1864,58 @@ class TestDockerAwareGateway:
         out = capsys.readouterr().out
         assert "Docker" in out or "docker" in out
         assert "restart" in out.lower()
+
+    def test_install_in_systemd_container_refuses_user_scope(self, monkeypatch, capsys):
+        """A bind-mounted home must not receive a host-visible user unit."""
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_install_systemd_from_cli",
+            lambda *args, **kwargs: pytest.fail("must not install a user unit in a container"),
+        )
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=False, run_as_user=None)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(args)
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "--system" in out
+        assert "user-scope" in out
+
+    def test_install_in_systemd_container_keeps_explicit_system_scope(self, monkeypatch):
+        """Explicit system installs stay available for systemd-managed containers."""
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_install_systemd_from_cli",
+            lambda *args, **kwargs: calls.append(kwargs),
+        )
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=True, run_as_user=None)
+        gateway_cli.gateway_command(args)
+
+        assert calls == [{"force": False, "system": True, "run_as_user": None}]
+
+    def test_setup_wizard_user_scope_in_container_skips_install(self, monkeypatch, capsys):
+        """The wizard's default "user service" choice is the same host-visible unit (#112323):
+        inside a container it prints the guidance and reports no install instead of writing it."""
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(gateway_cli, "prompt_linux_gateway_install_scope", lambda: "user")
+        monkeypatch.setattr(
+            gateway_cli, "systemd_install",
+            lambda **kwargs: pytest.fail("must not install a user unit in a container"),
+        )
+
+        assert gateway_cli.install_linux_gateway_from_setup(force=False, enable_on_startup=True) == ("user", False)
+        assert "--system" in capsys.readouterr().out
 
 
 class TestLegacyHermesUnitDetection:
@@ -2407,6 +2461,22 @@ class TestServiceTakeoverGovernance:
         assert "<string>run</string>" in plist
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist
+
+    def test_launchd_plist_parks_ex_config_instead_of_keepalive_loop(self, tmp_path, monkeypatch):
+        """Token-collision EX_CONFIG (78) must not KeepAlive-respawn on macOS.
+
+        systemd parks via RestartPreventExitStatus=78; launchd cannot gate on a
+        specific status. Unconditional KeepAlive=true turned that exit into a
+        30s crash loop (#89477). SuccessfulExit=false plus the stderr wrapper
+        mapping 78→0 is the launchd twin: a clean stop stays down, exit 75 and
+        crashes still relaunch.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        parsed = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        assert parsed["KeepAlive"] == {"SuccessfulExit": False}
+        assert parsed["RunAtLoad"] is True
 
     def test_systemd_unit_does_not_arm_takeover(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"

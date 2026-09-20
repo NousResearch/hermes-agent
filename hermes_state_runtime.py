@@ -84,7 +84,7 @@ def begin_runtime_epoch(db, *, instance_id: str) -> int:
 
 
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
-                        request_id: str, payload: dict, intent: str = 'queue', input_custody=None) -> dict:
+                        request_id: str, payload: dict, intent: str = 'queue') -> dict:
     for value in (principal_id, session_id, request_id):
         _text(value)
     if intent not in ('queue', 'steer', 'redirect'):
@@ -104,28 +104,13 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
         if old is not None:
             if old['payload_digest'] != digest:
                 raise RuntimeStoreError('admission_conflict')
-            if input_custody is not None:
-                from hermes_state_input_custody import AcceptedInputHandle, accept_prepared_input
-                if isinstance(input_custody, AcceptedInputHandle):
-                    if input_custody.admission_id != old['admission_id']:
-                        raise RuntimeStoreError('admission_conflict')
-                else:
-                    accept_prepared_input(conn, epoch=epoch, admission=old, handle=input_custody)
             return _row(old)
-        if input_custody is not None:
-            from hermes_state_input_custody import AcceptedInputHandle
-            if isinstance(input_custody, AcceptedInputHandle):
-                raise RuntimeStoreError('not_found')
         admission_id = uuid.uuid4().hex
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
             VALUES(?,?,?,?,?,?,?,?,'queued',?)''',
             (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), encoded, digest, intent, epoch))
-        row = _admission(conn, admission_id)
-        if input_custody is not None:
-            from hermes_state_input_custody import accept_prepared_input
-            accept_prepared_input(conn, epoch=epoch, admission=row, handle=input_custody)
-        return _row(row)
+        return _row(_admission(conn, admission_id))
     return db._execute_write(write)
 
 
@@ -580,6 +565,10 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
+    if not auxiliary:
+        # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
+        # session row was minted with its real surface at admission, so nothing to repair here.
+        payload = {k: v for k, v in payload.items() if k != 'source'}
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute'})
     if set(payload) - allowed:
         raise RuntimeStoreError('invalid_params')

@@ -169,6 +169,8 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
         raise HTTPException(status_code=400, detail="Only regular files can be read")
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, st
 
 
@@ -612,7 +614,7 @@ async def fs_list(path: str):
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN:
+                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -711,8 +713,6 @@ async def fs_read_data_url(
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
     target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
@@ -724,8 +724,6 @@ async def fs_download(
     path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),

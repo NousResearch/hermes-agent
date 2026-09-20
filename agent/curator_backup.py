@@ -32,9 +32,10 @@ DEFAULT_KEEP = 5
 # Never rolled into a snapshot: .hub/ is owned by the skills hub (rolling it back breaks lockfile invariants); .curator_backups
 # is the backup dir itself; .git is repository metadata — rolling it back breaks git tracking, and snapshots that include it grow
 # with the full history (once backups are committed back, each snapshot contains the prior ones: 38MB of skills inflated to 24GB
-# in weeks). The tar filter in ``snapshot_skills`` applies the same set to nested paths, so a nested ``.git`` is skipped too.
+# in weeks); .locks holds skill_manage's per-skill lock files — restoring them would swap a lock out from under a waiting
+# writer. The tar filter in ``snapshot_skills`` applies the same set to nested paths, so a nested ``.git`` is skipped too.
 # See #91449.
-_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".git"}
+_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".locks", ".git"}
 
 # Snapshot id: UTC ISO with colons replaced by dashes (Windows-safe filename); optional ``-NN`` suffix for same-second snapshots.
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")

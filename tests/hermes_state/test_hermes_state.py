@@ -2900,6 +2900,79 @@ class TestListSessionsRich:
         ).fetchall()
         assert child_id not in {row["id"] for row in ephemeral}
 
+    def test_reopen_keeps_branch_provenance_out_of_legacy_reset_backfill(self, db):
+        """A same-key branch is never rewritten as a reset successor on reopen."""
+        lane_key = "agent:main:telegram:dm:branch"
+        db.create_session("branch_parent", "telegram", session_key=lane_key)
+        db.create_session(
+            "branch_child",
+            "telegram",
+            session_key=lane_key,
+            parent_session_id="branch_parent",
+            model_config={"_branched_from": "branch_parent"},
+        )
+        db.end_session("branch_parent", "session_switch")
+
+        db.reopen_session("branch_parent")
+
+        child = db.get_session("branch_child")
+        assert child is not None
+        assert json.loads(child["model_config"]) == {"_branched_from": "branch_parent"}
+        assert "branch_child" in [row["id"] for row in db.list_sessions_rich(source="telegram")]
+
+    def test_reopen_does_not_backfill_child_that_precedes_reset_boundary(self, db):
+        """A pre-marker branch cannot become a reset child after a later reopen cycle."""
+        lane_key = "agent:main:telegram:dm:legacy-branch"
+        db.create_session("legacy_branch_parent", "telegram", session_key=lane_key)
+        db.create_session(
+            "legacy_branch_child",
+            "telegram",
+            session_key=lane_key,
+            parent_session_id="legacy_branch_parent",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (100.0, "legacy_branch_child")
+        )
+        db._conn.commit()
+        db.end_session("legacy_branch_parent", "branched")
+        db.reopen_session("legacy_branch_parent")
+        db.end_session("legacy_branch_parent", "session_switch")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ? WHERE id = ?", (200.0, "legacy_branch_parent")
+        )
+        db._conn.commit()
+
+        db.reopen_session("legacy_branch_parent")
+
+        child = db.get_session("legacy_branch_child")
+        assert child is not None
+        assert child["model_config"] is None
+
+    def test_reopen_backfills_legacy_reset_child_of_cycled_parent(self, db):
+        """A markerless reset child from an earlier boundary is still frozen after the parent was
+        reopened and re-ended later (its started_at precedes the parent's current ended_at)."""
+        lane_key = "agent:main:telegram:dm:cycled"
+        db.create_session("cycled_parent", "telegram", session_key=lane_key)
+        db.end_session("cycled_parent", "session_reset")
+        db.create_session(
+            "cycled_reset_child", "telegram", session_key=lane_key, parent_session_id="cycled_parent"
+        )
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", ("cycled_parent",)
+        )
+        db._conn.commit()
+        db.end_session("cycled_parent", "session_switch")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ended_at + 100 WHERE id = ?", ("cycled_parent",)
+        )
+        db._conn.commit()
+
+        db.reopen_session("cycled_parent")
+
+        child = db.get_session("cycled_reset_child")
+        assert json.loads(child["model_config"]) == {"_reset_from": "cycled_parent"}
+        assert "cycled_reset_child" in [row["id"] for row in db.list_sessions_rich(source="telegram")]
+
     def test_reset_parent_does_not_surface_unrelated_child(self, db):
         db.create_session(
             "reset_parent",
@@ -5400,12 +5473,12 @@ class TestGetMessagesPagination:
         assert db.get_resume_message_count("seg-5", tip_only=True) == 4
         with pytest.raises(hermes_state.SessionResumeTooLargeError) as full:
             db.assert_resume_safe("seg-5", max_messages=10)
-        assert "across its lineage" in str(full.value)
+        assert full.value.scope == "across its lineage"
         assert db.assert_resume_safe("seg-5", max_messages=10, tip_only=True) == 4
         with pytest.raises(hermes_state.SessionResumeTooLargeError) as tip:
             db.assert_resume_safe("seg-5", max_messages=3, tip_only=True)
         assert tip.value.message_count == 4
-        assert "in its tip segment" in str(tip.value)
+        assert tip.value.scope == "in its tip segment"
 
     def test_resume_guard_counts_exactly_what_a_branch_resume_loads(self, db):
         """An explicit /branch copy owns its transcript: the guard and the

@@ -75,7 +75,7 @@ def _open_regular(path):
 
 
 def capture_native_media(paths):
-    from gateway.platforms.base import get_inbound_media_max_bytes
+    from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
     references = []
     limit = max(0, get_inbound_media_max_bytes())
     # ``gateway.max_inbound_media_bytes`` bounds the whole admission, not each file: with
@@ -167,7 +167,7 @@ def _held_media_paths(conn):
     held = set()
     for status, encoded in rows:
         attachments, native, api, peer = json.loads(encoded)
-        # Retained API and signed peer inputs are holders, never deletion candidates.
+        # Private API images remain holders after execution; G owns v3 documents.
         references = list(api or ()) + list(peer or ())
         if status != 'terminal':
             references.extend(attachments or ())
@@ -216,7 +216,6 @@ def release_admission_media(db, admission_id):
         return 0
     root = _media_root()
     def collect(conn):
-        from gateway.hosted_room_input_custody import custody_holds
         held = _held_media_paths(conn)
         identities = _held_file_identities(held, root)
         if identities is None:
@@ -225,8 +224,6 @@ def release_admission_media(db, admission_id):
         for reference in mine:
             path = Path(reference['path'])
             if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
-                continue
-            if custody_holds(conn, db.db_path, reference):
                 continue
             try:
                 if path.parent.resolve() != path.parent or _file_identity(path) in identities:

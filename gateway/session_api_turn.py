@@ -17,7 +17,7 @@ _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
-                 'session_history_delivery', 'room_input_media')
+                 'session_history_delivery')
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
@@ -42,10 +42,13 @@ def check_api_turn(authority, ref, payload):
                 or (data['history'] is not None and not isinstance(data['history'], list))
                 or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))):
             raise RuntimeStoreError('invalid_params')
-        if set(data['settings']) - set(_SETTING_KEYS):
+        if set(data['settings']) - (set(_SETTING_KEYS) | {'room_input_media'}):
             raise RuntimeStoreError('invalid_params')
     settings = payload.get('api_turn_v1', {}).get('settings') or api_settings(authority, ref)
     check_api_settings(adapter, settings)
+    if 'api_turn_v1' in payload:
+        from gateway.session_peer_input import check_peer_input
+        check_peer_input(settings)
     return adapter
 
 
@@ -54,8 +57,6 @@ def _valid_owner_scope(value):
 
 
 def check_api_settings(adapter, settings):
-    from gateway.session_peer_input import check_peer_input
-    check_peer_input(settings)
     dispatch = settings.get('room_dispatch')
     if dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
@@ -101,8 +102,6 @@ def admit_api_turn(adapter, **kwargs):
         sid = declared_api_session(authority.db, declared_key) or sid
     authority._require_admission_open()
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
-    if kwargs.get('room_input_media') is None:
-        settings.pop('room_input_media')
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):
@@ -130,6 +129,14 @@ def admit_api_turn(adapter, **kwargs):
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
+    input_custody = None
+    if (settings.get('room_dispatch') or {}).get('attachment_manifest_digest') is not None:
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.session_peer_input import prepare_peer_input
+        bind_api_session(authority, sid, hosted_dispatch=settings['room_dispatch'], declared_key=declared_key)
+        prepared = prepare_peer_input(authority, session_id=sid, request_id=request_id,
+            dispatch=HostedMemberDispatch.from_mapping(settings['room_dispatch']), payload=payload)
+        payload, input_custody = prepared.payload, prepared.handle
     from hermes_state_terminal import retry_terminal_admission
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
@@ -140,7 +147,7 @@ def admit_api_turn(adapter, **kwargs):
     ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
     check_api_turn(authority, ref, payload)
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
-                              session_id=sid, request_id=request_id, payload=payload)
+                              session_id=sid, request_id=request_id, payload=payload, input_custody=input_custody)
     return authority, ref, row
 
 
@@ -267,16 +274,22 @@ def prepare_api_execution(authority, ref, payload):
             _epoch(conn, authority.epoch)
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                         (_SETTINGS_PREFIX + ref.session_id, _json(settings)))
+                         (_SETTINGS_PREFIX + ref.session_id, _json({
+                             key: value for key, value in settings.items() if key != 'room_input_media'})))
         authority.db._execute_write(write)
     content = payload['text']
-    if data and isinstance(content, list):
+    prepared = {}
+    if data and settings.get('room_input_media') is not None:
+        from gateway.session_peer_input import peer_input_content, peer_input_transcript
+        content = peer_input_content(authority, ref, payload)
+        # Private, per-execution companion to verified model content. Never an
+        # accepted client field or a saved session setting.
+        prepared['files_persist_user_message'] = peer_input_transcript(payload)
+    elif data and isinstance(content, list):
         from gateway.session_api_media import restore_api_images
         content = restore_api_images(content, data.get('media') or [])
-    from gateway.session_peer_input import peer_input_content
-    content = peer_input_content(content, settings)
-    return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
-            'content': content, 'turn_author': data.get('turn_author') if data else None}
+    return dict(prepared, adapter=adapter, settings=settings, history=data['history'] if data else None,
+                content=content, turn_author=data.get('turn_author') if data else None)
 
 
 def _api_observers(authority, session_id):

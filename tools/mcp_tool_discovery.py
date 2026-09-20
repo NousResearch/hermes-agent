@@ -16,7 +16,7 @@ from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_loop as _loop
 from tools import mcp_tool_registration as _registration
 from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
-from tools.mcp_tool_scope import _key_name, _key_scope, _resolve_server_key, _server_key
+from tools.mcp_tool_scope import _key_name, _key_scope, _key_visible_in_scope, _resolve_server_key, _server_key
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -347,6 +347,9 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
                     _core._server_connecting.discard(_server_key(_sn))
                     _core._server_connect_errors.setdefault(
                         _server_key(_sn), f"Connection attempt {how} during discovery")
+                    # Its attempt is still running on the MCP loop; without a cooldown the next
+                    # reconcile tick would spawn a second one beside it.
+                    _record_connect_failure(_sn)
         raise
     finally:
         if _was_interrupted:
@@ -367,10 +370,12 @@ def _connected_summary(names, *, lazy_tools: int = 0, lazy_servers: int = 0) -> 
 def _log_summary(prefix: str, names, **lazy) -> None:
     """Log ``<prefix> N tool(s) from M server(s) (K failed)`` when anything happened."""
     new_tool_count, connected_count, failed = _connected_summary(names, **lazy)
-    if new_tool_count or failed:
+    if new_tool_count or failed or lazy.get("lazy_servers"):
         summary = f"{prefix} {new_tool_count} tool(s) from {connected_count} server(s)"
         if failed:
             summary += f" ({failed} failed)"
+        if lazy.get("lazy_servers"):
+            summary += f" ({lazy['lazy_servers']} lazy, not spawned yet)"
         logger.info(summary)
 
 
@@ -476,9 +481,19 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
             new_server_names = [name for name, cfg in servers.items()
                                 if keys[name] not in _core._servers and keys[name] not in _core._server_connecting
                                 and _enabled(cfg)]
+            prior_lazy = set(_core._lazy_server_configs)
         tool_names = register_mcp_servers(servers)
         if new_server_names:
-            _log_summary("  MCP:", new_server_names)
+            # A lazily registered server never connected, so it must not be counted as failed
+            # (the old summary read "N failed" for a healthy all-lazy config, #111717). Reporting
+            # it separately also keeps an already-lazy server from being re-announced on a
+            # repeat discovery. Lazy state is keyed by resolved server key, not by name.
+            with _core._lock:
+                lazy_now = [n for n in new_server_names if keys[n] in _core._lazy_server_configs]
+                newly_lazy = [n for n in lazy_now if keys[n] not in prior_lazy]
+                lazy_tools = sum(len(_core._lazy_server_tool_names.get(keys[n], [])) for n in newly_lazy)
+            _log_summary("  MCP:", [n for n in new_server_names if n not in lazy_now],
+                         lazy_tools=lazy_tools, lazy_servers=len(newly_lazy))
         return tool_names
     finally:
         if cookie not in (None, _core._LOCK_UNAVAILABLE):
@@ -489,7 +504,8 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     """Bring the live server set in step with ``mcp_servers`` as it is on disk NOW: tear down
     servers that were removed from config or set ``enabled: false`` (a parked server keeps
     self-probing forever otherwise — for hours after the user deleted its entry), then connect
-    anything newly configured via :func:`discover_mcp_tools`. Scoped to the current registry
+    anything enabled that is not live via :func:`discover_mcp_tools` — newly configured, or one
+    whose earlier connect failed and whose cooldown has lapsed. Scoped to the current registry
     scope (one multiplexed profile's config prunes only its own connections). A lazily registered
     (schema-cache) server loses its cached tools; one still mid-connect cannot be torn down yet and
     is reported under ``"pending"`` so the caller retries. Returns
@@ -510,10 +526,18 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     for key in lazy:
         _forget_lazy_server(key)
     with _core._lock:
-        known = {_key_name(key) for key, owner in _core._server_scope_keys.items()
-                 if owner == scope and (key in _core._servers or key in _core._server_connecting)}
-        known |= {_key_name(key) for key in _core._lazy_server_configs}
-    added = sorted(wanted - known)
+        # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
+        # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
+        # case, so a multiplexed profile would re-enter discovery (cross-process lock) and log
+        # "added" every tick forever for a server that is already serving it.
+        known = {name for name in wanted
+                 if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                 or key in _core._server_connecting or key in _core._lazy_server_configs}
+    # A configured server that is not live is retried here — this is the only reviver for one whose
+    # FIRST connect failed (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
+    # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
+    # waiting when another process holds it) and logs a failed pass, every tick, for nothing.
+    added = sorted(name for name in wanted - known if not _connect_cooldown_active(name))
     if added:
         discover_mcp_tools()
     return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
@@ -543,8 +567,12 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
 
 def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
-    status (connected / disabled / connecting / failed / configured) and error for failed.
-    Reads cached runtime state only; never connects."""
+    status (connected / disabled / connecting / failed / lazy / configured) and error for failed.
+    Reads cached runtime state only; never connects.
+
+    ``lazy`` is a registered-but-not-spawned server (``lazy: true``, tools from the schema
+    cache): its tools are callable and the process starts on first use. Reporting it as
+    ``configured`` (never registered) misreads a working setup (#111717)."""
     configured = _config._load_mcp_config() if configured is None else dict(configured)
     if not configured:
         return []
@@ -559,14 +587,22 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
         active_servers = {_key_name(k): s for k, s in _core._servers.items() if visible(k)}
         connecting = {_key_name(k) for k in _core._server_connecting if visible(k)}
         connect_errors = {_key_name(k): e for k, e in _core._server_connect_errors.items() if visible(k)}
+        # A lazy registration is not a live connection: ``_server_visible_in_scope`` reads the
+        # adoption/teardown maps a lazy server never populates, so use the registration-level
+        # predicate ``_resolve_server_key`` already relies on for this state.
+        lazy_tools = {_key_name(k): len(v) for k, v in _core._lazy_server_tool_names.items()
+                      if include_runtime and _key_visible_in_scope(k, current_scope)
+                      and k in _core._lazy_server_configs}
 
     result: List[dict] = []
     for name, cfg in configured.items():
         enabled = _enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
+        # An in-flight or failed first-use connect outranks "lazy": that server is no longer
+        # merely waiting to be spawned, and the error is the actionable part.
         status = ("connected" if live else "disabled" if not enabled else "connecting" if name in connecting
-                  else "failed" if name in connect_errors else "configured")
+                  else "failed" if name in connect_errors else "lazy" if name in lazy_tools else "configured")
         entry = {"name": name, "transport": cfg.get("transport", "http") if "url" in cfg else "stdio",
                  "tools": 0, "connected": False, "disabled": status == "disabled", "status": status}
         if live:
@@ -577,6 +613,8 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
                 entry["sampling"] = dict(server._sampling.metrics)
         elif status == "failed":
             entry["error"] = connect_errors[name]
+        elif status == "lazy":
+            entry["tools"] = lazy_tools[name]
         result.append(entry)
     return result
 

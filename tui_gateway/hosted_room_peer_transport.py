@@ -140,7 +140,6 @@ class PeerMemberRoute:
     trace_id: str
     grant: str
     execution_policy_digest: str = ""
-    attachments: bool = False
 
 
 def build_member_dispatch(
@@ -240,6 +239,10 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         self._validate_coordinates(profile=profile, source=source)
         if self._session_id not in {None, session_id}:
             raise ValueError("peer room session changed during admission")
+        if (task.room_id != self.binding.room_id
+                or (self.task_id is not None and self.task_id != task.task_id)
+                or (self.execution_generation is not None and self.execution_generation != execution_generation)):
+            raise ValueError("peer room task identity changed before admission")
         from tui_gateway.hosted_room_peer_attachments import bound_attachment_payloads
         pending = bound_attachment_payloads(
             self.attachment_store, self.binding.room_id, self.route.member_id, attachments)
@@ -259,15 +262,6 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             try:
                 self.client.stage_attachments(dispatch=dispatch.as_mapping(), attachments=pending, grant=self.route.grant)
             except Exception as exc:
-                if getattr(exc, "status_code", None) == 413 and not getattr(exc, "retryable", False):
-                    # A definitive byte rejection precedes model admission: settle once.
-                    self._discard_terminal_attachments()
-                    receipt = {
-                        "status": "failed",
-                        "settlement_id": f"attachment-rejected:{dispatch.task_id}:{dispatch.execution_generation}",
-                        "error": "A Group Chat file exceeded the peer gateway's upload limit."}
-                    on_terminal(receipt)
-                    return receipt
                 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
                 failure = PeerRunsHTTPError(
                     "Group Chat files could not be transferred",

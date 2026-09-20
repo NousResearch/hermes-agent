@@ -114,7 +114,9 @@ async def mutate_session(authority, actor, ref, params):
     if operation in {'reset', 'compress'}:
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, ref.session_id)
-        authority.runner._evict_cached_agent(authority.sessions[ref.session_id].route)
+        # A session boundary, not a resource evict: memory providers get on_session_end first.
+        evict = getattr(authority.runner, '_evict_cached_agent_at_boundary', None) or authority.runner._evict_cached_agent
+        evict(authority.sessions[ref.session_id].route)
         # Publish the prepared entry, not just its target ID, so fresh-reset and
         # per-session counters match cold recovery in this process too.
         from hermes_state_local import local_receipt

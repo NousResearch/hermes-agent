@@ -134,6 +134,11 @@ Two auth-flavored corollaries worth naming because they are easy to get wrong:
 - **A connection test must exercise the leg you'll actually use.** An HTTP
   status probe passing while the WebSocket/auth leg fails is a false positive
   that ships as "it said connected but nothing works."
+- **Cookie-jar partition names contain nothing Electron percent-escapes.** A
+  `persist:` partition becomes a `Partitions/<escaped name>` folder; a folder
+  name with `%3A` (an escaped `:`) gets a cookie store Windows can neither read
+  nor write, so the session silently never persists. `electron/oauth-partition.ts`
+  pins the invariant; renaming a partition signs its users out once — say so.
 
 ## Compatibility without carrying the past forever
 

@@ -18,8 +18,8 @@ import pytest
 def served_root(tmp_path, monkeypatch):
     root = tmp_path / "hermes"
     (root / "profiles" / "alpha").mkdir(parents=True)
-    (root / "config.yaml").write_text("gateway: {multiplex_profiles: true}\n")
-    (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
+    (root / "config.yaml").write_text("gateway: {multiplex_profiles: true}\n", encoding="utf-8")
+    (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}), encoding="utf-8")
     (root / "gateway_state.json").write_text(json.dumps({
         "pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
         "served_profiles": ["default", "alpha", "beta"],
@@ -27,7 +27,7 @@ def served_root(tmp_path, monkeypatch):
             "api_server": {"state": "connected", "listener_base": "http://127.0.0.1:45719"},
             "webhook": {"state": "fatal", "error_code": "port_in_use"},
             "alpha:telegram": {"state": "connected"},
-        }}))
+        }}), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     import hermes_constants
@@ -64,3 +64,54 @@ def test_messaging_card_for_a_served_profile_reads_connected_not_restart_needed(
     assert payload["gateway_running"] is True
     assert payload["state"] == "connected", payload
     assert payload["ingress_url"] == "http://127.0.0.1:45719/p/alpha/v1"
+
+
+def test_messaging_card_ignores_a_served_profiles_stale_own_runtime_record(served_root, monkeypatch):
+    """A served profile writes no live ``gateway_state.json`` of its own, but one left behind by a
+    pre-multiplex or standalone run (``stopped``, empty platforms) used to shadow the multiplexer's
+    record: the fallback only ran when the file was missing, the bare-key lookup found nothing, and
+    the card read "Restart needed" forever for a platform that was connected (#112765)."""
+    from hermes_cli.web_routers import messaging
+    monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
+    entry = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    alpha = served_root / "profiles" / "alpha"
+    (alpha / "gateway_state.json").write_text(json.dumps(
+        {"gateway_state": "stopped", "platforms": {}}), encoding="utf-8")
+    [payload] = messaging._platform_payloads(alpha, [entry])
+    assert payload["gateway_running"] is True
+    assert payload["state"] == "connected", payload
+    # The shared record is scoped per profile: beta has no ``beta:telegram`` entry, so alpha's
+    # connected verdict must not bleed into beta's card.
+    beta = served_root / "profiles" / "beta"
+    beta.mkdir()
+    (beta / "gateway_state.json").write_text(json.dumps({"gateway_state": "stopped", "platforms": {}}), encoding="utf-8")
+    [beta_payload] = messaging._platform_payloads(beta, [entry])
+    assert beta_payload["state"] == "pending_restart", beta_payload
+
+
+def test_messaging_card_keeps_a_live_own_gateway_record_over_the_multiplexer(served_root, monkeypatch):
+    """Transitional dual-live case: a profile running its own standalone gateway while the live
+    multiplexer still lists it in ``served_profiles``. ``resolve_gateway_liveness`` answers from the
+    own record (rung 3) before the multiplexer (rung 4); the card must read the same record, or
+    liveness and platform state come from two different gateways."""
+    import gateway.status as status
+    from hermes_cli.web_routers import messaging
+    monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
+    alpha = served_root / "profiles" / "alpha"
+    # Two live gateways: this process is the default multiplexer; a second (fake, never signalled)
+    # PID wears alpha's argv. Only the live guard sees a foreign PID, so existence is stubbed.
+    own_pid = 2 ** 22 - 1
+    (alpha / "gateway_state.json").write_text(json.dumps({
+        "pid": own_pid, "hermes_home": str(alpha), "gateway_state": "running",
+        "platforms": {"telegram": {"state": "retrying", "error_code": "network"}}}), encoding="utf-8")
+    real_pid_exists = status._pid_exists
+    monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == own_pid or real_pid_exists(pid))
+    monkeypatch.setattr(status, "_read_process_cmdline",
+                        lambda pid: "hermes -p alpha gateway run" if pid == own_pid else "hermes gateway run")
+    assert status.multiplexer_liveness_for_profile(alpha) is not None
+    entry = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    [payload] = messaging._platform_payloads(alpha, [entry])
+    assert payload["gateway_running"] is True
+    assert payload["state"] == "retrying", payload

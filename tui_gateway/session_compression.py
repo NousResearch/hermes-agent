@@ -219,7 +219,7 @@ def _compress_session_history(
     request = parse_compress_args(focus_topic or "")
     if request.aggressive:
         raise ValueError(AGGRESSIVE_UNSUPPORTED)
-    result = compress_now(agent, before_messages, request)
+    result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default")
     if result.status == "preview":
         return 0, _get_usage(agent)
     # Lock-skipped: raise so callers surface a clear message instead of "No changes from compression".

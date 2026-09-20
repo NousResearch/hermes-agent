@@ -7,7 +7,12 @@ call), ``read_history`` (diagnostics), ``dedup`` (key -> mtime; survives context
 compression), ``dedup_generation_reads`` (keys whose full content was served since
 the last compaction boundary; cleared on compression so one recovery read returns
 full content), ``dedup_hits`` (stub-loop breaker), ``read_timestamps``
-(staleness warnings) and ``not_found`` (short-TTL negative cache). Every
+(staleness warnings), ``read_coverage`` (per resolved path: the line ranges the
+task has paged through at one mtime — contiguous pages that reach the last line
+count as a whole-file read), ``full_write_baselines`` (resolved paths whose
+whole-file content this task saw via unredacted read_file page(s) or wrote via
+write_file; required before write_file may overwrite an existing file — patch
+never qualifies) and ``not_found`` (short-TTL negative cache). Every
 container is hard-capped (``_cap_read_tracker_data``) so long sessions stay small.
 """
 
@@ -16,7 +21,7 @@ import os
 import threading
 import time
 
-from tools.file_state import _evict_oldest
+from tools.file_state import _evict_oldest, _mtime_or_none
 from tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_for_task
 
 logger = logging.getLogger("tools.file_tools")
@@ -35,6 +40,7 @@ _PATCH_FAILURE_PATHS_CAP = 64
 _READ_HISTORY_CAP = 500
 _DEDUP_CAP = 1000
 _READ_TIMESTAMPS_CAP = 1000
+_FULL_WRITE_BASELINES_CAP = 1000
 _NOT_FOUND_CAP = 500
 _NOT_FOUND_TTL_SECONDS = 60.0  # a path that didn't exist may be created soon
 
@@ -44,9 +50,10 @@ def _task_data(task_id: str) -> dict:
     (search_tool / tests create partial entries). Lock must be held."""
     task_data = _read_tracker.setdefault(task_id, {
         "last_key": None, "consecutive": 0, "read_history": set()})
-    for key in ("dedup", "dedup_hits", "read_timestamps"):
+    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage"):
         task_data.setdefault(key, {})
-    task_data.setdefault("dedup_generation_reads", set())
+    for key in ("dedup_generation_reads", "full_write_baselines"):
+        task_data.setdefault(key, set())
     return task_data
 
 
@@ -80,6 +87,8 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         ("dedup_hits", _DEDUP_CAP),
         ("dedup_generation_reads", _DEDUP_CAP),
         ("read_timestamps", _READ_TIMESTAMPS_CAP),
+        ("read_coverage", _READ_TIMESTAMPS_CAP),
+        ("full_write_baselines", _FULL_WRITE_BASELINES_CAP),
         ("not_found", _NOT_FOUND_CAP)):
         container = task_data.get(key)
         if container is not None and len(container) > cap:
@@ -150,7 +159,10 @@ def reset_file_dedup(task_id: str = None):
     files keep returning stubs instead of re-bloating the reclaimed context; the
     generation-read set is cleared so the FIRST unchanged read of each key after
     compaction returns full content the summary may have dropped. Stub-hit counters
-    are cleared so the hard block restarts fresh."""
+    are cleared so the hard block restarts fresh. write_file baselines survive
+    exactly like the dedup map does — for files whose mtime still matches the
+    stamp this task recorded; a baseline whose file changed underneath is dropped
+    (the stat runs outside the lock so a hung mount cannot stall other tasks)."""
     with _read_tracker_lock:
         if task_id:
             targets = [_read_tracker[task_id]] if _read_tracker.get(task_id) else []
@@ -160,6 +172,13 @@ def reset_file_dedup(task_id: str = None):
             if "dedup_hits" in task_data:
                 task_data["dedup_hits"].clear()
             task_data.setdefault("dedup_generation_reads", set()).clear()
+        candidates = [(task_data, list(task_data.get("full_write_baselines", ())),
+                       dict(task_data.get("read_timestamps", {}))) for task_data in targets]
+    for task_data, baselines, stamps in candidates:
+        changed = {p for p in baselines if _mtime_or_none(p) != stamps.get(p)}
+        if changed:
+            with _read_tracker_lock:
+                task_data.get("full_write_baselines", set()).difference_update(changed)
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -219,22 +238,70 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
             _cap_read_tracker_data(task_data)
 
 
-def _check_file_staleness(filepath: str, task_id: str) -> str | None:
-    """Warn (don't block) when the file's mtime changed since this task last read it.
-    ``None`` when never read, fresh, or unstattable (a deleted file is the write's problem)."""
+def _mark_full_write_baseline(resolved: str, task_id: str) -> None:
+    """Record that *task_id* saw the whole current content of *resolved* (full
+    unredacted read_file, or its own successful write_file), so a later
+    write_file may replace the file. Acquires the lock itself."""
+    with _read_tracker_lock:
+        task_data = _task_data(task_id)
+        task_data["full_write_baselines"].add(str(resolved))
+        _cap_read_tracker_data(task_data)
+
+
+def _has_full_write_baseline(resolved: str, task_id: str) -> bool:
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id) or {}
+        return str(resolved) in task_data.get("full_write_baselines", set())
+
+
+_READ_COVERAGE_RANGES_CAP = 256
+
+
+def _note_read_coverage(task_data: dict, resolved: str, mtime: float, start: int, end: int,
+                        total_lines, redacted: bool) -> tuple[bool, bool]:
+    """Merge the page ``start..end`` into this task's coverage of *resolved* and return
+    ``(complete, redacted_any)``: whether pages taken at this same *mtime* now reach from
+    line 1 to *total_lines*, and whether any of them came back redacted. A file too large
+    for one read_file page (>2000 lines / the char budget) can only ever be seen this
+    way, so paging through it must count as a whole-file read. A new mtime restarts the
+    coverage (the earlier pages describe a file that no longer exists). Lock must be held."""
+    coverage = task_data.setdefault("read_coverage", {})
+    entry = coverage.get(resolved)
+    if entry is None or entry["mtime"] != mtime or len(entry["ranges"]) > _READ_COVERAGE_RANGES_CAP:
+        entry = coverage[resolved] = {"mtime": mtime, "ranges": [], "redacted": False}
+    entry["redacted"] = entry["redacted"] or redacted
+    merged: list[tuple[int, int]] = []
+    for s, e in sorted(entry["ranges"] + [(start, end)]):
+        if merged and s <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    entry["ranges"] = merged
+    complete = (isinstance(total_lines, int) and total_lines > 0
+                and merged[0][0] <= 1 and merged[0][1] >= total_lines)
+    return complete, entry["redacted"]
+
+
+def _read_mtime_drifted(filepath: str, task_id: str) -> bool:
+    """True when the file's mtime changed since this task last read it. False when
+    never read, fresh, or unstattable (a deleted file is the write's problem)."""
     resolved = _resolved_or_none(filepath, task_id)
     if resolved is None:
-        return None
+        return False
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
         read_mtime = task_data.get("read_timestamps", {}).get(resolved) if task_data else None
     if read_mtime is None:
-        return None
+        return False
     try:
-        current_mtime = os.path.getmtime(resolved)
+        return os.path.getmtime(resolved) != read_mtime
     except OSError:
-        return None
-    if current_mtime != read_mtime:
+        return False
+
+
+def _check_file_staleness(filepath: str, task_id: str) -> str | None:
+    """Warn (don't block) when the file's mtime changed since this task last read it."""
+    if _read_mtime_drifted(filepath, task_id):
         return (
             f"Warning: {filepath} was modified since you last read it "
             "(external edit or concurrent agent). The content you read may be "

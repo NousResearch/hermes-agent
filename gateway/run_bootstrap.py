@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 from gateway.config import GatewayConfig
 
@@ -216,6 +216,7 @@ async def _start_gateway_start_control_socket(runner):
     """Start the gateway control socket (identify/status/pause-for-update); None when unavailable."""
     from gateway.run import (asyncio, logger, os, threading)
     import atexit
+    import concurrent.futures
     _control_server = None
     try:
         # Started immediately after the PID-file claim: winning that O_EXCL race is the moment this process
@@ -224,13 +225,14 @@ async def _start_gateway_start_control_socket(runner):
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
         from gateway.control_socket import GatewayControlServer, build_identify_payload
+        from gateway.run_profile_reconcile import migrate_profile_identity_verb, purge_profile_identity_verb
         descriptor = runner.session_runtime_descriptor
 
         def _identify_runtime():
             payload = build_identify_payload()
             payload.update({key: descriptor[key] for key in (
                 "instance_id", "runtime_protocol", "authority_epoch", "state", "api_origin",
-                "served_profiles", "capabilities") if key in descriptor})
+                "served_profiles", "parked_profiles", "capabilities") if key in descriptor})
             if getattr(runner, '_draining', False):
                 payload.update(state='draining', capabilities=[])
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(
@@ -266,8 +268,26 @@ async def _start_gateway_start_control_socket(runner):
                 "pausing": accepted, "already_stopping": not accepted,
                 "pid": os.getpid(), "drain_timeout": _drain}
 
+        def _rescan_profiles_handler() -> dict:
+            """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
+            (the watcher also rescans periodically). Runs on the socket executor: marshal onto the loop
+            and wait briefly so the caller learns whether the profile is served."""
+            if not getattr(runner.config, "multiplex_profiles", False):
+                return {"multiplex": False, "served_profiles": runner.served_profile_names()}
+            future = asyncio.run_coroutine_threadsafe(
+                runner.reconcile_served_profiles(reason="control-socket"), _main_loop)
+            try:
+                # Bounded: a token-less create reconciles in milliseconds; a credential-add whose adapter
+                # connect outlasts this keeps running and the caller sees ``pending`` (not an error).
+                return {"multiplex": True, **future.result(timeout=5.0)}
+            except concurrent.futures.TimeoutError:
+                return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
+
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime})
+            verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
+                           "rescan-profiles": _rescan_profiles_handler,
+                           "migrate-profile-identity": migrate_profile_identity_verb(runner),
+                           "purge-profile-identity": purge_profile_identity_verb(runner)})
         _control_server.ticket_store = runner.session_ticket_store
         if not await _control_server.start():
             _control_server = None
@@ -285,7 +305,7 @@ async def _start_gateway_start_control_socket(runner):
 def _start_gateway_start_cron_and_housekeeping(runner):
     """Start the cron scheduler thread + gateway housekeeping thread; returns
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
-    from gateway.run import (Any, Dict, Platform, _cron_tick_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
+    from gateway.run import (Dict, Platform, _cron_tick_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
     # The event loop is passed so cron delivery can use live adapters (E2EE support).
     from cron.scheduler_provider import (
         InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
@@ -300,7 +320,8 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         try:
             profile_homes = _cron_tick_profile_homes(runner.config)
             if profile_homes:
-                cron_start_kwargs["profile_homes"] = profile_homes
+                # Live enumerator: re-read per cycle so a hot-served profile's jobs fire without a restart.
+                cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
                 # runner.adapters belongs to the LAUNCH profile (default, or the --profile name); naming
@@ -317,9 +338,10 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     if isinstance(cron_provider, InProcessCronScheduler):
         cron_start_kwargs["can_dispatch"] = lambda: not (
             runner._draining or runner._external_drain_active)
-    cron_thread = threading.Thread(
-        target=cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, daemon=True,
-        name="cron-scheduler")
+    # Supervised: a ticker that dies without a stop request is respawned by housekeeping (#111010).
+    from cron.scheduler_thread import SupervisedTickerThread
+    cron_thread = SupervisedTickerThread(
+        cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
     from gateway.runtime_ownership import process_ownership
     process_ownership.start_writer(cron_thread)
 
@@ -345,7 +367,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     housekeeping_thread = threading.Thread(
         target=_start_gateway_housekeeping, args=(cron_stop,),
         kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(),
-                "cron_provider": cron_provider, "runner": runner},
+                "cron_provider": cron_provider, "runner": runner, "cron_thread": cron_thread},
         daemon=True, name="gateway-housekeeping")
     process_ownership.start_writer(housekeeping_thread)
     return cron_stop, cron_provider, cron_thread, housekeeping_thread
@@ -353,7 +375,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
 
 async def _start_gateway_shutdown_tail(
     runner, _control_server, cron_stop: threading.Event, cron_provider,
-    cron_thread: threading.Thread, housekeeping_thread: threading.Thread,
+    cron_thread: Any, housekeeping_thread: threading.Thread,
     _planned_stop_watcher_stop: threading.Event, _planned_stop_watcher_thread: threading.Thread,
     _signal_initiated_shutdown: list) -> bool:
     """Post-``wait_for_shutdown`` teardown; returns the process exit verdict (True = exit 0)."""
@@ -399,6 +421,25 @@ async def _start_gateway_shutdown_tail(
 
 
 
+def _launch_home_may_multiplex() -> bool:
+    """A named profile serving ``default`` as a secondary splits default's local sessions between
+    the two stores (routing rows follow the launch home, receipts follow the authority), so the
+    multiplexer is the default profile's job. Exits EX_CONFIG: a config verdict, never a retry."""
+    from hermes_constants import profile_name_for_home
+    from gateway.run import get_hermes_home, logger
+    name = profile_name_for_home(get_hermes_home())
+    if name in (None, "default"):
+        return True
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from gateway.run import _write_runtime_status_quiet
+    logger.error(
+        "gateway.multiplex_profiles is set on profile %r, but only the default profile can run the "
+        "multiplexer. Unset the flag in this profile's config.yaml, or start the gateway from the "
+        "default profile (`hermes gateway run`), which serves this profile too.", name)
+    _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason="multiplex_requires_default_profile")
+    raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop deadlocks)."""
@@ -433,6 +474,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
 
+    # Config verdicts come before the duplicate-instance guard: `--replace` must not stop a healthy
+    # gateway for a launch that cannot start.
+    resolved_config = config if config is not None else load_gateway_config_for_runner()
+    profile_homes = (_multiplex_profile_homes(resolved_config)
+                     if getattr(resolved_config, 'multiplex_profiles', False) else [])
+    if profile_homes and not _launch_home_may_multiplex():
+        return False
+
     # Duplicate-instance guard scoped to HERMES_HOME; distinct-home multi-profile setups coexist.
     from gateway.status import get_running_pid
     existing_pid = get_running_pid()
@@ -442,9 +491,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     from gateway.runtime_ownership import process_ownership, OwnershipConflict
     from gateway.status import remove_pid_file, release_gateway_runtime_lock
-    resolved_config = config if config is not None else load_gateway_config_for_runner()
-    profile_homes = (_multiplex_profile_homes(resolved_config)
-                     if getattr(resolved_config, 'multiplex_profiles', False) else [])
     try:
         process_ownership.reserve([get_hermes_home(), *(home for _, home in profile_homes)])
     except OwnershipConflict as exc:

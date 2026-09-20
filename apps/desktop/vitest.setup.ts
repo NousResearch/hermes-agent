@@ -1,16 +1,10 @@
 import { configure } from '@testing-library/react'
 
-// jsdom lacks Web Locks. Serialize callbacks to exercise the browser journal's
-// transaction boundary; native journal tests use the real Electron store.
-const webLocks = new Map<string, Promise<unknown>>()
-Object.defineProperty(navigator, 'locks', { configurable: true, value: {
-  request: (name: string, run: () => unknown) => {
-    const next = (webLocks.get(name) ?? Promise.resolve()).then(run)
-    webLocks.set(name, next.catch(() => undefined))
+import { stubResizeObserver } from './src/test/jsdom'
 
-    return next
-  }
-} })
+// Shared tooltips now measure their arrow through Radix's useSize hook.
+// Geometry assertions still belong in a real browser, not this inert observer.
+stubResizeObserver()
 
 // Node 26 defines its own `localStorage` accessor on the global object, which
 // returns `undefined` unless the process was started with --localstorage-file

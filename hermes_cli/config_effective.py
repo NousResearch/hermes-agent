@@ -25,8 +25,8 @@ from utils import fast_safe_load
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
 _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
-# path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, effective, env_snapshot).
-_EFFECTIVE_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
+# path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
+_EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 
 def _effective(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,15 +72,15 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[5].items()):
-                return copy.deepcopy(cached[4])
+        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
+            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
+                return copy.deepcopy(cached[8])
 
         raw: Dict[str, Any] = {}
         recovered = False
         raw_hit = _config._RAW_CONFIG_CACHE.get(path_key)
-        if user_sig is not None and raw_hit is not None and raw_hit[:2] == user_sig:
-            raw = copy.deepcopy(raw_hit[2])  # one parse per process, shared with read_raw_config()
+        if user_sig is not None and raw_hit is not None and raw_hit[:4] == user_sig:
+            raw = copy.deepcopy(raw_hit[4])  # one parse per process, shared with read_raw_config()
             _LAST_GOOD_USER_RAW.setdefault(path_key, copy.deepcopy(raw))
         elif user_sig is not None:
             try:

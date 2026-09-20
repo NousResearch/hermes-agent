@@ -31,10 +31,9 @@ def _reconcile_repo_discovery(pdb, conn, policy, policy_key):
 
 @_projects_handler("projects.discover_repos")
 def _(rid, params: dict) -> dict:
-    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
+    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived. A profile whose
+    session store was never initialized still answers from its scan cache (``db`` is None then)."""
     with _profile_db(params) as db:
-        if db is None:
-            return _ok(rid, {"repos": []})
         from hermes_cli import projects_db as pdb
         policy = _repo_discovery_policy()
         with pdb.connect_closing() as conn:
@@ -70,7 +69,7 @@ def _(rid, params: dict) -> dict:
         elif not policy["enabled"]:
             pdb.clear_discovered_repos(conn, policy_key=policy_key)
     with _profile_db(params) as db:
-        repos = [] if db is None else _discover_repos_payload(db, include_cached=policy["enabled"])
+        repos = _discover_repos_payload(db, include_cached=policy["enabled"])
         return _ok(rid, {"repos": repos, "accepted": accepted, "discovery_policy": policy})
 
 
@@ -248,18 +247,19 @@ def _readiness_check(rid, params, probe):
     stay isolated); ``scoped`` is the ``{"profile": ...}`` payload stamp (``{}`` for the launch
     profile). An unknown profile answers ``ok=False`` (never a JSON-RPC error, never a quiet answer
     for the launch profile instead)."""
-    import contextlib
     profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
-    scope = contextlib.nullcontext()
+    home = None
     if profile:
         from hermes_cli import profiles as profiles_mod
         if not profiles_mod.profile_exists(profile):
             return _ok(rid, {"ok": False, "profile": params.get("profile"),
                              "error": f"Profile '{profile}' does not exist on this backend."})
         home = _profile_home(profile)
-        if home is not None:
-            scope = _session_profile_runtime_scope({"profile_home": str(home)})
-    with scope:
+    # ``profile_home=None`` is the launch profile: once this process multiplexes its probe must
+    # run under its own frozen secret scope too (``_profile_runtime_scope_tokens`` binds nothing in
+    # a single-profile process), or the first profile-scoped read inside the resolver
+    # (``HERMES_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
+    with _session_profile_runtime_scope({"profile_home": str(home) if home is not None else None}):
         payload = probe(profile, {"profile": profile} if profile else {})
     return _ok(rid, payload)
 
@@ -282,9 +282,11 @@ def _(rid, params: dict) -> dict:
             if record is None:
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
                         **scoped}
+            # ``failure_fields`` rides along only when the free-tier mint did not happen: the code,
+            # the sentence, and whether / when a retry can succeed (``free_tier.provision``).
             return {"provider_configured": record.provider_configured, "ready": True,
                     "free_tier": record.free_tier, "other_providers": record.other_providers,
-                    "inference_provider": record.inference_provider, **scoped}
+                    "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
         return _readiness_check(rid, params, probe)
     except Exception as e:
         return _err(rid, 5016, str(e))
@@ -292,16 +294,28 @@ def _(rid, params: dict) -> dict:
 
 @method("setup.runtime_check")
 def _(rid, params: dict) -> dict:
-    """Strict provider check via the same resolve_runtime_provider() the agent uses on session
-    creation (setup.status is True if ANY provider auth state is discoverable): ok=False + the auth
-    error when the model can't be served, so UIs surface onboarding before a doomed prompt.
-    ``profile`` answers for THAT profile's pin and ``.env``; unknown -> ``ok=False``."""
+    """Readiness probe for the session a client is about to open (setup.status is True if ANY
+    provider auth state is discoverable): ok=False + the auth error when the model can't be served,
+    so UIs surface onboarding before a doomed prompt. Without ``provider`` it runs the SAME
+    resolver as session creation (``_resolve_agent_model_runtime``: startup model + provider pin,
+    then the configured fallback chain) — a probe that ignores the chain shows onboarding for a
+    backend whose sessions build fine. An explicit ``provider`` stays a strict single-provider
+    check so onboarding can verify the provider just connected without another provider's
+    fallback masking a failed connection. ``profile`` answers for THAT profile's pin and ``.env``;
+    unknown -> ``ok=False``."""
     try:
         from hermes_cli.runtime_readiness import check_runtime_readiness
         requested = str(params.get("provider") or "").strip() or None
 
         def probe(profile, scoped):
-            return {**check_runtime_readiness(requested, strict_profile_scope=bool(profile)), **scoped}
+            def resolve():
+                if requested:
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+                    model, _startup_provider = _resolve_startup_runtime()
+                    return model, resolve_runtime_provider(requested=requested, target_model=model or None)
+                return _resolve_agent_model_runtime(None, None)
+            return {**check_runtime_readiness(requested, strict_profile_scope=bool(profile), resolve=resolve),
+                    **scoped}
         return _readiness_check(rid, params, probe)
     except Exception as e:
         return _ok(rid, {"ok": False, "error": str(e)})

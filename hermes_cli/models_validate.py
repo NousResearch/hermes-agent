@@ -364,16 +364,25 @@ def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
 
 
 def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
-    """Anthropic Messages transport: many proxies don't implement /v1/models — probe, and accept
-    with a warning when the probe fails or the model isn't listed."""
+    """Anthropic Messages transport: probe /v1/models and soft-accept either way, but say which
+    happened — a proxy that never implemented the listing is a different situation from a reachable
+    listing that simply doesn't name the slug (vendors alias ids: ``kimi-k3`` is served as ``k3``)."""
     from hermes_cli import models as _m
 
     models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
-    verdict = _match_in_catalog(req.lookup, models).verdict(req) if models is not None else None
-    return verdict or _soft_accept(
-        f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
-        "Anthropic-compatible proxies do not implement GET /v1/models.  The model name has been accepted "
-        "without verification."
+    if models is None:
+        return _soft_accept(
+            f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
+            "Anthropic-compatible proxies do not implement GET /v1/models.  The model name has been accepted "
+            "without verification."
+        )
+    # Vendor alias pairs sit below the default 0.5 similarity cutoff (kimi-k3 vs k3 ≈ 0.44).
+    match = _match_in_catalog(req.lookup, models, case_insensitive=True, suggest_query=req.requested,
+                              suggest_cutoff=0.4)
+    return match.verdict(req) or _soft_accept(
+        f"Note: `{req.requested}` is not named in this endpoint's model listing (it may still serve it "
+        f"under an alias).{match.suggestion_text}"
+        "\n  The model name has been accepted without verification."
     )
 
 

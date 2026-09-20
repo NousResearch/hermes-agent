@@ -6,23 +6,10 @@ import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
-// Display names must not become part of the immutable routing binding.
-export const $canonicalGroupNames = atom<Record<string, string>>({})
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
-  const bindings = $canonicalGroupBindings.get()
-  const current = bindings[key]
-
-  if (!current || current.connectionId !== route.connectionId || current.profile !== route.profile || current.roomId !== room.room_id) {
-    $canonicalGroupBindings.set({ ...bindings, [key]: { connectionId: route.connectionId, profile: route.profile, roomId: room.room_id } })
-  }
-
-  const names = $canonicalGroupNames.get()
-
-  if (names[key] !== room.name) {
-    $canonicalGroupNames.set({ ...names, [key]: room.name })
-  }
+  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id } })
 
   return key
 }

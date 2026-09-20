@@ -93,14 +93,12 @@ def _prune_sessions(body: SessionPrune):
             **{f: getattr(body, f) for f in _PRUNE_NUM_FILTERS}}
         skipped_open = db.count_open_prune_matches(**filters)
         if body.dry_run:
-            report = {}
-            rows = db.list_prune_candidates(**filters, exclude_ledger_owned=True, report=report)
+            rows = db.list_prune_candidates(**filters)
             return {
                 "ok": True,
                 "removed": 0,
                 "matched": len(rows),
                 "skipped_open": skipped_open,
-                "skipped_protected": report.get('skipped_protected', 0),
                 # Rows are ordered by last activity, not creation time.
                 "oldest_last_active": rows[0]["last_active"] if rows else None,
                 "newest_last_active": rows[-1]["last_active"] if rows else None,
@@ -108,11 +106,9 @@ def _prune_sessions(body: SessionPrune):
                 "newest_started_at": max(r["started_at"] for r in rows) if rows else None,
                 "sessions": [{k: r.get(k) for k in _PRUNE_ROW_KEYS} for r in rows]}
         sessions_dir = profile_home / "sessions"
-        report = {}
         removed = db.prune_sessions(
-            sessions_dir=sessions_dir if sessions_dir.exists() else None, report=report, **filters)
-        return {"ok": True, "removed": removed, "skipped_open": skipped_open,
-                "skipped_protected": report.get('skipped_protected', 0)}
+            sessions_dir=sessions_dir if sessions_dir.exists() else None, **filters)
+        return {"ok": True, "removed": removed, "skipped_open": skipped_open}
     finally:
         db.close()
 
@@ -136,11 +132,7 @@ def _with_db(profile: Optional[str], fn: Callable, *, read_only: bool):
     def run():
         db = _open_session_db_for_profile(profile, read_only=read_only)
         try:
-            from hermes_state_raw_delete import SessionLedgerProtectedError
-            try:
-                return fn(db)
-            except SessionLedgerProtectedError as exc:
-                raise HTTPException(status_code=409, detail={'code': exc.reason, 'message': str(exc)}) from exc
+            return fn(db)
         finally:
             db.close()
     if read_only:
@@ -438,10 +430,9 @@ async def import_sessions_endpoint(request: Request):
 @manage_router.get("/api/sessions/empty/count")
 async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     """Count of empty, ended, non-archived sessions (the "Delete empty (N)" button)."""
-    report = {}
     count = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.count_empty_sessions(report=report), read_only=True)
-    return {"count": count, "skipped_protected": report.get('skipped_protected', 0)}
+        _with_db, profile, lambda db: db.count_empty_sessions(), read_only=True)
+    return {"count": count}
 
 
 @manage_router.delete("/api/sessions/empty")
@@ -456,10 +447,9 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     Archived sessions are skipped — the user explicitly chose to keep those rows. * Children of deleted
     parents are orphaned, not cascade-deleted. See #95868.
     """
-    report = {}
     deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_empty_sessions(report=report), read_only=False)
-    return {"ok": True, "deleted": deleted, "skipped_protected": report.get('skipped_protected', 0)}
+        _with_db, profile, lambda db: db.delete_empty_sessions(), read_only=False)
+    return {"ok": True, "deleted": deleted}
 
 
 @manage_router.get("/api/sessions/stats")
@@ -582,6 +572,65 @@ async def get_session_messages(
             "limit": _limit, "offset": offset,
             "order": order or ("latest" if limit is None else "oldest"),
             "returned": len(projected_messages)}}
+
+
+def _timeline_session_id(db, session_id: str, owner: str) -> str:
+    # Durable jump addresses are exact ids, never title/prefix guesses. A NULL
+    # legacy owner belongs to this profile's store, just like /messages pages.
+    def owned(sid):
+        row = db._read_one("SELECT profile_name FROM sessions WHERE id = ?", (sid,))
+        return row is not None and row["profile_name"] in (None, owner)
+
+    if not owned(session_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    sid = db.resolve_resume_session_id(session_id)
+    if not owned(sid):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    return sid
+
+
+@manage_router.get("/api/sessions/{session_id}/timeline")
+async def get_session_timeline(
+    session_id: str, profile: Optional[str] = None,
+    limit: int = Query(500, ge=1, le=500), after_row_id: int = Query(0, ge=0),
+):
+    """Prompt metadata only, including compacted display history (never rewind rows).
+
+    ``next_cursor`` is a stable logical first-row id; pass it as ``after_row_id``.
+    Entry ``row_id`` addresses the current representative for /messages/around.
+    """
+    from hermes_state_timeline import get_session_timeline as read_timeline
+
+    owner = _serving_profile(profile)
+
+    def _read(db):
+        sid = _timeline_session_id(db, session_id, owner)
+        return {"session_id": sid, "profile": owner,
+                **read_timeline(db, sid, limit=limit, after_row_id=after_row_id)}
+
+    return await asyncio.to_thread(_with_db, profile, _read, read_only=True)
+
+
+@manage_router.get("/api/sessions/{session_id}/messages/around")
+async def get_session_messages_around(
+    session_id: str, row_id: int = Query(..., ge=1), profile: Optional[str] = None,
+    limit: int = Query(120, ge=1, le=120),
+):
+    """Bounded display page starting at a timeline prompt; no intervening payloads."""
+    from hermes_state_timeline import get_session_messages_around as read_around
+
+    owner = _serving_profile(profile)
+
+    def _read(db):
+        sid = _timeline_session_id(db, session_id, owner)
+        page = read_around(db, sid, row_id, limit=limit)
+        if page is None:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        return {"session_id": sid, "profile": owner, **page}
+
+    result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
+    result["messages"] = _project_for_display(result["messages"])
+    return result
 
 
 @manage_router.delete("/api/sessions/{session_id}")

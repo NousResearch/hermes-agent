@@ -79,7 +79,8 @@ def _ra():
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
     "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview",
-    "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "gui_tour", "delegate_task",
+    "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour",
+    "delegate_task",
 })
 
 _TRAJECTORY_SYSTEM_PROMPT = (
@@ -842,6 +843,9 @@ def recover_with_credential_pool(
                 from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
                 failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
             kwargs["failure_reason"] = failure_reason
+        model = getattr(agent, "model", None)
+        if isinstance(model, str) and model.strip():
+            kwargs["model"] = model
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False
@@ -1038,7 +1042,8 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
         if not matches_primary(pool):
             prefetched_pool = pool = load_primary_pool()
             prefetched = True
-        next_at = getattr(pool, "next_available_at", lambda: None)()
+        primary_model = str(rt.get("model") or "").strip()
+        next_at = getattr(pool, "next_available_at", lambda **_kwargs: None)(model=primary_model or None)
         if next_at is not None and next_at > time.time():
             if not getattr(agent, "_restore_wait_logged", False):
                 agent._restore_wait_logged = True
@@ -1063,7 +1068,7 @@ def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
         logger.warning("Ignoring malformed runtime capabilities snapshot")
 
 
-def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
+def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
     """Rebind and re-select the primary credential pool after a fallback turn. A cross-provider
     fallback attaches its own pool, which would trip the provider-mismatch guard on the next
     401/429: reload the primary pool, else clear it. The snapshot api_key may be stale after
@@ -1082,7 +1087,7 @@ def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, lo
             )
     agent._credential_pool_entry_id = None
     pool = getattr(agent, "_credential_pool", None)
-    entry = pool.select() if pool is not None and pool.has_available() else None
+    entry = pool.select(model=primary_model or None) if pool is not None and pool.has_available(model=primary_model or None) else None
     if entry is None or not (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")):
         return
     if matches_primary(entry):
@@ -1169,7 +1174,7 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
         )
         _rebind_primary_credential_pool(
-            agent, primary_provider, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
+            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
         )
         # Older snapshots have no reasoning_config; keep the current value.
         saved_reasoning = rt.get("reasoning_config")
@@ -1202,7 +1207,7 @@ def restore_primary_runtime(agent) -> bool:
 
 # Transient transport failures worth one more attempt with a rebuilt client / connection pool.
 _TRANSIENT_TRANSPORT_ERRORS = frozenset({
-    "ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "RemoteProtocolError",
+    "ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "ReadError", "RemoteProtocolError",
     "APIConnectionError", "APITimeoutError",
 })
 _INLINE_REASONING_PATTERNS = tuple(
@@ -1773,9 +1778,12 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs.setdefault("max_retries", 0)
     _ensure_copilot_headers(client_kwargs)
     # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
-    # Authorization default_header overrides the SDK's "Bearer <api_key>".
-    if agent.provider == "opencode-free":
-        from hermes_cli.models import opencode_zen_free_headers
+    # Authorization default_header overrides the SDK's "Bearer <api_key>". Key on the keyless
+    # placeholder as well as the provider: a free slug picked under the paid ``opencode`` profile
+    # resolves to the placeholder too, and shipping it as a bearer 401s every request with an
+    # empty pool to rotate (#110831).
+    from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
+    if agent.provider == "opencode-free" or client_kwargs.get("api_key") == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
         client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
@@ -1888,15 +1896,11 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
 def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
     """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
     if new_norm == "moa":
-        from agent.moa_loop import build_moa_facade
+        from agent.moa_loop import bind_moa_runtime
         # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
-        # is applied inside the fan-out. Pin api_mode so the loop never dispatches
-        # client.responses.create against the facade (matches agent_init.py).
-        agent.api_mode = "chat_completions"
-        agent.api_key = api_key or "moa-virtual-provider"
-        agent.base_url = "moa://local"
-        agent._client_kwargs = {}
-        agent.client = build_moa_facade(agent, agent.model)
+        # is applied inside the fan-out. The binder pins api_mode so the loop never dispatches
+        # client.responses.create against the facade (same pins as agent_init / fallback).
+        bind_moa_runtime(agent, agent.model, api_key)
         return
     if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
@@ -1910,7 +1914,9 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
-        effective_key = api_key or agent.api_key or (resolve_anthropic_token() if is_native_anthropic else "") or ""
+        effective_key = api_key or agent.api_key or (
+            resolve_anthropic_token(model=getattr(agent, "model", None)) if is_native_anthropic else ""
+        ) or ""
         # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
         # agent_init.py).
         if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
@@ -3009,12 +3015,28 @@ def _iter_httpx_pool_objects(http_client: Any):
 
 
 def _connection_candidates(conn: Any):
-    """Walk nested ``_connection`` wrappers (proxy tunnel → HTTP11/2)."""
+    """Walk nested wrappers: proxy tunnels (``_connection``) plus httpx/httpcore
+    stream envelopes (``_stream``/``_httpcore_stream``: BoundSyncStream →
+    ResponseStream → connection byte stream → HTTP11/2 connection)."""
     seen: set[int] = set()
-    while conn is not None and id(conn) not in seen:
-        seen.add(id(conn))
-        yield conn
-        conn = getattr(conn, "_connection", None)
+    stack = [conn]
+    while stack:
+        obj = stack.pop()
+        if obj is None or id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        yield obj
+        for attr in ("_connection", "_stream", "_httpcore_stream"):
+            nxt = getattr(obj, attr, None)
+            if nxt is not None:
+                stack.append(nxt)
+
+
+def _socket_from_candidate(candidate: Any):
+    """Raw socket behind a connection/stream wrapper yielded by ``_connection_candidates``."""
+    stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
+    sock = _socket_from_stream(stream) if stream is not None else None
+    return sock if sock is not None else _socket_from_stream(candidate)
 
 
 def _socket_from_stream(stream: Any):
@@ -3067,8 +3089,7 @@ def _iter_pool_sockets(client: Any):
                 connections.append(conn)
         for conn in connections:
             for candidate in _connection_candidates(conn):
-                stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
-                sock = _socket_from_stream(stream) if stream is not None else None
+                sock = _socket_from_candidate(candidate)
                 if sock is not None and id(sock) not in seen:
                     seen.add(id(sock))
                     yield sock
@@ -3205,24 +3226,30 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
-def force_close_tcp_sockets(client: Any) -> int:
-    """Abort in-flight TCP I/O via ``shutdown(SHUT_RDWR)`` WITHOUT closing FDs. ``close()`` from
-    a non-owner thread is unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a
-    flushed TLS record lands in the wrong file (once clobbered a SQLite header). ``shutdown()``
-    is FD-safe from any thread. Returns the count (logged as ``tcp_force_closed=N``)."""
+def _shutdown_socket(sock: Any) -> None:
+    """``shutdown(SHUT_RDWR)`` WITHOUT closing the FD. ``close()`` from a non-owner thread is
+    unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a flushed TLS record lands
+    in the wrong file (once clobbered a SQLite header). ``shutdown()`` is FD-safe from any thread.
+    Already shut down / not connected / FD invalid are all benign."""
     import socket as _socket
+    try:
+        # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            with contextlib.suppress(OSError):
+                settimeout(0)
+        sock.shutdown(_socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
+def force_close_tcp_sockets(client: Any) -> int:
+    """Abort in-flight TCP I/O on every pool socket via ``_shutdown_socket``. Returns the count
+    (logged as ``tcp_force_closed=N``)."""
     shutdown_count = 0
     try:
         for sock in _iter_pool_sockets(client):
-            try:
-                # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
-                settimeout = getattr(sock, "settimeout", None)
-                if callable(settimeout):
-                    with contextlib.suppress(OSError):
-                        settimeout(0)
-                sock.shutdown(_socket.SHUT_RDWR)
-            except OSError:
-                pass  # already shut down / not connected / FD invalid: all benign
+            _shutdown_socket(sock)
             shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)

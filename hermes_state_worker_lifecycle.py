@@ -195,6 +195,11 @@ def insert_session_row_in_transaction(
         )
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
+               source = CASE
+                   WHEN sessions.source = 'unknown'
+                   THEN COALESCE(excluded.source, 'unknown')
+                   ELSE sessions.source
+               END,
                model = COALESCE(sessions.model, excluded.model),
                model_config = CASE
                    WHEN excluded.model_config IS NOT NULL

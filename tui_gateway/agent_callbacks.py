@@ -79,11 +79,11 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
 
 
 def _agent_cbs(sid: str) -> dict:
-    def _read_block(event: str, timeout: int):
-        # read_terminal / read_preview (desktop GUI): blocking bridge like clarify; the preview
+    def _read_block(method: str, timeout: int):
+        # read_terminal / read_preview (desktop GUI): server request like clarify; the preview
         # read gets longer since a URL tab extracts text from a live page.
-        return lambda start=None, count=None: _block(
-            event, sid, {k: v for k, v in (("start", start), ("count", count)) if v is not None},
+        return lambda start=None, count=None: _ask(
+            method, sid, {k: v for k, v in (("start", start), ("count", count)) if v is not None},
             timeout=timeout)
 
     callbacks = {
@@ -105,17 +105,16 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
-        "read_terminal_callback": _read_block("terminal.read.request", 30),
-        "read_preview_callback": _read_block("preview.read.request", 45),
+        "read_terminal_callback": _read_block("terminal.read", 30),
+        "read_preview_callback": _read_block("preview.read", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
-        "drive_preview_callback": lambda payload: _block("preview.act.request", sid, dict(payload), timeout=45),
+        "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
-        "read_window_below_callback": lambda: _block("window.read.request", sid, {}, timeout=30),
-        # setup_mcp (desktop GUI): consent card + install/enable/OAuth; long timeout on purpose
-        # (typing an API key, browser OAuth) and, like clarify, a late answer is tolerated.
-        "setup_mcp_callback": lambda server, action, reason: _block(
-            "mcp.setup.request", sid, {"server": server, "action": action, "reason": reason}, timeout=600),
-        # tour (desktop GUI): renderer drives driver.js and answers tour.respond.
+        "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
+        # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
+        # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
+        "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
+        # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
@@ -157,18 +156,21 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
 
 def _wire_callbacks(sid: str):
     from tools.terminal_tool import set_sudo_password_callback
+    from tools.terminal_tool_sudo import get_sudo_prompt_command
+    from gateway.run import _redact_approval_command
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
-        val = _block("secret.request", sid, pl)
+        val = _ask("secret", sid, pl)
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure
         return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
 
-    set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
+    set_sudo_password_callback(lambda: _ask(
+        "sudo", sid, {"command": _redact_approval_command(get_sudo_prompt_command())}, timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
     # External password-manager unlock: the renderer shows a masked master-password card; the
@@ -176,12 +178,12 @@ def _wire_callbacks(sid: str):
     from agent.vault_backends.unlock import (set_code_prompt_callback, set_current_session_id,
                                              set_save_login_prompt_callback, set_unlock_prompt_callback)
     set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
-    set_unlock_prompt_callback(lambda backend, display_name: _block(
-        "vault.unlock.request", sid, {"backend": backend, "display_name": display_name}, timeout=120))
+    set_unlock_prompt_callback(lambda backend, display_name: _ask(
+        "vault.unlock_prompt", sid, {"backend": backend, "display_name": display_name}, timeout=120))
 
     def save_login_cb(origin, site):
         # The renderer shows identifier + masked password; the JSON answer goes straight to the vault store.
-        raw = _block("vault.save_login.request", sid, {"origin": origin, "site": site}, timeout=180)
+        raw = _ask("vault.save_login", sid, {"origin": origin, "site": site}, timeout=180)
         try:
             data = json.loads(raw) if raw else None
         except ValueError:
@@ -189,8 +191,8 @@ def _wire_callbacks(sid: str):
         return data if isinstance(data, dict) and data.get("password") else None
 
     set_save_login_prompt_callback(save_login_cb)
-    set_code_prompt_callback(lambda site, hint: _block(
-        "vault.code.request", sid, {"site": site, "hint": hint}, timeout=180))
+    set_code_prompt_callback(lambda site, hint: _ask(
+        "vault.code", sid, {"site": site, "hint": hint}, timeout=180))
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
@@ -412,7 +414,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # No live agent to inherit from (rebuild before the deferred build ran): open the profile's store the
     # same FAIL-CLOSED way _start_agent_build does rather than letting _make_agent reach for the launch db.
     opened = session_db is None and bool(profile_home)
-    scopes = _bind_build_profile_scopes(profile_home) if profile_home else None
+    scopes = _bind_build_profile_scopes(profile_home)
     try:
         # Resolve fallible config before allocating a replacement or moving its handle.
         config_model_seen = _config_model_target()

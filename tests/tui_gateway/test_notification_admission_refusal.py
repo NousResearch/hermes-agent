@@ -33,6 +33,8 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
     # Also bind the retry helper when present; old code must fail on the receipt, not an absent test import.
     if hasattr(session_notifications, '_notif_defer_event'):
         namespace['_notif_defer_event'] = rebind(session_notifications._notif_defer_event, namespace)
+    # The dispatcher binds the session's DB row before admission; this session has no store.
+    namespace['_ensure_session_db_row'] = lambda _session: True
     original_queue = process_registry.completion_queue
     process_registry.completion_queue = queue.Queue()
     try:

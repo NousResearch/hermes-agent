@@ -113,14 +113,14 @@ def _model_flow_moa(config, current_model=""):
 
     names = list(presets.keys())
     default_name = moa.get("default_preset") or names[0]
-    # Rows show the aggregator so the picker is informative before drilling in.
+    # Rows show the aggregator as the acting/billed model so the picker is informative before drilling in.
     rows = []
     for n in names:
         agg = presets[n].get("aggregator") or {}
         agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
         ref_count = len(presets[n].get("reference_models") or [])
         suffix = "  ← default" if n == default_name else ""
-        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+        rows.append(f"{n}  (acting: {agg_label}, {ref_count} refs){suffix}")
     default_idx = names.index(default_name) if default_name in names else 0
 
     title = "Select a Mixture of Agents preset:"
@@ -151,11 +151,18 @@ def _model_flow_moa(config, current_model=""):
     _save_model_choice(selected_name)
 
     preset = presets[selected_name]
-    _say("", f"Default model set to: {selected_name} (via Mixture of Agents)", f"  Preset: {selected_name}", "  Reference models:")
+    _say(
+        "",
+        f"Default model set to: {selected_name} (via Mixture of Agents)",
+        f"  Preset: {selected_name}",
+        "  Reference models (advise once per user turn):",
+    )
     for i, slot in enumerate(preset.get("reference_models") or [], start=1):
         print(f"    {i}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
-    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+    print(
+        f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step and carries almost all of the cost)"
+    )
 
 
 def _nous_login_args(args) -> argparse.Namespace:
@@ -537,12 +544,11 @@ def _copilot_obtain_token() -> bool:
 
 
 def _model_flow_copilot(config, current_model=""):
-    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code."""
-    from hermes_cli.main_provider_setup import _prompt_reasoning_effort_selection
-    from hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
+    """GitHub Copilot flow using env vars, gh CLI, or OAuth device code. The reasoning-effort step
+    is the shared post-pick one in ``select_provider_and_model`` (Copilot's per-model level set
+    comes from ``github_model_reasoning_efforts`` there)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
-    from hermes_cli.config import load_config
-    from hermes_cli.models import fetch_api_models, github_model_reasoning_efforts, copilot_model_api_mode
+    from hermes_cli.models import fetch_api_models, copilot_model_api_mode
     provider_id = "copilot"
     pconfig = PROVIDER_REGISTRY[provider_id]
     creds = resolve_api_key_provider_credentials(provider_id)
@@ -572,25 +578,9 @@ def _model_flow_copilot(config, current_model=""):
         print("No change.")
         return
     selected = _normalize(selected)
-    current_effort = _current_reasoning_effort(load_config())
-    reasoning_efforts = github_model_reasoning_efforts(selected, catalog=catalog, api_key=api_key)
-    selected_effort = None
-    if reasoning_efforts:
-        print(f"  {selected} supports reasoning controls.")
-        selected_effort = _prompt_reasoning_effort_selection(reasoning_efforts, current_effort=current_effort)
-
-    def _finish(cfg, _model):
-        if selected_effort is not None:
-            _set_reasoning_effort(cfg, selected_effort)
-
     _persist_model(selected, provider_id, base_url=effective_base,
-                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key), finish=_finish)
+                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key))
     print(f"Default model set to: {selected} (via {pconfig.name})")
-    if reasoning_efforts:
-        if selected_effort == "none":
-            print("Reasoning disabled for this model.")
-        elif selected_effort:
-            print(f"Reasoning effort set to: {selected_effort}")
 
 
 def _model_flow_copilot_acp(config, current_model=""):

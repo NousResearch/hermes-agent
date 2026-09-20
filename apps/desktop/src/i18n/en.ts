@@ -3,6 +3,45 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  catalog: {
+    listView: 'List view',
+    cardView: 'Card view',
+    installTitle: (name: string) => `Install “${name}”?`,
+    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
+    installTo: 'Install to',
+    thisComputer: 'This computer',
+    installing: 'Installing…',
+    installComplete: (name: string) => `“${name}” installed`,
+    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
+    browse: 'Browse',
+    installed: 'Installed',
+    searchSkills: 'Search skills',
+    searchPlugins: 'Search plugins',
+    allSources: 'All sources',
+    allCategories: 'All categories',
+    about: 'About',
+    author: 'Author',
+    source: 'Source',
+    category: 'Category',
+    version: 'Version',
+    platforms: 'Platforms',
+    requires: 'Requires',
+    tools: 'Tools',
+    hooks: 'Hooks',
+    repository: 'Repository',
+    documentation: 'Documentation',
+    noResults: 'No matches',
+    tryAnother: 'Try another search or clear your filters.',
+    clearFilters: 'Clear filters',
+    loadFailed: 'Could not load the catalog',
+    retry: 'Try again',
+    more: 'Show more',
+    pinned: 'Reviewed commit',
+    snapshotHint: 'From the Hermes catalog. Browsing never contacts source repositories.',
+    installHint: 'Review the source before installing. Changes apply to new sessions.',
+    results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
+    back: 'Back to results'
+  },
   connectors: {
     title: 'Connect your apps',
     connect: 'Connect',
@@ -13,7 +52,7 @@ export const en: Translations = {
     connected: 'Connected',
     checking: 'Checking your apps…',
     waitingSignIn: 'Waiting for you to finish signing in…',
-    notConnected: "Didn't connect",
+    notConnected: 'Not connected',
     notAvailable: 'Not available',
     startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
     startWithout: 'Start without connections',
@@ -22,19 +61,17 @@ export const en: Translations = {
     failed: 'Could not connect',
     needsAuth: 'Access expired',
     opening: 'Opening sign-in…',
-    waiting: 'Finish connecting in your browser…',
+    waiting: 'Waiting for your browser…',
     timeout: 'Still waiting for authorization.',
-    keepWaiting: 'Keep waiting',
     refresh: 'Refresh status',
     statusError: 'Could not check connections. Try refreshing.',
     connectError: 'Could not start authorization. Try again.',
+    connectErrorFor: (app: string) => `Could not start authorization for ${app}.`,
     unavailable: 'Connectors are unavailable for this session.',
     ownerMissing: 'Reopen this conversation to manage its connections.',
     search: 'Find an app',
     empty: 'No matching apps',
     disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
-    connectTitle: app => `Connect ${app}?`,
-    describe: app => `Hermes signs in to ${app} in your browser and asks before reading anything there.`,
     execution: 'Connector tools'
   },
 
@@ -145,20 +182,37 @@ export const en: Translations = {
       startingHermesDesktop: 'Starting Hermes Desktop…'
     },
     errors: {
-      backgroundExited: 'Hermes background process exited.',
-      backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
-      backendStopped: 'Backend stopped',
-      desktopBootFailed: 'Desktop boot failed',
-      gatewayConnectionLost: 'Lost connection to the gateway',
+      backgroundExited: 'The service that runs your chats closed unexpectedly. Restart it to keep going — your chats and settings are safe.',
+      backgroundExitedDuringStartup: 'Hermes stopped right after it started.',
+      backendStopped: 'Hermes stopped working in the background',
+      restartHermes: 'Restart Hermes',
+      openLogs: 'Open logs',
+      desktopBootFailed: "Hermes couldn't start",
+      gatewayConnectionLost: 'Hermes lost its connection',
       gatewayConnectionLostDetail:
-        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
-      gatewaySignInRequired: 'Gateway sign-in required',
-      ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
+        'Still trying to reconnect. You can keep reading and drafting. If this keeps up, reconnect now or check your connection settings.',
+      reconnectNow: 'Reconnect now',
+      connectionSettings: 'Connection settings',
+      gatewaySignInRequired: 'Your remote Hermes signed you out',
+      gatewaySignInRequiredDetail: 'Sign in again to reconnect. Your chats and settings are safe.',
+      signInAgain: 'Sign in again',
+      ipcBridgeUnavailable: "Hermes Desktop couldn't talk to its own background layer. Restart the app."
+    },
+    // Plain causes for a local backend boot failure (`classifyBootFailure`);
+    // the raw output stays behind "Show recent logs".
+    causes: {
+      exitedEarly: "Hermes' background service stopped right after starting.",
+      timedOut: "Hermes' background service didn't answer in time.",
+      permission: "Hermes couldn't write to its data folder (permission problem).",
+      diskFull: 'The disk is full, so Hermes could not start.',
+      portInUse: 'Another program is using the network port Hermes needs.',
+      installMissing: "Part of Hermes' installation is missing. Choose Repair install to put it back."
     },
     failure: {
       title: "Hermes couldn't start",
       description:
-        "The background gateway didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
+        "Hermes' background service didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
+      details: 'Details',
       remoteTitle: 'Remote gateway sign-in required',
       remoteDescription:
         'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
@@ -224,17 +278,24 @@ export const en: Translations = {
       disableFailed: name => `Could not disable ${name} MCP.`
     },
     errors: {
-      elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
-      elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
+      elevenLabsNeedsKey: 'Voice input needs an ElevenLabs key. Add one in Settings → Keys.',
+      elevenLabsRejectedKey: "ElevenLabs didn't accept your API key. Update it in Settings → Keys, then try again.",
       diskFull: 'Disk full — free some space, then try again.',
-      gatewayAuthFailed: 'Gateway authentication failed — check your API_SERVER_KEY.',
-      methodNotAllowed:
-        'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.',
+      storageFailure: "Hermes couldn't save to its data folder. Open Maintenance to check and repair it.",
+      gatewayAuthFailed:
+        'This Hermes no longer accepts your saved sign-in. Open Gateways and sign in again (or paste a new access token), then retry.',
+      methodNotAllowed: "Hermes' background service is out of step with the app, probably after an update. Restart it to fix this.",
       microphonePermission: 'Microphone permission was denied.',
-      openaiRejectedApiKey: 'OpenAI rejected the API key.',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI rejected the API key (${status} invalid_api_key).`,
-      openaiTtsNeedsKey: 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.',
-      codeSkewRestartRequired: 'This backend is running old code after an update. Restart it to load the new code.'
+      openaiRejectedApiKey: "OpenAI didn't accept your API key. Update it in Settings → Keys, then try again.",
+      openaiTtsNeedsKey: 'Voice needs an OpenAI key. Add one in Settings → Keys.',
+      codeSkewRestartRequired: 'Hermes was updated but is still running the old version. Restart it to finish the update.',
+      restartHermesFailed: "Couldn't restart Hermes"
+    },
+    actions: {
+      restartHermes: 'Restart Hermes',
+      openKeys: 'Open Keys',
+      openGateways: 'Open Gateways',
+      openMaintenance: 'Open Maintenance'
     },
     voice: {
       configureSpeechToText: 'Configure speech-to-text to use voice mode.',
@@ -256,6 +317,8 @@ export const en: Translations = {
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable',
       liveEnded: 'Live voice session ended',
+      liveEndedConnectionLost: 'The live voice session lost its connection.',
+      liveEndedClosed: 'The live voice session was closed by the service.',
       liveError: 'Live voice',
       liveDelegationFailed: 'Could not hand the request to Hermes',
       liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
@@ -388,6 +451,7 @@ export const en: Translations = {
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',
       'view.toggleTabStrip': 'Toggle tabs',
+      'view.toggleProfileRail': 'Toggle profile rail',
       'view.showFiles': 'Show file browser',
       'view.showBrowser': 'Open browser',
       'view.toggleHud': 'Toggle HUD mode',
@@ -549,7 +613,7 @@ export const en: Translations = {
         desktopSuccess: name => `Desktop plugin ${name} installed`,
         agentFailed: 'Agent plugin install failed',
         desktopFailed: 'Desktop plugin install failed',
-        missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
+        missingEnv: (name, vars) => `${name} is installed but needs a key before it can work: ${vars}. Add it now, or the plugin's tools will fail.`
       }
     },
     vault: {
@@ -713,7 +777,7 @@ export const en: Translations = {
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
       tabStripTitle: 'Tab Strip',
-      tabStripDesc: 'Show tabs above a zone. Auto hides them when a zone holds a single pane.',
+      tabStripDesc: 'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
@@ -727,6 +791,13 @@ export const en: Translations = {
       terminalFontPlaceholder: 'MesloLGS NF or a CSS font stack',
       terminalFontPreview: 'Glyph preview',
       terminalFontReset: 'Use default',
+      chatFontTitle: 'Chat Font',
+      chatFontDesc:
+        "Choose an installed font for chat and the rest of the app. Handy for readability faces such as OpenDyslexic; leave blank to use the theme's font.",
+      chatFontPlaceholder: 'OpenDyslexic or a CSS font stack',
+      chatFontPreview: 'Preview',
+      chatFontSample: 'The quick brown fox jumps over the lazy dog. 0123456789',
+      chatFontReset: 'Use theme font',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window, text and all. Tuned separately for light and dark.',
       translucencyGlassDesc:
@@ -927,6 +998,29 @@ export const en: Translations = {
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
       showOptions: 'Show options'
     },
+    screenshot: {
+      enabledTitle: 'Screenshot shortcut',
+      enabledDesc:
+        'Press both Command keys together from any app to capture its frontmost window and attach it to your current Hermes draft. Never sends automatically. Off by default; applies only to this Mac. Window contents may be sensitive — review the attachment before sending.',
+      statusTitle: 'Screenshot shortcut status',
+      checking: 'Checking screenshot shortcut…',
+      disabled: 'Screenshot shortcut is off.',
+      starting: 'Starting the shortcut listener. It is not ready yet.',
+      ready: 'Shortcut is ready. Screenshots attach to your current draft without sending.',
+      inputPermission:
+        'Input Monitoring permission lets Hermes detect both Command keys while another app is active. Allow Hermes in System Settings → Privacy & Security → Input Monitoring, then return here and retry.',
+      screenPermission:
+        'Screen Recording permission lets Hermes capture the frontmost app window when you use this shortcut. Allow Hermes in System Settings → Privacy & Security → Screen Recording, then return here and retry. Restart Hermes if macOS asks.',
+      openSettings: 'Open System Settings',
+      retry: 'Retry',
+      unavailable: 'The screenshot shortcut is unavailable. Retry, or turn it off.',
+      errorTitle: 'Screenshot shortcut error',
+      loadFailed: 'Could not read the shortcut status. Retry to check its current setting.',
+      saveFailed: 'Could not confirm the shortcut change. Retry to check its current setting.',
+      permissionFailed: 'Could not open System Settings. Open Privacy & Security manually, then retry.',
+      captureFailed: 'Could not capture the frontmost window. Nothing was attached or sent.',
+      contextChanged: 'The current draft changed during capture. The screenshot was not attached or sent.'
+    },
     quickEntry: {
       enabledTitle: 'Quick Entry',
       enabledDesc:
@@ -1041,14 +1135,14 @@ export const en: Translations = {
     gateway: {
       loading: 'Loading gateway settings...',
       unavailableTitle: 'Gateway settings unavailable',
-      unavailableDesc: 'The desktop IPC bridge does not expose gateway settings.',
+      unavailableDesc: 'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
       title: 'Gateway Connection',
       envOverride: 'env override',
       intro:
         'Local by default. Use remote when this app should drive a Hermes backend elsewhere. Gateway connections are machine-level; profiles are discovered from the gateways you connect.',
-      envOverrideTitle: 'Environment variables are controlling this desktop session.',
+      envOverrideTitle: 'This connection was fixed by the way Hermes was launched.',
       envOverrideDesc:
-        'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
+        'A startup setting outside the app chose this connection, so the options below are read-only. Restart Hermes without that setting — or ask whoever set it up — to change it here.',
       modeTitle: 'Connection mode',
       localTitle: 'Local gateway',
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
@@ -1094,7 +1188,7 @@ export const en: Translations = {
       remoteUrlTitle: 'Remote URL',
       remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',
-      probeError: 'Could not reach this gateway yet. Check the URL — the auth method will appear once it responds.',
+      probeError: "Hermes can't reach that address. Check the URL and that the other computer is running Hermes — sign-in options appear once it answers.",
       signedIn: 'Signed in',
       signIn: 'Sign in',
       signOut: 'Sign out',
@@ -1307,13 +1401,18 @@ export const en: Translations = {
       setToMain: 'Set to main',
       change: 'Change',
       autoUseMain: 'auto · use main model',
+      inheritMainEffort: 'inherit · main model effort',
       providerDefault: '(provider default)',
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       moaTitle: 'Mixture of Agents',
       moaPreset: 'Preset',
+      moaDescription:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop, and almost all of the run’s cost is billed to its provider. References only advise once per user turn by default.',
       moaAggregator: 'Aggregator',
+      moaAggregatorBilled: 'acting model · billed for the run',
+      moaReferenceHint: 'advises once per turn by default',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         compression: { label: 'Compression', hint: 'Context compaction' },
@@ -1322,6 +1421,9 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         review: { label: 'Review', hint: '/review reviewer subagent' },
+        triage_specifier: { label: 'Triage specifier', hint: 'Kanban spec fleshing' },
+        kanban_decomposer: { label: 'Kanban decomposer', hint: 'Task decomposition' },
+        profile_describer: { label: 'Profile describer', hint: 'Auto profile descriptions' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
       }
     },
@@ -1386,8 +1488,7 @@ export const en: Translations = {
       updateAction: 'Update engine',
       updating: 'Updating engine…',
       upToDateTitle: 'Engine up to date',
-      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the latest build Hermes ships.`,
-      updateToast: next => `A newer local engine build (${next}) is available. Update from Settings → Local Models.`,
+      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the configured build.`,
       activeDetail: 'New chats use this model — it loads when you send your first message',
       activeNotLoaded: 'Loads on your first message',
       loadedPill: 'In memory',
@@ -1532,13 +1633,15 @@ export const en: Translations = {
       activeBackend: 'Active',
       activeBackendHint: 'This is your active backend',
       useBackend: 'Use this backend',
-      nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
-      nousAuthNeededTitle: 'Sign in to Nous Portal',
-      nousAuthNeededMessage: provider => `${provider} is saved but won't activate until you sign in to Nous Portal.`,
+      nousIncluded: 'Included with a Nous subscription — sign in with your Nous account to activate.',
+      nousAuthNeededTitle: 'Sign in with your Nous account',
+      nousAuthNeededMessage: provider => `${provider} is saved but will only work once you sign in with your Nous account.`,
       nousAuthSignIn: 'Sign in',
-      nousAuthDoneTitle: 'Nous Portal connected',
+      nousAuthDoneTitle: 'Nous account connected',
       nousAuthDoneMessage: 'Your subscription backends are now active.',
-      nousAuthFailed: 'Nous Portal sign-in did not complete',
+      nousAuthFailed: 'Nous sign-in did not complete',
+      nousAuthFailedMessage: 'Try again.',
+      nousAuthTryAgain: 'Try again',
       noApiKeyRequired: 'No API key required.',
       postSetupHint: step =>
         `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
@@ -1551,7 +1654,9 @@ export const en: Translations = {
       postSetupCompleteTitle: 'Setup complete',
       postSetupCompleteMessage: step => `${step} installed.`,
       postSetupErrorTitle: 'Setup finished with errors',
-      postSetupErrorMessage: step => `Check the ${step} log.`,
+      postSetupErrorMessage: step => `Setting up ${step} did not finish. Open the logs to see why, then run setup again.`,
+      postSetupOpenLogs: 'Open logs',
+      postSetupRunAgain: 'Run again',
       postSetupFailed: step => `Failed to run ${step} setup`,
       webSearchActive: backend => `Search: ${backend}`,
       webExtractActive: backend => `Extract: ${backend}`,
@@ -1582,7 +1687,13 @@ export const en: Translations = {
         selectedTitle: 'Backend selected',
         selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
         failedSelect: backend => `Failed to select ${backend}`,
-        needsSetupHint: 'You can select this backend now — commands will fail until setup is complete.'
+        needsSetupHint: 'You can select this option now — commands will fail until setup is complete.',
+        unavailableTitle: 'Terminal commands are unavailable',
+        unavailableMessage: backend =>
+          `Hermes can't run shell commands right now: ${backend} isn't ready. Switch to Local, or finish setting up ${backend} and try again.`,
+        openBackendSettings: 'Open terminal settings',
+        useLocal: 'Use Local',
+        switchedToLocal: 'Terminal commands now run locally. Applies to new sessions.'
       },
       browserRealProfile: {
         label: 'Use My Real Browser Profile',
@@ -1752,6 +1863,11 @@ export const en: Translations = {
       uninstallStarted: name => `Uninstalling ${name}...`,
       updateStarted: 'Updating installed skills...',
       actionFailed: 'Skill action failed',
+      installBlockedTitle: name => `Couldn't install ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `The security scan flagged ${findings > 0 ? `${findings} item${findings === 1 ? '' : 's'}` : 'risky patterns'} to review${unverified ? ' and the skill comes from an unverified source' : ''}. Read the scan before deciding whether to trust the author.`,
+      viewScan: 'View scan',
+      openLog: 'Open log',
       actionLog: 'Action log',
       alreadyInstalled: (name: string) => `"${name}" is already installed`,
       pickerTitle: 'Skills Hub',
@@ -2101,7 +2217,10 @@ export const en: Translations = {
     restartNeeded: 'Saved. Restart the messaging gateway so the new settings take effect.',
     restartNow: 'Restart now',
     restarting: 'Restarting…',
-    restartFailedManual: 'Gateway restart failed — restart it manually and check the gateway logs.',
+    restartFailedManual: "Hermes couldn't restart to apply your messaging settings",
+    restartFailedManualDetail: 'Try Restart again; if it still fails, open the logs and send diagnostics.',
+    restartAgain: 'Restart again',
+    openLogs: 'Open logs',
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
       subtitle: 'Both options connect a bot you control and save its credentials only to this Hermes installation.',
@@ -2347,6 +2466,12 @@ export const en: Translations = {
     actions: 'Actions',
     color: 'Color…',
     colorFor: 'Color',
+    openInNewWindow: 'Open in new window',
+    setAsDefault: 'Set as default',
+    defaultProfile: 'Default profile',
+    defaultSet: name => `${name} is now the default`,
+    defaultDescription: 'Used when Hermes opens and for new chats. Existing sessions stay in their profiles.',
+    failedSetDefault: 'Could not set the default profile',
     setColor: color => `Set color ${color}`,
     autoColor: 'Auto',
     noProfiles: 'No profiles yet.',
@@ -2438,9 +2563,12 @@ export const en: Translations = {
       running: 'running',
       paused: 'paused',
       disabled: 'disabled',
-      error: 'error',
+      error: 'last run failed',
       completed: 'completed'
     },
+    lastRunFailed: 'Last run failed:',
+    editJob: 'Edit job',
+    runAgain: 'Run again',
     deliveryLabels: {
       local: 'This desktop',
       telegram: 'Telegram',
@@ -2628,6 +2756,7 @@ export const en: Translations = {
       reorder: 'Reorder group',
       actions: 'Group actions'
     },
+    profileRail: 'Profile rail',
     nav: {
       'new-session': 'New session',
       skills: 'Capabilities',
@@ -2731,6 +2860,7 @@ export const en: Translations = {
       enter: label => `Open ${label}`,
       reorder: label => `Reorder ${label}`,
       toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
+      showAllCount: count => `Show all ${count} sessions`,
       back: 'All projects'
     },
     newSessionIn: label => `New session in ${label}`,
@@ -2852,6 +2982,7 @@ export const en: Translations = {
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
+    wakeWord: phrase => `Wake word "${phrase}"`,
     wakeWordListening: phrase => `Wake word: "${phrase}" — listening`,
     wakeWordOff: phrase => `Wake word: "${phrase}" — off`,
     wakeWordPausedVoice: phrase => `Wake word: "${phrase}" — paused during voice chat`,
@@ -2899,7 +3030,7 @@ export const en: Translations = {
     queueSend: 'Send',
     queueDelete: 'Delete',
     queueLostNote: 'Turn lost during restart',
-    restoreImageDraft: 'Restore draft',
+    restoreImageDraft: 'Restore image draft',
     queueLostDiscard: 'Discard',
     queueLostDiscardTip: 'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',
@@ -3158,7 +3289,10 @@ export const en: Translations = {
     tryAgain: 'Try again',
     notAvailableTitle: 'Update not available',
     unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
-    connectionRetry: 'Check your connection and try again.',
+    connectionRetry:
+      "Hermes couldn't reach the update server. Check your internet connection and try again. If you use a remote Hermes, make sure it is online.",
+    connectionSettings: 'Connection settings',
+    openDownloadPage: 'Open download page',
     latestBody: 'You’re running the latest version.',
     latestBodyBackend: 'The backend is running the latest version.',
     allSetTitle: 'You’re all set',
@@ -3264,7 +3398,8 @@ export const en: Translations = {
     remoteUrlDesc: 'Use the base URL of the Hermes gateway, including https:// when remote.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'Detecting gateway authentication...',
-    probeError: 'Could not reach that Hermes gateway.',
+    probeError: "Hermes can't reach that address. Check the URL and that the other computer is running Hermes — sign-in options appear once it answers.",
+    probeErrorDetails: 'Details',
     identityProvider: 'your identity provider',
     authTitle: 'Authentication',
     authNeedsOauth: provider => `Sign in with ${provider} before testing this gateway.`,
@@ -3287,7 +3422,7 @@ export const en: Translations = {
     settingUpTitle: 'Setting up Hermes Agent',
     finishingTitle: 'Finishing up',
     failedDesc:
-      'One of the install steps failed. On Windows, this can happen if another Hermes CLI or desktop instance is running. Stop any running Hermes instances, then retry. Check the details below or the desktop log for the full transcript.',
+      'One of the setup steps did not finish. This can happen when another copy of Hermes is running, the internet connection dropped, or antivirus blocked the installer. Close other Hermes windows, then choose Reload and retry. If it fails again, open the logs and send them to support.',
     activeDesc:
       'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.',
     progress: (completed, total) => `${completed} of ${total} steps complete`,
@@ -3303,7 +3438,8 @@ export const en: Translations = {
     transcriptSaved: 'Full transcript saved to',
     copiedOutput: 'Copied!',
     copyOutput: 'Copy output',
-    reloadRetry: 'Reload and retry'
+    reloadRetry: 'Reload and retry',
+    openLogs: 'Open logs'
   },
 
   onboarding: {
@@ -3359,7 +3495,12 @@ export const en: Translations = {
     connectedPicking: provider => `${provider} connected. Picking a default model...`,
     signInFailed: 'Sign-in failed. Try again.',
     signInExpired:
-      'Sign-in expired waiting for authorization. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then try again. If it keeps failing, use an API key or the CLI fallback instead.',
+      'The sign-in page timed out before you finished. Try again and complete the browser step within a few minutes, or use an API key instead.',
+    signInDidNotFinish: provider =>
+      `Sign-in with ${provider} did not finish. Check your internet connection and try again, or pick a different provider.`,
+    tryAgain: 'Try again',
+    useApiKeyInstead: 'Use an API key',
+    errorDetails: 'Details',
     pickDifferentProvider: 'Pick a different provider',
     signInWith: provider => `Sign in with ${provider}`,
     openedBrowser: provider => `We opened ${provider} in your browser.`,
@@ -3419,15 +3560,39 @@ export const en: Translations = {
     notNow: 'Not now',
     tryAgain: 'Try again',
     startAgain: 'Start again',
-    didNotComplete: 'Sign-in did not complete',
-    rejectedBody: 'Sign-in was rejected in the browser. You are still on the free tier.',
-    supersededBody: 'A newer sign-in code replaced this one.',
-    timedOutHeading: 'Sign-in timed out',
-    timedOutBody: 'The code was not used in time. You are still on the free tier.',
-    retiredBody: 'This free-tier identity was already used or expired; a new one is set up on the next start.',
-    errorBody: 'Sign-in did not complete; run it again.',
+    didNotComplete: "Sign-in didn't finish",
+    rejectedBody: "No problem, you're still on the free Nous service. Sign in whenever you're ready.",
+    supersededBody: 'A newer sign-in code replaced this one. Use the newest one, or start again.',
+    timedOutHeading: 'That sign-in link has expired',
+    timedOutBody: "Start again whenever you're ready. You're still on the free Nous service.",
+    retiredBody:
+      'Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you\'re ready.',
+    errorBody: "Sign-in didn't finish. Try again whenever you're ready.",
+    busyHeading: 'Almost there',
+    busyBody: wait =>
+      `Hermes couldn't finish signing you in because the Nous service is busy. Try again in ${wait}. Your session is still here in the meantime.`,
+    unreachableBody:
+      "Hermes couldn't reach the Nous service to finish signing you in. Check your internet connection and try again. Your session is still here.",
     alreadySignedInHeading: 'Already signed in.',
-    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.'
+    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.',
+    setupFailed: {
+      gateClosed:
+        "This version of Hermes can't start without a Nous account. Sign in or create one, it's free and only takes a minute.",
+      paused:
+        'Using Hermes without signing in is paused for a moment. Hermes will keep checking. Signing in is free and gets you going right now.',
+      rateLimited: wait =>
+        `Lots of people are getting started right now, so Hermes will try again in ${wait}. Signing in is free and skips the wait.`,
+      unreachable:
+        "Hermes couldn't reach the Nous service. Check your internet connection, then tap Try again. Or connect another provider for now.",
+      serverError: 'The Nous service had a hiccup. Tap Try again in a moment, or connect another provider for now.',
+      powRequired:
+        "The Nous server asked for a proof of work, but that isn't implemented in your Agent yet. Sign in or create a free Nous account to continue.",
+      locked: "This session can't continue without signing in. Sign in or create a free Nous account to keep going.",
+      generic: "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
+      signInBelow: 'Signing in is free. Pick Nous below.',
+      tryAgain: 'Try again',
+      retrying: 'Trying again…'
+    }
   },
 
   modelPicker: {
@@ -3857,20 +4022,174 @@ export const en: Translations = {
       react: 'React',
       dismissError: 'Dismiss error',
       errorLayers: {
-        auth: 'Authentication error',
+        auth: 'Sign-in problem',
         billing: 'Out of credits',
         disk: 'Disk full',
-        endpoint: 'Custom endpoint error',
-        gateway: 'Gateway error',
-        generic: 'Turn failed',
-        provider: 'Provider error',
-        runtime: 'Local runtime error',
-        streaming: 'Streaming connection error'
+        endpoint: "Can't reach your model server",
+        gateway: 'Hermes hit a problem',
+        generic: "Hermes couldn't finish this reply",
+        provider: 'The AI service returned an error',
+        runtime: 'Hermes hit a problem',
+        streaming: 'The reply was cut off'
       },
+      errorLayerBodies: {
+        auth: 'The AI service rejected your sign-in. Check the credentials for this provider, then send your message again.',
+        billing: 'Your account has no credits left for this provider. Top up or switch provider, then send again.',
+        disk: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.',
+        endpoint: "Hermes can't reach your custom model server. Check that it is running, then send your message again.",
+        gateway: 'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
+        generic: 'Something went wrong while Hermes was replying. Retry, or copy the details if it keeps happening.',
+        provider: 'The AI service could not complete this request. Retry in a moment or switch provider.',
+        runtime: 'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
+        streaming: 'The connection dropped before the reply finished. Retry to send it again.'
+      },
+      errorCodes: {
+        auth: {
+          title: provider => `${provider} rejected your sign-in`,
+          body: provider => `The credentials saved for ${provider} were not accepted. Fix them in Settings or switch provider, then send your message again.`
+        },
+        auth_permanent: {
+          title: provider => `${provider} rejected your sign-in`,
+          body: provider =>
+            `The credentials saved for ${provider} are invalid or were revoked. Update them or switch provider, then send your message again.`
+        },
+        billing: {
+          title: 'Out of credits',
+          body: provider => `Your ${provider} account has no credits left. Top up or switch provider, then send again.`
+        },
+        rate_limit: {
+          title: 'The AI service is busy',
+          body: provider => `${provider} is limiting requests right now. Wait a minute, then retry.`
+        },
+        upstream_rate_limit: {
+          title: 'The AI service is busy',
+          body: provider => `${provider} is limiting requests right now. Wait a minute, then retry.`
+        },
+        overloaded: {
+          title: 'The AI service is overloaded',
+          body: provider => `${provider} is having problems right now. Retry in a moment or switch provider.`
+        },
+        server_error: {
+          title: 'The AI service had a problem',
+          body: provider => `${provider} returned a server error. Retry in a moment or switch provider.`
+        },
+        timeout: {
+          title: 'The reply timed out',
+          body: provider => `${provider} did not answer in time. Retry to send it again.`
+        },
+        stream_drop: {
+          title: 'The reply was cut off',
+          body: 'The connection dropped before the reply finished. Retry to send it again.'
+        },
+        ssl_cert_verification: {
+          title: 'Secure connection failed',
+          body: provider =>
+            `Hermes could not verify the secure connection to ${provider}. Check your network or proxy settings, or switch provider, then send your message again.`
+        },
+        context_overflow: {
+          title: 'This conversation is too long',
+          body: 'The conversation no longer fits the model. Compress it or start a new chat, then send again.'
+        },
+        payload_too_large: {
+          title: 'This message is too large',
+          body: 'The request was too big for the model. Compress the conversation or start a new chat, then send again.'
+        },
+        model_not_found: {
+          title: 'This model is not available',
+          body: provider => `${provider} does not offer this model on your account. Choose another model, then send your message again.`
+        },
+        provider_policy_blocked: {
+          title: 'This model is blocked by your account settings',
+          body: provider =>
+            `${provider} would not route this request under your account's data or privacy settings. Choose another model or switch provider.`
+        },
+        content_policy_blocked: {
+          title: 'The AI service declined this request',
+          body: provider => `${provider} would not answer this message. Edit it and send again.`
+        },
+        format_error: {
+          title: 'The AI service rejected the request',
+          body: provider =>
+            `${provider} did not accept how this request was built. Switch provider or send diagnostics so we can look into it.`
+        },
+        truncated: {
+          title: 'The reply was cut short',
+          body: 'The model stopped before finishing. Retry to get a complete reply.'
+        },
+        invalid_response: {
+          title: 'The AI service sent an unreadable reply',
+          body: provider => `${provider} returned something Hermes could not read. Retry in a moment.`
+        },
+        empty_response: {
+          title: 'The AI service sent an empty reply',
+          body: provider => `${provider} returned nothing for this message. Retry in a moment.`
+        },
+        loop_error: {
+          title: 'Hermes got stuck in a loop',
+          body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
+        },
+        SESSION_NOT_OWNED: {
+          title: 'This chat is open somewhere else',
+          body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'
+        },
+        disk_full: {
+          title: 'Disk full',
+          body: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.'
+        },
+        // Nous free tier. The body is normally the backend's own sentence (it names the wait
+        // and the way forward); these bodies stand in for an older backend that sent none.
+        free_tier_disabled: {
+          title: 'Using Hermes without signing in is switched off right now',
+          body: "Sign in with a Nous account to keep chatting, it's free."
+        },
+        free_tier_rate_limited: {
+          title: "You've used up the allowance for chatting without signing in",
+          body: "It refreshes shortly. Sign in with a Nous account for a bigger allowance, it's free."
+        },
+        free_tier_at_capacity: {
+          title: 'Chatting without signing in is really busy right now',
+          body: "Sign in to skip the queue, it's free, or try again in a little while."
+        },
+        free_tier_model_not_free: {
+          title: "That model isn't available without signing in",
+          body: "Hermes uses the free model for now. Sign in with a Nous account for more models, it's free."
+        },
+        free_tier_route: {
+          title: "Hermes couldn't reach the free model on this route",
+          body: "Sign in with a Nous account, it's free, or check the NOUS_INFERENCE_BASE_URL setting."
+        },
+        free_tier_outage: {
+          title: 'The free model is having trouble responding right now',
+          body: 'Try sending your message again in a minute.'
+        },
+        free_tier_refused: {
+          title: "Hermes couldn't send that without signing in",
+          body: 'Signing in with a Nous account is free.'
+        }
+      },
+      errorAuthKinds: {
+        api_key: {
+          title: provider => `${provider} rejected your API key`,
+          body: provider => `The key saved for ${provider} is invalid or was revoked. Update it, then retry.`
+        },
+        oauth: {
+          title: provider => `Your ${provider} sign-in expired`
+        }
+      },
+      errorDetails: 'Details',
+      errorGenericProvider: 'The AI service',
+      errorToastTitle: "Hermes couldn't finish the reply",
       errorRetry: 'Retry',
       errorStartNewSession: 'Start new session',
       errorSwitchProvider: 'Switch provider',
+      errorChooseModel: 'Choose a model',
+      errorCompressConversation: 'Compress conversation',
+      errorCompressFailed: 'Could not compress the conversation',
+      errorOpenHermesFolder: 'Open Hermes folder',
+      errorOpenHermesFolderFailed: 'Could not open the Hermes folder',
+      errorUpdateApiKey: 'Update API key',
       errorSignInAgain: provider => `Sign in to ${provider} again`,
+      errorSignInFreeTier: 'Sign in with a Nous account',
       errorOauthExpired: provider =>
         `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
@@ -3901,8 +4220,13 @@ export const en: Translations = {
       attachingFile: 'Attaching…'
     },
     approval: {
-      gatewayDisconnected: 'Hermes gateway is not connected',
-      sendFailed: 'Could not send approval response',
+      gatewayDisconnected:
+        'Hermes is offline right now. The command is still waiting for your answer (until the approval timeout). Reconnect, then send it again.',
+      sendFailed: 'Could not send your answer',
+      reconnect: 'Reconnect',
+      timedOutSystemLine:
+        'Approval timed out — the command was not run. Ask Hermes to try again, or raise the limit in Settings → Safety → Approval timeout.',
+      openSafetySettings: 'Open Safety settings',
       run: 'Run',
       command: 'Command',
       moreOptions: 'More approval options',
@@ -3917,7 +4241,7 @@ export const en: Translations = {
     },
     clarify: {
       notReady: 'Clarify request is not ready yet',
-      gatewayDisconnected: 'Hermes gateway is not connected',
+      gatewayDisconnected: 'Hermes is offline right now. Reconnect, then send it again.',
       sendFailed: 'Could not send clarify response',
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
@@ -3933,26 +4257,22 @@ export const en: Translations = {
       lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
     },
     mcpSetup: {
-      installTitle: server => `Add the ${server} MCP server?`,
-      enableTitle: server => `Enable the ${server} MCP server?`,
-      authorizeTitle: server => `Authorize the ${server} MCP server?`,
+      installTitle: 'Add MCP servers',
+      enableTitle: 'Enable MCP servers',
+      authorizeTitle: 'Authorize MCP servers',
       installAction: 'Install',
       enableAction: 'Enable',
       authorizeAction: 'Authorize',
-      decline: 'Not now',
-      declined: 'Declined',
       installed: server => `Installed ${server}`,
       enabled: server => `Enabled ${server}`,
       authorized: server => `Authorized ${server}`,
       failed: server => `Setup failed for ${server}`,
-      unanswered: 'No response',
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
       notInCatalog: server => `“${server}” is not in the MCP catalog`,
-      catalogSource: 'From the Nous-approved catalog',
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',
-      gatewayDisconnected: 'Hermes gateway is not connected'
+      gatewayDisconnected: 'Hermes is offline right now. Reconnect, then send it again.'
     },
     tool: {
       copyCode: 'Copy code',
@@ -3965,6 +4285,19 @@ export const en: Translations = {
       copyQuery: 'Copy query',
       copyFile: 'Copy file',
       copyPath: 'Copy path',
+      failedCalls: (count: number) => `${count} tool call${count === 1 ? '' : 's'} failed`,
+      skillActivity: {
+        loading: 'Loading skill',
+        loaded: 'Loaded skill',
+        loadFailed: 'Failed to load skill',
+        readingResource: 'Reading skill resource',
+        readResource: 'Read skill resource',
+        resourceFailed: 'Failed to read skill resource',
+        listing: 'Listing skills',
+        listed: 'Listed skills',
+        listFailed: 'Failed to list skills',
+        unavailable: 'Skill result unavailable'
+      },
       outputAlt: 'Tool output',
       rawResponse: 'Raw response',
       copyActivity: 'Copy activity',
@@ -3976,6 +4309,7 @@ export const en: Translations = {
       statusError: 'Error',
       statusRecovered: 'Recovered',
       statusDone: 'Done',
+      resultUnavailable: 'Result unavailable',
       memoryWriteNoted: 'Memory write noted',
       actions: {
         read: 'Read',
@@ -4043,11 +4377,13 @@ export const en: Translations = {
   },
 
   prompts: {
-    gatewayDisconnected: 'Hermes gateway is not connected',
+    gatewayDisconnected: 'Hermes is offline right now. Reconnect, then send it again.',
+    reconnect: 'Reconnect',
     sudoSendFailed: 'Could not send sudo password',
     secretSendFailed: 'Could not send secret',
     sudoTitle: 'Administrator password',
-    sudoDesc: 'Hermes needs your sudo password to run a privileged command. It is sent only to your local agent.',
+    sudoDesc: 'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
+    sudoCommandUnavailable: 'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',
@@ -4115,7 +4451,7 @@ export const en: Translations = {
     resumeStrandedBody:
       'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
     poolSlotTimeoutBody:
-      'All local profile backend slots are busy. Increase Warm Bot Backends in Settings → Advanced, or retry after an idle backend is evicted.',
+      "Too many bots are running at once for this computer's limit. Raise the limit in Settings → Advanced, or wait for one to finish and retry.",
     poolSlotTimeoutOpenSettings: 'Open Advanced Settings',
     resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
@@ -4131,7 +4467,13 @@ export const en: Translations = {
     cwdChangeFailed: 'Working directory change failed',
     cwdStagedTitle: 'Working directory staged',
     cwdStagedMessage: 'Restart the desktop backend to apply cwd changes to this active session.',
+    modelSwitchConfirmBody: 'This model switch needs confirmation.',
+    modelSwitchConfirmLabel: 'Switch anyway',
+    modelSwitchConfirmTitle: (model: string) => `Switch to ${model}?`,
+    modelSwitchConfirmTitleFallback: 'Switch models?',
     modelSwitchFailed: 'Model switch failed',
+    modelSwitchKeepLabel: 'Keep current model',
+    modelSwitchStaleNotice: 'Selection changed — the model switch was not applied.',
     hydrationSyncing: (profile: string) => `Syncing ${profile}\u2026`,
     sessionExported: 'Session exported',
     sessionExportFailed: 'Could not export session',
@@ -4159,7 +4501,8 @@ export const en: Translations = {
       success: platform => `Handed off to ${platform}. Resume here anytime.`,
       systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
       failed: error => `Handoff failed: ${error}`,
-      timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+      timedOut: "Hermes couldn't reach your messaging connection. Start it from Settings → Messaging, then try the handoff again.",
+      startMessaging: 'Start messaging'
     }
   },
 
@@ -4198,6 +4541,11 @@ export const en: Translations = {
         title: 'Attach and command',
         text: 'Type @ to bring a file into the conversation, / to run a command.'
       },
+      'local-runtime-update': {
+        title: 'A local engine update is available',
+        text: 'Update the engine that runs your local models. Active local requests may be interrupted.',
+        action: 'Update now'
+      },
       'local-setup': {
         title: 'This machine can run models locally',
         text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
@@ -4214,6 +4562,8 @@ export const en: Translations = {
     genericFailure: 'Something went wrong',
     boundaryTitle: 'Something broke in the interface',
     boundaryDesc: 'The view hit an unexpected error. Your chats and settings are safe.',
+    boundaryDetails: 'Details',
+    sendDiagnostics: 'Send diagnostics',
     reloadWindow: 'Reload window',
     openLogs: 'Open logs'
   },

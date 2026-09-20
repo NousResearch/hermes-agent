@@ -73,7 +73,7 @@ export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): nu
   const remaining = work.count - listed.length
   const lines = listed.map(title => `• ${title}`)
 
-  if (listed.length > 0 && remaining > 0) {
+  if (remaining > 0) {
     lines.push(remaining === 1 ? '• 1 more' : `• ${remaining} more`)
   }
 

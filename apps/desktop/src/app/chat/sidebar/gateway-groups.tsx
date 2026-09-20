@@ -21,6 +21,7 @@ import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { newSessionInAgent, newSessionInProfile } from '@/store/profile'
 import { $sessionProfilesUsage } from '@/store/session'
@@ -180,12 +181,19 @@ function GatewayProfileGroup({
 
   return (
     <SidebarRowStack
+      className={cn(sortable.dragging && 'relative z-10')}
       data-gateway-group={group.profile ? group.id : undefined}
       data-gateway-section={!group.profile ? group.id : undefined}
       ref={sortable.ref}
       style={sortable.style}
     >
       <SidebarGroupRow
+        // The whole header is grab surface, same as a project row: the lead
+        // glyph only reveals its grabber on hover, so a press anywhere on the
+        // row must start the reorder too. The ⋯/caret cluster and the handle
+        // keep their own gestures; a sub-threshold press on the label is still
+        // the click that folds the group.
+        {...sortable.dragHandleProps}
         actions={
           <div className="flex items-center">
             {group.profile && (
@@ -243,6 +251,8 @@ function GatewayProfileGroup({
             </DropdownMenu>
           </div>
         }
+        className={cn(sortable.dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+        data-glass-opaque={sortable.dragging ? '' : undefined}
         label={
           <SidebarRowLink aria-expanded={open} onClick={() => toggleGatewayGroup(group.id)}>
             {label}
@@ -266,6 +276,13 @@ function GatewayProfileGroup({
             )}
           </SidebarRowGrab>
         }
+        onPointerDown={event => {
+          if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
+            return
+          }
+
+          sortable.dragHandleProps.onPointerDown?.(event)
+        }}
         toggle={{ ariaLabel: s.projects.toggle(label, !open), onToggle: () => toggleGatewayGroup(group.id), open }}
         totals={usage ? { costUsd: usage.cost_usd, tokens: usage.tokens } : undefined}
       />

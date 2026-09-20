@@ -720,6 +720,8 @@ async def poll_oauth_session(provider_id: str, session_id: str, profile: Optiona
         # Nous over a free-tier identity: why a transfer ended, who signed in, and the default model
         # the completion settled on (None when the config was on the user's own model).
         "reason": sess.get("reason"), "account_email": sess.get("account_email"), "model": sess.get("model"),
+        # Failed sign-ins over a free-tier identity: can a later attempt succeed, and after how long.
+        "retryable": sess.get("retryable"), "retry_after": sess.get("retry_after"),
     }
 
 

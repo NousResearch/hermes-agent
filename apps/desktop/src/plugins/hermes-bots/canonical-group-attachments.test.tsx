@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { ComponentProps, ReactNode } from 'react'
+import type { ComponentProps } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
@@ -7,7 +7,6 @@ import { expectDownloaded, observeDownloads } from './canonical-download-test-ut
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', () => ({
   host: { requestProfile: request },
-  Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
   Button: (props: ComponentProps<'button'>) => <button {...props} />
 }))
 vi.mock('./canonical-group-labels', () => ({

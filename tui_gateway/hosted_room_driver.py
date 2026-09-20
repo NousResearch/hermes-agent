@@ -48,7 +48,6 @@ class SessionOperations(Protocol):
         self, *, profile: str, session_id: str, source: str, expected_task_id: str,
     ) -> Mapping[str, Any] | None: ...
 
-
 class InternalSessionRPC(SessionOperations, Protocol):
     """Descriptor-bound submission of original text and complete event references.
 
@@ -61,7 +60,6 @@ class InternalSessionRPC(SessionOperations, Protocol):
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
         attachments: list[dict[str, Any]] | None = None,
     ) -> Mapping[str, Any]: ...
-
 
 class LegacySessionRPC(SessionOperations, Protocol):
     """Explicit in-process session staging; member proof is bound before submit."""
@@ -118,6 +116,7 @@ class LegacySessionRPC(SessionOperations, Protocol):
 
 
 MemberTransportResolver = Callable[["HostedRoomBinding", Mapping[str, Any]], InternalSessionRPC | LegacySessionRPC]
+AttachmentLoader = Callable[["HostedRoomBinding", Mapping[str, Any]], Iterable[tuple[Mapping[str, Any], bytes]]]
 
 
 @dataclass(frozen=True)
@@ -144,7 +143,6 @@ class _RecoveryInspection:
 
 
 _NO_INSPECTION = _RecoveryInspection(terminal=None, active=False, status=None)
-AttachmentLoader = Callable[["HostedRoomBinding", Mapping[str, Any]], Iterable[tuple[Mapping[str, Any], bytes]]]
 
 
 def _session_kw(profile: str, session_id: str) -> dict[str, str]:
@@ -162,11 +160,9 @@ class HostedRoomRuntime:
     def __init__(
         self, *, db_path: Path | str,
         rooms: Iterable[HostedRoomBinding] | Callable[[], Iterable[HostedRoomBinding]],
-        turn_lock: Callable[[str], ContextManager[Any]], rpc: LegacySessionRPC | None = None,
+        turn_lock: Callable[[str], ContextManager[Any]], rpc: InternalSessionRPC | None = None,
         transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
-        prepare_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
-        maintain_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         attachment_loader: AttachmentLoader | None = None,
@@ -194,8 +190,6 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
-        self.prepare_leased_room = prepare_leased_room
-        self.maintain_leased_room = maintain_leased_room
         self.pending_action, self.clock = pending_action, clock
         self.attachment_loader = attachment_loader
         for name, value in positive.items():
@@ -294,7 +288,11 @@ class HostedRoomRuntime:
                 binding = self._binding_for_room(identity.room_id)
                 try:
                     if binding is not None:
-                        self._finish_stop(binding, result)
+                        lease = self._ensure_lease(binding)
+                        if self._peer_stop_acknowledged(binding, result) or (
+                            not self._settle_stopping_completion(binding, result, lease)
+                            and self._interrupt_stopping_task(binding, result)):
+                            self._complete_cancel(result, cancel_id=cancel_id)
                 except Exception as exc:
                     self._record_error(f"stop remains pending: {exc}")
             self.wakeup()
@@ -374,26 +372,13 @@ class HostedRoomRuntime:
             **asdict(terminal))
 
     def _finish_stop(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease | None = None
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
     ) -> bool:
         """Terminalize a stopping task from its receipt or an acknowledged interrupt."""
-        if self._peer_stop_acknowledged(binding, task):
-            self._complete_cancel(task)
+        if self._settle_stopping_completion(binding, task, lease):
             return True
-        try:
-            lease = self._ensure_lease(binding) if lease is None else self._renew_lease_if_needed(lease)
-            state.require_active_lease(self.db_path, lease, clock=self.clock)
-            if self._settle_stopping_completion(binding, task, lease):
-                return True
-        except (state.RoomUnavailableError, state.StaleLeaseError, state.LeaseHeldError):
-            # Observing/interrupting an exact admitted attempt is not permission
-            # to schedule work or publish a new result from this coordinator.
-            lease = None
         if self._interrupt_stopping_task(binding, task):
-            try:
-                self._complete_acknowledged_stop(binding, task, lease)
-            except (state.RoomUnavailableError, state.StaleLeaseError):
-                self._complete_cancel(task)
+            self._complete_acknowledged_stop(binding, task, lease)
             return True
         return False
 
@@ -484,9 +469,13 @@ class HostedRoomRuntime:
                 "request_id": safe_approval.get("request_id"), "approval": safe_approval}
         self.pending_action(task["identity"].room_id, _member_id(task), action)
 
-    def _retry_stopping_tasks(self, binding: HostedRoomBinding, lease: state.DriverLease | None = None) -> bool:
+    def _retry_stopping_tasks(self, binding: HostedRoomBinding, lease: state.DriverLease) -> bool:
         for task in self._tasks(binding, "stopping"):
             try:
+                lease = self._renew_lease_if_needed(lease)
+                if self._peer_stop_acknowledged(binding, task):
+                    self._complete_cancel(task)
+                    continue
                 if not self._finish_stop(binding, task, lease):
                     return True
             except Exception as exc:
@@ -572,9 +561,6 @@ class HostedRoomRuntime:
                 self.wakeup()
 
     def _process_room(self, binding: HostedRoomBinding) -> None:
-        if self._retry_stopping_tasks(binding):
-            self._set_blocked(binding.room_id, True)
-            return
         if self.prepare_room is not None:
             self.prepare_room(binding)
         self._inspect_abandoned_attempts(binding)
@@ -587,8 +573,6 @@ class HostedRoomRuntime:
         if (lease.room_id, lease.lease_generation) not in self._recovered_leases:
             state.recover_room(self.db_path, lease, clock=self.clock)
             self._recovered_leases.add((lease.room_id, lease.lease_generation))
-        if self.prepare_leased_room is not None:
-            self.prepare_leased_room(binding, lease)
         if self._retry_stopping_tasks(binding, lease):
             self._set_blocked(binding.room_id, True)
             return
@@ -597,31 +581,17 @@ class HostedRoomRuntime:
         for task in self._tasks(binding, "queued"):
             retry = self._unavailable_route_retries.get(
                 (task["identity"].room_id, _member_id(task)))
-            if self._stop.is_set():
+            if self._stop.is_set() or (
+                    retry is not None and self.clock() < retry["next_attempt_at"]):
                 return
-            if retry is not None and self.clock() < retry["next_attempt_at"]:
-                continue
             lease = self._renew_lease_if_needed(lease)
             attempt = state.start_task(
                 self.db_path, task["identity"], lease,
                 expected_cancel_generation=task["cancel_generation"], clock=self.clock)
             self._execute_attempt(binding, task, attempt)
             current = state.get_task(self.db_path, task["identity"])
-            if current["status"] in state.TERMINAL_STATUSES:
-                lease = self._maintain_room(binding, lease)
             if current["status"] not in state.TERMINAL_STATUSES:
-                retry = self._unavailable_route_retries.get((task["identity"].room_id, _member_id(task)))
-                if current["status"] == "queued" and retry is not None and self.clock() < retry["next_attempt_at"]:
-                    continue
                 return
-
-        self._maintain_room(binding, lease)
-
-    def _maintain_room(self, binding: HostedRoomBinding, lease: state.DriverLease) -> state.DriverLease:
-        if self.maintain_leased_room is not None and not self._stop.is_set():
-            lease = self._renew_lease_if_needed(lease)
-            self.maintain_leased_room(binding, lease)
-        return lease
 
     def _defer_unavailable_route(self, task: Mapping[str, Any]) -> float:
         key = (task["identity"].room_id, _member_id(task))
@@ -681,12 +651,15 @@ class HostedRoomRuntime:
         with self._status_lock:
             self._current_tasks[binding.room_id] = attempt.identity
         try:
-            transport = self._transport_for(binding, task)
+            transport = self._transport_for(binding, {**task, "execution_generation": attempt.execution_generation})
             with self.turn_lock(profile):
                 session = self._resolve_or_create(transport, profile, binding.room_id)
                 session_id = _session_id(session)
                 prompt = str(task["payload"]["prompt"])
                 manifests = task["payload"].get("attachments") or []
+                if manifests:
+                    from gateway.session_ingress_media import validate_media_batch_size
+                    validate_media_batch_size(item["size"] for item in manifests)
                 if manifests and transport is self.rpc:
                     if self.attachment_loader is None:
                         raise RuntimeError("hosted attachments are unavailable for this member transport")
@@ -714,9 +687,6 @@ class HostedRoomRuntime:
                         raise RuntimeError("hosted attachment ownership did not match the task manifest")
                     if file_refs:
                         prompt = f"{prompt}\n\nAttached files staged in your session workspace:\n" + "\n".join(file_refs)
-                # Profile contention and session resolution may outlive this
-                # worker's authority. Recheck before contacting the executor.
-                state.require_active_lease(self.db_path, attempt.lease, clock=self.clock)
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted = True
@@ -758,38 +728,28 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
-            # Only start_task's newly allocated, still-fenced generation proves freshness.
-            fresh_preflight_failure = (
-                getattr(exc, "dispatch_not_attempted", False) is True
-                and task.get("status") == "queued"
-                and task.get("execution_generation") == attempt.execution_generation - 1
-            )
             if transport is not None and attachment_staging_active and attachment_session_id is not None:
                 self._finish_attachment_staging_after_error(
                     transport=transport, profile=profile, session_id=attachment_session_id,
                     execution_generation=attempt.execution_generation, submit_attempted=submit_attempted,
                     not_admitted=bool(getattr(exc, "not_admitted", False)))
-            if submit_attempted and (
-                bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure
-            ):
+            if (submit_attempted and fresh_preflight_failure
+                    and getattr(exc, "status_code", None) == 413
+                    and not getattr(exc, "retryable", False)):
+                # Permanent upload failure only settles a newly allocated source
+                # generation; reused identities still require remote observation.
+                self._settle_failure_if_current(attempt, exc)
+            elif submit_attempted and bool(getattr(exc, "not_admitted", False)):
                 try:
-                    if task.get("payload", {}).get("target_member_id"):
-                        deferred = state.defer_not_admitted_task(
-                            self.db_path, attempt, reason="member_unavailable", clock=self.clock)
-                    else:
-                        deferred = None
-                        state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
+                    state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
                     self._mark_ambiguous(binding, attempt)
                     self._record_task_error(
                         attempt, f"not-admitted proof lost its fence: {fence_exc}")
                 else:
                     delay = self._defer_unavailable_route(task)
-                    if deferred is not None and self.publish_terminal is not None:
-                        self.publish_terminal(binding, deferred)
                     self._record_task_error(
-                        attempt, "was not admitted; " + (f"member deferred for {delay:g}s"
-                                                        if deferred is not None else f"queued for retry in {delay:g}s"))
+                        attempt, f"was not admitted; queued for retry in {delay:g}s")
             elif submit_attempted:
                 self._mark_ambiguous(binding, attempt)
                 self._record_task_error(attempt, f"observation failed after submit: {exc}")
@@ -853,6 +813,7 @@ class HostedRoomRuntime:
                 return None
             if task["status"] == "stopping":
                 try:
+                    lease = self._renew_lease_if_needed(lease)
                     if self._finish_stop(binding, task, lease):
                         return None
                 except Exception as exc:
@@ -869,17 +830,16 @@ class HostedRoomRuntime:
                 return receipt
             info = transport.info(**_session_kw(profile, session_id))
             self._report_pending_action(task, session_id=session_id, info=info)
-            lease = self._maintain_room(binding, lease)
             remaining = max(0.0, deadline_monotonic - time.monotonic())
             self._wake.wait(min(self.active_poll_interval_seconds, remaining))
             self._wake.clear()
         return None
 
     def _complete_acknowledged_stop(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease | None
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
     ) -> dict[str, Any]:
         """Terminalize an acknowledged Stop: deadline stops publish an explicit failure."""
-        if lease is None or not str(task.get("cancel_id") or "").startswith("deadline:"):
+        if not str(task.get("cancel_id") or "").startswith("deadline:"):
             return self._complete_cancel(task)
         return self._fenced(
             state.settle_stopping_task, binding, task, lease,
@@ -903,6 +863,7 @@ class HostedRoomRuntime:
         # A user Stop that won the race keeps its own cancellation semantics.
         if not str(task.get("cancel_id") or "").startswith("deadline:"):
             return
+        lease = self._renew_lease_if_needed(lease, force=True)
         if not self._finish_stop(binding, task, lease):
             self._record_error(
                 f"task {task['identity'].task_id} exceeded its deadline; stop remains pending")
@@ -1062,16 +1023,8 @@ class HostedRoomRuntime:
             state.settle_task(
                 self.db_path, attempt,
                 settlement_id=f"failure:{attempt.identity.task_id}:{attempt.execution_generation}",
-                status="failed", result={"error": "Group Chat member turn failed."}, clock=self.clock)
-        self._record_task_error(attempt, "failed")
-
-    def _record_task_error(self, attempt: state.TaskAttempt, message: str) -> None:
-        self._record_error(f"task {attempt.identity.task_id} {message}")
-
-    def _record_error(self, message: str) -> None:
-        with self._status_lock:
-            self._last_error = message
-
+                status="failed", result={"error": str(exc)}, clock=self.clock)
+        self._record_task_error(attempt, f"failed: {exc}")
 
     def _finish_attachment_staging_after_error(
         self,
@@ -1108,6 +1061,13 @@ class HostedRoomRuntime:
                 "attachment staging cleanup failed for "
                 f"session {session_id}: {cleanup_error}"
             )
+
+    def _record_task_error(self, attempt: state.TaskAttempt, message: str) -> None:
+        self._record_error(f"task {attempt.identity.task_id} {message}")
+
+    def _record_error(self, message: str) -> None:
+        with self._status_lock:
+            self._last_error = message
 
 
 def room_session_title(room_id: str) -> str:
@@ -1190,9 +1150,3 @@ def null_turn_lock(_profile: str) -> Any:
     """Provide an explicit no-op lock for narrow embedding tests."""
     yield
 # ---- END PLUGIN-COMPAT ----
-
-
-class MemberTransportUnavailable(RuntimeError):
-    """A member route rejected work before any remote admission occurred."""
-
-    not_admitted = True

@@ -11,7 +11,9 @@ import pytest
 from gateway import hosted_rooms
 from gateway.hosted_room_attachments import AttachmentError
 from tui_gateway.hosted_room_service import HostedRoomService
-import tui_gateway.server as server
+from tests.tui_gateway.viewer_read_fence_import import import_viewer_server
+
+server = import_viewer_server()
 
 
 class ViewerRPCRejected(RuntimeError):
@@ -23,8 +25,7 @@ DATA = b"Files-only canonical bytes"
 OPTIONAL_TABLES = ("hosted_room_quarantine", "hosted_room_disband_fences")
 
 
-@pytest.fixture
-def published(tmp_path, monkeypatch):
+def _publish_current(tmp_path, monkeypatch):
     root = tmp_path / "home"
     root.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(root))
@@ -72,6 +73,19 @@ def published(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(server, "get_hosted_room_service", lambda: service)
     return SimpleNamespace(service=service, item=item, room=room)
+
+
+@pytest.fixture
+def current_published(tmp_path, monkeypatch):
+    return _publish_current(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def published(tmp_path, monkeypatch):
+    from tests.tui_gateway.viewer_historical_fixture import restore_historical_layout
+    result = _publish_current(tmp_path, monkeypatch)
+    restore_historical_layout(result.service.db_path)
+    return result
 
 
 def _read(published, mode="service", **overrides):
@@ -259,14 +273,14 @@ def test_native_change_after_service_entry_is_rechecked_before_io(
     published, monkeypatch, state
 ):
     service = published.service
-    original = service._owned_room
+    original = service._owned_viewer_room
 
     def changed_after_entry(room_id):
         room = original(room_id)
         _native_change(published, state)
         return room
 
-    monkeypatch.setattr(service, "_owned_room", changed_after_entry)
+    monkeypatch.setattr(service, "_owned_viewer_room", changed_after_entry)
     monkeypatch.setattr(
         service.attachments,
         "_read_blob",

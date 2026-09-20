@@ -122,7 +122,7 @@ def _set_model(rid, params, key, value, session):
             if failed_ready is None:
                 return _err(rid, 5032, session.get("agent_error") or "agent initialization failed")
             if not failed_ready.wait(timeout=30.0):
-                return _err(rid, 5032, "agent initialization timed out")
+                return _err(rid, 5032, AGENT_STILL_STARTING)
         failed_agent_init = (
             failed_agent_init and session.get("agent") is None and session.get("agent_error") is not None
             and session.get("agent_ready") is failed_ready and failed_ready.is_set())

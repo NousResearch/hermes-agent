@@ -63,17 +63,6 @@ test('quitPromptFor speaks singular for one chat', () => {
   assert.equal(prompt.message, 'Hermes is still working on 1 chat.')
 })
 
-test('quit details do not show a remainder-only list for untitled chats', () => {
-  for (const count of [1, 3]) {
-    const prompt = quitPromptFor({ count, titles: [] }, false)
-
-    assert.ok(prompt)
-    assert.doesNotMatch(prompt.detail, /^•/m)
-    assert.match(prompt.detail, /Running and queued work/)
-    assert.ok(prompt.message.includes(String(count)))
-  }
-})
-
 test('active-work reports with unknown lifecycle keep a scoped confirmation, not a work-loss claim', () => {
   // The real IPC summary has no connection identity or Desktop-tool activity.
   // Neither named nor untitled work proves it is independent of the client.

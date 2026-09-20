@@ -18,6 +18,7 @@ Cron 任务可以：
 - 将结果回传到来源会话、本地文件或已配置的平台目标
 - 在全新的 agent 会话中运行，使用正常的静态工具列表
 - 以**无 agent 模式**运行——按计划执行脚本，其 stdout 原样投递，零 LLM 参与（参见下方[无 agent 模式](#no-agent-mode-script-only-jobs)章节）
+- 由**外部事件触发**——设置了 `cron_job` 的 webhook 路由会在事情发生的那一刻（PR 收到反馈、服务发出告警）立即触发任务，而不是等待下一次定时 tick。参见[事件触发的 Cron 任务](/user-guide/messaging/webhooks#event-triggered-cron-jobs)。
 
 所有这些功能均可通过 `cronjob` 工具由 Hermes 自身使用，因此你可以用自然语言创建、暂停、编辑和删除任务——无需 CLI。
 
@@ -343,7 +344,7 @@ cron:
 
 行为为**优先使用话题**，范围限定在任务的来源聊天：
 
-- **支持话题的平台**（Telegram 话题、Discord/Slack 话题）：每次投递都会新建
+- **支持话题的平台**（Telegram 话题、Discord/Slack/Matrix 话题）：每次投递都会新建
   专用话题，并将简报植入该话题的会话中，因此在话题内回复即可带完整上下文继续。
 - **仅 DM 的平台**（WhatsApp、Signal、SMS）：不存在话题，因此简报会被镜像进
   来源 DM 会话——DM 本身就是继续的载体。

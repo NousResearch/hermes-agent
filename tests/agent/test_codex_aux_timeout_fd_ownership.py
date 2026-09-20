@@ -71,13 +71,15 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
         shutdown(); the real close() must land on the owning thread in the
         adapter's ``finally``."""
 
-        def _stalled():
-            deadline = time.monotonic() + 30.0
-            while time.monotonic() < deadline:
-                time.sleep(0.02)
-                yield SimpleNamespace(type="response.in_progress")
+        def _one_keepalive_then_block():
+            # Let the owner process one keepalive, then keep it inside the
+            # stream past the watchdog window.  The Timer is consequently
+            # the only deadline observer that can win this timeout.
+            yield SimpleNamespace(type="response.in_progress")
+            time.sleep(1.0)
+            yield SimpleNamespace(type="response.in_progress")
 
-        adapter, events = _adapter_with_recording_client(_stalled())
+        adapter, events = _adapter_with_recording_client(_one_keepalive_then_block())
         owner_tid = threading.get_ident()
 
         def _consume(stream, *, model, on_event):

@@ -9,6 +9,7 @@ from gateway import hosted_rooms
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from gateway.platforms import base
 from gateway.session_api_turn import admit_api_turn
+from gateway.session_hosted_attachments import submission_payload
 from gateway.session_ingress_media import _media_root, admit_attachments, release_admission_media, restore_native_media
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input, settle_session_input
 from tests.gateway.test_api_cutover_contract import api, owner  # noqa: F401
@@ -28,8 +29,6 @@ def settled_native(owner, paths):
 
 @pytest.mark.parametrize('settled', [False, True], ids=['queued-holder', 'terminal-holder'])
 def test_api_image_survives_native_cleanup_while_unique_native_bytes_are_collected(api, owner, settled):
-    from gateway.hosted_room_input_custody import initialize_input_custody
-    initialize_input_custody(owner.db)
     _, _, row = admit_api_turn(api, session_id='image-holder', request_id='api-image',
         user_message=[{'type': 'image_url', 'image_url': {
             'url': 'data:image/png;base64,' + base64.b64encode(PNG).decode()}}], conversation_history=[])
@@ -53,10 +52,6 @@ def test_api_image_survives_native_cleanup_while_unique_native_bytes_are_collect
 def test_hosted_batch_total_is_rejected_before_any_capture(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db_path = tmp_path / 'state.db'
-    from gateway.hosted_room_input_custody import initialize_input_custody
-    from hermes_state import SessionDB
-    with SessionDB(db_path) as db:
-        initialize_input_custody(db)
     hosted_rooms.create_room(db_path, room_id='room', name='Room', authority_gateway_id='home',
         members=[dict(member_id='member', profile='default', handle='member')])
     store = HostedRoomAttachmentStore(db_path)
@@ -70,8 +65,7 @@ def test_hosted_batch_total_is_rejected_before_any_capture(tmp_path, monkeypatch
     rpc = SimpleNamespace(authority=SimpleNamespace(db=SimpleNamespace(db_path=db_path)), room_id='room', member_id='member')
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 3072)
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        from gateway.hosted_room_input_preparation import resolve_inputs
-        resolve_inputs(rpc, bound)
+        submission_payload(rpc, 'read', bound)
     assert not _media_root().exists()
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 4096)
-    assert [data for _, data in resolve_inputs(rpc, bound)] == [b'A' * 2048, b'B' * 2048]
+    assert submission_payload(rpc, 'read', bound)['text'].count('[Shared attachment] file:') == 2

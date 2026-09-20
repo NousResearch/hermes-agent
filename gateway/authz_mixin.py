@@ -630,7 +630,7 @@ class GatewayAuthorizationMixin:
         return "*" in allowed_ids or _principal_matches_allowlist(source, user_id, allowed_ids)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform], *, profile: Optional[str] = None) -> str:
-        """How unauthorized DMs are handled ("pair" / "ignore") for a platform.
+        """How unauthorized DMs are handled ("pair" / "ignore" / "decline") for a platform.
 
         Order: explicit per-platform config; Email → "ignore" (inboxes hold arbitrary mail); explicit
         non-default global; adapter dm_policy (pairing → "pair", allowlist/disabled → "ignore"); any

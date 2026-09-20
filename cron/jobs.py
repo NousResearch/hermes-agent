@@ -25,7 +25,7 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import display_hermes_home, get_hermes_home
 from cron.env_settings import cron_env_setting
@@ -34,6 +34,7 @@ from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Colle
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from hermes_time import get_timezone
 from utils import atomic_replace, atomic_write_text
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
@@ -110,6 +111,38 @@ class _CronStorePaths:
 
 _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
     "cron_store_override", default=None)
+
+
+class _SelfRemovalDelivery:
+    """Mutable run-local marker shared with the agent's copied ContextVar context."""
+
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        self.removed = False
+
+
+_self_removal_delivery: ContextVar[Optional[_SelfRemovalDelivery]] = ContextVar(
+    "self_removal_delivery", default=None)
+
+
+@contextlib.contextmanager
+def self_removal_delivery_scope(job_id: str):
+    """Permit this run's final delivery after it removes its own job record."""
+    marker = _SelfRemovalDelivery(job_id)
+    token = _self_removal_delivery.set(marker)
+    try:
+        yield marker
+    finally:
+        _self_removal_delivery.reset(token)
+
+
+def self_removal_delivery_allowed(job_id: str) -> bool:
+    """Whether the active run deleted exactly its own job record and no record has since taken
+    its id (a replacement record belongs to another owner, so that stays fail-closed)."""
+    marker = _self_removal_delivery.get()
+    if marker is None or marker.job_id != job_id or not marker.removed:
+        return False
+    return all(item.get("id") != job_id for item in load_jobs())
 
 # Import-time snapshot so deliberate re-pointing of CRON_DIR/JOBS_FILE/OUTPUT_DIR (the documented
 # escape hatch for tests/embedders) is distinguishable from the constants merely being stale.
@@ -353,7 +386,8 @@ def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
 
 @contextlib.contextmanager
 def fire_claim_fence(job_id: str, *, expected_owner: str):
-    """Hold a per-job fence while an owner performs an external side effect."""
+    """Hold a per-job fence while an owner performs an external side effect. A missing record
+    is accepted only for the active run that removed this exact job (#111039)."""
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
             yield False
@@ -362,6 +396,8 @@ def fire_claim_fence(job_id: str, *, expected_owner: str):
             job = next((item for item in load_jobs() if item.get("id") == job_id), None)
             claim = job.get("fire_claim") if isinstance(job, dict) else None
             owns_claim = isinstance(claim, dict) and claim.get("by") == expected_owner
+            if job is None:
+                owns_claim = self_removal_delivery_allowed(job_id)
         yield owns_claim
 
 
@@ -795,7 +831,9 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError:
             raise ValueError(
                 f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
-        run_at = _hermes_now() + timedelta(minutes=minutes)
+        now = _hermes_now()
+        # Durations measure elapsed time, not wall-clock hours across a DST transition.
+        run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
         return _interval_schedule(parse_duration(schedule))
@@ -895,6 +933,10 @@ _TELEMETRY_RECENT_HISTORY = 20
 # A fire_claim younger than this is a live run (heartbeat cadence is 60 s). One value
 # for claiming, one-shot re-arm, and stale-error recovery so they cannot disagree.
 FIRE_CLAIM_TTL_SECONDS = 300
+# A hosted/webhook fire for the armed slot can arrive a few seconds before the stored
+# ``next_run_at`` (the fire scheduler's clock runs ahead of ours). Claims that early still own
+# the slot; only claims further ahead are off-tick manual/dashboard fires.
+FIRE_CLAIM_SKEW_SECONDS = 60
 _persisted_error_recoveries_recent: list = []
 
 
@@ -1113,7 +1155,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         minutes = schedule.get("minutes")
         if minutes is None:
             return None
-        return (base_time + timedelta(minutes=minutes)).isoformat()
+        # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
+        next_run = base_time.astimezone(timezone.utc) + timedelta(minutes=minutes)
+        return next_run.astimezone(base_time.tzinfo).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")
         if not expr:
@@ -1125,7 +1169,36 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
                 expr)
             return None
-        return croniter(expr, base_time).get_next(datetime).isoformat()
+        # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,
+        # not to the UTC offset carried by ``base_time``. croniter ignores
+        # the tzinfo on its start time and uses the start's UTC offset as its
+        # working offset, so a ``last_run_at`` stored in UTC (+00:00) would
+        # push the next fire to 09:00 UTC instead of 09:00 local, and DST
+        # transition days (spring-forward / fall-back) would land one hour off
+        # (08:00 or 10:00). Render the base as the configured zone's naive
+        # wall clock for croniter, then re-attach the zone to the result, so
+        # the wall-clock hour stays correct every calendar day, including DST
+        # boundaries (morning-routine 09:00 America/Toronto).
+        # Fall back to the base's own zone only when nothing is configured.
+        zone = get_timezone() or base_time.tzinfo
+        base_wall = base_time.astimezone(zone).replace(tzinfo=None)
+        it = croniter(expr, base_wall)
+        # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
+        # attaching the zone to a naive wall clock resolves the repeated autumn hour
+        # to its EARLIER occurrence (fold=0), so a base inside the second occurrence
+        # got a "next run" up to an hour in the PAST — the fire path would re-fire
+        # immediately and re-anchor, looping. Try both folds of each candidate wall
+        # clock and return the earliest instant strictly after the base; a repeated
+        # hour has two instants, so two candidates always suffice.
+        base_ts = base_time.timestamp()
+        next_wall = it.get_next(datetime)
+        for _ in range(2):
+            for fold in (0, 1):
+                candidate = next_wall.replace(tzinfo=zone, fold=fold)
+                if candidate.timestamp() > base_ts:
+                    return candidate.isoformat()
+            next_wall = it.get_next(datetime)
+        return next_wall.replace(tzinfo=zone).isoformat()
     return None
 
 
@@ -2240,6 +2313,9 @@ def remove_job(job_id: str) -> bool:
         # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
         job_output_dir = _job_output_dir(canonical_id)
         save_jobs(jobs, removed_ids={canonical_id})
+        marker = _self_removal_delivery.get()
+        if marker is not None and marker.job_id == canonical_id:
+            marker.removed = True
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         try:
@@ -2679,6 +2755,21 @@ def claim_job_for_fire(
         # stamping it would make completed_occurrence() skip that slot when it arrives.
         manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
         instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        # A scheduled tick only ever fires when now >= next_run_at
+        # (_evaluate_due_job returns False while the stored occurrence is still
+        # in the future), so a claim arriving BEFORE the stored next occurrence
+        # cannot be the tick that owns it — it is a manual / dashboard / webhook
+        # fire and must stay occurrence-free. Binding it would make run_one_job
+        # stamp that FUTURE instant completed in the ledger: later manual fires
+        # are then refused ("Job is already being fired by the scheduler") and
+        # the scheduled tick dedupe-skips its real delivery (2026-09-08 live:
+        # a manual run at 19:53 consumed the next day's 19:00 occurrence).
+        # A claim within FIRE_CLAIM_SKEW_SECONDS of the slot is the fire for that slot
+        # (provider clock skew); dropping its identity would leave the slot unrecorded, so
+        # mark_job_run recomputes the same cron slot and the misfire backstop runs it twice.
+        if (instant is not None
+                and datetime.fromisoformat(instant) - now >= timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)):
+            instant = None
         if instant and completed_occurrence(job, instant):
             if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())

@@ -24,7 +24,7 @@ def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: FakeDB())
     monkeypatch.setattr(
         sys,
         "argv",
@@ -73,7 +73,7 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
     ]
 
     class FakeDB:
-        def list_prune_candidates(self, *, exclude_ledger_owned=False, report=None, **kwargs):
+        def list_prune_candidates(self, **kwargs):
             seen.update(kwargs)
             return rows
 
@@ -90,7 +90,7 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
         def close(self):
             pass
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: FakeDB())
     monkeypatch.setattr(
         sys, "argv", ["hermes", "sessions", "prune", *argv_tail]
     )

@@ -5,6 +5,8 @@ import logging
 import os
 import signal
 import tarfile
+import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,9 +16,12 @@ fcntl = pytest.importorskip("fcntl")
 
 from tools.environments.file_sync import (
     FileSyncManager,
+    _cleanup_stale_sync_back_temp,
     _sha256_file,
     _SYNC_BACK_BACKOFF,
     _SYNC_BACK_MAX_RETRIES,
+    _SYNC_BACK_STALE_SECONDS,
+    _SYNC_BACK_TEMP_PREFIX,
 )
 
 
@@ -87,6 +92,54 @@ def _make_manager(
         if not mgr._pushed_hashes:
             mgr._pushed_hashes["/_sentinel"] = "0" * 64
     return mgr
+
+
+class TestStaleSyncBackTempCleanup:
+    """Sync-back temp entries leaked by a hard kill are reclaimed by the next sync-back (#110812)."""
+
+    def test_removes_only_stale_prefixed_entries(self, tmp_path, monkeypatch):
+        stale_tar = tmp_path / "hermes-sync-back-stale.tar"
+        stale_dir = tmp_path / "hermes-sync-back-stale-staging"
+        recent = tmp_path / "hermes-sync-back-recent.tar"
+        unrelated = tmp_path / "other-process.tar"
+        for path in (stale_tar, recent, unrelated):
+            path.write_bytes(b"tar")
+        stale_dir.mkdir()
+        (stale_dir / "root").mkdir()
+        now = 10_000.0
+        for path in (stale_tar, stale_dir):
+            os.utime(path, (now - _SYNC_BACK_STALE_SECONDS - 1,) * 2)
+        os.utime(recent, (now - _SYNC_BACK_STALE_SECONDS + 1,) * 2)
+        monkeypatch.setattr("tools.environments.file_sync.time.time", lambda: now)
+
+        assert _cleanup_stale_sync_back_temp(tmp_path) == 2
+
+        assert not stale_tar.exists()
+        assert not stale_dir.exists()
+        assert recent.exists()
+        assert unrelated.exists()
+
+    def test_sync_back_sweeps_leaked_entry_and_uses_identifiable_tar(self, tmp_path, monkeypatch):
+        tmp_root = tmp_path / "tmproot"
+        tmp_root.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_root))
+        leaked = tmp_root / "hermes-sync-back-leaked.tar"
+        leaked.write_bytes(b"x" * 1024)
+        old = time.time() - _SYNC_BACK_STALE_SECONDS - 60
+        os.utime(leaked, (old, old))
+
+        seen = {}
+
+        def download(dest: Path):
+            seen["tar"] = dest
+            _make_tar({"root/.hermes/x.txt": b"hi"}, dest)
+
+        mgr = _make_manager(tmp_path, bulk_download_fn=download)
+        mgr.sync_back()
+
+        assert seen["tar"].name.startswith(_SYNC_BACK_TEMP_PREFIX)
+        assert not leaked.exists()
+        assert list(tmp_root.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------

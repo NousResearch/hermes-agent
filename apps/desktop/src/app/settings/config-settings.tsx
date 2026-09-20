@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { isSubmitEnter } from '@/lib/ime'
 import { confirm } from '@/store/confirm'
 import {
   $dataUrlReadMaxMb,
@@ -509,7 +510,7 @@ function AttachmentSizeSetting() {
             onBlur={commit}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={event => {
-              if (event.key === 'Enter') {
+              if (isSubmitEnter(event)) {
                 event.currentTarget.blur()
               }
             }}

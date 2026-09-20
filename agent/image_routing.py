@@ -287,7 +287,7 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[Dict[str, Any]]) 
     # historical network-on-cold-cache behavior for this one path; the fetch is cached (4h TTL) and
     # backoff-limited after failures.
     caps = get_model_capabilities(provider, model, allow_network=True)
-    return None if caps is None else bool(caps.supports_vision)
+    return None if caps is None else caps.supports_vision
 
 
 def _probe_ollama(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:

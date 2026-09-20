@@ -305,7 +305,6 @@ describe('durable submit acknowledgement', () => {
     const previous = window.hermesDesktop
     window.hermesDesktop = { ...previous, preparedSubmissions: {
       read: async () => JSON.stringify(journal.read()),
-      compareSend: async (key, expected, entry) => journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry)),
       update: async (key, entry) => { journal.update(key, entry === null ? null : JSON.parse(entry)) }
     } }
     let accepted = false
@@ -2218,7 +2217,7 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(calls).toContainEqual({
       method: 'handoff.fail',
       params: {
-        error: expect.stringContaining('Timed out'),
+        error: expect.stringContaining("couldn't reach your messaging connection"),
         session_id: RUNTIME_SESSION_ID
       }
     })

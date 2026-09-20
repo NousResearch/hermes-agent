@@ -5,15 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_authorized_upload_send_download_and_task_consumption(tmp_path, monkeypatch):
-    from gateway.hosted_room_input_custody import initialize_input_custody
-    from hermes_state import SessionDB
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    with SessionDB(tmp_path / 'state.db') as db:
-        initialize_input_custody(db)
-    from gateway.session_hosted_attachments import upload, download
-    from gateway.hosted_room_input_preparation import prepare_hosted_input
+def test_authorized_upload_send_download_and_task_consumption(tmp_path):
+    from gateway.session_hosted_attachments import upload, download, submission_payload
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway import hosted_rooms
     hosted_rooms.create_room(tmp_path / "state.db", room_id="room", name="Room", members=[], authority_gateway_id="gateway")
@@ -33,40 +26,26 @@ async def test_authorized_upload_send_download_and_task_consumption(tmp_path, mo
     from gateway.session_hosted_attachments import append_user_event
     append_user_event(service, room_id='room', event_id='event', payload={'text':'read', 'attachments':manifest}, gateway_id='gateway', epoch=1)
     bound = [{**manifest[0], 'event_id': 'event'}]
-    from tests.gateway.input_reclamation_fixtures import owned, close
-    from gateway.session_contract import Principal, SessionRef
-    db, authority = owned(tmp_path, monkeypatch)
-    try:
-        principal = Principal('owner', authority.profile_id, frozenset({'session:submit'}), 'fixture')
-        rpc = SimpleNamespace(authority=authority, room_id='room', member_id='member', principal=principal,
-            ref=SessionRef(authority.profile_id, 's'))
-        prepared = prepare_hosted_input(rpc, request_id='hosted:test', prompt='read it', attachments=bound)
-        path = Path(prepared.payload['text'].split('file: ')[1].split('\n')[0])
-        assert path.read_bytes() == b'committed bytes'
-        assert prepare_hosted_input(rpc, request_id='hosted:test', prompt='read it', attachments=bound).payload == prepared.payload
-        assert base64.b64decode(download(service, actor, dict(room_id='room', event_id='event', attachment_id=metadata['attachment_id']))['data_base64']) == path.read_bytes()
-        with pytest.raises(Exception):
-            prepare_hosted_input(rpc, request_id='hosted:test', prompt='read it', attachments=[{**bound[0], 'event_id': 'wrong'}])
-    finally:
-        close(db, tmp_path)
+    rpc = SimpleNamespace(authority=SimpleNamespace(db=SimpleNamespace(db_path=service.db_path)), room_id='room', member_id='member')
+    payload = submission_payload(rpc, 'read it', bound)
+    path = Path(payload['text'].split('file: ')[1].split('\n')[0])
+    assert path.read_bytes() == b'committed bytes'
+    assert submission_payload(rpc, 'read it', bound) == payload
+    assert base64.b64decode(download(service, actor, dict(room_id='room', event_id='event', attachment_id=metadata['attachment_id']))['data_base64']) == path.read_bytes()
+    with pytest.raises(Exception):
+        submission_payload(rpc, 'read it', [{**bound[0], 'event_id': 'wrong'}])
     allowed[0] = False
     for call in (lambda: upload(service, actor, params), lambda: download(service, actor, dict(room_id='room', attachment_id=metadata['attachment_id'], event_id='event'))):
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             call()
 
 
-def test_rpc_accepts_only_bound_manifest_after_producer_authorization(owner, request):
+def test_rpc_accepts_only_bound_manifest_after_producer_authorization(owner):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from hermes_state_runtime import list_session_admissions
     authority, loop, principal, _ = owner
-    from gateway.runtime_ownership import process_ownership
-    from gateway.hosted_room_input_reclamation import initialize_working_copies
-    home = Path(authority.db.db_path).resolve().parent
-    process_ownership.reserve([home])
-    request.addfinalizer(lambda: process_ownership.release(home))
-    initialize_working_copies(authority.db, epoch=authority.epoch)
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']

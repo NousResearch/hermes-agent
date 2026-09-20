@@ -108,6 +108,47 @@ class TestFleetRestartTimeoutIsolation:
 
         assert seen == ["hermes-serve", "hermes-serve-work", "hermes-gateway"]
 
+    def test_hermes_webui_units_are_included(self):
+        # #95882 — hermes update restarted hermes-gateway* and hermes-serve*
+        # units but left companion hermes-webui* (sharing the source tree) on
+        # stale pre-update code, producing HTTP 409 until a manual restart.
+        seen: list[str] = []
+
+        _for_each_systemd_gateway_unit(
+            "\n".join(
+                [
+                    "ssh.service loaded active running",
+                    "hermes-webui.service loaded active running",
+                    "hermes-webui-prod.service loaded active running",
+                    "hermes-serve.service loaded active running",
+                    "hermes-gateway.service loaded active running",
+                    "",
+                ]
+            ),
+            process_unit=seen.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+        )
+
+        assert seen == [
+            "hermes-webui",
+            "hermes-webui-prod",
+            "hermes-serve",
+            "hermes-gateway",
+        ]
+
+    def test_hermes_webui_near_prefix_is_rejected(self):
+        # Keep the exact/hyphenated gate: a bare prefix would also accept
+        # the unrelated ``hermes-webuictl.service``.
+        seen: list[str] = []
+
+        _for_each_systemd_gateway_unit(
+            _list_units_stdout(["hermes-webuictl", "hermes-webui-coder"]),
+            process_unit=seen.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+        )
+
+        assert seen == ["hermes-webui-coder"]
+
     def test_hermes_server_near_prefix_is_rejected(self):
         # Review on #83595: a bare ``startswith("hermes-serve")`` gate also
         # accepts the unrelated ``hermes-server.service``. Only the exact
@@ -137,6 +178,59 @@ class TestFleetRestartTimeoutIsolation:
         assert seen == ["hermes-gateway-coder"]
 
 
+class TestFleetRestartBestEffort:
+    def test_discovers_and_restarts_hermes_webui_units(self, monkeypatch):
+        # #95882 — the user-facing boundary is that ``hermes update`` runs
+        # ``systemctl list-units`` with the right globs and restarts the units.
+        # Mock the subprocess boundary so this is testable on macOS/CI.
+        from hermes_cli.update_cmd_fleet import (
+            _restart_systemd_gateway_units_best_effort,
+            _systemd_gateway_unit_listings,
+        )
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            if "list-units" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="\n".join(
+                        [
+                            "hermes-webui.service loaded active running",
+                            "hermes-serve.service loaded active running",
+                        ]
+                    )
+                )
+            stdout = "active\n" if "is-active" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        failed: list[str] = []
+        listings = list(_systemd_gateway_unit_listings())
+        _restart_systemd_gateway_units_best_effort(failed, listings)
+
+        list_units_calls = [c for c in calls if "list-units" in c]
+        assert list_units_calls == [
+            prefix + [
+                "list-units", "hermes-gateway*", "hermes-serve*",
+                "hermes-webui*", "--plain", "--no-legend", "--no-pager",
+            ]
+            for prefix in (["systemctl", "--user"], ["systemctl"])
+        ]
+
+        restart_calls = [
+            c for c in calls if "restart" in c and "hermes-webui" in c
+        ]
+        assert len(restart_calls) == 2
+        assert "--user" in restart_calls[0]
+        assert "--user" not in restart_calls[1]
+        assert [c for c in calls if c[-2:] == ["is-active", "hermes-webui"]] == [
+            ["systemctl", "--user", "is-active", "hermes-webui"],
+            ["systemctl", "is-active", "hermes-webui"],
+        ]
+        assert failed == []
+
+
 class TestGracefulSigusr1Eligibility:
     def test_gateway_units_are_eligible(self):
         assert _service_unit_supports_graceful_sigusr1_restart("hermes-gateway")
@@ -152,6 +246,10 @@ class TestGracefulSigusr1Eligibility:
         assert not _service_unit_supports_graceful_sigusr1_restart(
             "hermes-serve-work"
         )
+
+    def test_webui_units_are_not_eligible(self):
+        assert not _service_unit_supports_graceful_sigusr1_restart("hermes-webui")
+        assert not _service_unit_supports_graceful_sigusr1_restart("hermes-webui-prod")
 
     def test_process_errors_other_than_timeout_still_propagate(self):
         def process_unit(_svc_name: str) -> None:

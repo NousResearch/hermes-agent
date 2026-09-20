@@ -572,11 +572,17 @@ def classify_effort(user_message: str, *, tool_errors: int = 0,
             level = "medium"
         else:
             level = "minimal"
+    elif kw_hits >= 2:
+        # multiple DISTINCT complexity cues are work-shaped regardless of
+        # length — zh hard tasks read denser per char than en, so a char
+        # budget alone under-routes them. A single cue + short message
+        # stays low (single-keyword brevity is chat-shaped).
+        level = "medium"
     elif (kw_hits or technical) and (n > low_max or work_depth > 0):
         # work cue on a work-shaped message or within a work session
         level = "medium"
     else:
-        # chat-shaped cold: low baseline; glm-5.3 self-allocates
+        # chat-shaped cold: low baseline; glm-5.3 self-allocates under soft low
         level = "low"
 
     # Rescue: turn-local tool errors are the ground-truth difficulty signal

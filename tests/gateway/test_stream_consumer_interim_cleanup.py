@@ -58,6 +58,25 @@ class TestCleanupInterimSegments:
         assert consumer._preview_message_ids == {"final"}
 
     @pytest.mark.asyncio
+    async def test_split_delivery_leaves_sealed_heads_untouched(self):
+        """A long answer sealed into multiple messages (seal_overflow_heads)
+        sets ``_turn_split_delivery``; ``_message_id`` then only points at the
+        last continuation, so every earlier sealed head in
+        ``_preview_message_ids`` is delivered content, not a stale preview.
+        Cleanup must bail entirely rather than deleting the earlier chunks."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter=adapter, chat_id="chat",
+            config=StreamConsumerConfig(cleanup_interim_segments=True),
+        )
+        consumer._message_id = "tail"
+        consumer._preview_message_ids = {"head1", "head2", "tail"}
+        consumer._turn_split_delivery = True
+        await consumer._cleanup_interim_segment_messages()
+        adapter.delete_message.assert_not_called()
+        assert consumer._preview_message_ids == {"head1", "head2", "tail"}
+
+    @pytest.mark.asyncio
     async def test_no_adapter_delete_support_is_a_silent_noop(self):
         adapter = _make_adapter()
         del adapter.delete_message  # adapter without the optional method

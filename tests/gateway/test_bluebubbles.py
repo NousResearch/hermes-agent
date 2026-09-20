@@ -8,6 +8,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageType
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -23,7 +24,9 @@ def _make_adapter(monkeypatch, **extra):
             **extra,
         },
     )
-    return BlueBubblesAdapter(cfg)
+    adapter = BlueBubblesAdapter(cfg)
+    adapter._inbound_coalesce_seconds = 0.001
+    return adapter
 
 
 class TestBlueBubblesConfigLoading:
@@ -406,17 +409,28 @@ class TestBlueBubblesWebhookRegistration:
     # -- _register_webhook --
 
     def test_register_fresh(self, monkeypatch):
-        """No existing webhook → POST creates one."""
+        """No existing webhook → POST creates and verifies one."""
         import asyncio
         adapter = _make_adapter(monkeypatch)
-        adapter.client = self._mock_client(
-            get_response={"status": 200, "data": []},
-            post_response={"status": 200, "data": {"id": 42}},
-        )
+        adapter.client = AsyncMock()
+        url = adapter._webhook_register_url
+        state = []
+
+        async def find(_url):
+            return list(state)
+
+        async def post(_path, payload):
+            created = {"id": 42, "url": url, "events": payload["events"]}
+            state.append(created)
+            return {"status": 200, "data": created}
+
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", find)
+        monkeypatch.setattr(adapter, "_api_post", post)
         ok = asyncio.get_event_loop().run_until_complete(
             adapter._register_webhook()
         )
         assert ok is True
+        assert state == [{"id": 42, "url": url, "events": ["new-message", "updated-message"]}]
 
 
     def test_register_reuses_existing(self, monkeypatch):
@@ -426,7 +440,7 @@ class TestBlueBubblesWebhookRegistration:
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
-                {"id": 7, "url": url, "events": ["new-message"]},
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
             ]},
         )
 
@@ -606,3 +620,172 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class TestBlueBubblesInboundRegression:
+    @staticmethod
+    def _payload(event_type="new-message", guid="msg-1", *, chat=None, **fields):
+        data = {
+            "guid": guid,
+            "text": "hello",
+            "handle": {"address": "+155****0100"},
+            "isFromMe": False,
+            **fields,
+        }
+        if chat is None:
+            data["chatIdentifier"] = "+155****0100"
+        else:
+            data["chats"] = [chat]
+        return {"type": event_type, "data": data}
+
+    @staticmethod
+    def _capture(monkeypatch, **extra):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False, require_mention=False, **extra)
+        handled = []
+
+        async def capture(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", capture)
+        return adapter, handled
+
+    @pytest.mark.asyncio
+    async def test_inbound_lifecycle_routes_once_without_losing_rich_metadata(self, monkeypatch):
+        # A delayed same-GUID update enriches the one dispatch instead of opening a second turn.
+        adapter, handled = self._capture(monkeypatch)
+        real_sleep = asyncio.sleep
+        coalesce_started = asyncio.Event()
+        release_coalesce = asyncio.Event()
+
+        async def controlled_sleep(delay):
+            if delay == adapter._inbound_coalesce_seconds:
+                coalesce_started.set()
+                await release_coalesce.wait()
+            else:
+                await real_sleep(0)
+
+        async def collect(record):
+            await real_sleep(0)
+            attachments = record.get("attachments") or []
+            return (["/tmp/photo.jpg"], ["image/jpeg"], MessageType.PHOTO) if attachments else (
+                [], [], MessageType.TEXT)
+
+        monkeypatch.setattr(asyncio, "sleep", controlled_sleep)
+        monkeypatch.setattr(adapter, "_collect_attachments", collect)
+        dm = {"guid": "any;-;+155****0100", "style": 45}
+        first = asyncio.create_task(adapter._handle_webhook(_FakeBlueBubblesRequest(
+            self._payload("new-message", guid="enriched", chat=dm))))
+        await coalesce_started.wait()
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest(self._payload(
+            "updated-message", guid="enriched", chat=dm,
+            attachments=[{"guid": "att-1", "mimeType": "image/jpeg"}])))
+        release_coalesce.set()
+        responses = [await first, second]
+        await real_sleep(0)
+
+        assert [response.status for response in responses] == [200, 200]
+        assert [(event.source.chat_id, event.source.chat_type, event.message_type, event.media_urls)
+                for event in handled] == [
+            ("+155****0100", "dm", MessageType.PHOTO, ["/tmp/photo.jpg"])]
+
+        # Receipt-only updates do not claim the GUID needed by a subsequent real event.
+        monkeypatch.setattr(asyncio, "sleep", real_sleep)
+        receipt_adapter, receipt_handled = self._capture(monkeypatch)
+        receipt = await receipt_adapter._handle_webhook(_FakeBlueBubblesRequest(
+            self._payload("updated-message", guid="receipt", chat=dm, dateRead=1789859535544)))
+        message = await receipt_adapter._handle_webhook(_FakeBlueBubblesRequest(
+            self._payload("new-message", guid="receipt", chat=dm)))
+        await real_sleep(0)
+        assert receipt.status == message.status == 200
+        assert [(event.source.chat_id, event.source.chat_type) for event in receipt_handled] == [
+            ("+155****0100", "dm")]
+
+        # Sparse private-API group records retry hydration inside this webhook and never become DMs.
+        group_adapter, group_handled = self._capture(monkeypatch)
+        group_adapter.client = AsyncMock()
+        get = AsyncMock(side_effect=[
+            httpx.ReadTimeout("temporary"),
+            {"data": {"chats": []}},
+            {"data": {"chats": [{
+                "[auth-key]": "any;+;family-group",
+                "style": 43,
+                "chatIdentifier": "family-group",
+            }]}},
+        ])
+        monkeypatch.setattr(group_adapter, "_api_get", get)
+        response = await group_adapter._handle_webhook(_FakeBlueBubblesRequest(
+            self._payload("updated-message", guid="group")))
+        await real_sleep(0)
+        assert response.status == 200
+        assert get.await_count == 3
+        assert [(event.source.chat_id, event.source.chat_type) for event in group_handled] == [
+            ("any;+;family-group", "group")]
+
+        # A rich group event followed by a sparse echo remains one group dispatch.
+        echo_adapter, echo_handled = self._capture(monkeypatch)
+        echo_adapter.client = AsyncMock()
+        monkeypatch.setattr(echo_adapter, "_api_get", AsyncMock(return_value={"data": {
+            "chats": [{"guid": "any;+;same-group", "style": 43}],
+        }}))
+        await echo_adapter._handle_webhook(_FakeBlueBubblesRequest(self._payload(
+            "new-message", guid="echo", chat={"guid": "any;+;same-group", "style": 43})))
+        await echo_adapter._handle_webhook(_FakeBlueBubblesRequest(self._payload(
+            "updated-message", guid="echo")))
+        await real_sleep(0)
+        assert [(event.source.chat_id, event.source.chat_type) for event in echo_handled] == [
+            ("any;+;same-group", "group")]
+
+    @pytest.mark.asyncio
+    async def test_webhook_reconciliation_preserves_delivery_registration(self, monkeypatch):
+        # BlueBubbles POST is idempotent by URL, so migration must delete stale state before creation.
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = AsyncMock()
+        url = adapter._webhook_register_url
+        state = [{"id": 1, "url": url, "events": ["new-message"]}]
+        order = []
+
+        async def find(_url):
+            return list(state)
+
+        async def post(_path, payload):
+            order.append(("post", payload["events"]))
+            if state:
+                return {"status": 200, "data": state[0]}
+            created = {"id": 2, "url": url, "events": payload["events"]}
+            state.append(created)
+            return {"status": 200, "data": created}
+
+        async def delete(webhook_id):
+            order.append(("delete", webhook_id))
+            state[:] = [item for item in state if item["id"] != webhook_id]
+
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", find)
+        monkeypatch.setattr(adapter, "_api_post", post)
+        monkeypatch.setattr(adapter, "_delete_webhook_id", delete)
+        assert await adapter._register_webhook() is True
+        assert order == [("delete", 1), ("post", ["new-message", "updated-message"])]
+        assert state == [{"id": 2, "url": url, "events": ["new-message", "updated-message"]}]
+
+        # If replacement fails after deletion, restore the prior event set best-effort.
+        rollback = _make_adapter(monkeypatch)
+        rollback.client = AsyncMock()
+        rollback_state = [{"id": 3, "url": url, "events": ["new-message"]}]
+        posts = []
+
+        async def rollback_delete(webhook_id):
+            rollback_state[:] = [item for item in rollback_state if item["id"] != webhook_id]
+
+        async def rollback_post(_path, payload):
+            posts.append(payload["events"])
+            if len(posts) == 1:
+                raise httpx.ReadTimeout("replacement failed")
+            restored = {"id": 4, "url": url, "events": payload["events"]}
+            rollback_state.append(restored)
+            return {"status": 200, "data": restored}
+
+        monkeypatch.setattr(rollback, "_find_registered_webhooks", AsyncMock(return_value=list(rollback_state)))
+        monkeypatch.setattr(rollback, "_api_post", rollback_post)
+        monkeypatch.setattr(rollback, "_delete_webhook_id", rollback_delete)
+        assert await rollback._register_webhook() is False
+        assert posts == [["new-message", "updated-message"], ["new-message"]]
+        assert rollback_state == [{"id": 4, "url": url, "events": ["new-message"]}]

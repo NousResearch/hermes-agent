@@ -24,7 +24,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from .media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns, strip_markdown
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -55,7 +55,13 @@ DEFAULT_MENTION_PATTERNS = [r"(?<![\w@])@?hermes\s+agent\b[,:\-]?", r"(?<![\w@])
 
 # Tapback associatedMessageType codes: 2000-2005 added, 3000-3005 removed (love, like, dislike, ...).
 _TAPBACK_CODES = {*range(2000, 2006), *range(3000, 3006)}
-_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}  # webhook event types carrying user messages
+# BlueBubbles 1.9.x may use updated-message as the only inbound event for another group participant.
+# Keep both and classify receipt-only updates before routing.
+_MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+_WEBHOOK_EVENTS = ("new-message", "updated-message")
+_RECEIPT_FIELDS = ("dateRead", "dateDelivered", "isRead", "isDelivered")
+_INBOUND_COALESCE_SECONDS = 3.5
+_HYDRATE_RETRY_DELAYS = (0.0, 0.05, 0.15)
 
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
@@ -131,6 +137,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._inbound_dedup = MessageDeduplicator(max_size=2000, ttl_seconds=300)
+        self._pending_inbound_records: Dict[str, Dict[str, Any]] = {}
+        self._inbound_coalesce_seconds = _INBOUND_COALESCE_SECONDS
 
     # --- API helpers ---
 
@@ -231,7 +240,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if self._runner is not None:
             logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
                         self.webhook_path)
-        await self._register_webhook()  # the server only sends events to webhooks registered via its API
+        # The server only sends events to webhooks registered through its API. Do not report a
+        # connected adapter with a live listener but no verified desired registration.
+        if not await self._register_webhook():
+            logger.error("[bluebubbles] webhook registration failed; adapter will retry connection")
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+            await self._close_client()
+            self._mark_disconnected()
+            return False
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
@@ -274,33 +292,68 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return self._webhook_register_url_with("***")
 
     async def _find_registered_webhooks(self, url: str) -> list:
-        """Return list of BB webhook entries matching *url*."""
-        with suppress(Exception):
-            data = (await self._api_get("/api/v1/webhook")).get("data")
-            if isinstance(data, list):
-                return [wh for wh in data if wh.get("url") == url]
-        return []
+        """Return every BlueBubbles webhook entry matching *url*.
+
+        Listing failures must propagate: treating an unavailable API as an empty list creates duplicate
+        registrations on reconnect.
+        """
+        data = (await self._api_get("/api/v1/webhook")).get("data")
+        if not isinstance(data, list):
+            raise ValueError("BlueBubbles webhook list response did not contain a list")
+        return [wh for wh in data if isinstance(wh, dict) and wh.get("url") == url]
+
+    async def _delete_webhook_id(self, webhook_id: Any) -> None:
+        assert self.client is not None
+        (await self.client.delete(self._api_url(f"/api/v1/webhook/{webhook_id}"))).raise_for_status()
 
     async def _register_webhook(self) -> bool:
-        """Register this webhook URL, reusing an existing registration if present (crash resilience —
-        avoids duplicates after an unclean shutdown)."""
+        """Ensure the same-URL registration has the desired inbound event set.
+
+        BlueBubbles ``addWebhook`` is idempotent by URL and does not update an existing row. A stale
+        same-URL registration therefore has to be removed before its replacement is created. If creation
+        fails, restore the previous event set best-effort rather than leaving the server with no webhook.
+        """
         if not self.client:
             return False
         webhook_url, log_url = self._webhook_register_url, self._webhook_register_url_for_log
-        if await self._find_registered_webhooks(webhook_url):
-            logger.info("[bluebubbles] webhook already registered: %s", log_url)
-            return True
+        desired = set(_WEBHOOK_EVENTS)
+        existing: list[dict] = []
         try:
-            res = await self._api_post("/api/v1/webhook",
-                                       {"url": webhook_url, "events": ["new-message", "updated-message"]})
-            status = res.get("status", 0)
-            if 200 <= status < 300:
-                logger.info("[bluebubbles] webhook registered with server: %s", log_url)
+            existing = await self._find_registered_webhooks(webhook_url)
+            exact = [wh for wh in existing if set(wh.get("events") or []) == desired and wh.get("id")]
+            if exact:
+                keeper = exact[0]
+                for wh in existing:
+                    if wh is not keeper and wh.get("id"):
+                        await self._delete_webhook_id(wh["id"])
+                logger.info("[bluebubbles] webhook already registered: %s", log_url)
                 return True
-            logger.warning("[bluebubbles] webhook registration returned status %s: %s", status, res.get("message"))
-            return False
+
+            # The URL is unique in BlueBubbles. POST-before-delete merely returns the stale row unchanged.
+            for wh in existing:
+                if wh.get("id"):
+                    await self._delete_webhook_id(wh["id"])
+
+            res = await self._api_post(
+                "/api/v1/webhook", {"url": webhook_url, "events": list(_WEBHOOK_EVENTS)})
+            status = res.get("status", 0)
+            data = res.get("data") or {}
+            if not 200 <= status < 300 or not isinstance(data, dict) or set(data.get("events") or []) != desired:
+                raise RuntimeError(f"webhook registration returned unverified status {status}")
+            verified = await self._find_registered_webhooks(webhook_url)
+            if not any(set(wh.get("events") or []) == desired and wh.get("id") for wh in verified):
+                raise RuntimeError("webhook replacement was not visible after creation")
+
+            logger.info("[bluebubbles] webhook registered with server: %s", log_url)
+            return True
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to register webhook with server: %s", exc)
+            # If replacement failed after deleting a stale same-URL row, restore its old event set.
+            if existing:
+                old_events = existing[0].get("events") or []
+                with suppress(Exception):
+                    await self._api_post(
+                        "/api/v1/webhook", {"url": webhook_url, "events": list(old_events)})
+            logger.warning("[bluebubbles] failed to reconcile webhook registration: %s", exc)
             return False
 
     async def _unregister_webhook(self) -> bool:
@@ -543,21 +596,128 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 or request.headers.get("x-guid") or request.headers.get("x-bluebubbles-guid"))
 
     def _resolve_chat_and_sender(self, payload: Dict[str, Any], record: Dict[str, Any]):
-        """Returns ``(chat_guid, chat_identifier, sender)`` from the many BlueBubbles payload shapes."""
+        """Return ``(chat_guid, chat_identifier, sender)`` across BlueBubbles payload shapes."""
         chat_guid = self._value(record.get("chatGuid"), payload.get("chatGuid"), record.get("chat_guid"),
-                                payload.get("chat_guid"), payload.get("guid"))
-        # BlueBubbles v1.9+ payloads omit top-level chatGuid; it's nested under data.chats[0].guid.
-        _chats = record.get("chats") or []
-        if not chat_guid and _chats and isinstance(_chats[0], dict):
-            chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
-        chat_identifier = self._value(record.get("chatIdentifier"), record.get("identifier"),
-                                      payload.get("chatIdentifier"), payload.get("identifier"))
+                                payload.get("chat_guid"))
+        # ``guid`` on payload/record is the message GUID, never a chat GUID. BlueBubbles v1.9+
+        # commonly nests chat identity under data.chats[0], including private API ``[auth-key]``.
+        chats = record.get("chats") or []
+        first_chat = chats[0] if chats and isinstance(chats[0], dict) else {}
+        if not chat_guid:
+            chat_guid = self._value(first_chat.get("guid"), first_chat.get("chatGuid"),
+                                    first_chat.get("[auth-key]"))
+        chat_identifier = self._value(
+            record.get("chatIdentifier"), record.get("identifier"),
+            payload.get("chatIdentifier"), payload.get("identifier"),
+            first_chat.get("chatIdentifier"), first_chat.get("identifier"), first_chat.get("displayName"))
         handle = record.get("handle")
         sender = (self._value(handle.get("address") if isinstance(handle, dict) else None, record.get("sender"),
                               record.get("from"), record.get("address")) or chat_identifier or chat_guid)
         if not (chat_guid or chat_identifier) and sender:
             chat_identifier = sender
         return chat_guid, chat_identifier, sender
+
+    @staticmethod
+    def _is_group_record(record: Dict[str, Any], chat_guid: Optional[str]) -> bool:
+        if record.get("isGroup") or ";+;" in (chat_guid or ""):
+            return True
+        for chat in record.get("chats") or []:
+            if not isinstance(chat, dict):
+                continue
+            with suppress(TypeError, ValueError):
+                # BlueBubbles v1.9.9: group chats are style 43; one-to-one DMs are style 45.
+                if int(chat.get("style") or 0) == 43:
+                    return True
+        return False
+
+    @staticmethod
+    def _canonical_session_chat_id(chat_guid: Optional[str], chat_identifier: Optional[str],
+                                   sender: Optional[str], is_group: bool) -> Optional[str]:
+        """Collapse BlueBubbles DM GUID aliases onto the address while preserving group GUIDs."""
+        if is_group:
+            return chat_guid
+        for candidate in (chat_identifier, sender):
+            if candidate and ";" not in candidate:
+                return candidate
+        if chat_guid and ";-;" in chat_guid:
+            return chat_guid.split(";-;", 1)[-1]
+        return chat_guid
+
+    @staticmethod
+    def _has_real_chat_guid(chat_guid: Optional[str]) -> bool:
+        return bool(chat_guid and (";-;" in chat_guid or ";+;" in chat_guid))
+
+    @staticmethod
+    def _is_receipt_only_update(event_type: str, record: Dict[str, Any]) -> bool:
+        return event_type == "updated-message" and any(record.get(field) for field in _RECEIPT_FIELDS)
+
+    async def _hydrate_chats(self, message_id: Optional[str]) -> list:
+        """Fetch missing ``chats[]`` for a message GUID with bounded in-request retries.
+
+        BlueBubbles does not retry failed webhook POSTs, so transient API/relationship lag has to be
+        absorbed before this request is acknowledged.
+        """
+        if not message_id or not self.client:
+            return []
+        last_error: Optional[Exception] = None
+        for delay in _HYDRATE_RETRY_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                data = (await self._api_get(f"/api/v1/message/{quote(message_id, safe='')}")).get("data")
+                last_error = None
+            except Exception as exc:
+                last_error = exc
+                continue
+            if isinstance(data, dict):
+                chats = [chat for chat in (data.get("chats") or []) if isinstance(chat, dict)]
+                if chats:
+                    return chats
+        if last_error is not None:
+            raise last_error
+        return []
+
+    @staticmethod
+    def _merge_inbound_record(target: Dict[str, Any], incoming: Dict[str, Any]) -> None:
+        """Merge a richer same-GUID lifecycle event into the pending record in place."""
+        for key, value in incoming.items():
+            if value in (None, "", []):
+                continue
+            if key in {"attachments", "chats"} and isinstance(value, list):
+                current = target.setdefault(key, [])
+                seen = {item.get("guid") or item.get("[auth-key]") or repr(item)
+                        for item in current if isinstance(item, dict)}
+                for item in value:
+                    identity = (item.get("guid") or item.get("[auth-key]") or repr(item)
+                                if isinstance(item, dict) else repr(item))
+                    if identity not in seen:
+                        current.append(item)
+                        seen.add(identity)
+            else:
+                target[key] = value
+
+    async def _coalesce_inbound_record(self, message_id: Optional[str], event_type: str,
+                                       record: Dict[str, Any]) -> Optional[tuple[str, Dict[str, Any]]]:
+        """Fold immediate new/updated lifecycle pairs into one dispatch candidate."""
+        if not message_id:
+            return event_type, record
+        pending = self._pending_inbound_records.get(message_id)
+        if pending is not None:
+            self._merge_inbound_record(pending["record"], record)
+            if event_type != "updated-message":
+                pending["event_type"] = event_type
+            return None
+
+        pending = {"event_type": event_type, "record": dict(record)}
+        self._pending_inbound_records[message_id] = pending
+        try:
+            await asyncio.sleep(self._inbound_coalesce_seconds)
+            current = self._pending_inbound_records.pop(message_id, pending)
+            return current["event_type"], current["record"]
+        except BaseException:
+            if self._pending_inbound_records.get(message_id) is pending:
+                self._pending_inbound_records.pop(message_id, None)
+            raise
 
     async def _handle_webhook(self, request):
         from aiohttp import web
@@ -578,33 +738,63 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         assoc_type = record.get("associatedMessageType")
         if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
             return _ok()
+        message_id = self._value(record.get("guid"), record.get("messageGuid"), record.get("id"))
+        coalesced = await self._coalesce_inbound_record(message_id, event_type, record)
+        if coalesced is None:
+            return _ok()
+        event_type, record = coalesced
+        if self._is_receipt_only_update(event_type, record):
+            return _ok()
+
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
-        session_chat_id = chat_guid or chat_identifier
-        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
-        # Mention gate BEFORE the attachment downloads: an unmentioned group message must not
-        # pull every attachment through the REST API only to be dropped.
+        if not self._has_real_chat_guid(chat_guid):
+            try:
+                chats = await self._hydrate_chats(message_id)
+            except Exception as exc:
+                logger.error("[bluebubbles] dropping unroutable message after chat hydration retries: %s", exc)
+                return _ok()
+            if chats:
+                record = {**record, "chats": chats}
+                chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
+            if not self._has_real_chat_guid(chat_guid):
+                # A sender-only payload is ambiguous: in a group it would route a private reply to the
+                # participant. Acknowledge without claiming the GUID so a later rich event remains eligible.
+                logger.warning("[bluebubbles] ignoring message with no resolvable chat GUID")
+                return _ok()
+
+        is_group = self._is_group_record(record, chat_guid)
+        # Mention gate BEFORE attachment downloads: an unmentioned group message must not pull every
+        # attachment through the REST API only to be dropped.
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
                 return _ok()
             text = self._clean_mention_text(text)
+
         media_urls, media_types, msg_type = await self._collect_attachments(record)
         if not text and media_urls:
             text = "(attachment)"
-        if not sender or not (chat_guid or chat_identifier) or not text:
+        session_chat_id = self._canonical_session_chat_id(chat_guid, chat_identifier, sender, is_group)
+        if not sender or not session_chat_id or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
-        source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
+
+        # Claim only after routing and attachment resolution. This is the atomic dispatch decision:
+        # concurrent webhook requests may both do preliminary work, but exactly one can reach the agent.
+        if message_id and self._inbound_dedup.is_duplicate(message_id):
+            return _ok()
+
+        source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or session_chat_id,
                                    chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
                                    chat_id_alt=chat_identifier)
         event = MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=payload,
-            message_id=self._value(record.get("guid"), record.get("messageGuid"), record.get("id")),
+            message_id=message_id,
             reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
             media_urls=media_urls, media_types=media_types)
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-        if self.send_read_receipts and session_chat_id:  # fire-and-forget read receipt
+        if self.send_read_receipts:  # fire-and-forget read receipt
             asyncio.create_task(self.mark_read(session_chat_id))
         return _ok()

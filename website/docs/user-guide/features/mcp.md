@@ -874,7 +874,7 @@ hermes mcp serve --transport http --host 0.0.0.0 --port 8000 \
   --allowed-host mcp.example.com:* --public-url https://mcp.example.com/mcp
 ```
 
-Remote HTTP binds fail closed unless a bearer token and at least one allowed `Host` value are configured. Put TLS in front of the listener before sending the token across an untrusted network. Clients connect to the public URL and send the configured secret as an Authorization bearer credential. Loopback HTTP (`--transport http` with the default host) may run without authentication for local-only clients.
+Remote HTTP binds fail closed unless a bearer token and at least one allowed `Host` value are configured. Wildcard binds (`0.0.0.0` or `::`) also require `--public-url`; Hermes advertises that client-reachable URL in the authentication challenge instead of guessing an address from the bind interface. Put TLS in front of the listener before sending the token across an untrusted network. Clients connect to the public URL and send the configured secret as an Authorization bearer credential. Loopback HTTP (`--transport http` with the default host) may run without authentication for local-only clients.
 
 ### MCP client configuration
 

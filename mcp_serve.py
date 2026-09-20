@@ -777,11 +777,18 @@ def run_mcp_server(
             file=sys.stderr,
         )
         sys.exit(2)
+    if remote_http and host in {"0.0.0.0", "::"} and not public_url:
+        print(
+            "Error: wildcard MCP HTTP binds require --public-url so authentication "
+            "metadata advertises a client-reachable resource URL",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, stream=sys.stderr)
     bridge = EventBridge()
     bridge.start()
-    resource_host = "localhost" if host in {"0.0.0.0", "::"} else host
+    resource_host = host
     if ":" in resource_host:
         resource_host = f"[{resource_host}]"
     resource_url = public_url or f"http://{resource_host}:{port}{path}"

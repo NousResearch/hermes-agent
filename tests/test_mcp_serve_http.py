@@ -46,6 +46,23 @@ def test_remote_http_requires_auth_and_host_allowlist(monkeypatch):
     assert authorized.status_code == 200
 
 
+def test_wildcard_http_bind_requires_client_reachable_public_url(monkeypatch, capsys):
+    import mcp_serve
+
+    monkeypatch.setenv("TEST_MCP_TOKEN", "secret")
+
+    with pytest.raises(SystemExit) as missing_public_url:
+        mcp_serve.run_mcp_server(
+            transport="http",
+            host="0.0.0.0",
+            token_env="TEST_MCP_TOKEN",
+            allowed_hosts=["mcp.example.com:*"],
+        )
+
+    assert missing_public_url.value.code == 2
+    assert "wildcard MCP HTTP binds require --public-url" in capsys.readouterr().err
+
+
 def test_remote_http_uses_bearer_auth_and_preserves_transport_settings(monkeypatch):
     import mcp_serve
 

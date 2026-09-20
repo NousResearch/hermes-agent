@@ -266,6 +266,12 @@ async def _expand_reference(
             git_args = _GIT_REFERENCE_ARGS[ref.kind](ref)
             return _expand_git_reference(ref, cwd, git_args, "git " + " ".join(git_args))
         if ref.kind == "url":
+            # A comment deep link resolves to THE comment via the REST API; anything
+            # the resolver cannot settle (not a comment link, API failure, rate limit)
+            # falls through to today's generic scrape, unchanged.
+            block = await _expand_github_comment_reference(ref)
+            if block is not None:
+                return None, block
             content = await _fetch_url_content(ref.target, url_fetcher=url_fetcher)
             if not content:
                 return f"{ref.raw}: no content extracted", None
@@ -431,6 +437,26 @@ async def _fetch_url_content(url: str, *, url_fetcher: UrlFetcher = None) -> str
     if inspect.isawaitable(content):
         content = await content
     return str(content or "").strip()
+
+
+async def _expand_github_comment_reference(ref: ContextReference) -> str | None:
+    """Resolve a GitHub PR/issue COMMENT deep link to a block, else ``None``.
+
+    ``None`` — not a comment deep link, or ANY API failure (exception, timeout,
+    non-200, rate limit, unparseable JSON) — means the caller runs the generic
+    scrape exactly as before. Never raises: an attachment path that the gateway
+    feeds untrusted text through must not be able to fail the turn.
+    """
+    try:
+        from agent import context_references_github
+
+        link = context_references_github.parse_comment_url(ref.target)
+        if link is None:
+            return None
+        # The REST call is sync httpx; keep it off the event loop (gather expands refs concurrently).
+        return await asyncio.to_thread(context_references_github.build_comment_block, link)
+    except Exception:
+        return None
 
 
 async def _default_url_fetcher(url: str) -> str:

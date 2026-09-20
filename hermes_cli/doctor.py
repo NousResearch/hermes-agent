@@ -5,6 +5,7 @@ Check bodies live in the ``doctor_*`` siblings.
 """
 
 import os
+import json
 import sys
 
 from hermes_cli.config import get_env_path, get_hermes_home, get_project_root
@@ -170,6 +171,19 @@ def run_doctor(args):
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
     if getattr(args, 'ack', None):
         return _ack_advisory(args.ack)
+    runtime_requested = bool(getattr(args, 'runtime', False))
+    json_requested = bool(getattr(args, 'json', False))
+    if json_requested:
+        if not runtime_requested:
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "error",
+                "error_class": "RuntimeFlagRequired",
+            }, sort_keys=True))
+            return
+        from hermes_cli.doctor_runtime import run_runtime_diagnostic
+        print(json.dumps(run_runtime_diagnostic().to_dict(), sort_keys=True))
+        return
     print()
     for line in ("┌─────────────────────────────────────────────────────────┐",
                  "│                 🩺 Hermes Doctor                        │",
@@ -184,6 +198,15 @@ def run_doctor(args):
     with warn_on_error(""):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
+    if runtime_requested:
+        with warn_on_error(""):
+            from hermes_cli.doctor_runtime import run_runtime_diagnostic, render_runtime_report
+            runtime_report = run_runtime_diagnostic()
+            render_runtime_report(runtime_report)
+            if runtime_report.status == "fail":
+                total.manual_issues.append(
+                    f"Runtime diagnostic failed in {runtime_report.failed_phase or 'an unknown phase'}."
+                )
     _print_summary(should_fix, total)
 
 

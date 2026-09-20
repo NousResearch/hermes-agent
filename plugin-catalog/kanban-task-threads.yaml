@@ -1,0 +1,25 @@
+name: kanban-task-threads
+repo: https://github.com/diegomarino/kanban-task-threads
+sha: 779074e9d45b49cc4d6b90443555187692bb3fda
+description: Give every Hermes kanban task a live Discord forum thread with a rewritten status card and append-only event log.
+maintainer: diegomarino
+tier: community
+category: automation
+requires_hermes: ">=0.20"
+docs_url: https://github.com/diegomarino/kanban-task-threads#readme
+version: "0.2.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - kanban_task_claimed
+    - kanban_task_completed
+    - kanban_task_blocked
+    - on_kanban_task_updated
+    - on_kanban_worker_spawned
+    - on_kanban_worker_exited
+    - on_kanban_worker_stale_claim
+    - on_kanban_dispatch_tick
+  provides_middleware: []
+  requires_env:
+    - KANBAN_TASK_THREADS_WEBHOOK_URL

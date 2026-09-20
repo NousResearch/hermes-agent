@@ -37,9 +37,8 @@ RIGHTS = (
     "hosted.output.discard",
 )
 OUTPUT_OPERATIONS = frozenset({"output_export", "output_ack", "output_discard"})
-# Deliberately false until stopped/unknown/disband retirement is wired end to end.
-# The provider may initialize its owner-local store, but NEW admissions receive no
-# Output consent while this hold remains.
+# Deliberately false until the parent completes one combined owner-RPC review.
+# Positive probes enable the completed lifecycle only with a test-local patch.
 OWNER_OUTPUT_LIFECYCLE_READY = False
 CHUNK_BYTES = 360 * 1024
 MAX_ITEM_BYTES = 15_000_000
@@ -55,6 +54,10 @@ _COMMON = {
     "manifest_digest",
     "owner_output_receipt",
 }
+
+
+class _OwnerReplacementRetry(RoomArtifactError):
+    retryable = True
 
 
 def _canonical(value) -> str:
@@ -252,6 +255,20 @@ def capture_owner_output_context(authority, binding, attested, peer_subject):
 def new_admission_authorizer(rpc, context, *, request_id, payload, task, generation):
     """Return a target-local NEW guard; exact replay bypass is intentional."""
     if type(context) is not OwnerOutputContext or context.authority is not rpc.authority:
+        return None
+    live = rpc.authority.sessions.get(rpc.ref.session_id)
+    if live is None:
+        return None
+    from gateway.session_managed_worker import managed_policy
+    from gateway.session_policy import policy_for_source
+
+    policy = policy_for_source(rpc.authority.runner, live.source)
+    if (
+        managed_policy(rpc.authority, rpc.ref) is not None
+        or policy is None
+        or policy.source != "bot_room"
+        or "bot_room" not in policy.toolsets
+    ):
         return None
     candidate = context.attested
     try:
@@ -958,6 +975,13 @@ def source_output_action_attestation(service, selector, operation, params):
     }[operation]
     key = service._output_key(task)
     with service.authority.db._read_ctx() as conn:
+        if operation != "output_discard":
+            from gateway.hosted_room_route_schema import require_room_work_open
+
+            try:
+                require_room_work_open(conn, scope.room_id, error=RuntimeStoreError)
+            except RuntimeStoreError as exc:
+                raise RuntimeStoreError("permission_denied") from exc
         current = service._output_metadata(conn, key)
         retry = conn.execute(
             "SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? AND execution_generation=?",
@@ -1329,7 +1353,7 @@ class ServedNamedOutputCustody:
             if owner is None:
                 owner = identity
             elif identity != owner:
-                raise RoomArtifactError("Group Chat output owner changed during read")
+                raise _OwnerReplacementRetry("Group Chat output owner changed during read")
             data.extend(raw)
             self._recheck()
         if len(data) != item["size"] or hashlib.sha256(data).hexdigest() != item["sha256"]:

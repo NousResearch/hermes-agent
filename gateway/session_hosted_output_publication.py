@@ -193,7 +193,12 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
         initial = discussion.plan_publication(
             room, task_events, plan, status=status, result=result,
             execution_generation=generation if status == "deferred" else None, local_profiles=local_profiles)
-        peer_discard = (output is not None and output[0].target_install_id != output[0].home_install_id
+        named_owner = False
+        if output is not None:
+            from gateway.session_hosted_output_rpc import ServedNamedOutputCustody
+            named_owner = type(output[2]) is ServedNamedOutputCustody
+        peer_discard = (output is not None
+                        and (output[0].target_install_id != output[0].home_install_id or named_owner)
                         and initial.terminal_kind in {"turn.cancelled", "turn.failed"})
         if output is not None:
             scope, manifest, outbox = output

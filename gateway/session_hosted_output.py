@@ -173,13 +173,21 @@ def hosted_output_scope(authority, ref, row):
 def capture_output_result(authority, row, binding):
     if binding is None or not binding.used:
         return
+    saved = authority.pending_results.get(row["admission_id"])
+    if saved is None:
+        raise RuntimeStoreError("storage_unavailable")
+    value = saved.get("result")
+    if isinstance(value, dict) and (
+        value.get("interrupted") is True
+        or value.get("failed") is True
+        or value.get("error")
+    ):
+        capture_failed_output(authority, row, binding)
+        return
     from gateway.hosted_room_artifacts import terminal_artifact_manifest
     manifest = terminal_artifact_manifest(authority.db.db_path, binding.scope, outbox=binding.outbox())
     if manifest is None:
         return
-    saved = authority.pending_results.get(row["admission_id"])
-    if saved is None:
-        raise RuntimeStoreError("storage_unavailable")
     saved["result"].update(artifacts=manifest, artifact_scope=binding.scope.as_mapping())
     if hasattr(binding, "consent_json"):
         from gateway.session_hosted_output_rpc import capture_owner_output_receipt

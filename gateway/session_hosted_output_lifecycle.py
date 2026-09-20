@@ -47,7 +47,21 @@ class CanonicalOutputLifecycle:
     def stop_room(self, *args, **kwargs):
         with self._policy_lock, self._output_policy_read():
             pass
-        return super().stop_room(*args, **kwargs)
+        result = super().stop_room(*args, **kwargs)
+        if kwargs.get('require_acknowledged'):
+            room_id = args[0] if args else kwargs.get('room_id')
+            room = self._room(room_id)
+            self._publish_terminal_tasks(room, defer_errors=True)
+            retry = self.output_retry_status(room_id)
+            cleanup = [
+                row for row in self.output_cleanup_status(room_id)
+                if row['state'] != 'completed'
+            ]
+            if retry or cleanup:
+                raise RuntimeError(
+                    "room Output cleanup is still pending; retry deletion after cleanup completes"
+                )
+        return result
 
     def _capture_room_cancel(self, task, cancel_id):
         captured = super()._capture_room_cancel(task, cancel_id)

@@ -31,6 +31,8 @@ def retryable(error):
     if isinstance(error, sqlite3.Error):
         return getattr(error, 'sqlite_errorcode', None) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
     return (getattr(error, 'retryable', False) is True
+            or (isinstance(error, RuntimeStoreError)
+                and error.reason == 'storage_unavailable')
             or isinstance(error, (ConnectionError, OSError, TimeoutError)))
 
 

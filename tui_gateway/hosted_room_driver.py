@@ -961,7 +961,7 @@ def _find_terminal_receipt(
             result=_bounded_terminal_result(
                 {"message_id": receipt_id, "text": message.get("content", ""),
                  "artifacts": message.get("artifacts"),
-                 **{k: message[k] for k in ("peer_run_id", "peer_admission_id", "peer_execution_generation", "peer_result_digest") if k in message},
+                 **{k: message[k] for k in ("peer_run_id", "peer_admission_id", "peer_execution_generation", "peer_result_digest", "owner_output_receipt") if k in message},
                  **({"artifact_scope": message["artifact_scope"]} if "artifact_scope" in message else {})}))
     return None
 

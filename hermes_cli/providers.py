@@ -235,8 +235,11 @@ def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
     url_vars = tuple(v for v in env_vars if v.endswith(("_BASE_URL", "_URL")))
     key_vars = tuple(v for v in env_vars if v not in url_vars)
     api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
+    # A mode outside the reverse table is a plugin-registered dialect: keep its name so
+    # ``determine_api_mode`` can check the transport registry instead of degrading it.
+    mode = (prof.api_mode or "").strip()
     return ProviderDef(id=prof.name, name=prof.display_name or prof.name or name,
-                       transport=api_mode_to_transport.get(prof.api_mode, "openai_chat"),
+                       transport=api_mode_to_transport.get(mode, mode or "openai_chat"),
                        api_key_env_vars=key_vars, base_url=(prof.base_url or "").strip(),
                        base_url_env_var=next(iter(url_vars), ""),
                        auth_type=prof.auth_type or "api_key", source="plugin-profile")
@@ -376,7 +379,11 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
         return nous_api_mode(model)
     pdef = get_provider(provider)
     if pdef is not None:
-        return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
+        if pdef.transport in TRANSPORT_TO_API_MODE:
+            return TRANSPORT_TO_API_MODE[pdef.transport]
+        # A plugin profile's transport IS its api_mode when a plugin registered that dialect.
+        from agent.transports import registered_api_modes
+        return pdef.transport if pdef.transport in registered_api_modes() else "chat_completions"
     if provider == "bedrock":
         return "bedrock_converse"
     return "chat_completions"

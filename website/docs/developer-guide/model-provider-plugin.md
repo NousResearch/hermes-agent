@@ -316,7 +316,7 @@ Only a **user** plugin (`$HERMES_HOME/plugins/model-providers/` or an installed 
 
 ## api_mode selection
 
-Four values are recognized. Hermes picks one based on:
+Four built-in values are recognized (`chat_completions`, `codex_responses`, `anthropic_messages`, `bedrock_converse`), plus any mode a plugin registers itself. Hermes picks one based on:
 
 1. User explicit override (`config.yaml` `model.api_mode` when set)
 2. OpenCode's per-model dispatch (`opencode_model_api_mode` for Zen and Go)
@@ -325,6 +325,24 @@ Four values are recognized. Hermes picks one based on:
 5. Default `chat_completions`
 
 Set `profile.api_mode` to match the default your provider ships — it acts as a hint. User URL overrides still win.
+
+### Shipping your own wire dialect
+
+A plugin that speaks a protocol none of the built-in transports cover registers one and names it in the profile:
+
+```python
+from agent.transports import register_transport
+from agent.transports.chat_completions import ChatCompletionsTransport
+
+class MyDialectTransport(ChatCompletionsTransport):
+    api_mode = "mydialect"
+    # override convert_messages / build_kwargs / normalize_response as needed
+
+register_transport("mydialect", MyDialectTransport)
+register_provider(ProviderProfile(name="myprovider", api_mode="mydialect", ...))
+```
+
+Every `api_mode` gate (`determine_api_mode`, runtime resolution, agent construction, delegation) accepts a mode iff the transport registry knows it; a profile naming a mode nobody registered still degrades to `chat_completions`.
 
 ## Auth types
 

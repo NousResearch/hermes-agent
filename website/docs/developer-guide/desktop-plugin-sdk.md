@@ -535,6 +535,8 @@ host.restartGateway()                      // restart the backend gateway
 host.profileRoutes()                       // [{ profile, targetProfile, connectionId, mode }]
 host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
+host.submitToSession(route, { storedSessionId, text })
+                                           // one turn to ONE stored session, queued
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
 
@@ -580,6 +582,44 @@ for requests; `targetProfile` is the backend Hermes profile served by that route
 They differ when a route explicitly maps to another backend profile (for example an
 SSH `remoteProfile` override or a legacy per-profile URL alias). This distinction
 preserves backend identity without exposing connection secrets.
+
+`host.submitToSession(route, { storedSessionId, text })` delivers one user turn to
+**one stored session on one exact route** — no credentials, and nothing is
+foregrounded. It exists because the delivery is a sequence rather than a call:
+hold the route's socket, `session.resume` the stored id, hold the returned
+runtime, then `prompt.submit` with `queued: true`. Every step has a lifetime trap
+invisible in the RPC shapes — an unheld secondary socket is reaped between the
+calls and takes the runtime it minted with it, and a submit whose lease is
+released at the acknowledgement detaches the runtime mid-turn (`client_gone`).
+
+`storedSessionId` is the durable id the session list shows; the reply's
+`runtimeSessionId` is live and ephemeral, so persist the stored id and never the
+runtime one. `status` is the backend's own submit status: `'streaming'` when the
+backend was idle, `'queued'` when the turn will run after the active one, plus
+`'steered'` / `'redirected'` and `null` for the reply that carries none.
+
+```ts
+const routes = await host.profileRoutes()
+const route = routes.find(r => r.profile === 'project-worker-01')
+if (!route) throw new Error('the worker profile is not registered')
+
+const { runtimeSessionId, status } = await host.submitToSession(route, {
+  storedSessionId: '20260920_122038_661ec0',
+  text: 'Pick up the next task from the plan.',
+})
+```
+
+Delivery is **always queued** behind an active turn: this verb never steers,
+redirects, or interrupts one. It **fails closed** when another process owns the
+session (Hermes' single-writer fence is surfaced unchanged, never worked around),
+and it is **not safe for blind retries** — a submit that times out may already
+have been accepted, so reconcile the session's transcript instead of resending.
+There is no exactly-once guarantee. Feature-detect it in plugins that also
+support older Desktop builds:
+
+```js
+if (typeof host.submitToSession === 'function') { /* … */ }
+```
 
 Profile-shaped plugins get first-class methods too:
 `profiles.list` (each profile + its most recent conversation as
@@ -933,7 +973,7 @@ not treat this pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
+| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.submitToSession`, `.request`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |

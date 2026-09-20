@@ -114,6 +114,25 @@ def _subagent_worktree(project, tmp_path, monkeypatch):
     return wt, project, remove
 
 
+def _web_git_worktree_remove(project, tmp_path, monkeypatch):
+    from hermes_cli import web_git
+    wt = _linked_worktree(project, tmp_path)
+    return wt, project, lambda: web_git.worktree_remove(str(project), str(wt), True)
+
+
+def _worktree_gc_reclaim(project, tmp_path, monkeypatch):
+    from hermes_cli import worktree_gc
+    wt = _linked_worktree(project, tmp_path)
+    record = worktree_gc.TreeRecord(
+        name="wt", path=str(wt), branch="wt/t1", age_days=0.0, size_mb=None,
+        verdict="reap", reason="test-forced")
+
+    def remove():
+        actions = worktree_gc.reclaim_worktrees(str(project), records=[record])
+        assert actions and actions[0].startswith("removed")
+    return wt, project, remove
+
+
 def _kanban_scratch(project, tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -137,8 +156,11 @@ def _kanban_scratch(project, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("mock_pyright", [False, True], ids=["single-root", "multi-root"], indirect=True)
-@pytest.mark.parametrize("entry", [_kanban_worktree, _cli_worktree, _subagent_worktree, _kanban_scratch],
-                         ids=lambda f: f.__name__.strip("_"))
+@pytest.mark.parametrize(
+    "entry",
+    [_kanban_worktree, _cli_worktree, _subagent_worktree, _kanban_scratch,
+     _web_git_worktree_remove, _worktree_gc_reclaim],
+    ids=lambda f: f.__name__.strip("_"))
 def test_workspace_removal_releases_only_its_language_servers(entry, mock_pyright, project, tmp_path,
                                                                  monkeypatch):
     """Every in-process workspace-removal path (kanban worktree/scratch cleanup, ``hermes -w`` exit, the

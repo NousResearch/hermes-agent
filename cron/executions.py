@@ -318,7 +318,9 @@ _OWNER_WEDGED_REASON = (
 
 
 def recover_interrupted_executions() -> int:
-    """Mark provably abandoned attempts unknown without scheduling retries."""
+    """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
+    dead, plus rows whose live owner holds a claim older than the derived stale bound (the
+    process is not killed)."""
     now = _hermes_now().isoformat()
     changed = 0
     recovered: List[Dict[str, Any]] = []

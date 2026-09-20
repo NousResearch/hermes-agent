@@ -3755,8 +3755,9 @@ def _reap_throttle_key() -> str:
 
 
 def _maybe_reap_dead_owners() -> None:
-    """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Only
-    rows whose owner process is proved gone are touched (_owner_is_live). Throttled."""
+    """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Rows
+    whose owner process is proved gone are released (_owner_is_live), as are rows whose live owner
+    holds a claim older than the derived stale bound (the process is not killed). Throttled."""
     # Dead-owner claim reclaim (#86721): execution rows carry their owner pid + process start time, but
     # recovery previously ran only at scheduler STARTUP. A one-shot `hermes cron run` that claimed a job and
     # died mid-run (its runner thread lived in the exiting CLI process) left the row 'claimed' forever while

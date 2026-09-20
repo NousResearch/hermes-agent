@@ -1,0 +1,28 @@
+name: remarkable
+repo: https://github.com/cygnostik/hermes-plugin-remarkable
+sha: a7f42cf1eb125427eb0e6f675eaadfb24997c00c
+description: Unofficial reMarkable cloud transfers, library management, backups, typed text, and bounded native notebook rendering.
+maintainer: cygnostik
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+version: "0.2.0"
+docs_url: https://github.com/cygnostik/hermes-plugin-remarkable#readme
+platforms: [windows, linux, macos]
+capabilities:
+  provides_tools:
+    - remarkable_enroll
+    - remarkable_status
+    - remarkable_list
+    - remarkable_download
+    - remarkable_upload
+    - remarkable_mkdir
+    - remarkable_manage
+    - remarkable_export
+    - remarkable_extract_text
+    - remarkable_search
+    - remarkable_backup
+    - remarkable_changes
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

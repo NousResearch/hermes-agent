@@ -727,6 +727,9 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    creator_task_id: Optional[str] = None
+    root_task_id: Optional[str] = None
+    worker_started_at: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -757,6 +760,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "creator_task_id", "root_task_id", "worker_started_at",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -949,6 +953,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- profile's state.db (kanban_create verifies before stamping). Indexed
     -- so per-session list queries stay cheap on larger boards.
     session_id           TEXT,
+    creator_task_id      TEXT,
+    root_task_id         TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -1354,8 +1360,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        creator_task_id, root_task_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1365,6 +1372,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        creator_task_id, task_id,
                     ),
                 )
                 for pid in parents:
@@ -3122,6 +3130,16 @@ def block_task(
         # kind with none open would park in ``todo`` and ``recompute_ready``
         # would promote+respawn it context-free on the next tick. Re-kind to
         # ``needs_input`` so it is sticky until a human unblocks.
+        descendant_wait_refused = bool(
+            kind == "dependency" and _parents_satisfied(conn, task_id)
+            and child_ids(conn, task_id)
+        )
+        if descendant_wait_refused:
+            # Park safely for explicit recovery, but report refusal to the
+            # caller: a parent waiting for its own descendant is a semantic
+            # dependency cycle and must never enter the auto-promoted lane.
+            kind = "needs_input"
+            rekind_reason = "descendant_wait"
         if kind == "dependency" and _parents_satisfied(conn, task_id):
             kind = "needs_input"
             rekind_reason = "no_open_parent"
@@ -3158,7 +3176,7 @@ def block_task(
             _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
             return True
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-    return True
+    return not descendant_wait_refused
 
 
 def _route_block(

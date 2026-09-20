@@ -124,7 +124,14 @@ def test_dependency_block_with_terminal_parents_parks_then_escalates(
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
         child = _running_task(conn, title="child-of-done")
-        kb.link_tasks(conn, parent_id=parent, child_id=child)
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        kb.link_tasks(
+            conn,
+            parent_id=parent,
+            child_id=child,
+            expected_child_run_id=child_task.current_run_id,
+        )
 
         # `hermes kanban block <child> --kind dependency waiting on upstream`
         args = argparse.Namespace(task_id=child, ids=None, reason=["waiting", "on", "upstream"], kind="dependency")
@@ -163,7 +170,14 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="open-parent", assignee="alice")
         child = _running_task(conn, title="waiter")
-        kb.link_tasks(conn, parent_id=parent, child_id=child)
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        kb.link_tasks(
+            conn,
+            parent_id=parent,
+            child_id=child,
+            expected_child_run_id=child_task.current_run_id,
+        )
         for _ in range(kb.BLOCK_RECURRENCE_LIMIT + 1):
             assert kb.block_task(conn, child, reason="wait", kind="dependency")
             parked = kb.get_task(conn, child)

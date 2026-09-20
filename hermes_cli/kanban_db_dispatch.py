@@ -1879,6 +1879,33 @@ def _dispatch_lane_task(
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
         return False
+    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+    if guard_reason is not None:
+        result.respawn_guarded.append((task_id, guard_reason))
+        if not dry_run:
+            with _kb.write_txn(conn):
+                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
+    if not dry_run:
+        from hermes_cli.kanban_skill_validation import unavailable_profile_skills
+        task_skills = _kb._json_or(row["skills"], []) if "skills" in row.keys() else []
+        missing_skills = unavailable_profile_skills(assignee, task_skills)
+        if missing_skills:
+            error = f"profile {assignee!r} cannot load explicit skill(s): {', '.join(missing_skills)}"
+            with _kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', consecutive_failures = consecutive_failures + 1, "
+                    "last_failure_error = ? WHERE id = ? AND status IN ('ready', 'review')",
+                    (error[:500], task_id),
+                )
+                run_id = _kb._synthesize_ended_run(
+                    conn, task_id, outcome="spawn_failed", error=error,
+                    metadata={"reason": "unavailable_explicit_skill", "skills": missing_skills},
+                )
+                _kb._append_event(conn, task_id, "spawn_failed",
+                                  {"error": error, "skills": missing_skills, "terminal": True}, run_id=run_id)
+            result.auto_blocked.append(task_id)
+            return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
@@ -1886,20 +1913,6 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
-    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
-    if guard_reason is not None:
-        result.respawn_guarded.append((task_id, guard_reason))
-        # Event so ``hermes kanban tail`` shows why the task looks stuck.
-        # Honour kanban.default_assignee: when the dispatcher hits an unassigned ready task and an
-        # operator-configured fallback exists, persist the assignment and proceed. This removes the
-        # dashboard footgun where a task created without an assignee parks in 'ready' forever even though
-        # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
-        # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
-        # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
-        if not dry_run:
-            with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
-        return False
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
@@ -2077,7 +2090,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, skills FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()

@@ -173,6 +173,28 @@ _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None) -> dict[str, Any]:
     d = asdict(task)
+    operational = task.status
+    if task.status == "running":
+        heartbeat_fresh = bool(
+            task.last_heartbeat_at
+            and time.time() - int(task.last_heartbeat_at)
+            <= kanban_db.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        )
+        worker_live = bool(
+            task.worker_pid and task.worker_started_at
+            and kbd._worker_alive(task.worker_pid, task.worker_started_at)
+        )
+        if not (heartbeat_fresh and worker_live):
+            d["status"] = "ready"
+            operational = "recovering"
+    elif task.status == "todo":
+        operational = "dependency-wait"
+    elif task.status in {"ready", "scheduled"}:
+        operational = "queued"
+    elif task.status in {"blocked", "triage"}:
+        operational = "failure"
+    d["operational_status"] = operational
+    d["continuation_of"] = task.creator_task_id
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:
         d["age"] = kanban_db.task_age(task)
@@ -394,6 +416,8 @@ class CreateTaskBody(BaseModel):
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
+        from hermes_cli.kanban_skill_validation import validate_profile_skills
+        validate_profile_skills(payload.assignee, payload.skills)
         # CreateTaskBody field names match create_task's keyword parameters.
         task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
         task = kanban_db.get_task(conn, task_id)

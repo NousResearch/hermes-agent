@@ -682,6 +682,10 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         "load_config",
         lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
     )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_skill_validation.unavailable_profile_skills",
+        lambda _assignee, _skills: [],
+    )
     captured: list[list[str]] = []
 
     def spawn(task, workspace):

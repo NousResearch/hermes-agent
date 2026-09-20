@@ -4,6 +4,19 @@ Captured: 2026-09-20T08:57:58+02:00
 Baseline: `main` at `7a1e78e411884e1e50f41630b0a0b80e6c490e7f` (local branch was 3 commits ahead and 1584 behind `origin/main`; no rebase or product-code change was performed).
 Scope: tests and evidence only; no deploy, service restart, or production-container action.
 
+## Implemented contract
+
+Kanban publication now validates every explicitly requested skill against the
+assignee's effective profile before writing any task, link, event, or run. The
+dispatcher repeats this check for legacy/external rows and records a terminal
+`spawn_failed` attempt instead of claiming or spawning them. Creator and root
+lineage are durable task fields. Dependency blocks cannot make an orchestrator
+wait on its own descendant, and the dashboard projects `running` only while the
+PID, process-start fingerprint, and heartbeat all prove a fresh worker; otherwise
+it reports `recovering`. Queued, dependency-wait, and failure states are likewise
+explicit. Existing atomic reclaim, retry limit, and sticky breaker behavior
+remain the source of truth. No deployment or service restart is part of this fix.
+
 ## Executable contract
 
 `tests/hermes_cli/test_kanban_supervision_contract_e2e.py` contains seven boundary regressions:

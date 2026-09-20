@@ -169,7 +169,9 @@ task graphs. See **[references/examples.md](references/examples.md)**.
 5. **Respect existing skills.** When a scene fits an existing skill, the
    relevant renderer should load that skill via `--skill <name>` on its task
    or `always_load` in its profile. Do not re-derive what a skill already
-   provides.
+   provides. Verify the exact skill is enabled in that assignee's effective
+   profile before publishing the graph; publication rejects unavailable or
+   disabled explicit skills without leaving partial task state.
 
 6. **The director never executes.** Even with the full `kanban + terminal +
    file` toolset, the director's `SOUL.md` rules forbid it from executing
@@ -180,7 +182,9 @@ task graphs. See **[references/examples.md](references/examples.md)**.
 
 7. **Don't over-decompose.** A 30-second product video does NOT need 20 tasks.
    Aim for the smallest task graph that still parallelizes well and exposes the
-   right human-review gates.
+   right human-review gates. Keep the dependency graph acyclic. Once the
+   director has published children, it completes to release them; it never
+   blocks waiting for one of its own descendants.
 
 8. **Verify API keys BEFORE firing.** External APIs (TTS, image-gen,
    image-to-video) need keys in `${HERMES_HOME:-~/.hermes}/.env` or the user's secret store.

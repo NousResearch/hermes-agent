@@ -340,6 +340,7 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
+    from hermes_cli.kanban_skill_validation import validate_profile_skills
 
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
@@ -356,8 +357,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
-    with kbc.connect_closing() as conn:
-        task_id = kb.create_task(
+    try:
+        validate_profile_skills(args.assignee, getattr(args, "skills", None))
+        with kbc.connect_closing() as conn:
+            task_id = kb.create_task(
             conn, title=args.title, body=args.body, assignee=args.assignee,
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
@@ -373,8 +376,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
-        )
-        task = kb.get_task(conn, task_id)
+            )
+            task = kb.get_task(conn, task_id)
+    except ValueError as exc:
+        return _err(f"kanban create: {exc}", 2)
     if getattr(args, "json", False):
         _print_json(_task_to_dict(task))
     else:

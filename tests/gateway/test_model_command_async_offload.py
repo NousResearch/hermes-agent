@@ -140,8 +140,6 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
     )
 
 
-
-
 @pytest.mark.asyncio
 async def test_picker_path_lists_cache_only_and_probes_only_the_current_custom_endpoint(_isolated_config, monkeypatch):
     """#74003: the chat ``/model`` reply is a read path. The listing must ask for cache-only catalogs

@@ -307,6 +307,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
               typeof payload!.turn_started_at === 'number' && payload!.turn_started_at > 0
                 ? payload!.turn_started_at * 1000
                 : null
+            const gatewayTurnId = typeof payload!.turn_id === 'number' ? payload!.turn_id : null
 
             return {
               ...state,
@@ -315,7 +316,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
               // message.start (e.g. resuming an already-running session
               // that never replays its start event).
               turnLive: true,
-              turnStartedAt: state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now()
+              turnStartedAt: state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now(),
+              turnId: state.turnId ?? gatewayTurnId
             }
           }
 
@@ -378,6 +380,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             pendingBranchGroup: null,
             streamId: null,
             turnStartedAt: null,
+            turnId: null,
             turnLive: false
           }
         },

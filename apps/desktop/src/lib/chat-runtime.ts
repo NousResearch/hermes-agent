@@ -44,6 +44,7 @@ export function createClientSessionState(
     interimBoundaryPending: false,
     needsInput: false,
     turnStartedAt: null,
+    turnId: null,
     turnLive: false,
     usage: null
   }

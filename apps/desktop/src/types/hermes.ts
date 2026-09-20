@@ -742,6 +742,8 @@ export interface SessionResumeResult {
   }
   /** Epoch seconds the current turn started, or null when idle. */
   turn_started_at?: number | null
+  /** Monotonic generation for the current backend turn. */
+  turn_id?: number | null
 }
 
 export interface SessionRuntimeInfo {

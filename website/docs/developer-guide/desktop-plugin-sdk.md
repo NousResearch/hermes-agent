@@ -494,6 +494,7 @@ host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the F
 host.state.focusedSessionProfile // ReadableAtom<string>  (owner profile of the focused chat — prefer over `profile` for per-bot/profile readouts)
 host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
 host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed usage of the focused session, no RPC needed)
+host.state.focusedTurnId    // ReadableAtom<number | null>  (monotonic turn generation; changes per fresh round, stable for in-place steer)
 host.state.cwd              // ReadableAtom<string>
 host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>

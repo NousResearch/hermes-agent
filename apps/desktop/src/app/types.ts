@@ -192,6 +192,8 @@ export interface ClientSessionState {
    *  CLOCK, not proof the turn is live — gate on turnLive for that.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** Monotonic backend generation for the current turn; stable for in-place steer. */
+  turnId: number | null
   /** The backend has confirmed this turn is running (message.start, a
    *  running=true session.info edge, or resuming onto an in-flight turn).
    *  False while a submit is only optimistically armed — the discriminator the

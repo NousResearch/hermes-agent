@@ -109,7 +109,8 @@ export function ChatBar({
   onRemoveAttachment,
   onSteer,
   onSubmit: onSubmitProp,
-  onTranscribeAudio
+  onTranscribeAudio,
+  onVoiceConversationStateChange
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
   const hudWindowing = window.hermesDesktop?.hud?.windowing
@@ -988,6 +989,34 @@ export function ChatBar({
     sessionId,
     target: scope.target
   })
+
+  useEffect(() => {
+    if (scope.target !== 'main' || !onVoiceConversationStateChange) {
+      return undefined
+    }
+
+    onVoiceConversationStateChange({
+      active: voiceConversationActive,
+      status: conversation.status,
+      stop: endConversation,
+      stopTurn: conversation.stopTurn
+    })
+  }, [
+    conversation.status,
+    conversation.stopTurn,
+    endConversation,
+    onVoiceConversationStateChange,
+    scope.target,
+    voiceConversationActive
+  ])
+
+  useEffect(() => {
+    if (scope.target !== 'main' || !onVoiceConversationStateChange) {
+      return undefined
+    }
+
+    return () => onVoiceConversationStateChange(null)
+  }, [onVoiceConversationStateChange, scope.target])
 
   // Keep the typed-stop interceptor (see onSubmit above) in sync with the
   // live conversation state. Render-time ref assignment, same pattern as

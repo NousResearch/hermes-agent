@@ -600,6 +600,7 @@ export function useVoiceConversation({
   ])
 
   const end = useCallback(async () => {
+    wasEnabledRef.current = false
     pendingStartRef.current = false
     clearTurnTimeout()
     stopVoicePlayback()

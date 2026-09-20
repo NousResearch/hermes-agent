@@ -31,6 +31,13 @@ export interface ChatBarState {
   voice: { enabled: boolean; active: boolean }
 }
 
+export interface ChatBarVoiceConversationState {
+  active: boolean
+  status: 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking'
+  stop: () => void
+  stopTurn: () => void
+}
+
 export interface ChatBarProps {
   busy: boolean
   disabled: boolean
@@ -57,6 +64,7 @@ export interface ChatBarProps {
   onSteer?: (text: string) => Promise<boolean> | boolean
   onSubmit: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onTranscribeAudio?: (audio: Blob) => Promise<string>
+  onVoiceConversationStateChange?: (state: ChatBarVoiceConversationState | null) => void
 }
 
 export type VoiceStatus = 'idle' | 'recording' | 'transcribing'

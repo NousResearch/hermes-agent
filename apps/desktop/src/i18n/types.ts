@@ -347,6 +347,14 @@ export interface Translations {
       emptyGreeting: (name?: string) => string
       navigationLabel: string
       showActivity: string
+      voiceControls: {
+        cancelTask: string
+        label: string
+        micLevel: string
+        startListening: string
+        stopListening: string
+        stopSpeaking: string
+      }
       status: {
         connection: {
           connected: string

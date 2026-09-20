@@ -338,6 +338,14 @@ export const pl = defineLocale({
       emptyGreeting: name => (name ? `${name}, od czego zaczynamy?` : 'Od czego zaczynamy?'),
       navigationLabel: 'Nawigacja Jarvisa',
       showActivity: 'Pokaż aktywność',
+      voiceControls: {
+        cancelTask: 'Zatrzymaj zadanie',
+        label: 'Sterowanie głosem',
+        micLevel: 'Poziom mikrofonu',
+        startListening: 'Zacznij słuchać',
+        stopListening: 'Przestań słuchać',
+        stopSpeaking: 'Przestań mówić'
+      },
       status: {
         connection: {
           connected: 'Połączono',

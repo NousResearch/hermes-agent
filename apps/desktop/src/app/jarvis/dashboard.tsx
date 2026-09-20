@@ -19,6 +19,7 @@ export interface JarvisDashboardProps {
   layout?: DashboardLayout
   profileDisplayName?: string
   state: JarvisUiState
+  voiceControls?: ReactNode
 }
 
 function greeting(copy: ReturnType<typeof useI18n>['t']['jarvisShell']['dashboard'], profileDisplayName?: string): string {
@@ -99,7 +100,8 @@ export function JarvisDashboard({
   connected,
   layout: layoutOverride,
   profileDisplayName,
-  state
+  state,
+  voiceControls
 }: JarvisDashboardProps) {
   const { t } = useI18n()
   const copy = t.jarvisShell.dashboard
@@ -124,6 +126,7 @@ export function JarvisDashboard({
         <JarvisCore audioLevel={0} compact={compactCore} taskPhase={state.task.phase} voice={state.voice} />
         <JarvisStatusStrip connected={connected} copy={copy.status} state={state} />
       </div>
+      {voiceControls ? <div className="shrink-0 px-4 pt-3 md:px-5">{voiceControls}</div> : null}
       <ResultHeader copy={copy} profileDisplayName={profileDisplayName} state={state} />
       <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
     </main>

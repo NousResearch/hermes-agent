@@ -64,9 +64,12 @@ export function useComposerVoice({
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
+  const voiceConversationActiveRef = useRef(voiceConversationActive)
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
+
+  voiceConversationActiveRef.current = voiceConversationActive
 
   // eslint-disable-next-line no-restricted-syntax -- session-id adopt token, not an atom mirror
   useEffect(() => {
@@ -195,11 +198,10 @@ export function useComposerVoice({
 
     if (voiceConversationActive) {
       setVoiceConversationActive(false)
-      void conversation.end()
     } else {
       setVoiceConversationActive(true)
     }
-  }, [conversation, disabled, voiceConversationActive])
+  }, [disabled, voiceConversationActive])
 
   useEffect(
     () => onComposerVoiceToggleRequest(toggled => toggled === target && toggleVoiceConversation()),
@@ -298,6 +300,10 @@ export function useComposerVoice({
   const startConversation = useCallback(() => setVoiceConversationActive(true), [])
 
   const endConversation = useCallback(() => {
+    if (!voiceConversationActiveRef.current) {
+      return
+    }
+
     setVoiceConversationActive(false)
     void conversation.end()
   }, [conversation])

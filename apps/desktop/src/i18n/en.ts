@@ -323,6 +323,14 @@ export const en: Translations = {
       emptyGreeting: name => (name ? `${name}, what should Jarvis handle next?` : 'What should Jarvis handle next?'),
       navigationLabel: 'Jarvis navigation',
       showActivity: 'Show activity',
+      voiceControls: {
+        cancelTask: 'Stop task',
+        label: 'Voice controls',
+        micLevel: 'Microphone level',
+        startListening: 'Start listening',
+        stopListening: 'Stop listening',
+        stopSpeaking: 'Stop speaking'
+      },
       status: {
         connection: {
           connected: 'Connected',

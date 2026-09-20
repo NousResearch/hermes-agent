@@ -4,7 +4,6 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """
 
-import base64
 import contextlib
 import hashlib
 import ipaddress
@@ -417,6 +416,21 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return bool(name) and any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+# OpenAI chat-era families served on api.openai.com that 400 on ANY ``reasoning`` field
+# ("Unsupported parameter: 'reasoning.effort' is not supported with this model"): gpt-3.5,
+# gpt-4 / gpt-4-turbo / gpt-4o / gpt-4.1 / gpt-4.5 and the chatgpt-* snapshots. A denylist so
+# an unknown future OpenAI model keeps its effort dial (fail-open); ``ft:`` fine-tune ids are
+# ``ft:<base>:<org>::<id>`` and inherit the base model's contract.
+_OPENAI_NON_REASONING_RE = re.compile(r"^(?:ft:)?(?:gpt-3\.5|gpt-4(?![0-9])|chatgpt-)")
+
+
+def openai_model_rejects_reasoning(model: str) -> bool:
+    """True for an OpenAI model id (aggregator ``openai/`` prefix stripped) that rejects the
+    Responses ``reasoning`` parameter outright, so callers send no ``reasoning`` key at all."""
+    name = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bool(_OPENAI_NON_REASONING_RE.match(name))
+
+
 def is_grok_46_family(model: str) -> bool:
     """Whether *model* is a Grok 4.6 family identifier."""
     name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
@@ -629,6 +643,21 @@ def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
     return (provider or "").strip().lower() in {"lmstudio", "openai-codex"}
 
 
+def _is_codex_route(provider: str, base_url: str, custom_providers: list | None) -> bool:
+    """True when the request travels the Codex Responses wire regardless of host: the native
+    ``openai-codex`` provider (also behind a ``HERMES_CODEX_BASE_URL`` / ``model.base_url`` proxy)
+    or a custom entry declaring ``api_mode: codex_responses``. The transport, not the hostname,
+    decides which window the model actually gets (#116191)."""
+    if (provider or "").strip().lower() == "openai-codex":
+        return True
+    if not base_url:
+        return False
+    with contextlib.suppress(Exception):  # config unreadable → not a known Codex route
+        from hermes_cli.config import get_custom_provider_api_mode
+        return get_custom_provider_api_mode(base_url, custom_providers) == "codex_responses"
+    return False
+
+
 def _save_unless_skipped(model: str, base_url: str, ctx: int, provider: str) -> None:
     """Persist ``ctx`` unless the provider opts out of the disk cache."""
     if not _skip_persistent_context_cache(base_url, provider):
@@ -716,6 +745,12 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(_normalize_base_url(base_url))
+    # A hosted provider (api.openai.com, api.anthropic.com, ...) never runs Ollama/LM Studio/llama.cpp/vLLM:
+    # skip the waterfall so egress logs do not fill with 404s for /api/tags, /v1/props, /version (#61421).
+    # Local addresses are never in that table, and ollama.com is the one hosted host that does speak
+    # Ollama's /api/tags, so it keeps the probe.
+    if _infer_provider_from_url(normalized) not in (None, "ollama-cloud"):
+        return None
     server_url = _server_root(normalized)
     lmstudio_url = _lmstudio_server_root(normalized)
     cached = _endpoint_probe_path_cache.get(server_url)
@@ -1265,6 +1300,26 @@ def get_context_length_from_provider_error(error_msg: str, current_context_lengt
     return parsed_limit if parsed_limit is not None and parsed_limit < current_context_length else None
 
 
+# OpenAI's original overflow wording, copied by vLLM / llama-cpp-python: "(36865 in the messages,
+# 65536 in the completion)"; legacy completions: "(771 in your prompt; 4000 for the completion)".
+# The first figure is the prompt the server MEASURED, the second the requested max_tokens.
+_COMPLETION_SPLIT_RE = re.compile(
+    r'\((\d+)\s+(?:tokens\s+)?in (?:the messages|your prompt|the prompt)\s*[;,]\s*'
+    r'(\d+)\s+(?:tokens\s+)?(?:in|for) the completion\)'
+)
+
+
+def _completion_split_budget(error_lower: str) -> Optional[int]:
+    """window - measured prompt from the OpenAI-style parenthetical split, or None when the wording
+    is absent or the prompt alone fills the window (a genuine input overflow -> compress)."""
+    split = _COMPLETION_SPLIT_RE.search(error_lower)
+    ctx = re.search(r'maximum context length is (\d+)', error_lower)
+    if not split or not ctx:
+        return None
+    available = int(ctx.group(1)) - int(split.group(1))
+    return available if available >= 1 else None
+
+
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     """Available OUTPUT tokens from a "max_tokens too large" error, or None. Distinct from "prompt
     too long" (-> compress): here input + requested_output > window, so the fix is a smaller
@@ -1284,6 +1339,10 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'available\s+tokens[:\s]+(\d+)',
         # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
         r'output limit (?:of|is)\s*(\d+)',
+        # Azure OpenAI: "max_tokens is too large: 65536. This model supports at most 32768 completion tokens."
+        r'supports at most\s+(\d+)\s*(?:completion\s+)?tokens',
+        # Scaleway: "max_completion_tokens is limited to 16384 for glm-5.2".
+        r'(?:max_tokens|max_completion_tokens) is limited to\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1296,6 +1355,9 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         _available = int(_m_ctx.group(1)) - int(_m_parts.group(1)) - int(_m_parts.group(2))
         if _available >= 1:
             return _available
+    _split_available = _completion_split_budget(error_lower)
+    if _split_available is not None:
+        return _split_available
     # LM Studio / llama.cpp: window in tokens, prompt in CHARACTERS; ~3 chars/token over-reserves the input.
     _m_ctx_tok = re.search(r'maximum context length is (\d+)\s*token', error_lower)
     _m_chars = re.search(r'prompt contains (\d+)\s*character', error_lower)
@@ -1303,6 +1365,12 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         _available = int(_m_ctx_tok.group(1)) - (int(_m_chars.group(1)) + 2) // 3
         if _available >= 1:
             return _available
+    # SGLang: "maximum context length of 131072 tokens. You requested a total of 132528 tokens: 66992 tokens
+    # from the input messages and 65536 tokens for the completion" -> window - input (None when the input
+    # alone overflows -> compress).
+    _m_sglang = _sglang_window_and_input(error_lower)
+    if _m_sglang and _m_sglang[0] - _m_sglang[1] >= 1:
+        return _m_sglang[0] - _m_sglang[1]
     # vLLM: window and prompt both in TOKENS; available = window - input (None when the input alone
     # overflows -> compress). When max_tokens is the BINDING constraint vLLM reports "at least N input
     # tokens" with N == window + 1 - requested_output, so window - N == requested_output - 1 and each
@@ -1329,6 +1397,8 @@ _OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
     ("output limit",), ("maximum allowed number of output tokens",),
+    ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
+    ("limited to",),  # Scaleway: "max_completion_tokens is limited to 16384 for <model>" (#67453)
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1342,9 +1412,19 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("max_tokens", "available_tokens"), ("max_tokens", "available tokens"),
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
+    ("maximum context length", "in the completion"), ("maximum context length", "for the completion"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
     ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
+    ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
+    ("limited to",),
 )
+
+
+def _sglang_window_and_input(error_lower: str) -> Optional[Tuple[int, int]]:
+    """``(window, input_tokens)`` from SGLang's wording, else None; both figures are explicit there."""
+    _m_ctx = re.search(r'maximum context length of (\d+)\s*token', error_lower)
+    _m_in = re.search(r'(\d+)\s*tokens from the input messages', error_lower)
+    return (int(_m_ctx.group(1)), int(_m_in.group(1))) if _m_ctx and _m_in else None
 
 
 def _any_phrase_group(text: str, groups: tuple) -> bool:
@@ -1356,11 +1436,18 @@ def is_output_cap_error(error_msg: str) -> bool:
     output-cap 400 misclassified as context overflow death-loops the compressor (same max_tokens, same
     rejection). Signal: talks about max_tokens as a cap/range/limit and NOT about an oversized input."""
     error_lower = error_msg.lower()
+    # The OpenAI-style split names neither max_tokens nor "output tokens" and ends with "reduce the
+    # length", so it fails both gates below; the measured prompt decides instead (#90607).
+    if _completion_split_budget(error_lower) is not None:
+        return True
     # An error that ALSO describes an oversized INPUT is a genuine overflow — compression can fix it.
+    # SGLang states both figures: input >= window is that same genuine overflow.
+    _m_sglang = _sglang_window_and_input(error_lower)
     return (
-        any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens"))
+        any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens", "tokens for the completion"))
         and _any_phrase_group(error_lower, _OUTPUT_CAP_SIGNALS)
         and not any(p in error_lower for p in _INPUT_OVERFLOW_SIGNALS)
+        and not (_m_sglang and _m_sglang[1] >= _m_sglang[0])
     )
 
 
@@ -1709,6 +1796,9 @@ def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
 
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
+# ``{slug: max_context_window}`` from the same fetch, keyed by the same token fingerprint. Only the
+# opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
+_codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
 # hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
@@ -1724,32 +1814,20 @@ def _codex_oauth_token_fingerprint(access_token: str) -> str:
     return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
 
 
-def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
-    """``chatgpt_account_id`` from the Codex OAuth JWT, or None on any parse error. Without the
-    ``ChatGPT-Account-Id`` header /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200)
-    and the probe silently falls back. Mirrors auxiliary_client.py."""
-    try:
-        payload_b64 = access_token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
-        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id") if isinstance(claims, dict) else None
-        return acct_id if isinstance(acct_id, str) and acct_id else None
-    except Exception:
-        return None
-
-
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
-    fingerprint (windows vary by entitlement). An in-process hit reports False: not a fresh
-    provider confirmation, must not drive persistent writes."""
+    fingerprint (windows vary by entitlement); ``max_context_window`` lands in
+    ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
+    fresh provider confirmation, must not drive persistent writes."""
     now = time.time()
     cache_key = _codex_oauth_token_fingerprint(access_token)
     cached = _codex_oauth_context_cache.get(cache_key)
     if cached is not None and now - cached[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
         return cached[0], False
-    headers = {"Authorization": f"Bearer {access_token}"}
-    acct_id = _extract_chatgpt_account_id(access_token)
-    if acct_id:
-        headers["ChatGPT-Account-Id"] = acct_id
+    # Without ChatGPT-Account-ID /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200) and
+    # the probe silently falls back; residency-enforced workspaces 401 without the residency header.
+    from agent.codex_headers import codex_account_headers
+    headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
     try:
         _ensure_requests()
         resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
@@ -1761,12 +1839,16 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
         logger.debug("Codex /models probe failed: %s", exc)
         return {}, False
     result: Dict[str, int] = {}
+    max_result: Dict[str, int] = {}
     for item in data.get("models", []) if isinstance(data, dict) else []:
-        slug, ctx = (item.get("slug"), item.get("context_window")) if isinstance(item, dict) else (None, None)
+        slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
         if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
             result[slug.strip()] = ctx
+            if isinstance(max_ctx, int) and max_ctx > 0:
+                max_result[slug.strip()] = max_ctx
     if result:
         _codex_oauth_context_cache[cache_key] = (result, now)
+        _codex_oauth_max_context_cache[cache_key] = max_result
     return result, True
 
 
@@ -1777,10 +1859,12 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
         return None, ""
-    def _apply_verified_bump(ctx: int, source: str) -> Tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only."""
+    def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> Tuple[int, str]:
+        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
+        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
         bumped = _verified_codex_ctx_for_slug(model_bare)
         if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+            bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
             return bumped, source
         return ctx, source
@@ -1792,12 +1876,11 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
+        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token), {})
         # Exact slug, then case-insensitive in case casing drifts.
-        hit = live.get(lookup_bare)
-        if hit is None:
-            hit = next((ctx for slug, ctx in live.items() if slug.lower() == lookup_bare.lower()), None)
-        if hit is not None:
-            return _apply_verified_bump(hit, "live" if fresh_probe else "memory")
+        slug = lookup_bare if lookup_bare in live else next((s for s in live if s.lower() == lookup_bare.lower()), None)
+        if slug is not None:
+            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", live_max.get(slug))
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback") if hit else (None, "")
 
@@ -1955,6 +2038,19 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     return DEFAULT_FALLBACK_CONTEXT
 
 
+def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
+    """Step 2 for a custom ``api_mode: codex_responses`` route — a Codex proxy on a generic URL.
+    The Codex OAuth table (with the opted-in ``-900k`` bump) answers first: the proxy's own /models
+    and the direct-API catalog both advertise the 1.05M direct window that Codex does not honour.
+    No live catalog probe — the route's key is the proxy's, not a ChatGPT token. Slugs the table
+    does not know take the ordinary endpoint probes."""
+    ctx, _source = _resolve_codex_oauth_context_length_with_source(model)
+    if ctx:
+        logger.info("Using Codex OAuth context length %s for model %r (codex_responses route at %s)", f"{ctx:,}", model, base_url)
+        return ctx
+    return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
+
+
 def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Optional[int]:
     """Step 0a: MoA virtual provider — ``model`` is a preset name, so every probe would miss. Resolve
     the aggregator's real provider+model (references are advisory). None on any failure."""
@@ -1994,7 +2090,9 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     # 0c. custom_providers per-model override — check before any probe. This closes the gap where /model
     # switch and display paths used to fall back to 128K despite the user having a per-model context_length
     # set. See #15779.
-    if custom_providers and base_url and model:
+    # Not gated on custom_providers: callers that never load the route list pass None and the
+    # helper self-resolves it from config (#69807).
+    if base_url and model:
         with contextlib.suppress(Exception):  # fall through to probing
             from hermes_cli.config import get_custom_provider_context_length
             cp_ctx = get_custom_provider_context_length(model=model, base_url=base_url, custom_providers=custom_providers)
@@ -2107,8 +2205,12 @@ def get_model_context_length(
     if endpoint_context is not None:
         return endpoint_context
     is_bedrock_context = _is_bedrock_context(base_url, provider)
-    # 1. Persistent cache (LM Studio / Codex OAuth excluded — see _skip_persistent_context_cache).
-    cached = get_cached_context_length(model, base_url) if base_url and not is_bedrock_context and not _skip_persistent_context_cache(base_url, provider) else None
+    # A Codex Responses route is keyed on its transport, not its host: behind a proxy
+    # (HERMES_CODEX_BASE_URL, model.base_url, custom api_mode: codex_responses) the URL looks
+    # generic while the window is still the Codex OAuth one (#116191).
+    codex_route = _is_codex_route(provider, base_url, custom_providers)
+    # 1. Persistent cache (LM Studio / Codex routes excluded — see _skip_persistent_context_cache).
+    cached = get_cached_context_length(model, base_url) if base_url and not is_bedrock_context and not codex_route and not _skip_persistent_context_cache(base_url, provider) else None
     validated = _validate_cached_context_length(model, base_url, cached, api_key=api_key) if cached is not None else None
     if validated is not None:
         return validated
@@ -2124,9 +2226,11 @@ def get_model_context_length(
                 save_context_length(model, base_url, ctx)
             return ctx
     # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
-    # report a provider-imposed limit (Copilot: 128k) rather than the window.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
-        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
+    # report a provider-imposed limit (Copilot: 128k) rather than the window. The native
+    # openai-codex provider skips it too even on a proxy URL — step 5 runs its live catalog probe.
+    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and (provider or "").strip().lower() != "openai-codex":
+        resolve = _resolve_custom_codex_route_context_length if codex_route else _resolve_custom_endpoint_context_length
+        return resolve(model, base_url, api_key, provider)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
@@ -2302,16 +2406,22 @@ def _count_parts(parts: Any, types: set) -> int:
     return sum(1 for part in parts if isinstance(part, dict) and part.get("type") in types) if isinstance(parts, list) else 0
 
 
+_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+
+
 def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     """Count image-like content parts in a message; return their token cost."""
     if not isinstance(msg, dict):
         return 0
     content = msg.get("content")
-    count = _count_parts(content, {"image", "image_url", "input_image"})
+    count = _count_parts(content, _IMAGE_PART_TYPES)
     count += _count_parts(msg.get("_anthropic_content_blocks"), {"image"})
     # Multimodal tool results that haven't been converted yet.
     if isinstance(content, dict) and content.get("_multimodal"):
         count += _count_parts(content.get("content"), {"image", "image_url"})
+    # Responses ``function_call_output`` items carry converted tool-result
+    # parts under ``output`` (the converter moves chat ``content`` there).
+    count += _count_parts(msg.get("output"), _IMAGE_PART_TYPES)
     return count * cost_per_image
 
 
@@ -2355,11 +2465,22 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         elif k == "content" and isinstance(v, list):
             shadow[k] = [
                 {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in {"image", "image_url", "input_image"} else part
+                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                else part
                 for part in v
             ]
         elif k == "content" and isinstance(v, dict) and v.get("_multimodal"):
             shadow[k] = v.get("text_summary", "")
+        elif k == "output" and isinstance(v, list):
+            # Responses ``function_call_output`` output parts: strip the image
+            # payload like the ``content`` branch above so encoded bytes are
+            # priced by the flat per-image model, never as text.
+            shadow[k] = [
+                {"type": part.get("type"), "image": "[stripped]"}
+                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                else part
+                for part in v
+            ]
         elif k == "codex_reasoning_items":
             shadow[k] = strip_opaque_replay_items(v)
         elif k == "encrypted_content":  # a Responses reasoning/compaction item passed as a row

@@ -325,6 +325,13 @@ def _create_overrides(params: dict) -> tuple:
 
 @method("session.create")
 def _(rid, params: dict) -> dict:
+    # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
+    profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
+    # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
+    # failure to the first turn's provider 404 (#96817). Custom/unknown providers stay permissive.
+    from .methods_session_model_guard import model_override_conflict
+    if conflict := model_override_conflict(params, _profile_build_scope(profile_home)):
+        return _err(rid, -32602, conflict.pop("message"), conflict)
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
@@ -335,8 +342,6 @@ def _(rid, params: dict) -> dict:
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     _enable_gateway_prompts()
-    # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
-    profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
     with _sessions_lock:
@@ -754,7 +759,8 @@ def _resume_lazy(ctx: _Resume) -> dict:
 def _resume_deferred(ctx: _Resume) -> dict:
     """Bounded ack; the transcript hydrates in the background (the ONE history read) and pages over REST."""
     sid, source, cwd = ctx.mint()
-    overrides = _stored_session_runtime_overrides(ctx.found)
+    with _profile_build_scope(ctx.profile_home):
+        overrides = _stored_session_runtime_overrides(ctx.found)
     record = ctx.record(source, cwd, [], overrides)
     record.update(resume_history_ready=threading.Event(), resume_hydrating=True,
                   resume_message_count=int(ctx.found.get("message_count") or 0))
@@ -779,7 +785,8 @@ def _resume_cold(ctx: _Resume) -> dict:
         history, display_history, raw_history = ctx.restore()
     except Exception as e:
         return _err(ctx.rid, 5000, resume_failed_message(e))
-    overrides = _stored_session_runtime_overrides(ctx.found)
+    with _profile_build_scope(ctx.profile_home):
+        overrides = _stored_session_runtime_overrides(ctx.found)
     record = ctx.record(source, cwd, history, overrides, display_history_prefix=ctx.display_prefix(),
                         todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
@@ -1207,7 +1214,25 @@ def _(rid, params: dict, session: dict) -> dict:
         from agent.account_usage import nous_credits_lines
         if credits := nous_credits_lines():
             usage["credits_lines"] = credits
+    # Provider account limits (e.g. Codex quota windows) — the same block the CLI and gateway /usage
+    # render, so the Desktop usage feed is not the one surface that omits them. Fail-open.
+    with contextlib.suppress(Exception):
+        if account := _account_usage_lines(session):
+            usage["account_lines"] = account
     return _ok(rid, usage)
+
+
+def _account_usage_lines(session: dict) -> list[str]:
+    """Rendered account-limit lines for the session's route: the live agent's provider/endpoint when
+    built, else the configured ``model.provider`` (on-disk credentials suffice, e.g. Codex OAuth)."""
+    from agent.account_usage import fetch_account_usage, render_account_usage_lines
+    agent = session.get("agent")
+    provider = getattr(agent, "provider", None) or _config_model_target()[1]
+    if not provider:
+        return []
+    snapshot = fetch_account_usage(
+        provider, base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None))
+    return render_account_usage_lines(snapshot)
 
 
 @_session_method("session.context_breakdown")

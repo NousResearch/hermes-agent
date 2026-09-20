@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
+from agent.secret_scope import get_secret_str
 from hermes_cli.urllib_security import url_origin
 
 # Log-record parity with the origin module.
@@ -116,12 +117,16 @@ def _get_ollama_base_url() -> str:
 
 
 def _api_key_from_provider_config(entry: dict, *env_keys: str) -> str:
-    """``api_key`` from a provider config block, else the env var named by the first set *env_keys*."""
+    """``api_key`` from a provider config block, else the env var named by the first set *env_keys*.
+
+    The variable is read through the profile secret scope (fresh ``.env``, never another
+    profile's process env under multiplexing), like every other credential read (#67935).
+    """
     api_key = str(entry.get("api_key") or "").strip()
     if api_key:
         return api_key
     key_env = str(next((entry.get(k) for k in env_keys if entry.get(k)), "") or "").strip()
-    return os.getenv(key_env, "").strip() if key_env else ""
+    return get_secret_str(key_env, "").strip() if key_env else ""
 
 
 def _drop_authorization(headers: dict[str, str]) -> None:

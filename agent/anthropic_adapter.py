@@ -340,11 +340,13 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
-    return _new_sdk_client(sdk, kwargs, headers)
+    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
-def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
+def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route: str = None):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
+    ``route`` is the caller's un-normalized base_url (the ``/v1`` form ``custom_providers`` entries are
+    keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
 
     The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
     ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.hermes/.env) and then sends dual
@@ -357,9 +359,26 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
         merged["Authorization"] = sdk.Omit()
     elif "auth_token" in kwargs and "api_key" not in kwargs:
         merged["X-Api-Key"] = sdk.Omit()
+    # Per-provider ``custom_providers[].extra_headers`` last: the most specific config level wins
+    # over the SDK User-Agent and the attribution/beta sets above, on every builder path (init,
+    # /model switch, rebuild, auxiliary) — the OpenAI-wire clients already do this (#24293, #9721).
+    merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
     if merged:
         kwargs["default_headers"] = merged
     return sdk.Anthropic(**kwargs)
+
+
+def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
+    """``extra_headers`` of the ``custom_providers`` entry routed at *base_url*, else ``{}``.
+    SECURITY: values routinely carry credentials (Cloudflare Access tokens) — never log them."""
+    if not base_url:
+        return {}
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        return get_custom_provider_extra_headers(str(base_url))
+    except Exception:
+        logger.debug("custom-provider extra_headers skipped for Anthropic client", exc_info=True)
+        return {}
 
 
 def _auth_style(api_key, base_url, normalized_base_url) -> str:
@@ -410,7 +429,7 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
-    return _new_sdk_client(sdk, kwargs, headers)
+    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
 def build_anthropic_bedrock_client(region: str):

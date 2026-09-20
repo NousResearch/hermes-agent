@@ -137,11 +137,11 @@ import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 import {
   type AppView,
   ARTIFACTS_ROUTE,
+  CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
-  type SidebarNavContribution,
-  SKILLS_ROUTE
+  type SidebarNavContribution
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session-drag'
@@ -207,11 +207,11 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     keybindActionId: 'session.new'
   },
   {
-    id: 'skills',
+    id: 'capabilities',
     label: '',
     icon: props => <Codicon name="symbol-misc" {...props} />,
-    route: SKILLS_ROUTE,
-    keybindActionId: 'nav.skills'
+    route: CAPABILITIES_ROUTE,
+    keybindActionId: 'nav.capabilities'
   },
   {
     id: 'messaging',
@@ -1517,7 +1517,7 @@ export function ChatSidebar({
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
-                  (item.id === 'skills' && currentView === 'skills') ||
+                  (item.id === 'capabilities' && currentView === 'capabilities') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
                   (item.id === 'cron' && currentView === 'cron') ||

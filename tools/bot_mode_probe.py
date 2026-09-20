@@ -239,7 +239,7 @@ def _remote_paragraph(root: Path) -> str:
         "\n\nTeammates on OTHER connected machines (reachable through the "
         "Desktop relay — message them with message_agent exactly like local "
         "teammates; replies arrive as completion notifications the same "
-        "way):\n" + "\n".join(lines)
+        "way, or via reply_delivery=\"poll\" as below):\n" + "\n".join(lines)
     )
 
 
@@ -275,7 +275,9 @@ def _build_section(home: Path) -> str:
         "with your attribution prefixed automatically and returns an acknowledgement "
         "immediately — it never returns the reply. Send it, finish your turn, and "
         "the reply arrives later as a background-process completion notification "
-        "that wakes you; relay it to the user then, attributed to that agent. "
+        "that wakes you; relay it to the user then, attributed to that agent — unless "
+        "the ack returns reply_delivery=\"poll\", in which case follow its "
+        "process(action=\"wait\") instruction before ending the turn. "
         "COMPOSE every message yourself — say what YOU need from that agent; never "
         "forward the user's words verbatim, and never reveal private 1:1 chat "
         "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "

@@ -212,6 +212,16 @@ def _resume_panel_colors() -> tuple:
         return tuple(default for _, default in _RESUME_SKIN_COLORS)
 
 
+def _retire_agent(cli) -> None:
+    """Drop ``cli.agent`` so the next turn rebuilds it, releasing its LLM clients first: the Codex
+    app-server child (and MCP descendants) belongs to the instance, so ``self.agent = None`` alone
+    orphans it for the CLI process lifetime (#72548). Session tool state is kept (soft release)."""
+    agent = cli.agent
+    if agent is not None and hasattr(agent, "release_clients"):
+        agent.release_clients()
+    cli.agent = None
+
+
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
@@ -324,7 +334,7 @@ class CLIAgentSetupMixin:
 
         # AIAgent/OpenAI client holds auth at init, so rebuild on key/routing/model change.
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
-            self.agent = None
+            _retire_agent(self)
             self._active_agent_route_signature = None
         return True
 
@@ -492,7 +502,7 @@ class CLIAgentSetupMixin:
         except Exception as exc:
             logger.debug("first-run config re-sync failed: %s", exc)
         # Force credential re-resolution + agent rebuild on next use.
-        self.agent = None
+        _retire_agent(self)
         self._active_agent_route_signature = None
         if self._runtime_credentials_ready():
             _cprint("  ✓ Provider configured — you're ready to chat.")

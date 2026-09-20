@@ -156,6 +156,9 @@ class GatewayShutdownMixin:
         active_agents: dict = dataclasses.field(default_factory=dict)
         timed_out: bool = False
         drain_elapsed: float = 0.0
+        # API-server runs still live when the adapters were released; the adapter map is empty by the
+        # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
+        api_live: int = 0
 
         def elapsed(self) -> float:
             return time.monotonic() - self.started_at
@@ -1005,7 +1008,7 @@ class GatewayShutdownMixin:
                 # The session's OWN profile's bot (transport ref → profile map), never a bare
                 # self.adapters hit: under multiplex that is the default bot, so a secondary session's
                 # "Gateway shutting down" would land in the user's chat with the wrong bot.
-                adapter = self._adapter_for_source(source) if source is not None else None
+                adapter = self._delivery_adapter_for(source) if source is not None else None
                 if adapter is None:
                     adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
@@ -1678,6 +1681,24 @@ class GatewayShutdownMixin:
         _step("cleanup_all_browsers", _cleanup_browsers)
         return _marked_cron_jobs
 
+    @staticmethod
+    async def _stop_kill_tool_subprocesses_off_loop(phase: str) -> list:
+        """Run _stop_kill_tool_subprocesses in a worker thread; returns cron job IDs marked interrupted.
+
+        ``kill_all`` fans out into per-target ``kill_process`` calls that do blocking work
+        (registry checkpoint disk I/O, ``subprocess.run`` for systemd scopes, sandbox exec),
+        so running the sweep inline would monopolize the gateway event loop (#116327).
+        Offloaded with ``asyncio.to_thread`` — the loop's default executor, deliberately NOT
+        the gateway-owned ``self._executor``, which ``_stop_quiesce_and_close_session_dbs``
+        drains right after this phase. Phase order is preserved: callers await this before
+        cron notices / adapter teardown. If the surrounding stop task is cancelled while the
+        worker runs, the thread is left to finish on its own; the thread-based shutdown
+        watchdog remains the hard backstop.
+        """
+        return await asyncio.to_thread(
+            GatewayShutdownMixin._stop_kill_tool_subprocesses, phase
+        )
+
     async def _stop_begin_teardown(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Flag teardown, stop room worker/watchdog, notify sessions."""
         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
@@ -1782,7 +1803,8 @@ class GatewayShutdownMixin:
             self._interrupt_running_agents(reason)
             logger.debug("Re-signaled interrupt for work still live at settle-window exit")
         # Kill tool subprocesses NOW: deferring past adapter/DB teardown risks the systemd cgroup SIGKILL.
-        _interrupted_cron_jobs = GatewayRunner._stop_kill_tool_subprocesses("post-interrupt")
+        # Off-loop: the sweep does blocking kills that must not monopolize the event loop (#116327).
+        _interrupted_cron_jobs = await GatewayRunner._stop_kill_tool_subprocesses_off_loop("post-interrupt")
         logger.info("Shutdown phase: post-interrupt tool kill done at +%.2fs", ctx.elapsed())
         # Last window with the transport up (the cron worker's own notice arrives after teardown).
         with _log_suppressed(logging.DEBUG, "Cron interrupt notification failed: %s"):
@@ -1825,7 +1847,7 @@ class GatewayShutdownMixin:
         _profile_adapters.clear()
         logger.info("Shutdown phase: all adapters disconnected at +%.2fs", ctx.elapsed())
 
-    def _stop_release_runtime_state(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
+    async def _stop_release_runtime_state(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Cancel background tasks, flush pending messages, clear per-session state, final tool kill."""
         from gateway.run import GatewayRunner
         for _task in list(self._background_tasks):
@@ -1837,6 +1859,7 @@ class GatewayShutdownMixin:
         # CancelledError into this _stop_impl and skip _shutdown_event.set() / _exit_code = 75 (#12875). It
         # self-terminates anyway.
         self._background_tasks.clear()
+        ctx.api_live = self._active_api_run_count()
         self.adapters.clear()
         for _session_key in list(self._running_agents):
             self._release_running_agent_state(_session_key)
@@ -1861,7 +1884,8 @@ class GatewayShutdownMixin:
                 getattr(self, _attr).clear()
         self._shutdown_event.set()
         # Global catch-all subprocess kill (safe to repeat) for the graceful path and late respawns.
-        GatewayRunner._stop_kill_tool_subprocesses("final-cleanup")
+        # Off-loop: same blocking sweep as the post-interrupt kill (#116327).
+        await GatewayRunner._stop_kill_tool_subprocesses_off_loop("final-cleanup")
         logger.info("Shutdown phase: final-cleanup tool kill done at +%.2fs", ctx.elapsed())
         # Reap the auxiliary-client cache: clients bound to dead worker-thread loops leak httpx transports.
         def _reap_aux_clients() -> None:
@@ -1907,6 +1931,20 @@ class GatewayShutdownMixin:
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
+        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
+        # default executor) never touch self._executor, so the join above cannot see them. A writer that
+        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
+        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
+        # taken before the adapters were released; a run whose handler task was cancelled at disconnect
+        # has already left it, so this term under-counts rather than over-counts.
+        _cron_live, _api_live, _deferred_live = self._active_cron_job_count(), ctx.api_live, ctx.deferred_count()
+        if _cron_live or _api_live or _deferred_live:
+            logger.warning(
+                "Shutdown phase: %d cron job(s) / %d API-server run(s) / %d deferred worker(s) still running "
+                "after the executor quiesce — skipping the SessionDB close/checkpoint, leaving state.db open "
+                "for the live writer (#102198)", _cron_live, _api_live, _deferred_live,
+            )
+            return
         _step = GatewayShutdownMixin._quiet_step
         # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.
         # ``_session_db`` is an AsyncSessionDB facade — unwrap; ``session_store`` holds ``_db``.
@@ -2025,7 +2063,7 @@ class GatewayShutdownMixin:
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
-            GatewayRunner._stop_release_runtime_state(self, ctx)
+            await GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
             GatewayRunner._stop_persist_exit_state(self, ctx)
         finally:

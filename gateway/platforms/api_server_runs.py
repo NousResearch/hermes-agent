@@ -37,10 +37,12 @@ _SUBAGENT_EVENT_KEYS = (
     "output_tokens", "reasoning_tokens", "api_calls", "cost_usd", "files_read", "files_written",
     "output_tail")
 _SUBAGENT_TEXT_KEYS = ("goal", "summary", "output_tail")
-# Terminal usage payload: (wire key, agent attribute), in wire order.
+# Terminal usage payload: (wire key, agent attribute), in wire order. Cache reads ride along so a
+# cost poller does not book them as full-price input (#102101).
 _USAGE_FIELDS = (
     ("input_tokens", "session_prompt_tokens"), ("output_tokens", "session_completion_tokens"),
-    ("total_tokens", "session_total_tokens"))
+    ("total_tokens", "session_total_tokens"), ("cache_read_tokens", "session_cache_read_tokens"),
+    ("cache_write_tokens", "session_cache_write_tokens"))
 # Tool-progress event -> SSE payload fields (tool_name, preview, kwargs); key order is wire format.
 _FIXED_EVENT_FIELDS = {
     "tool.started": lambda tool, preview, kw: {"tool": tool, "preview": preview},
@@ -625,8 +627,30 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 
+def _run_usage(agent) -> Dict[str, int]:
+    """Terminal ``usage`` payload from the agent's session counters; a missing or non-numeric
+    counter (test doubles, agents without cache accounting) reads as ``0``."""
+    usage = {}
+    for key, attr in _USAGE_FIELDS:
+        value = getattr(agent, attr, 0)
+        usage[key] = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    return usage
+
+
+def _served_runtime(agent) -> Dict[str, str]:
+    """The ``{provider, model}`` pair that actually served the turn. After a ``fallback_providers``
+    switch the agent keeps the fallback runtime until the NEXT turn restores the primary, so when
+    ``run_conversation()`` returns these attributes name the served pair — the run record's
+    ``model`` field only echoes the request (#102101). Non-string attributes read as ``""``."""
+    pair = {}
+    for key in ("provider", "model"):
+        value = getattr(agent, key, "")
+        pair[key] = value if isinstance(value, str) else ""
+    return pair
+
+
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
-    """Executor-thread body of one run; returns ``(result, usage)``."""
+    """Executor-thread body of one run; returns ``(result, usage, served_runtime)``."""
     from gateway.session_context import clear_session_vars
     from gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, reset_room_execution_policy)
@@ -690,7 +714,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 for token, reset in resets:
                     with suppress(Exception):
                         reset(token)
-        return r, {key: getattr(agent, attr, 0) or 0 for key, attr in _USAGE_FIELDS}
+        return r, _run_usage(agent), _served_runtime(agent)
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
@@ -728,6 +752,16 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with suppress(Exception):
             loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
 
+    def _interim_cb(text: str, *, already_streamed: bool = False) -> None:
+        # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
+        # same ``message.interim`` contract as the TUI gateway; reasoning never reaches this
+        # callback and the final answer still arrives via ``run.completed`` (#67580).
+        if not isinstance(text, str) or not text.strip() or run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(
+                run_id, "message.interim", text=text, already_streamed=bool(already_streamed)))
+
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
         extra = extra or {}
@@ -752,10 +786,10 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                **run.agent_kwargs)
+                interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage = await loop.run_in_executor(
+        result, usage, served_runtime = await loop.run_in_executor(
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
@@ -766,14 +800,21 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             # Non-retryable client errors (401/400) return failed=True rather than raising.
             _finish("failed", fields, error=_redact_api_error_text(result.get("error") or "agent run failed"))
         else:
-            _finish(status, fields, output=result.get("final_response", ""), usage=usage)
+            # ``runtime`` rides on both the pollable status and the run.completed event via _finish, in the
+            # canonical shape every other api_server surface emits (route_source/requested, cleaned ids).
+            requested = {k: run.agent_kwargs.get(f"requested_{k}") for k in ("provider", "model")}
+            served_runtime = self._sanitize_runtime_metadata(
+                runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
+                route_source=("model_routes" if run.agent_kwargs.get("route")
+                              else "raw_request" if any(requested.values()) else "global"))
+            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
     except _api_server._ProviderAuthResolutionError as exc:
         # Same controlled provider-auth message the _run_agent() endpoints give.
-        logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
-        _finish("failed", error=f"⚠️ Provider authentication failed: {exc}")
+        logger.warning("Provider resolution failed for run=%s: %s", run_id, exc)
+        _finish("failed", error=exc.user_text())
     except Exception as exc:
         logger.exception("[api_server] run %s failed", run_id)
         _finish("failed", error=_redact_api_error_text(exc))

@@ -1,6 +1,7 @@
 """Request-local worker lifecycle, watchdog polling, and wait status."""
 
 from agent import chat_completion_helpers as h
+from agent import chat_completion_wait_notice as wn
 
 
 class _NonStreamRequest:
@@ -40,6 +41,7 @@ class _NonStreamRequest:
         )
         self.call_start = h.time.time()
         self.wait_notice_started_ts = None
+        self.wait_notice = wn.WaitNoticeState()
         self.thread = None
 
     def _install_codex_request_token(self) -> None:
@@ -134,6 +136,7 @@ class _NonStreamRequest:
                     and activity_ts > self.wait_notice_started_ts):
                 self.agent._emit_wait_notice("")
                 self.wait_notice_started_ts = None
+                self.wait_notice.reset()
             if not heartbeat:
                 return
             silence = self.call_start + elapsed - (
@@ -143,23 +146,25 @@ class _NonStreamRequest:
                     "waiting for first stream event after reconnect"
                     if retry_started_ts is not None else "waiting for provider response")
                 return
-            status = "no response yet"
+            phase = "first_event"
             if retry_started_ts is not None:
-                status = "no response after reconnect"
+                phase = "reconnect"
             elif last_event_ts is not None:
-                status = "no stream events"
-            recovery = h._codex_wait_notice_recovery(stale_timeout=wd.stale_timeout,
+                phase = "post_event"
+            watchdog = wn.codex_watchdog_deadline(stale_timeout=wd.stale_timeout,
                 ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=wd.ttfb_timeout,
                 last_event_ts=last_event_ts, last_progress_ts=last_progress_ts,
                 retry_started_ts=retry_started_ts,
                 call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
                 idle_requires_progress=wd.idle_requires_progress,
                 elapsed=elapsed)
-            if recovery and activity_ts is not None:
-                recovery += " total elapsed"
-            self.agent._emit_wait_notice(
-                f"⏳ waiting on {self.api_kwargs.get('model', 'the provider')} — "
-                f"{int(silence)}s with {status} (provider may be slow or overloaded{recovery})")
+            # One neutral notice per silence; repeating it every heartbeat made
+            # healthy long calls read as provider trouble (#92550).
+            if not self.wait_notice.should_emit(phase, watchdog):
+                self.agent._touch_activity(f"waiting for provider response ({int(silence)}s, {phase})")
+                return
+            self.agent._emit_wait_notice(wn.wait_notice_text(
+                self.api_kwargs.get('model', 'the provider'), silence, phase, watchdog))
             self.wait_notice_started_ts = self.call_start + elapsed
         except Exception:
             h.logger.debug("wait-notice construction failed", exc_info=True)

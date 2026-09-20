@@ -171,8 +171,8 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None)
             "stars": _repo_stars(repo, stars),
         })
 
-    # Official first, then by stars (unknown = 0), then name so the order is stable.
-    entries.sort(key=lambda e: (0 if e["tier"] == "official" else 1, -(e["stars"] or 0), e["name"]))
+    # Most-starred first (unknown = 0), then name so the order is stable; tier does not rank.
+    entries.sort(key=lambda e: (-(e["stars"] or 0), e["name"]))
     return entries
 
 

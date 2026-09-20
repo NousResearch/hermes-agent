@@ -574,6 +574,23 @@ class TestResolveReasoningConfig:
         cfg = self._cfg(effort="medium", overrides={"gpt-5": "turbo-max"})
         assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
 
+    def test_dict_form_passes_bespoke_tier_verbatim_globally_and_per_model(self):
+        """#93238: providers with custom tiers (fast/thinking) need the dict form to send their
+        real level; a bare non-ladder string stays rejected so typos never reach the wire."""
+        from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+        cfg = self._cfg(effort={"enabled": True, "effort": "thinking"},
+                        overrides={"lumo-max": {"enabled": True, "effort": "fast"}})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "thinking"}
+        assert resolve_reasoning_config(cfg, "my-relay/lumo-max") == {"enabled": True, "effort": "fast"}
+        assert parse_reasoning_effort("thinking") is None
+
+    def test_dict_form_disabled_or_empty_effort(self):
+        """enabled:false disables regardless of level; a dict without a level is 'unset'."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort({"enabled": False, "effort": "low"}) == {"enabled": False}
+        assert parse_reasoning_effort({"enabled": True}) is None
+        assert parse_reasoning_effort({"effort": 0}) is None
+
 
 class TestReasoningOverridesDefaultConfig:
     """Tests for the agent.reasoning_overrides default config key (Task 2)."""

@@ -432,15 +432,15 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('route-scoped restoration', () => {
-    it('restores a non-session route like /skills', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/skills')
+    it('restores a non-session route like /capabilities', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
 
       const sessions = [session({ id: 'some-session', profile: 'default' })]
 
       render({ profileReady: true, sessions })
 
       // /skills is not a session route — no ownership validation needed.
-      expect(navigate).toHaveBeenCalledWith('/skills', { replace: true })
+      expect(navigate).toHaveBeenCalledWith('/capabilities', { replace: true })
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {

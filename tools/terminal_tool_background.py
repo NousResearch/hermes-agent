@@ -42,7 +42,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     '"$2==\\"pending\\""`) for sharded matrices. Load '
     "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
-    "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process(action='log')` to "
+    "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
     'loops.'
 )

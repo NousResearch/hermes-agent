@@ -565,7 +565,8 @@ def _bind_rpc_socket(kernel: SessionKernel) -> str:
         host, port = server_sock.getsockname()[:2]
         rpc_endpoint = f"tcp://{host}:{port}"
     else:
-        sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+        from hermes_constants import socket_safe_tmpdir
+        sock_tmpdir = socket_safe_tmpdir()
         rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(kernel.sock_path)

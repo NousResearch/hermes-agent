@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
@@ -16,7 +17,12 @@ import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
+import type {
+  CustomEndpoint,
+  CustomEndpointApiMode,
+  CustomEndpointModelDetail,
+  CustomEndpointUpdate
+} from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 import { ActiveProfileNote } from './profile-scope'
@@ -28,6 +34,7 @@ interface CustomEndpointsSettingsProps {
 
 interface EndpointForm {
   apiKey: string
+  apiMode: CustomEndpointApiMode
   baseUrl: string
   contextLength: string
   discoverModels: boolean
@@ -37,8 +44,18 @@ interface EndpointForm {
   name: string
 }
 
+// Same choices as `hermes model`'s custom-provider setup; '' = runtime auto-detect.
+// This panel is not internationalized — keep the literals it has.
+const API_MODE_OPTIONS: readonly { id: CustomEndpointApiMode; label: string }[] = [
+  { id: '', label: 'Auto-detect' },
+  { id: 'chat_completions', label: 'Chat Completions' },
+  { id: 'codex_responses', label: 'Responses API' },
+  { id: 'anthropic_messages', label: 'Anthropic Messages' }
+]
+
 const EMPTY_FORM: EndpointForm = {
   apiKey: '',
+  apiMode: '',
   baseUrl: '',
   contextLength: '',
   discoverModels: true,
@@ -51,6 +68,7 @@ const EMPTY_FORM: EndpointForm = {
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   return {
     apiKey: '',
+    apiMode: endpoint.api_mode ?? '',
     baseUrl: endpoint.base_url,
     contextLength: endpoint.context_length ? String(endpoint.context_length) : '',
     discoverModels: endpoint.discover_models,
@@ -61,7 +79,11 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   }
 }
 
-function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate {
+function toPayload(
+  form: EndpointForm,
+  models?: string[],
+  modelDetails?: CustomEndpointModelDetail[]
+): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
 
   return {
@@ -70,10 +92,12 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
     base_url: form.baseUrl.trim(),
     model: form.model.trim(),
     api_key: form.apiKey.trim() || undefined,
+    api_mode: form.apiMode,
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
     make_default: form.makeDefault,
-    models: models?.length ? models : undefined
+    models: models?.length ? models : undefined,
+    model_details: modelDetails?.length ? modelDetails : undefined
   }
 }
 
@@ -88,6 +112,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([])
   const [form, setForm] = useState<EndpointForm>(EMPTY_FORM)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
+  // Alias metadata from the last Test; the backend resolves a picked alias to its
+  // canonical model + reasoning effort on Save (#93622).
+  const [discoveredDetails, setDiscoveredDetails] = useState<CustomEndpointModelDetail[]>([])
 
   async function refresh() {
     const data = await getCustomEndpoints()
@@ -137,7 +164,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
+      const response = await saveCustomEndpoint(toPayload(form, discoveredModels, discoveredDetails))
 
       if (!mounted.current) {
         return
@@ -179,17 +206,29 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       }
 
       setDiscoveredModels(response.models)
+      setDiscoveredDetails(response.model_details ?? [])
 
       if (response.ok) {
+        // Persist the URL that actually served /models (e.g. "<root>/v1" when the user typed the
+        // bare root): chat POSTs {base_url}/chat/completions verbatim, so saving the typed root
+        // would 404 every request even though the test looked green (#65488).
+        const resolvedBaseUrl = response.resolved_base_url?.trim()
+
         if (!form.model && response.models[0]) {
           setForm(current => ({ ...current, model: response.models[0] }))
         }
 
+        if (resolvedBaseUrl && resolvedBaseUrl !== form.baseUrl.trim().replace(/\/+$/, '')) {
+          setForm(current => ({ ...current, baseUrl: resolvedBaseUrl }))
+        }
+
+        // The backend also POSTed the transport the runtime will use; name it so an
+        // auto-detected mode is visible before Save (#93622).
+        const transport = API_MODE_OPTIONS.find(option => option.id === response.transport_checked)?.label
+        const reachable = transport ? `Endpoint is reachable (${transport} route served).` : 'Endpoint is reachable.'
         notify({
           kind: 'success',
-          message: response.models.length
-            ? `Endpoint is reachable. Found ${response.models.length} models.`
-            : 'Endpoint is reachable.'
+          message: response.models.length ? `${reachable} Found ${response.models.length} models.` : reachable
         })
       } else {
         notify({
@@ -256,6 +295,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       if (form.id === endpoint.id) {
         setForm(EMPTY_FORM)
         setDiscoveredModels([])
+        setDiscoveredDetails([])
       }
 
       onConfigSaved?.()
@@ -283,7 +323,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       <ActiveProfileNote className="mb-5" />
       <div className="space-y-6">
         <section>
-          <SectionHeading icon={Globe} meta={`${endpoints.length}`} title={t.settings.customEndpoints.title} />
+          <SectionHeading icon={Globe} meta={`${endpoints.length}`} page title={t.settings.customEndpoints.title} />
           <div className="divide-y divide-border/40 rounded-md border border-border/50">
             {endpoints.length ? (
               endpoints.map(endpoint => (
@@ -293,6 +333,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     onClick={() => {
                       setForm(formFromEndpoint(endpoint))
                       setDiscoveredModels(endpoint.models)
+                      setDiscoveredDetails([])
                     }}
                     type="button"
                   >
@@ -377,6 +418,15 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 value={form.baseUrl}
               />
             </label>
+            <fieldset className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">
+              <legend className="mb-1.5">API Mode</legend>
+              <SegmentedControl
+                className="w-full max-w-full"
+                onChange={apiMode => setForm(current => ({ ...current, apiMode }))}
+                options={API_MODE_OPTIONS}
+                value={form.apiMode}
+              />
+            </fieldset>
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem]">
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 Default Model
@@ -445,6 +495,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 onClick={() => {
                   setForm(EMPTY_FORM)
                   setDiscoveredModels([])
+                  setDiscoveredDetails([])
                 }}
                 type="button"
                 variant="ghost"

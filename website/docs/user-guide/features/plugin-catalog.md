@@ -2,7 +2,7 @@
 sidebar_position: 13
 sidebar_label: "Plugin Catalog"
 title: "Plugin Catalog"
-description: "Browse and install reviewed, SHA-pinned Hermes plugins from the curated catalog"
+description: "Give Hermes new powers with reviewed plugins you can install in one click"
 ---
 
 # Plugin Catalog
@@ -62,6 +62,12 @@ The catalog is designed so you know exactly what you're installing:
   catalog install checked out at exactly the pinned SHA does not stop to ask
   about `caution` again; `dangerous` still blocks, and anything installed from
   a raw URL or at another revision gets the normal prompt.
+- **Desktop plugins stay inside the SDK.** A plugin's `desktop/plugin.js` runs
+  inside the Desktop app with the app's own authority, so listed ones may only
+  use the plugin SDK: no patching of built-in prototypes, no `eval`, no
+  importing the app's own bundle chunks or remote scripts. Admission refuses
+  these (`desktop surface` check) so a marketplace install cannot quietly
+  rewire the app around you.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
   etc.) it needs, so you can judge its blast radius before installing.

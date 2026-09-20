@@ -230,6 +230,22 @@ To isolate the source:
 
 See [Security](../user-guide/security.md) for Hermes' documented execution controls and [Providers](../integrations/providers.md) for provider configuration.
 
+#### "Could not open a stream to `<host>` after N attempts (request X KB)"
+
+**Meaning:** every connect attempt to that endpoint failed before a single stream event arrived, so nothing was billed; the normal retry/fallback chain still runs afterwards. The line names the host actually contacted, how many attempts were made, and the serialized request size — the three things that separate an outage from a request-size limit.
+
+**Solution:** if the request is large (hundreds of KB — long coding sessions reach this once the context grows) and short new chats work, the endpoint or a proxy in front of it is likely rejecting bodies that size: raise its body limit, or run `/compress` to shrink the context. If the request is small, the endpoint is unreachable — check the `base_url`, then retry with `/retry`. `logs/agent.log` records the exception chain for each attempt.
+
+#### Messaging replies: "interrupted mid-request" vs "not running or is unreachable" vs "could not reach"
+
+Chat surfaces (Telegram, Discord, Slack, …) never show the raw transport exception; the gateway maps it to one of three short replies, and the difference tells you where to look:
+
+| Reply | What happened | What to do |
+|---|---|---|
+| "The connection to the AI model service was **interrupted mid-request** — usually transient." | An established connection was cut (`Connection reset by peer`, EOF, `RemoteProtocolError`). The endpoint answered the connect, so it is running. | `/retry`. If it recurs on large requests, see the "stream" entry above. |
+| "The AI model service isn't reachable right now — the configured model endpoint is **not running or is unreachable**." | Nothing accepted the connection (`Connection refused`, no route to host, DNS failure). | Start the model server / check `base_url`, then `/retry`; `hermes doctor` on the host. |
+| "Hermes **could not reach** the AI model service (no further detail from the SDK)." | The SDK reported a generic `APIConnectionError` and kept no cause; neither of the above is certain. | `/retry`; `hermes doctor` if it persists. The raw exception is in `hermes logs`. |
+
 #### `/model` only shows one provider / can't switch providers
 
 **Cause:** `/model` (inside a chat session) can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all `/model` will show.
@@ -574,7 +590,7 @@ node --version
 npx --version
 
 # Test the server manually
-npx -y @modelcontextprotocol/server-filesystem /tmp
+npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/dir
 ```
 
 Verify your `~/.hermes/config.yaml` MCP configuration:

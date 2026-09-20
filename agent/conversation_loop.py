@@ -1519,11 +1519,18 @@ def _run_conversation_turn(
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
+        codex_result = agent._run_codex_app_server_turn(
             user_message=s.user_message, original_user_message=s.original_user_message,
             messages=s.messages, effective_task_id=s.effective_task_id,
             should_review_memory=s._should_review_memory,
         )
+        from agent.turn_recovery import activate_codex_app_server_fallback
+        if not activate_codex_app_server_fallback(agent, codex_result):
+            return codex_result
+        # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
+        # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+        s.api_call_count = int(codex_result.get("api_calls") or 0)
+        s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
@@ -1607,22 +1614,26 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from tools.vision_tools_history_budget import native_turn_images
 
-    result = _run_conversation_turn(
-        agent,
-        user_message,
-        system_message=system_message,
-        conversation_history=conversation_history,
-        task_id=task_id,
-        stream_callback=stream_callback,
-        persist_user_message=persist_user_message,
-        persist_user_timestamp=persist_user_timestamp,
-        persist_user_display_kind=persist_user_display_kind,
-        persist_user_display_metadata=persist_user_display_metadata,
-        persist_user_platform_id=persist_user_platform_id,
-        moa_config=moa_config,
-        turn_author=turn_author,
-    )
+    # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
+    # it does not embed the same pixels a second time into the same request (#76411).
+    with native_turn_images(user_message):
+        result = _run_conversation_turn(
+            agent,
+            user_message,
+            system_message=system_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            stream_callback=stream_callback,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            persist_user_platform_id=persist_user_platform_id,
+            moa_config=moa_config,
+            turn_author=turn_author,
+        )
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

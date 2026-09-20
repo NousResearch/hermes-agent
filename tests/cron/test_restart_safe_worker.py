@@ -194,6 +194,43 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert not stderr_capture.exists()
 
 
+def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch):
+    """The gateway polls ``ack_path.exists()`` then reads it (#107184, #116164 form 1): the ack
+    must appear atomically with its full body, or the parent logs "unreadable acknowledgement"
+    and loses the worker pid for a handoff that actually succeeded."""
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"})
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_a, **_k: True)
+
+    real_dump = json.dump
+    visible_while_writing = []
+
+    def spying_dump(obj, fp, *args, **kwargs):
+        # The body is being produced right now: a reader must not be able to see the ack yet.
+        visible_while_writing.append(ack.exists())
+        return real_dump(obj, fp, *args, **kwargs)
+
+    monkeypatch.setattr(scheduler.json, "dump", spying_dump)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert visible_while_writing == [False]
+    assert json.loads(ack.read_text(encoding="utf-8"))["execution_id"] == "exec-1"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("exec-1")] == [ack.name]
+
+
 def test_external_worker_refuses_to_run_without_durable_ownership(
     tmp_path, monkeypatch
 ):
@@ -412,86 +449,6 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
     assert scheduler._running_worker_pids == {"job-cold": 4321}
 
 
-def test_launch_external_worker_tolerates_ack_still_being_written(
-    tmp_path, monkeypatch, caplog
-):
-    """An ack that exists but is empty for a moment is retried, never an error."""
-    import cron.scheduler as scheduler
-    from tools.process_registry import GatewayChildDispatch
-
-    job = {"id": "job-race", "execution_id": "exec-race", "prompt": "work"}
-    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv",
-        lambda command, **_kw: GatewayChildDispatch("scoped", ["scope", "--", *command]),
-    )
-    monkeypatch.setattr(
-        scheduler, "mark_execution_handoff_pending", lambda _id: {"id": "exec-race"}
-    )
-    ack_path = tmp_path / "cron/external-workers/exec-race.ready"
-    sleeps = []
-
-    def sleep(_seconds):
-        sleeps.append(_seconds)
-        if len(sleeps) == 3:
-            ack_path.write_text(
-                json.dumps({"pid": 4321, "execution_id": "exec-race"}), encoding="utf-8"
-            )
-
-    class FakeProcess:
-        pid = 999
-
-        def poll(self):
-            # The child creates the ack empty, as the old O_EXCL publication did.
-            if not ack_path.exists():
-                ack_path.write_text("", encoding="utf-8")
-            return None
-
-        def wait(self, timeout=None):
-            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
-
-    monkeypatch.setattr(scheduler.subprocess, "Popen", lambda *_a, **_k: FakeProcess())
-    monkeypatch.setattr(
-        scheduler, "get_execution", lambda _id: {"id": "exec-race", "status": "completed"}
-    )
-    monkeypatch.setattr(scheduler.time, "sleep", sleep)
-    monkeypatch.setattr(scheduler, "_running_worker_pids", {})
-
-    with caplog.at_level("WARNING", logger=scheduler.logger.name):
-        assert scheduler._launch_external_cron_worker(job) is True
-
-    assert scheduler._running_worker_pids == {"job-race": 4321}
-    assert not [r for r in caplog.records if "unreadable acknowledgement" in r.getMessage()]
-
-
-def test_external_worker_ack_is_never_visible_partial(tmp_path, monkeypatch):
-    """The ack path either does not exist or already holds the complete JSON."""
-    import cron.scheduler as scheduler
-
-    ack = tmp_path / "exec-1.ready"
-    observed = []
-    real_replace = os.replace
-
-    def spying_replace(src, dst):
-        observed.append(("before", ack.exists()))
-        real_replace(src, dst)
-        observed.append(("after", json.loads(ack.read_text(encoding="utf-8"))))
-
-    monkeypatch.setattr(scheduler.os, "replace", spying_replace)
-
-    scheduler._publish_external_worker_ack(ack, {"pid": 7, "execution_id": "exec-1"})
-
-    assert observed == [
-        ("before", False),
-        ("after", {"pid": 7, "execution_id": "exec-1"}),
-    ]
-    # Only the acknowledgement remains: no temp or reservation litter.
-    assert [p.name for p in tmp_path.glob("exec-1*")] == ["exec-1.ready"]
-    # A second worker for the same execution cannot publish over the winner.
-    with pytest.raises(FileExistsError):
-        scheduler._publish_external_worker_ack(ack, {"pid": 8, "execution_id": "exec-1"})
-    assert json.loads(ack.read_text(encoding="utf-8"))["pid"] == 7
-    assert [p.name for p in tmp_path.glob("exec-1*")] == ["exec-1.ready"]
 
 
 def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):

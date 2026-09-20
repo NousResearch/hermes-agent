@@ -213,7 +213,7 @@ _SAME_KEY_NAMESPACE_SQL = (
 _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
     f"                       {col} = COALESCE(sessions.{col}, excluded.{col})" for col in (
         "session_key", "chat_id", "chat_type", "thread_id", "parent_session_id", "cwd", "profile_name",
-        "git_repo_root", "origin_json", "display_name",
+        "transport_profile", "git_repo_root", "origin_json", "display_name",
     )
 )
 
@@ -236,10 +236,20 @@ _INHERIT_PARENT_META_SQL = (
     ))
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL"
 )
+# A delegate/branch fork of a row that happens to have ended on compression is still not that
+# conversation's continuation. Markers are matched against the QUERIED parent id rather than mere
+# presence, for the same reason as _NON_CONTINUATION_CHILD_FILTER_SQL: a continuation inherits its
+# parent's model_config verbatim, so presence-matching would misclassify it as a delegate.
+_FORK_EDGE_EXCLUSION_SQL = "".join(
+    f"\n                       AND COALESCE({_sql_json_extract('model_config', f'$.{marker}')}, '')"
+    "\n                           != parent_session_id"
+    for marker in ("_delegate_from", "_branched_from")
+)
 _INHERIT_PARENT_ROUTING_SQL = (
     "UPDATE sessions\n                       SET "
     + _INHERIT_SEP.join(_inherit_col_sql(c) for c in (
         "user_id", "session_key", "chat_id", "chat_type", "thread_id", "display_name", "origin_json",
+        "transport_profile",
     ))
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL\n"
     "                       AND EXISTS (\n"
@@ -247,6 +257,7 @@ _INHERIT_PARENT_ROUTING_SQL = (
     "                           WHERE p.id = sessions.parent_session_id\n"
     "                             AND p.end_reason = 'compression'\n"
     "                       )"
+    + _FORK_EDGE_EXCLUSION_SQL
 )
 
 
@@ -275,7 +286,10 @@ class SessionSessionsMixin:
         """NULL-fill a child's cwd/git/profile from its parent (profile_name only within the same
         ``agent:<ns>:`` namespace). Gateway routing columns are inherited ONLY by compression forks
         (a crash before the gateway re-records the peer would strand the child unroutable); delegate
-        children must NOT inherit them (peer recovery could repoint traffic into a subagent's session)."""
+        and branch children must NOT inherit them (peer recovery could repoint traffic into a
+        subagent's session), including when their parent row itself ended on compression — a long
+        batch outlives its coordinator's rotation, and two live rows holding one routing key is the
+        shape reported in #92859."""
         conn.execute(_INHERIT_PARENT_META_SQL, (session_id,))
         conn.execute(_INHERIT_PARENT_ROUTING_SQL, (session_id,))
 
@@ -285,6 +299,7 @@ class SessionSessionsMixin:
         chat_id: str = None, chat_type: str = None, thread_id: str = None,
         parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
+        transport_profile: Optional[str] = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
         bare row before create_session carries the real model/prompt) — the one exception is the
@@ -323,10 +338,10 @@ class SessionSessionsMixin:
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
-                   parent_session_id, cwd, profile_name, git_repo_root,
+                   parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        source = CASE
                            WHEN sessions.source = 'unknown'
@@ -367,8 +382,8 @@ class SessionSessionsMixin:
                 (
                     session_id, source, user_id, session_key, chat_id, chat_type, thread_id, model,
                     json.dumps(model_config) if model_config else None, system_prompt_hash,
-                    parent_session_id, cwd, profile_name, git_repo_root, origin_json, display_name,
-                    time.time(),
+                    parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
+                    display_name, time.time(),
                 ),
             )
             if system_prompt_hash is not None:

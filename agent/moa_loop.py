@@ -270,8 +270,9 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         extra_body = overrides.get("extra_body") if isinstance(overrides, dict) else None
         if isinstance(extra_body, dict) and extra_body:
             out["extra_body"] = dict(extra_body)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
+    except Exception as exc:
+        logger.warning("MoA slot %s: provider '%s' could not be resolved (%s); calling with bare provider/model",
+                       _slot_label(slot), provider, exc)
         return out
     with _runtime_cache_lock:
         _runtime_cache[cache_key] = (now, out)

@@ -1041,6 +1041,7 @@ from hermes_cli.worktree_ops import (
     _repo_is_shallow,
     _setup_worktree,
     _worktree_has_unpushed_commits,
+    release_lsp_clients,
 )
 
 # ============================================================================= Git Worktree Isolation
@@ -1070,7 +1071,9 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         _active_worktree = None
         return
 
-    # Unlock first so `remove` isn't blocked by the lock placed at creation. Fail-soft.
+    # Release the tree's language servers while the path still exists, then unlock so `remove`
+    # isn't blocked by the lock placed at creation. Fail-soft.
+    release_lsp_clients(wt_path)
     _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
     _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
@@ -3749,7 +3752,14 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             pass
 
     def _tui_startup_background_maintenance(self):
-        """Best-effort startup passes: curator skill maintenance, personal + org skill sync."""
+        """Best-effort startup passes: curator skill maintenance, personal + org skill sync.
+
+        Off the main thread: the curator's deterministic pass snapshots and prunes the whole
+        skills tree (a due weekly pass held the prompt for 6 minutes on a large library), and
+        the sync pulls can hit the network. The REPL must never wait on housekeeping."""
+        threading.Thread(target=self._run_startup_maintenance, name="startup-maintenance", daemon=True).start()
+
+    def _run_startup_maintenance(self):
         with suppress(Exception):
             from agent.curator import maybe_run_curator
             maybe_run_curator(
@@ -4127,8 +4137,10 @@ _TRANSIENT_PROVIDER_REASONS = frozenset({
 # ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
 # the provider's words as the reason, instead of re-spawning into the same wall until
 # ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
+# ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
+# header change heals it, never a retry.
 _TERMINAL_PROVIDER_REASONS = frozenset({
-    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification",
+    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
 })
 
 

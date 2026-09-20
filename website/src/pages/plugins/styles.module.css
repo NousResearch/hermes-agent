@@ -43,6 +43,10 @@
   margin-bottom: 0.75rem;
 }
 
+[data-theme="light"] .heroEyebrow {
+  color: #a8860a;
+}
+
 .heroTitle {
   font-size: 3rem;
   font-weight: 700;
@@ -94,33 +98,31 @@
   color: #ffd700;
 }
 
-.statsRow {
-  display: flex;
-  justify-content: center;
-  gap: 2.5rem;
-  flex-wrap: wrap;
+/* Inline "submit your plugin" link under the hero subtitle. */
+.heroLink {
+  color: #ffd700;
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 215, 0, 0.35);
+  transition: border-color 0.15s;
 }
 
-.stat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.2rem;
+.heroLink:hover {
+  color: #ffd700;
+  text-decoration: none;
+  border-bottom-color: #ffd700;
 }
 
-.statValue {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 1.6rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.statLabel {
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+.heroMeta {
+  font-size: 0.85rem;
   color: var(--ifm-font-color-secondary, #9a968e);
+  opacity: 0.8;
+  margin: -0.75rem 0 1.5rem;
 }
+
+/* Three promises every listing carries; replaces the registry-style counters. */
+
+
 
 .controlsBar {
   position: sticky;
@@ -159,12 +161,16 @@
   padding: 0.7rem 2.5rem 0.7rem 2.6rem;
   font-size: 0.95rem;
   font-family: "DM Sans", sans-serif;
-  border: 1px solid rgba(255, 215, 0, 0.12);
+  border: 1px solid rgba(255, 215, 0, 0.18);
   border-radius: 10px;
-  background: rgba(15, 15, 24, 0.6);
+  background: var(--ifm-background-surface-color, #fff);
   color: var(--ifm-font-color-base, #e8e4dc);
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+[data-theme="dark"] .searchInput {
+  background: rgba(15, 15, 24, 0.6);
 }
 
 .searchInput:focus {
@@ -850,13 +856,6 @@
     font-size: 2rem;
   }
 
-  .statsRow {
-    gap: 1.5rem;
-  }
-
-  .statValue {
-    font-size: 1.25rem;
-  }
 
   .controlsBar {
     padding: 0.75rem 1rem;

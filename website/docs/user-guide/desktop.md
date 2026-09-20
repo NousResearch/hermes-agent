@@ -99,9 +99,9 @@ With **Group by → Projects**, each project row previews its three most recent 
 
 #### Choosing a model
 
-The model picker lives in the **composer**, just left of the microphone. Click it to switch the model; hover a model row for its options (thinking, effort, fast). Next to it, a **reasoning pill** shows the active model's effort level (`Med`, `High`, …) and opens the same options directly, so you can change effort without finding the model's row. The pill is hidden for models whose catalog reports no reasoning control. When the gateway flags a switch as risky (a large cached context, an expensive model, a data-training tier), the app asks first in a dialog: **Switch anyway** applies it, **Keep current model** (or Esc) leaves everything as it was.
+The model picker lives in the **composer**, just left of the microphone. Click it to switch the model; hover a model row for its options (thinking, effort, fast). Next to it, a **reasoning pill** shows the active model's effort level (`Med`, `High`, …) and opens the same options directly, so you can change effort without finding the model's row. The pill is hidden for models whose catalog reports no reasoning control. When the route clamps a Hermes-internal step (`ultra` is sent as the route's strongest level, e.g. `max`), the pill shows both ends (`Ultra→Max`) and its tooltip spells out the same wording as the CLI, `Ultra (sends Max on this route)`, so the level you see is the level that is sent. When the gateway flags a switch as risky (a large cached context, an expensive model, a data-training tier), the app asks first in a dialog: **Switch anyway** applies it, **Keep current model** (or Esc) leaves everything as it was.
 
-The **microphone** is dictation; hover it and the other voice toggles fan out above it — **Read replies aloud** and the **wake word** ear. A toggle that is on shows as a solid disc. Starting a full voice conversation stays on the primary button to the right. In the HUD and in narrow tiles the same controls fold into one menu behind the mic instead.
+The **microphone** is dictation; hover it and the other voice toggles fan out above it — **Read replies aloud** and the **wake word** ear. A toggle that is on shows as a solid disc. Starting a full voice conversation stays on the primary button to the right. In the HUD and in narrow tiles the same controls fold into one menu behind the mic instead. When dictation talks to the speech-to-text provider directly (client-direct voice), the request honours the same `stt.openai.timeout` budget (default 60 s) as the gateway's own transcription client, so a slow endpoint fails with "Transcription timed out" instead of leaving the mic stuck on transcribing.
 
 - **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
 - **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
@@ -194,6 +194,7 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 
 - **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider. Accounts and API keys share the Settings **Applies to** selection: credential reads and edits, OAuth account removal, and sign-in launched here target the selected profile, not the active chat profile. The sign-in flow keeps that target through credential saving and model selection. Changing **Applies to** discards unsaved credential drafts. Closing sign-in cancels polling and ignores late results; a credential write already sent may still finish in its original profile. Externally managed CLI credentials use their own CLI and are not covered by this profile selector. Its **Local Models** view installs and manages an on-device llama.cpp runtime — see [Local Models](./local-models.md).
 - **Every provider and model in the menus** — the GUI surfaces the full provider list and every model that `hermes model` knows about, so you pick from the same catalog the CLI sees rather than a curated subset.
+- **Custom endpoints with an API mode** — **Settings → Providers → Custom Endpoints** has an **API Mode** selector (**Auto-detect**, **Chat Completions**, **Responses API**, **Anthropic Messages**) — the same choice `hermes model` offers for a custom provider. It is saved as `providers.<id>.api_mode` in `config.yaml`, so a Responses-only or Anthropic-compatible host is no longer called on `/chat/completions`. **Test** checks the transport you will actually use, not just `/v1/models`: it sends a one-token request to the pinned mode's route (or to the mode Auto-detect resolves to) and fails with the transport named when the host does not serve it. **Test** also keeps the alias metadata a gateway advertises in `/v1/models` (`canonical_model`, `reasoning_effort`): picking an alias such as `gpt-5.6-sol-high` saves the canonical model and pins its effort under `agent.reasoning_overrides`.
 - **xAI Grok OAuth** — Grok is a first-class OAuth provider in the launcher; sign in through the browser flow like the other OAuth providers.
 - **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal. In the terminal backend picker, selecting a backend marked **Needs setup** asks for confirmation first; declining leaves the current backend selected.
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
@@ -520,6 +521,10 @@ redirect here.
 
 If a Desktop chat or bot stops responding while the connection still shows **Connected**, select that bot/profile or gateway, open the status bar's gateway menu, and click **Reconnect gateway**. Reconnect stays available for open, connecting, and disconnected transports. It redials the active route without restarting Desktop or deliberately closing other routes' sockets. In-flight requests on the selected socket can be interrupted; this is an explicit recovery action, not a backend or model restart.
 
+### The app vanished after `hermes update`
+
+An earlier update that replaced the checkout without keeping `apps/desktop/release/` leaves no packaged app to launch. As long as `HERMES_HOME/desktop-build-stamp.json` (written only by a successful Desktop build) still exists, the next `hermes update` notices the missing app and rebuilds it. To rebuild by hand: `hermes desktop --build-only --force-build`. On Windows the ZIP fallback also keeps the built app, its renderer bundle and its Electron `node_modules` across the swap.
+
 ### The local backend stopped in the background
 
 If the local Hermes backend process exits after it was ready, Desktop restarts it on its own and shows a **Hermes stopped working in the background** notice; the chat reconnects once the replacement is up. `HERMES_HOME/logs/desktop.log` records the exit code together with the backend's last output lines (`Hermes backend exited (1)` followed by `Recent backend output:`), so the reason it died is in the log even when the app recovered by itself. A backend that keeps dying within seconds of every restart points at the backend itself — look at the traceback in that tail. After three such restarts within two minutes Desktop stops respawning and shows a **keeps crashing** notice instead of cycling; relaunch the app once the cause is fixed.
@@ -533,8 +538,19 @@ generic error toast. The card offers recovery actions matched to the failure:
 
 - **Retry** — re-runs the failed turn in place (hidden when retrying would
   deterministically reproduce the failure, e.g. a content-policy rejection).
-- **Switch provider** — jumps to Settings → Models for provider, endpoint,
-  auth, and billing failures.
+  When a rate-limit or usage-limit response names when the limit lifts
+  (`Retry-After` header or a `resets_at` field), the card shows **Limit resets
+  at HH:mm (in 1h 05m)** next to Retry so you know when a retry will work; the
+  CLI/TUI print the same line under the error. The hint itself is
+  informational, but the card also offers **Retry when the limit resets
+  (HH:mm)**: click it and the app retries that turn once at the reset time
+  with a live countdown and a **Cancel** control. The schedule lives only in
+  the open window — switching sessions, sending another message, or closing
+  the app drops it, and nothing retries unattended.
+- **Switch provider** — for provider, endpoint, auth, and billing failures,
+  opens the composer's live model menu so you can move **this chat** to another
+  provider/model right away (Settings → Models only changes the default for new
+  chats). When no chat surface is on screen it falls back to Settings → Models.
 - **Open logs** — opens `HERMES_HOME/logs` in your file manager. On a remote
   or Cloud connection the button reads **Open Desktop logs**: it opens the
   local Desktop-side logs (transport evidence), since the failed turn's
@@ -592,7 +608,7 @@ clearing the entry — the latch resets and the next boot dials fresh.
 
 The build downloads the Electron runtime (~114&nbsp;MB) from `github.com/electron/electron/releases`. If the installer hangs on the **Build desktop app** step with the live output repeating `retrying attempt=…`, GitHub is being blocked or throttled on your network (firewall, proxy, or region).
 
-The installer self-heals this automatically: on a failed build it (1) clears a corrupt cached Electron zip and retries, then (2) if it still fails and you haven't set `ELECTRON_MIRROR`, retries once more through `npmmirror.com`, the de-facto Electron community mirror. `@electron/get` SHASUM-checks the download, but the checksums come from the same mirror — that catches a corrupt or partial download, not a compromised mirror. If you'd rather not trust a third-party host, pin your own `ELECTRON_MIRROR` (below); the build never overrides one you've set.
+The installer self-heals this automatically: on a failed build it (1) clears a corrupt cached Electron zip and retries, then (2) if it still fails, the Electron distributable is still missing, and you haven't set `ELECTRON_MIRROR`, retries once more through `npmmirror.com`, the de-facto Electron community mirror. `@electron/get` SHASUM-checks the download, but the checksums come from the same mirror — that catches a corrupt or partial download, not a compromised mirror. If you'd rather not trust a third-party host, pin your own `ELECTRON_MIRROR` (below); the build never overrides one you've set.
 
 To **choose your own mirror** (e.g. a corporate/trusted one), set `ELECTRON_MIRROR` before installing or rebuild manually — the build honors it and won't override it:
 
@@ -602,6 +618,8 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
 ```
 
 **Other native downloads (e.g. the `get-windows` prebuilt on Windows) that need a mirror:** put the npm keys in `$HERMES_HOME/npmrc` (`%LOCALAPPDATA%\hermes\npmrc` on Windows, `~/.hermes/npmrc` elsewhere) — for example `node_get_windows_binary_host_mirror=https://<mirror>/sindresorhus/get-windows/releases/download/`. Every `npm ci`/`npm run` the updater spawns (desktop, web and TUI builds) points `NPM_CONFIG_USERCONFIG` at that file when it exists, so the config survives `hermes update`; the repo-root `.npmrc` is git-tracked and gets autostashed on every update, and `~/.npmrc` may be missed because the desktop hand-off inherits the GUI's environment. An `NPM_CONFIG_USERCONFIG` you set yourself is never overridden.
+
+**If `get-windows` is missing or half-installed:** the build no longer fails — it prints `[stage-native-deps] get-windows not installed ... read_window_below will be unavailable in this build` and ships without the `read_window_below` tool. When the package directory exists but is not loadable (a Windows in-place update interrupted by a running Hermes window, `TAR_ENTRY_ERROR` in the install log), the same warning names the directory, and the next `hermes desktop --force-build` or update removes it before its npm install so the package is re-extracted — close every Hermes window and gateway first so the extract is not interrupted again. A package whose native binding or macOS helper is missing is likewise shipped without window enumeration rather than failing the build.
 
 To clear a corrupt cached zip by hand:
 
@@ -624,7 +642,7 @@ Point the app at a specific checkout, or sandbox it from your real config:
 
 ```bash
 HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=/tmp/throwaway npm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 

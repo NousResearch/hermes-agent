@@ -119,6 +119,7 @@ Bad: `Use when a user asks to monitor named competitors or companies for product
 | `osascript`, `defaults`, `pmset` | `[macos]` |
 | `apt`/`systemctl`/`/proc` | `[linux]` |
 
+<!-- no-tmp: ok — names the anti-pattern skill authors must avoid -->
 POSIX-only signals to search for in `scripts/`: `fcntl`, `termios`, `pty`, `os.fork`, `os.killpg`, `signal.SIGKILL`, `os.kill(pid, 0)` liveness checks, hardcoded `/tmp` `/proc` `/etc`. Default posture: fix cross-platform first (`tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists`); gate narrower only when the dependency is genuinely platform-bound, and say why in `## Pitfalls`.
 
 ## Size Limits

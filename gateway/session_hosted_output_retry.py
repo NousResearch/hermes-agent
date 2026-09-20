@@ -40,10 +40,43 @@ class CanonicalOutputRetry:
         self._artifact_clock = time.time
         self._output_publish_locks = {}
         self._output_publish_locks_guard = threading.Lock()
+        from gateway.session_group_state import GroupStateOwner
+        self._output_status_owner = GroupStateOwner(
+            self.authority, self.authority.db, self.authority.epoch,
+            self.authority.instance_id, self.authority.profile_id, self, self.runtime)
         self._output_db = self.authority.db
         self._output_epoch = self.authority.epoch
         self._output_instance = self.authority.instance_id
         self._prepare_artifact_retry_store()
+
+    @contextmanager
+    def _output_status_read(self, room_id, *, state_read=None):
+        # Informational obligations are not NEW work. Keep _output_owner and
+        # _output_policy_read strict for publication and held eligibility.
+        owner = self._output_status_owner
+        if not self._output_retry_ready:
+            raise RuntimeStoreError('output_owner_unavailable')
+        if state_read is not None:
+            if (state_read.owner != owner or state_read.service is not self
+                    or state_read.room['room_id'] != room_id):
+                raise RuntimeStoreError('output_owner_unavailable')
+            state_read.authorize()
+            yield state_read.conn
+            state_read.authorize()
+            return
+        def current(conn):
+            owner.current(conn)
+            if (self.authority is not owner.authority
+                    or getattr(owner.authority, 'hosted_room_service', None) is not self):
+                raise RuntimeStoreError('output_owner_unavailable')
+        with owner.read() as conn:
+            current(conn)
+            conn.execute('BEGIN')
+            try:
+                yield conn
+            finally:
+                conn.rollback()
+            current(conn)
 
     @contextmanager
     def _output_policy_read(self):
@@ -403,19 +436,19 @@ class CanonicalOutputRetry:
                              (json.dumps({**old, **current}, sort_keys=True), 'route_recovered', *key))
         self.authority.db._execute_write(unblock)
 
-    def status(self, room_id=None):
-        result = super().status(room_id)
+    def status(self, room_id=None, *, state_read=None):
+        result = (super().status(room_id, state_read=state_read) if state_read is not None
+                  else super().status(room_id))
         if room_id is None:
             return result
-        obligations = self.output_retry_status(room_id)
-        cleanup = self.output_cleanup_status(room_id)
+        obligations = self.output_retry_status(room_id, state_read=state_read)
+        cleanup = self.output_cleanup_status(room_id, state_read=state_read)
         # Informational only: these are retained output operations, never the
         # driver's NEW-execution Retry action.
         return {**result, 'pending_actions': [*result['pending_actions'], *cleanup, *[
             dict(row, kind='output_retry', blocked=bool(row['blocked'])) for row in obligations]]}
 
-    def output_retry_status(self, room_id):
-        with self.authority.db._read_ctx() as conn:
-            self._output_owner(conn)
+    def output_retry_status(self, room_id, *, state_read=None):
+        with self._output_status_read(room_id, state_read=state_read) as conn:
             return [dict(r) for r in conn.execute('SELECT task_id,execution_generation,member_id,attempts,next_attempt_at,'
                 'blocked,operation,reason_code FROM hosted_room_artifact_retries WHERE room_id=?', (room_id,))]

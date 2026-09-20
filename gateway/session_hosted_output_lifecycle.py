@@ -292,8 +292,8 @@ class CanonicalOutputLifecycle:
         if current != expected or (terminal and (admission is None or admission['status'] != 'terminal')):
             raise RoomArtifactError('Group Chat cleanup authority changed')
 
-    def output_cleanup_status(self, room_id):
-        with self._output_policy_read() as conn:
+    def output_cleanup_status(self, room_id, *, state_read=None):
+        with self._output_status_read(room_id, state_read=state_read) as conn:
             rows = records(conn, room_id, pending_limit=BATCH + 1)
             result = [dict(kind='output_cleanup', **{k: r[k] for k in (
                 'task_id', 'member_id', 'execution_generation', 'state', 'reason_code', 'attempts', 'next_attempt_at')})

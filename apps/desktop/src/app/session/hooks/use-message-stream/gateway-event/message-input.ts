@@ -75,7 +75,7 @@ export function handleMessageInputEvent(ctx: GatewayEventContext): boolean {
         parts: display.cleanedText ? [textPart(display.cleanedText, occurredAt)] : [],
         attachmentRefs: display.refs.length ? display.refs : undefined
       },
-      { interruptTools: payload.kind === 'redirect' }
+      { interruptTools: payload?.kind === 'redirect' }
     )
   })
 

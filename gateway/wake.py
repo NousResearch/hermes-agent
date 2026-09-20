@@ -136,6 +136,11 @@ def _delegation_display_metadata(evt: dict) -> dict:
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
+    from tools.async_delegation import internal_event_persistence
+    display_kind, internal_metadata = internal_event_persistence(evt)
+    if display_kind is not None and internal_metadata is not None:
+        metadata.update(internal_metadata)
+        metadata["display_kind"] = display_kind
     return metadata
 
 

@@ -7,6 +7,7 @@ formatting, capacity rejection, and crash handling.
 
 import json
 import os
+from contextlib import closing
 import sqlite3
 import subprocess
 import sys
@@ -121,8 +122,6 @@ def test_connect_preserves_wal_and_applies_macos_durability_barriers(
         conn.close()
 
 
-
-
 def test_async_executor_workers_are_daemon_threads():
     gate = threading.Event()
 
@@ -172,6 +171,41 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
+    assert len(res["delegation_id"].removeprefix("deleg_")) == 32
+    assert evt["event_schema"] == "hermes.internal_event.v1"
+    assert evt["event_id"] == f"async_delegation:{res['delegation_id']}:terminal"
+    assert evt["event_kind"] == "workflow.async_delegation.terminal"
+    assert evt["workflow_id"] == f"delegation:{res['delegation_id']}"
+    assert evt["display_kind"] == "internal_event"
+    assert evt["user_originated"] is False
+    assert evt["terminal"] is True
+
+
+def test_internal_event_persistence_is_fail_closed_and_legacy_compatible():
+    from tools.async_delegation import _internal_event_envelope, internal_event_persistence
+
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
+    event = {"delegation_id": delegation_id, **_internal_event_envelope(delegation_id)}
+    display_kind, metadata = internal_event_persistence(event)
+
+    assert display_kind == "internal_event"
+    assert metadata == {
+        "event_schema": "hermes.internal_event.v1",
+        "event_id": f"async_delegation:{delegation_id}:terminal",
+        "event_kind": "workflow.async_delegation.terminal",
+        "workflow_id": f"delegation:{delegation_id}",
+        "delegation_id": delegation_id,
+        "user_originated": False,
+        "terminal": True,
+    }
+    assert internal_event_persistence({"delegation_id": delegation_id}) == (None, None)
+    assert internal_event_persistence({**event, "event_id": "spoofed"}) == (None, None)
+    for key, value in [("terminal", 1), ("user_originated", 0), ("task_failure_notice", True),
+                       ("workflow_id", "foreign"), ("display_kind", "user"), ("delegation_id", 42)]:
+        assert internal_event_persistence({**event, key: value}) == (None, None)
+    for missing_id in (None, "", "  ", 42):
+        with pytest.raises(ValueError, match="delegation_id"):
+            _internal_event_envelope(missing_id)
 
 
 def test_rich_reinjection_block_is_self_contained():
@@ -986,6 +1020,8 @@ def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch
 
     gates[0].set()
     assert [r["task_index"] for r in _drain_one()["results"]] == [0]
+    assert len(handle["delegation_id"].removeprefix("deleg_")) == 32
+    assert all(unit["delegation_id"].startswith(handle["delegation_id"] + "-") for unit in handle["units"])
 
 
 def test_units_of_one_call_share_a_single_capacity_slot():
@@ -1023,6 +1059,10 @@ def test_multi_task_call_is_one_completion_unless_independent_completions(monkey
     gates[2].set()
     evt = _drain_one()
     assert sorted(r["task_index"] for r in evt["results"]) == [0, 1, 2]
+    assert evt["delegation_id"] == handle["delegation_id"]
+    assert len(handle["delegation_id"].removeprefix("deleg_")) == 32
+    assert evt["event_id"] == f"async_delegation:{handle['delegation_id']}:terminal"
+    assert evt["terminal"] is True and evt["user_originated"] is False
 
 
 def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(monkeypatch):
@@ -1098,6 +1138,12 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
     assert by_index[1]["status"] == "unknown"
     assert "1/2 child results were recorded" in evt["error"]
     assert "done: fast member" in format_process_notification(evt)
+    assert evt["event_id"] == f"async_delegation:{evt['delegation_id']}:terminal"
+    assert evt["terminal"] is True and evt["user_originated"] is False
+    with closing(sqlite3.connect(tmp_path / "state.db")) as conn:
+        durable = json.loads(conn.execute("SELECT event_json FROM async_delegations WHERE delegation_id=?",
+                                          (evt["delegation_id"],)).fetchone()[0])
+    assert durable["event_id"] == evt["event_id"]
 
 
 def test_one_child_unit_keeps_its_finished_child_when_the_owner_dies(tmp_path):

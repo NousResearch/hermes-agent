@@ -29,6 +29,8 @@ class EnvVarReveal(EnvVarDelete):
 
 class MemoryProviderConfigUpdate(BaseModel):
     values: Dict[str, Any] = {}
+    # Legacy clients save and select; settings editors explicitly opt out.
+    activate: bool = True
 
 class MemoryProviderSetupRequest(BaseModel):
     values: Dict[str, Any] = {}

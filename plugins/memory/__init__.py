@@ -33,6 +33,8 @@ ENTRY_POINTS_GROUP = "hermes_agent.memory_providers"
 _REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, dict[str, Path]] = {}
 # Native extensions whose first import must not race another thread (#58083 warm-up).
 _NATIVE_WARM_IMPORTS: Tuple[str, ...] = ("numpy",)
+# (provider name, source path) -> the package generation whose hooks, tools and skills are registered.
+_REGISTERED_GENERATIONS: dict[tuple, str] = {}
 
 
 def _registered_skills_for_active_home() -> dict[str, Path]:
@@ -225,10 +227,7 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
     imported = False
     try:
         if provider_dir := find_provider_dir(name):
-            imported = _loader.load_plugin_module(
-                _module_name(provider_dir, name), provider_dir, parents=("plugins", "plugins.memory"),
-                logger=logger, synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
-            ) is not None
+            imported = import_provider_package(provider_dir) is not None
         elif (entry_point := find_provider_entry_point(name)) is not None:
             entry_point.load()
             imported = True
@@ -296,20 +295,34 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
     return provider
 
 
+def import_provider_package(provider_dir: Path):
+    """The provider package as the runtime loads it: a bundled one under ``plugins.memory.<name>``, an
+    external one as its current generation. Warm-up and ``load_memory_provider`` share this module object."""
+    bundled = _is_bundled(provider_dir)
+    module_name, snapshot = _module_name(provider_dir, provider_dir.name), None
+    if not bundled:
+        from plugins.memory import contract
+
+        module_name, snapshot = contract.generation(provider_dir)
+    return _loader.load_plugin_module(
+        module_name, provider_dir,
+        parents=("plugins", "plugins.memory"),
+        logger=logger,
+        synthetic_namespace=None if bundled else _USER_NAMESPACE,
+        source_snapshot=snapshot,
+    )
+
+
 def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
-    mod = _loader.load_plugin_module(
-        _module_name(provider_dir, name), provider_dir,
-        parents=("plugins", "plugins.memory"),
-        logger=logger,
-        synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
-    )
+    mod = import_provider_package(provider_dir)
     if mod is None:
         return None
 
     if hasattr(mod, "register"):
-        collector = _ProviderCollector(name, register_skills=register_skills)
+        generation = None if _is_bundled(provider_dir) else mod.__name__
+        collector = _ProviderCollector(name, register_skills=register_skills, generation=generation)
         try:
             collector.collect(mod.register, source=mod.__file__)
         except Exception as e:
@@ -335,27 +348,41 @@ class _ProviderCollector:
     (the one call the activation path owns) and delegates other ``register_*``
     calls to a real ``PluginContext`` so providers have the full plugin surface."""
 
-    def __init__(self, name: str, *, register_skills: bool = True):
+    def __init__(self, name: str, *, register_skills: bool = True, generation: Optional[str] = None):
         self.name = name
         self.provider = None
         self._register_skills = register_skills
+        self._generation = generation
+        self._inert = False  # an earlier generation's hooks, tools and skills are live; only collect the provider
         self._context = None
         self._hook_source = None
 
     def collect(self, register, *, source=None):
         """Run ``register`` with this collector; hooks it registers form the fallback group that
-        general discovery of the same source replaces (see ``PluginLedgerMixin``)."""
+        general discovery of the same source replaces (see ``PluginLedgerMixin``). Host registrations
+        belong to the package generation that first made them: a newer generation registers its own only
+        once the earlier one is unloaded, so a session's provider and its hooks stay one generation."""
         from hermes_cli.plugins_ledger import _hook_source_of
 
         module = sys.modules.get(getattr(register, "__module__", ""))
         self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=source) if source else module)
         manager = self._plugin_context()._manager
         with manager._discovery_lock:
-            manager._drop_fallback_hooks(self._hook_source)
+            owner = _REGISTERED_GENERATIONS.get(self._hook_source)
+            self._inert = (self._generation is not None and owner not in (None, self._generation)
+                           and owner in sys.modules and bool(manager._ownership_ledger.get(self.name)))
+            if not self._inert:
+                manager._drop_fallback_hooks(self._hook_source)
+                if self._generation is not None and self._hook_source is not None:
+                    _REGISTERED_GENERATIONS[self._hook_source] = self._generation
             register(self)
 
     def register_hook(self, hook_name, callback):
         context = self._plugin_context()
+        if self._inert:
+            from hermes_cli.plugins_ledger import PluginRegistration
+
+            return PluginRegistration(kind="hook", key=hook_name, release=lambda: None, plugin_key=self.name)
         with context._manager._discovery_lock:
             return context._manager._register_fallback_hook(context, self._hook_source, hook_name, callback)
 
@@ -366,7 +393,7 @@ class _ProviderCollector:
         """Forward skills to the plugin registry, tracking qualified name + path so
         switching the active provider can retract the previous one's skills. Gated
         on ``register_skills`` so inspecting an inactive provider has no side effects."""
-        if not self._register_skills:
+        if not self._register_skills or self._inert:
             return
         try:
             self._plugin_context().register_skill(*args, **kwargs)
@@ -391,6 +418,8 @@ class _ProviderCollector:
             raise AttributeError(attr)
 
         def _forward(*args, **kwargs):
+            if self._inert:
+                return None
             try:
                 return self._plugin_context().__getattribute__(attr)(*args, **kwargs)
             except Exception as exc:

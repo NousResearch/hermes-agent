@@ -13,7 +13,7 @@ import type {
   MemoryStatusResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, scopedApi } from './client'
 
 export const AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS = 180_000
 export const AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS = 600_000
@@ -46,47 +46,45 @@ export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
   return Math.min(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS, estimated)
 }
 
+const MEMORY_OAUTH_REQUEST_TIMEOUT_MS = 15_000
+
 // surface=declared serves the curated desktop schema; the dashboard consumes the raw plugin schema.
-export function getMemoryProviderConfig(provider: string, profile?: null | string): Promise<MemoryProviderConfig> {
-  return hermesApi<MemoryProviderConfig>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
-  })
+const memoryProviderPath = (provider: string, suffix: string) =>
+  `/api/memory/providers/${encodeURIComponent(provider)}/${suffix}?surface=declared`
+
+export function getMemoryProviderConfig(provider: string, profile?: ProfileScope): Promise<MemoryProviderConfig> {
+  return scopedApi<MemoryProviderConfig>(profile, { path: memoryProviderPath(provider, 'config') })
 }
 
+// Without legacyActive the backend saves the values but leaves the selected provider alone.
 export function saveMemoryProviderConfig(
   provider: string,
   values: Record<string, string>,
-  profile?: null | string
+  profile?: ProfileScope,
+  options: { legacyActive?: boolean } = {}
 ): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
+  return scopedApi<{ ok: boolean }>(profile, {
+    path: memoryProviderPath(provider, 'config'),
     method: 'PUT',
-    body: { values }
+    body: options.legacyActive ? { values } : { values, activate: false }
   })
 }
 
-// Memory-provider OAuth connect (provider-keyed; 404s for providers without an
-// OAuth flow). Profile-scoped: the grant lands in the active profile's config.
-export function startMemoryProviderOAuth(
-  provider: string,
-  profile?: null | string
-): Promise<MemoryProviderOAuthStatus> {
-  return hermesApi<MemoryProviderOAuthStatus>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
-    method: 'POST'
+export function startMemoryProviderOAuth(provider: string, profile?: ProfileScope): Promise<MemoryProviderOAuthStatus> {
+  return scopedApi<MemoryProviderOAuthStatus>(profile, {
+    path: memoryProviderPath(provider, 'oauth/start'),
+    method: 'POST',
+    timeoutMs: MEMORY_OAUTH_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getMemoryProviderOAuthStatus(
   provider: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<MemoryProviderOAuthStatus> {
-  return hermesApi<MemoryProviderOAuthStatus>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
+  return scopedApi<MemoryProviderOAuthStatus>(profile, {
+    path: memoryProviderPath(provider, 'oauth/status'),
+    timeoutMs: MEMORY_OAUTH_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -94,11 +92,12 @@ export function getMemoryProviderOAuthStatus(
 // Memory data + curator (parity with `hermes memory` / `hermes curator`).
 // ---------------------------------------------------------------------------
 
-export function getMemoryStatus(): Promise<MemoryStatusResponse> {
-  return hermesApi<MemoryStatusResponse>({
-    ...profileScoped(),
-    path: '/api/memory'
-  })
+export function setMemoryProvider(provider: string, profile?: ProfileScope): Promise<{ ok: boolean; active: string }> {
+  return scopedApi(profile, { path: '/api/memory/provider', method: 'PUT', body: { provider } })
+}
+
+export function getMemoryStatus(profile?: ProfileScope): Promise<MemoryStatusResponse> {
+  return scopedApi<MemoryStatusResponse>(profile, { path: '/api/memory' })
 }
 
 export function resetMemory(target: 'all' | 'memory' | 'user'): Promise<{ ok: boolean; deleted: string[] }> {

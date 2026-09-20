@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect } from 'react'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { getEnvVars, getHermesConfigSchema } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -75,16 +74,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
   // boot); agent plugins ride the gateway, so load them the first time the
   // catalog is wanted — same RPC the Plugins page fires on mount, deduped by
   // the store's own inflight guard.
-  const { requestGateway } = useGatewayRequest()
   const gatewayState = useStore($gatewayState)
   const desktopPluginRecords = useStore($pluginRecords)
   const agentPlugins = useStore($agentPlugins)
 
   useEffect(() => {
     if (enabled && gatewayState === 'open') {
-      void loadAgentPlugins(requestGateway)
+      void loadAgentPlugins()
     }
-  }, [enabled, gatewayState, requestGateway])
+  }, [enabled, gatewayState])
 
   // Installed plugin rows (both halves) — they live on Capabilities → Plugins,
   // so each entry carries the `?plugin=` row selector for that page.

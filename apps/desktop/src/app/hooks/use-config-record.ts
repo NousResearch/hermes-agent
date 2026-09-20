@@ -13,16 +13,17 @@ import type { HermesConfigRecord } from '@/types/hermes'
 // it pushes personality/cwd/voice/… into the session stores for live chat.
 export const HERMES_CONFIG_KEY = ['hermes-config-record'] as const
 
-// Per-scope cache key. The base key (no suffix) is the app-wide active
-// profile, unchanged for every caller that passes nothing. An explicit scope —
-// the Capabilities scope selector configuring ANOTHER profile, possibly on
-// another registered gateway — gets its own suffixed key so switching the
-// selector refetches and never paints stale cross-profile config (the
-// AGENTS.md scope-in-key rule). profileScopeKey folds a remote pin's
-// connection id into the suffix, so two gateways' same-named profiles never
-// share a cache row.
-export const hermesConfigKey = (profile?: ProfileScope) =>
-  profile == null ? HERMES_CONFIG_KEY : ([...HERMES_CONFIG_KEY, profileScopeKey(profile)] as const)
+// An object scope owns its own row (null connection included); string and omitted scopes keep the ambient rows.
+function configQueryKey(root: 'hermes-config-record' | 'hermes-config-schema', scope?: ProfileScope) {
+  if (scope && typeof scope === 'object') {
+    return [root, 'owner', scope.connectionId?.trim() || null, scope.profile?.trim() || 'default'] as const
+  }
+
+  return scope == null ? ([root] as const) : ([root, profileScopeKey(scope)] as const)
+}
+
+export const hermesConfigKey = (profile?: ProfileScope) => configQueryKey('hermes-config-record', profile)
+export const hermesConfigSchemaKey = (profile?: ProfileScope) => configQueryKey('hermes-config-schema', profile)
 
 // staleTime 0 → serve cache instantly, background-revalidate on every mount.
 // `profile` scopes both the query key and the fetch; omitting it preserves the
@@ -45,4 +46,5 @@ export const hermesConfigCacheWriter = (profile?: ProfileScope) =>
   writeCache<HermesConfigRecord>(hermesConfigKey(profile))
 
 export const invalidateHermesConfig = (profile?: ProfileScope) =>
-  queryClient.invalidateQueries({ queryKey: hermesConfigKey(profile) })
+  // A legacy profile named "owner" would otherwise prefix-match every owner row.
+  queryClient.invalidateQueries({ queryKey: hermesConfigKey(profile), exact: profile != null })

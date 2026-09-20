@@ -9,6 +9,7 @@ handler). Endpoints are env-overridable because ``/authorize`` (dashboard) and
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import html
 import logging
@@ -394,11 +395,27 @@ def _detect_connection() -> tuple[bool, str | None]:
         auth = None
     return auth is not None, auth
 
-def get_flow_status() -> dict[str, object]:
-    status, _thread = _flow_state(_flow_target())
-    with _status_lock:
-        state, detail = status.state, status.detail
-    connected, auth = _detect_connection()
+@contextlib.contextmanager
+def _home_override(hermes_home: str | Path | None):
+    """Resolve the profile under ``hermes_home`` when the host names one; None keeps the caller's scope."""
+    if hermes_home is None:
+        yield
+        return
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(hermes_home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+def get_flow_status(*, hermes_home: str | Path | None = None) -> dict[str, object]:
+    with _home_override(hermes_home):
+        status, _thread = _flow_state(_flow_target())
+        with _status_lock:
+            state, detail = status.state, status.detail
+        connected, auth = _detect_connection()
     return {"state": state, "detail": detail, "connected": connected, "auth": auth}
 
 def _set_status(status: FlowStatus, state: str, detail: str = "") -> None:
@@ -407,10 +424,15 @@ def _set_status(status: FlowStatus, state: str, detail: str = "") -> None:
 
 def start_loopback_flow_background(
     *, config_path: Path | None = None, host: str | None = None, source: str = "hermes-desktop",
-    timeout: float = 300.0,
+    timeout: float = 300.0, hermes_home: str | Path | None = None,
 ) -> dict[str, str]:
     """Launch the loopback flow in a daemon thread; returns the initial status.
     Idempotent while pending, so a double-click can't open two tabs / bind :8765 twice."""
+    with _home_override(hermes_home):
+        return _start_loopback_flow(config_path=config_path, host=host, source=source, timeout=timeout)
+
+
+def _start_loopback_flow(*, config_path: Path | None, host: str | None, source: str, timeout: float) -> dict[str, str]:
     global _flow_thread
     # Resolve under the caller's profile scope NOW — a context-local HERMES_HOME override can't reach the worker.
     target = _flow_target()

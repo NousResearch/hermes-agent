@@ -90,11 +90,17 @@ def _exec(mod: Any, logger: Optional[logging.Logger] = None) -> bool:
 
 
 def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str, ...],
-                       logger: logging.Logger, synthetic_namespace: Optional[str] = None) -> Optional[Any]:
+                       logger: logging.Logger, synthetic_namespace: Optional[str] = None,
+                       source_snapshot=None) -> Optional[Any]:
     """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded).
     Order matters: parents first (relative imports need them), then siblings as ``module_name.<stem>``
     (so ``from ._x import Y`` resolves), then the module. Finally child is bound onto parent and
     siblings onto module — the shape normal imports produce, which monkeypatch relies on."""
+    if source_snapshot is not None:  # external memory packages load as frozen generations
+        from plugins.package_generation import load_package_generation
+        if synthetic_namespace:
+            register_synthetic_package(synthetic_namespace, [])
+        return load_package_generation(module_name, source_snapshot, execute_init=True)
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None

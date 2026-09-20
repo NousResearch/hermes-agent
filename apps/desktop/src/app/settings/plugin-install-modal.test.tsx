@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The host tab lists installed plugins on mount; only an `install` action counts as installing.
@@ -13,11 +13,18 @@ const { requestGateway } = vi.hoisted(() => ({
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestGatewayForAgent: (_connection: unknown, _profile: unknown, method: string, params: Record<string, unknown>) =>
+    requestGateway(method, params)
+}))
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getProfiles: async () => ({ profiles: [] })
 }))
+vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 
+import { setApiRequestConnection } from '@/api/client'
 import { queryClient } from '@/lib/query-client'
 import {
   $pluginInstallRequest,
@@ -57,6 +64,7 @@ afterEach(() => {
   cleanup()
   closePluginInstallRequest()
   vi.unstubAllGlobals()
+  setApiRequestConnection(null)
 })
 
 describe('Install from Git entry flow', () => {
@@ -125,6 +133,50 @@ describe('Install from Git entry flow', () => {
     expect(installDesktopPlugin).not.toHaveBeenCalled()
   })
 
+  it('Review keeps the owner the request was opened for, not the foreground profile', async () => {
+    $activeGatewayProfile.set('beta')
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: '', profile: { connectionId: null, profile: 'alpha' } }))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Repository' }), {
+      target: { value: 'example/plugin' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Review repository' }))
+    expect($pluginInstallRequest.get()).toMatchObject({
+      repo: 'example/plugin',
+      target: { connectionId: null, profile: 'alpha' }
+    })
+  })
+
+  it('a finished catalog install opens Capabilities on the profile it installed into', async () => {
+    $activeGatewayProfile.set('beta')
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    requestGateway.mockImplementation(async method =>
+      method === 'plugins.manage' ? { ok: true, plugin_name: 'fixture' } : { plugins: [] }
+    )
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <QueryClientProvider client={queryClient}>
+          <LocationProbe />
+          <PluginInstallModal />
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+    act(() =>
+      openPluginInstallRequest({
+        repo: 'fixture/plugin',
+        catalogName: 'fixture',
+        profile: { connectionId: null, profile: 'alpha' }
+      })
+    )
+    const install = (await screen.findByRole('button', { name: 'Install' })) as HTMLButtonElement
+    await waitFor(() => expect(install.disabled).toBe(false))
+    fireEvent.click(install)
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/capabilities?tab=plugins'))
+    expect(screen.getByTestId('state').textContent).toBe(
+      JSON.stringify({ capabilityScope: { connectionId: null, profile: 'alpha' } })
+    )
+  })
+
   it('pins a custom install to a full commit SHA and refuses anything shorter', async () => {
     probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
     requestGateway.mockImplementation(async method =>
@@ -146,5 +198,72 @@ describe('Install from Git entry flow', () => {
         expect.objectContaining({ action: 'install', ref: sha.toLowerCase() })
       )
     )
+  })
+})
+
+function LocationProbe() {
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  return (
+    <>
+      <button onClick={() => navigate('/elsewhere')}>Leave</button>
+      <output data-testid="location">{location.pathname + location.search}</output>
+      <output data-testid="state">{JSON.stringify(location.state)}</output>
+    </>
+  )
+}
+
+describe('Install started from Memory settings', () => {
+  const api = vi.fn()
+
+  beforeEach(() => {
+    $activeGatewayProfile.set('beta')
+    $connection.set({ connectionId: 'source-a', mode: 'remote' } as never)
+    setApiRequestConnection('source-a')
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    api.mockResolvedValue({
+      active: 'builtin',
+      providers: [{ name: 'fixture', description: '', status: 'needs_config' }]
+    })
+    vi.stubGlobal('hermesDesktop', { probePluginRepo, api })
+    requestGateway.mockImplementation(async (_method, params) =>
+      params?.action === 'install' ? { ok: true, plugin_name: 'fixture' } : { plugins: [] }
+    )
+    openPluginInstallRequest({ repo: 'fixture/plugin', origin: { kind: 'memory', providerId: 'fixture' } })
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=config:memory']}>
+        <QueryClientProvider client={queryClient}>
+          <LocationProbe />
+          <PluginInstallModal />
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+  })
+
+  async function install() {
+    const button = await screen.findByRole('button', { name: 'Install' })
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(button)
+  }
+
+  const installed = () => waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
+
+  it('returns to Memory settings for the installed provider; the read goes to the owner captured when the request opened', async () => {
+    await install()
+    setApiRequestConnection('source-b')
+    await installed()
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/memory', profile: 'beta', connectionId: 'source-a' })
+    )
+    expect(screen.getByTestId('location').textContent).toBe('/settings?tab=config:memory&provider=fixture')
+  })
+
+  it('a completion that lands after the view moved on does not navigate', async () => {
+    await install()
+    // The open dialog hides its siblings from the accessibility tree.
+    fireEvent.click(screen.getByText('Leave'))
+    await installed()
+    expect(screen.getByTestId('location').textContent).toBe('/elsewhere')
   })
 })

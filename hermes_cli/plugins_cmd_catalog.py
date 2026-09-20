@@ -20,6 +20,8 @@ from hermes_cli.plugin_catalog import (
     _NAME_RE,
 )
 
+from hermes_cli.plugin_installation import installation_transaction
+
 logger = logging.getLogger(__name__)
 
 CATALOG_SIDECAR = ".hermes-catalog.json"
@@ -60,6 +62,7 @@ def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
     return entry
 
 
+@installation_transaction
 def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry) -> None:
     """``.hermes-catalog.json`` inside the install dir — how ``update``/``list``/dashboards know the plugin
     came from the catalog and at which pin."""
@@ -111,6 +114,7 @@ def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry])
 
 # ── Catalog-aware install / update ───────────────────────────────────────────
 
+@installation_transaction
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance sidecar.
@@ -125,6 +129,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     return target, manifest, installed_name
 
 
+@installation_transaction
 def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:
     """Re-pin a catalog install to the current catalog SHA (never ``git pull``). Returns
     ``(new_sha, changed)``; raises ``PluginOperationError`` when the entry left the catalog."""
@@ -143,6 +148,7 @@ def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:
     return entry.sha, True
 
 
+@installation_transaction
 def cmd_update_catalog(name: str, target: Path, sidecar: dict, console) -> None:
     from hermes_cli.plugins_cmd import PluginOperationError, _fail
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")

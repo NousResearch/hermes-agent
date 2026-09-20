@@ -1,6 +1,8 @@
 import type * as React from 'react'
 import { useCallback, useMemo, useState } from 'react'
+import { useLocation } from 'react-router'
 
+import type { ProfileScope } from '@/api/client'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
@@ -31,6 +33,10 @@ import { ToolsetsTab } from './toolsets/toolsets-tab'
 const CAPABILITY_MODES = ['skills', 'toolsets', 'mcp', 'plugins'] as const
 
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
+
+export interface CapabilitiesNavigationState {
+  capabilityScope?: ProfileScope
+}
 
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -81,7 +87,10 @@ export function CapabilitiesView({
     setHubMounted(true)
   }
 
-  const scope = useCapabilityScope({ fixedConnection, fixedProfile })
+  // An embedded view's scope belongs to its host dialog, not to the route.
+  const location = useLocation()
+  const routeScope = embedded ? undefined : (location.state as CapabilitiesNavigationState | null)?.capabilityScope
+  const scope = useCapabilityScope({ fixedConnection, fixedProfile, routeScope })
 
   // The two installed lists the tab pills count. They are fetched here, as a
   // pair, because the counts stay live for the tab the user is NOT on.

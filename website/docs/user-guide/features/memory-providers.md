@@ -25,6 +25,31 @@ memory:
   provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
+## Desktop
+
+Open **Settings → Memory** for a backend connection and profile. The list shows
+built-in memory and every discovered provider, with **Active** and a readiness
+state: **Ready**, **Needs configuration**, **Missing**, or **Unavailable**.
+
+1. **Install.** **Explore memory plugins** opens Capabilities → Plugins for the
+   same connection and profile; memory plugins have their own section in the
+   catalog picker. A selected provider that is **Missing** offers **Install from
+   Git** and returns here when the install finishes.
+2. **Configure.** **Configure** opens a provider's settings without selecting it.
+   Leave a secret blank to keep its current value; saved secrets are never shown.
+   Providers with a native full-form writer save every visible field together
+   through **Full configuration**.
+3. **Connect.** Providers with an OAuth flow show **Connect**. The browser and
+   callback run on the backend machine, so a headless or remote backend needs the
+   provider's own setup instead. **Stop waiting** stops polling; it does not
+   cancel the authorization, and **Check again** picks it back up.
+4. **Use provider.** When the provider is **Ready**, choose **Use provider**.
+   Built-in memory switches back.
+
+Every step targets the connection and profile of the view it started from, even
+if you switch profiles while it runs. Selection changes apply to new sessions;
+open conversations keep their provider.
+
 ## How It Works
 
 When a memory provider is active, Hermes automatically:
@@ -304,6 +329,10 @@ hermes memory setup    # select "openviking"
 # Or manually:
 hermes config set memory.provider openviking
 ```
+
+Desktop shows OpenViking's own schema and saves it through the provider's
+full-form writer. Linked `ovcli.conf` behavior and advanced options stay in
+`hermes memory setup`.
 
 `hermes memory setup` can reuse or copy connection values from
 `~/.openviking/ovcli.conf`. Manual setup uses the active profile's `.env` file;
@@ -697,12 +726,14 @@ Each provider's data is isolated per [profile](../profiles.md):
 ## Providers Moving to the Plugin Catalog
 
 Memory providers are moving out of the Hermes tree into their maintainers' own repositories,
-published through the [plugin catalog](./plugins.md). Nothing changes for you: the
+published through the [plugin catalog](./plugin-catalog.md). Nothing changes for you: the
 provider name, your `memory.<name>` settings, its data directory and its tools stay the same.
 When a provider you have configured stops shipping with Hermes, `hermes update` installs its
 catalog plugin for every profile that names it; if you update through the Desktop app, the
 agent does the same the first time it starts (unless `security.allow_lazy_installs` is
 `false`, in which case it prints the `hermes plugins install <name>` one-liner instead).
+A catalog entry can mark such a plugin with `former_bundled: true`; the flag is history,
+not install or readiness state.
 
 ## Building a Memory Provider
 

@@ -193,6 +193,28 @@ export function profileScopeKey(scope?: ProfileScope): string {
   return (scope ?? '').trim() || 'default'
 }
 
+/** A (connection, profile) pair fixed when an action starts. A null connection is the legacy profile route. */
+export interface OwnerScope {
+  readonly connectionId: null | string
+  readonly profile: string
+}
+
+// Resolves the ambient connection and profile now, so a later foreground switch cannot retarget the caller.
+export function captureOwner(scope?: ProfileScope): OwnerScope {
+  const pinned = capabilityScoped(scope)
+
+  return { connectionId: pinned.connectionId ?? null, profile: pinned.profile || 'default' }
+}
+
+export function sameOwner(a: OwnerScope, b: OwnerScope): boolean {
+  return a.connectionId === b.connectionId && a.profile === b.profile
+}
+
+// Unlike hermesApi, an object scope with a null connection is sent without the ambient connection tag.
+export function scopedApi<T>(scope: ProfileScope, request: HermesApiRequest): Promise<T> {
+  return window.hermesDesktop.api<T>({ ...capabilityScoped(scope), ...request })
+}
+
 /** Registry connection id that connection-scoped WS calls should target
  *  (null → the local pool). Read-only twin of setApiRequestConnection. */
 export function getApiRequestConnection(): null | string {

@@ -12,7 +12,7 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -23,6 +23,7 @@ from hermes_cli.web_server_memory import (
 )
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
+from plugins.memory import contract
 from plugins.memory.config_schema import (
     STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
@@ -123,10 +124,27 @@ def _read_flat_json(provider: ProviderConfigSchema) -> Dict[str, Any]:
     return _read_json_dict(_flat_json_path(provider), "memory provider config")
 
 
+class HonchoModules(NamedTuple):
+    """The ``client`` and ``oauth`` modules a ``honcho_host_block`` read or save goes through; an external
+    package's own (``contract.ExternalProvider.host_modules``), else the bundled plugin's."""
+
+    client: Any
+    oauth: Any
+
+    def resolvers(self) -> tuple:
+        return self.client.resolve_active_host, self.client.resolve_config_path, self.client._host_block
+
+
+def _honcho_modules(modules: Optional[HonchoModules]) -> HonchoModules:
+    if modules is not None:
+        return modules
+    from plugins.memory.honcho import client, oauth
+    return HonchoModules(client, oauth)
+
+
 def _honcho_resolvers():
     """Lazily import the Honcho plugin's resolvers (optional plugin)."""
-    from plugins.memory.honcho.client import _host_block, resolve_active_host, resolve_config_path
-    return resolve_active_host, resolve_config_path, _host_block
+    return _honcho_modules(None).resolvers()
 
 
 def _save_submitted_secrets(provider: ProviderConfigSchema, values: Dict[str, str]) -> list:
@@ -141,6 +159,14 @@ def _save_submitted_secrets(provider: ProviderConfigSchema, values: Dict[str, st
             save_env_value(field.env_key, submitted)
         saved.append((field, submitted))
     return saved
+
+
+def _validate_submitted(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    """Coerce every submitted non-secret field before anything is written, so a malformed
+    submission is rejected as a whole instead of after a secret already changed."""
+    for field in provider.fields:
+        if not field.is_secret and field.key in values:
+            _coerce_field_value(field, values[field.key])
 
 
 def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], target_for) -> None:
@@ -169,27 +195,29 @@ def _write_json_0600(path: Path, data: Dict[str, Any]) -> None:
     atomic_json_write(path, data, mode=0o600)
 
 
-def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str], modules=None) -> None:
+    _validate_submitted(provider, values)
     existing = _read_flat_json(provider)
     _save_submitted_secrets(provider, values)
     _apply_field_values(provider, values, lambda field: existing)
     _write_json_0600(_flat_json_path(provider), existing)
 
 
-def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str],
+                           modules: Optional[HonchoModules] = None) -> None:
     """Persist submitted fields to Honcho's real config for the active host (partial
     saves touch only submitted keys; blank text clears a key — see ``_apply_field_values``)."""
-    from plugins.memory.honcho.oauth import ACCESS_TOKEN_PREFIX, _config_refresh_lock, _read_config_strict, _refresh_lock
-
-    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
+    _validate_submitted(provider, values)
+    oauth = _honcho_modules(modules).oauth
+    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers() if modules is None else modules.resolvers()
     host = resolve_active_host()
     # Write the file reads resolve, or a save shadows it with a sparse copy.
     path = resolve_config_path()
 
     # OAuth rotation is single-use; an unlocked RMW here can revoke the grant.
-    with _refresh_lock, _config_refresh_lock(path):
+    with oauth._refresh_lock, oauth._config_refresh_lock(path):
         # Strict: a file that exists but does not parse must not be replaced by this host's block alone.
-        cfg = _read_config_strict(path)
+        cfg = oauth._read_config_strict(path)
         hosts = cfg.get("hosts")
         cfg["hosts"] = hosts = hosts if isinstance(hosts, dict) else {}
         # Update the block reads resolve (legacy dot-form included), never shadow it.
@@ -200,7 +228,7 @@ def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str
         for field, submitted in _save_submitted_secrets(provider, values):
             # Persist where the client reads first; an OAuth token owns that slot.
             stored = host_block.get(field.key)
-            if not (isinstance(stored, str) and stored.startswith(ACCESS_TOKEN_PREFIX)):
+            if not (isinstance(stored, str) and stored.startswith(oauth.ACCESS_TOKEN_PREFIX)):
                 host_block[field.key] = submitted
 
         _apply_field_values(provider, values, lambda field: host_block if field.scope == "host" else cfg)
@@ -242,11 +270,11 @@ def _declared_field_is_set(field: ProviderField, sources: tuple, env: Dict[str, 
     return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
 
 
-def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]:
+def _declared_provider_payload(provider: ProviderConfigSchema, modules: Optional[HonchoModules] = None) -> Dict[str, Any]:
     env = load_env()
     is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
     if is_honcho:
-        resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
+        resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers() if modules is None else modules.resolvers()
         host = resolve_active_host()
         raw = _read_json_dict(resolve_config_path(), "Honcho config")
         host_block = host_block_of(raw, host)
@@ -280,7 +308,8 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
         # Presence, not truthiness — a stored False/0 is still "set".
         entry["is_set"] = native is not None if is_honcho else bool(value)
         fields.append(entry)
-    return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
+    return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields,
+            **({"capabilities": _capabilities(partial_saves=True)} if fields else {})}
 
 
 def _stringify_submitted(value: Any) -> str:
@@ -302,15 +331,25 @@ def _memory_section(config: Dict[str, Any]) -> Dict[str, Any]:
     return memory_config
 
 
-def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
-    writer = _write_provider_honcho if provider.storage == STORAGE_HONCHO_HOST_BLOCK else _write_provider_flat
-    writer(provider, values)
+def _capabilities(*, partial_saves: bool) -> Dict[str, bool]:
+    return {"save_without_activation": True, "supports_partial_updates": partial_saves, "requires_full_form": not partial_saves}
+
+
+def _select_memory_provider(name: str) -> None:
     with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         config = load_config()
         memory_config = _memory_section(config)
-        if memory_config.get("provider") != provider.name:
-            memory_config["provider"] = provider.name
+        if memory_config.get("provider") != name:
+            memory_config["provider"] = name
             save_config(config)
+
+
+def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str], *, activate: bool,
+                                   modules: Optional[HonchoModules] = None) -> None:
+    writer = _write_provider_honcho if provider.storage == STORAGE_HONCHO_HOST_BLOCK else _write_provider_flat
+    writer(provider, values, modules)
+    if activate:
+        _select_memory_provider(provider.name)
 
 
 # ── Setup: dependency installation ────────────────────────────────────────────
@@ -410,6 +449,15 @@ def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
 
 # ── Legacy provider surface (provider.config_schema()) ────────────────────────
 
+def _memory_provider_native_writer(provider: Any):
+    from agent.memory_provider import MemoryProvider
+
+    writer = getattr(provider, "save_config", None)
+    if getattr(writer, "__func__", None) is MemoryProvider.save_config:
+        return None  # The inherited no-op uses core-owned generic persistence.
+    return writer
+
+
 def _memory_provider_payload(name: str, provider: Any) -> Dict[str, Any]:
     data = _read_memory_provider_existing_values(name)
     fields = [
@@ -424,6 +472,7 @@ def _memory_provider_payload(name: str, provider: Any) -> Dict[str, Any]:
     return {
         "name": name, "label": name.replace("_", " ").replace("-", " ").title(), "fields": fields,
         "setup": _memory_provider_setup_info(name),
+        **({"capabilities": _capabilities(partial_saves=_memory_provider_native_writer(provider) is None)} if fields else {}),
     }
 
 
@@ -462,14 +511,10 @@ def _coerce_schema_field(field: Dict[str, Any], raw: Any) -> Any:
 
 
 def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[str, Any]) -> None:
-    if provider is not None and hasattr(provider, "save_config"):
-        try:
-            from agent.memory_provider import MemoryProvider as _BaseMemoryProvider
-        except Exception:
-            _BaseMemoryProvider = None
-        if _BaseMemoryProvider is None or type(provider).save_config is not _BaseMemoryProvider.save_config:
-            provider.save_config(values, str(get_hermes_home()))
-            return
+    writer = _memory_provider_native_writer(provider)
+    if writer is not None:
+        writer(values, str(get_hermes_home()))
+        return
     with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         cfg = load_config()
         memory_cfg = _memory_section(cfg)
@@ -516,11 +561,15 @@ def _require_valid_memory_provider_name(name: str) -> None:
 @router.get("/api/memory/providers/{name}/config")
 async def get_memory_provider_config(name: str, surface: Optional[str] = None, profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
+    declared_surface = surface == "declared"
 
     def _run():
         # Undeclared providers (e.g. builtin) have no config surface; an
         # empty schema makes the generic panel render nothing.
-        if surface == "declared":
+        if declared_surface:
+            external = contract.for_provider(name)
+            if external is not None:
+                return external.describe()
             declared = get_provider_config_schema(name)
             if declared is None:
                 return {"name": name, "label": name, "docs_url": "", "fields": []}
@@ -530,7 +579,8 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
             return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
         return _memory_provider_payload(name, provider)
 
-    return await scoped_to_thread(profile, _run)
+    with _value_errors_as_http("GET /api/memory/providers/%s/config failed", name):
+        return await scoped_to_thread(profile, _run)
 
 
 @router.post("/api/memory/providers/{name}/setup")
@@ -556,26 +606,34 @@ async def update_memory_provider_config(
 ):
     _require_valid_memory_provider_name(name)
     values = body.values or {}
+    declared_surface = surface == "declared"
 
     def _run():
-        if surface == "declared":
-            declared = get_provider_config_schema(name)
-            if declared is None:
-                raise _unknown_provider(name)
-            _update_memory_provider_config(declared, {k: _stringify_submitted(v) for k, v in values.items()})
+        if declared_surface:
+            external = contract.for_provider(name)
+            if external is not None:
+                if not external.save(values):
+                    raise _unknown_provider(name)
+                if body.activate:
+                    _select_memory_provider(name)
+            else:
+                declared = get_provider_config_schema(name)
+                if declared is None:
+                    raise _unknown_provider(name)
+                _update_memory_provider_config(declared, {k: _stringify_submitted(v) for k, v in values.items()}, activate=body.activate)
             _invalidate_plugins_hub_cache()
             return {"ok": True}
-        provider = _load_memory_provider(name)
-        if provider is None:
-            raise _unknown_provider(name)
-        _write_memory_provider_config_values(name, provider, values)
-        _require_memory_provider_ready(name)
-        with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
-            config = load_config()
-            _memory_section(config)["provider"] = name
-            save_config(config)
+        else:
+            provider = _load_memory_provider(name)
+            if provider is None:
+                raise _unknown_provider(name)
+            _write_memory_provider_config_values(name, provider, values)
+        if body.activate:
+            if not declared_surface:  # the Desktop surface selects on request; the legacy dashboard refuses an unready provider
+                _require_memory_provider_ready(name)
+            _select_memory_provider(name)
         _invalidate_plugins_hub_cache()
-        return {"ok": True, "active": name}
+        return {"ok": True, **({"active": name} if body.activate and not declared_surface else {})}
 
     with _value_errors_as_http("PUT /api/memory/providers/%s/config failed", name):
         return await scoped_to_thread(profile, _run)

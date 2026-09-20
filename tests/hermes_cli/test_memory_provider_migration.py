@@ -56,3 +56,43 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
     said: list[str] = []
     assert mig.migrate_home(home, install=lambda n: pytest.fail("must not install"), say=said.append) is None
     assert "not in the plugin catalog" in said[0] and "memory.provider" in said[0]
+
+
+@pytest.fixture
+def scoped_homes(tmp_path, monkeypatch):
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+    homes = (tmp_path / "a", tmp_path / "b")
+    for h in homes:
+        h.mkdir()
+        (h / "config.yaml").write_text("memory:\n  provider: ${MIGRATION_PROVIDER}\nsecurity:\n  allow_lazy_installs: true\n")
+        (h / ".env").write_text(f"MIGRATION_PROVIDER={h.name}-provider\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    active = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        yield homes
+    finally:
+        set_multiplex_active(active)
+
+
+def test_startup_recovery_runs_once_per_home_and_provider_under_that_homes_scope(scoped_homes, monkeypatch, caplog):
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli import plugins_cmd
+    from hermes_constants import get_hermes_home
+
+    a, b = scoped_homes
+    calls = []
+    monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", lambda identifier, *, force, enable, catalog_name: (
+        calls.append((get_hermes_home().resolve(), catalog_name)) or {"ok": False, "error": "offline fixture"}))
+    assert [mig.configured_provider(h) for h in (a, b, a)] == ["a-provider", "b-provider", "a-provider"]  # each home's own .env
+    for home in (a, b, a / ".." / "a"):
+        with _profile_runtime_scope(home, hydrate_secrets=False):
+            assert mig.recover_at_startup("fixture") is False
+    assert calls == [(a, "a-provider"), (b, "b-provider")]  # each home's configured provider; A spelled twice is one home
+    assert "hermes plugins install fixture" in caplog.text
+    assert not mig._install_into(a)("fixture")["ok"] and calls[-1] == (a, "fixture")  # an explicit repair ignores the budget

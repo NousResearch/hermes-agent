@@ -33,7 +33,18 @@ silently redirect the agent's memory rather than merely override a tool.
 :::
 
 Discovery only *enumerates* — it never imports a provider. Nothing runs until
-`memory.provider` names it.
+`memory.provider` names it, except that Desktop's settings and Connect surfaces
+load a provider's config schema or companions on demand without selecting it.
+
+### External code updates and sessions
+
+An external provider loads as a Python package generation keyed by profile,
+source path, and source bytes. After an update, new sessions get the new code,
+schema, and tools; a session that already holds a provider instance keeps its
+module and its delayed relative imports for the life of the process. Bundled
+providers keep plain `plugins.memory.<name>` imports. Use package-relative
+imports for helpers; absolute imports and non-Python assets are not part of the
+generation.
 
 ### Directory Provider
 
@@ -65,10 +76,11 @@ keep your implementation, skills, and other resources in the normal Python
 package layout. No copy under `$HERMES_HOME/plugins/` is required.
 
 A package entry point gets everything a directory install does, including the
-two files Hermes reads from disk rather than importing — `config_schema.py`
-(the dashboard config panel) and `cli.py` (your `hermes <provider>`
-subcommands). Both are found next to your package's `__init__.py`, so point the
-entry point at a package rather than a single module if you ship either.
+files Hermes reads from disk rather than importing — `config_schema.py` (the
+config panel), `cli.py` (your `hermes <provider>` subcommands) and the optional
+`oauth_flow.py` (Desktop's Connect button). All are found next to your package's
+`__init__.py`, so point the entry point at a package rather than a single module
+if you ship any of them.
 
 ## The MemoryProvider ABC
 
@@ -148,7 +160,7 @@ workspace; absent or empty cwd remains unpinned.
 
 | Method | Purpose | Must Implement? |
 |--------|---------|-----------------|
-| `get_config_schema()` | Declare config fields for `hermes memory setup` | **Yes** |
+| `get_config_schema()` | Declare config fields for `hermes memory setup` | Optional (base returns `[]`) |
 | `save_config(values, hermes_home)` | Write non-secret config to native location | **Yes** (unless env-var-only) |
 
 ### Optional Hooks
@@ -255,8 +267,9 @@ own directory, so a provider installed from the plugin catalog keeps all of them
 
 | Surface | What the provider ships |
 |---|---|
-| Desktop → Capabilities → Tools → Memory (config panel) | `config_schema.py` (below) |
-| `hermes memory setup` wizard | `get_config_schema()` declares the fields the wizard prompts for, `save_config(config, hermes_home)` persists them, `post_setup(hermes_home, config)` runs afterwards for anything interactive (OAuth, first sync); `get_status_config()` feeds `hermes memory status` |
+| Desktop → Settings → Memory | `config_schema.py` (below), or the `get_config_schema()` fields saved through `save_config()` as one full form |
+| Desktop → Settings → Memory → Connect | Optional `oauth_flow.py` ([below](#optional-oauth-companion)) |
+| `hermes memory setup` wizard | `get_config_schema()` declares the fields the wizard prompts for, `save_config(values, hermes_home)` persists them, `post_setup(hermes_home, config)` runs afterwards for anything interactive (OAuth, first sync); `get_status_config()` feeds `hermes memory status` |
 | `hermes <provider> …` subcommands | `cli.py` with `register_cli(subparser)` ([Adding CLI Commands](#adding-cli-commands)) |
 | Python dependencies | `pyproject.toml` `[project] dependencies` (or `python_dependencies` in `plugin.yaml`); installed under Hermes' own pins at install time and re-applied across `hermes update` |
 
@@ -312,6 +325,46 @@ def save_config(self, values: dict, hermes_home: str) -> None:
 ```
 
 For env-var-only providers, leave the default no-op.
+
+`save_config` always receives the full form; the host never passes activation or
+partial-update flags to a plugin.
+
+### Desktop settings
+
+Desktop reads and writes `/api/memory/providers/{name}/config?surface=declared`.
+The host uses a sibling `config_schema.py` when the provider ships one and falls
+back to `get_config_schema()` otherwise. Neither path selects the provider.
+
+| Schema | Storage | Form |
+|---|---|---|
+| `config_schema.py` (`CONFIG_SCHEMA`, a `ProviderConfigSchema`) | Host-owned: `flat_json` writes `$HERMES_HOME/<provider>/config.json`; `honcho_host_block` keeps Honcho's host block | Partial saves; only submitted fields change |
+| `get_config_schema()` with a `save_config` override | Your writer, called with the whole form; a field the submission leaves out keeps its stored value, then its default | Desktop advertises `requires_full_form` |
+| `get_config_schema()` with the default no-op | Host-owned `memory.<name>` config merge | Partial saves |
+
+Secret fields use their `env_key` and are stored in the profile's env store. Forms
+receive a blank value plus an is-set flag, and a blank submission keeps the stored
+secret. Saving sends `activate: false`; **Use provider** is a separate call.
+
+## Optional OAuth companion
+
+Ship a sibling `oauth_flow.py` exporting `start_loopback_flow_background(*, hermes_home)`
+and `get_flow_status(*, hermes_home)`. Both return a dict with `state` (`idle`,
+`pending`, `connected`, or `error`) and optional `connected` and `auth` (`"oauth"`
+or `"apikey"`); keep credentials out of it. The launcher must return promptly.
+
+Desktop calls `GET /api/memory/providers/{provider}/oauth/status` and
+`POST /api/memory/providers/{provider}/oauth/start` with the same connection and
+profile scope as config requests. Hooks that accept `hermes_home` run in the host
+process, the launcher on a thread under that profile's scope. Zero-argument hooks
+run in a child process bound to the profile's environment, so threads the launcher
+starts keep the right `HERMES_HOME` and `.env` after the request returns. The
+browser and loopback callback run on the backend machine.
+
+Responses are sanitized before they reach clients: `state`, `connected`, and
+`auth` pass through, `detail` is replaced with fixed host text, and other fields
+are dropped. A provider without a companion returns `supported: false`. A
+`pending` flow pins the companion code it started with until it settles, and a
+repeated start request checks status instead of launching again.
 
 ## Plugin Entry Point
 

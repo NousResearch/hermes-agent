@@ -1,6 +1,11 @@
 import { atom } from 'nanostores'
 
+import { captureOwner, type OwnerScope, type ProfileScope, profileScopeKey, scopedApi } from '@/api/client'
+import { hermesConfigSchemaKey } from '@/app/hooks/use-config-record'
+import { queryClient } from '@/lib/query-client'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import type { MemoryStatusResponse } from '@/types/hermes'
 
 /**
  * Feature store for backend (agent) plugins — the native Hermes plugins plus
@@ -49,8 +54,7 @@ export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
-/** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
@@ -75,66 +79,85 @@ export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
   return !key || !HIDDEN_KEY_PREFIXES.some(prefix => key.startsWith(prefix))
 }
 
-let inflight: Promise<void> | null = null
-let inflightProfile: string | null = null
-// Bumped per load so a slow response from a previous profile scope can't
-// overwrite the newer scope's list (async results can land out of order).
-let loadGeneration = 0
+const inflightLoads = new Map<string, Promise<void>>()
+let foregroundOwner: string | null = null
 
-/** Scope a `plugins.manage` payload to a profile. Omitted (null) = the
- *  backend's launch profile — older backends ignore the extra param. */
-const withProfile = (params: Record<string, unknown>, profile?: string | null) =>
-  profile ? { ...params, profile } : params
+const requestForOwner =
+  (owner: OwnerScope): GatewayRequest =>
+  (method, params) =>
+    requestGatewayForAgent(owner.connectionId, owner.profile, method, { ...params, profile: owner.profile })
 
-/** Fetch the backend plugin list, optionally scoped to another profile's
- *  HERMES_HOME. Always refetches (it's a cheap local disk scan on the
- *  backend); concurrent callers for the SAME profile share one in-flight
- *  request — a different profile starts fresh so a scope switch can't get a
- *  stale list. */
-export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
-  const scope = profile ?? null
+// A foreground load re-homes the store to `profile`'s owner; a background load publishes only if that owner is still foreground.
+export function loadAgentPlugins(profile?: ProfileScope, foreground = true): Promise<void> {
+  const owner = captureOwner(profile)
+  const key = profileScopeKey(owner)
 
-  if (inflight && inflightProfile === scope) {
-    return inflight
+  const canPublish = () => foregroundOwner === key
+
+  if (foreground && !canPublish()) {
+    // Installed-state guards read the rows while loading, so the previous owner's rows are cleared before the read starts.
+    foregroundOwner = key
+    $agentPlugins.set([])
+    $agentPluginsError.set(null)
+    $agentPluginsStatus.set('loading')
+  } else if (canPublish() && $agentPluginsStatus.get() !== 'ready') {
+    $agentPluginsStatus.set('loading')
   }
 
-  const generation = ++loadGeneration
+  const existing = inflightLoads.get(key)
 
-  inflightProfile = scope
-  inflight = (async () => {
-    if ($agentPluginsStatus.get() !== 'ready') {
-      $agentPluginsStatus.set('loading')
-    }
+  if (existing) {
+    return existing
+  }
 
+  const flight = (async () => {
     try {
-      const result = await request<{ plugins?: AgentPluginRow[] }>(
-        'plugins.manage',
-        withProfile({ action: 'list' }, scope)
-      )
+      const result = await requestForOwner(owner)<{ plugins?: AgentPluginRow[] }>('plugins.manage', { action: 'list' })
 
-      if (generation !== loadGeneration) {
-        return
+      if (canPublish()) {
+        $agentPlugins.set(result?.plugins ?? [])
+        $agentPluginsStatus.set('ready')
+        $agentPluginsError.set(null)
       }
-
-      $agentPlugins.set(result?.plugins ?? [])
-      $agentPluginsStatus.set('ready')
-      $agentPluginsError.set(null)
     } catch (e) {
-      if (generation !== loadGeneration) {
-        return
+      if (canPublish()) {
+        $agentPluginsError.set(e instanceof Error ? e.message : String(e))
+        $agentPluginsStatus.set('error')
       }
-
-      $agentPluginsError.set(e instanceof Error ? e.message : String(e))
-      $agentPluginsStatus.set('error')
     } finally {
-      if (generation === loadGeneration) {
-        inflight = null
-        inflightProfile = null
-      }
+      inflightLoads.delete(key)
     }
   })()
 
-  return inflight
+  inflightLoads.set(key, flight)
+
+  return flight
+}
+
+// A mutation needs a scan started after its write, not one already in flight; the owner's memory and schema reads go stale.
+async function refreshAfterMutation(owner: OwnerScope): Promise<void> {
+  const key = profileScopeKey(owner)
+  const schemaKey = hermesConfigSchemaKey(owner)
+  await inflightLoads.get(key)
+  await loadAgentPlugins(owner, false)
+  void queryClient.invalidateQueries({
+    refetchType: 'none',
+    predicate: ({ queryKey }) =>
+      queryKey[0] === 'memory-status' || queryKey[0] === 'memory-provider-config'
+        ? queryKey[1] === key
+        : queryKey[0] === 'hermes-config-schema' &&
+          (queryKey.length === 1 || JSON.stringify(queryKey) === JSON.stringify(schemaKey))
+  })
+}
+
+// Whether the backend now lists `providerId` as installed code; a status read started before the install must not overwrite this one.
+export async function discoverInstalledMemoryProvider(owner: OwnerScope, providerId: string): Promise<boolean> {
+  const queryKey = ['memory-status', profileScopeKey(owner)]
+  await queryClient.cancelQueries({ queryKey, exact: true })
+  const status = await scopedApi<MemoryStatusResponse>(owner, { path: '/api/memory' })
+  queryClient.setQueryData(queryKey, status)
+
+  return status.providers.some(provider => provider.name === providerId && provider.status !== 'missing')
 }
 
 /** Flip a backend plugin on/off and patch the row from the RPC's refreshed
@@ -145,38 +168,22 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
  *  name protocol; the backend-contract skew toast points the user at the
  *  update. Returns whether the toggle stuck. */
 export async function toggleAgentPlugin(
-  request: GatewayRequest,
   key: string,
   enable: boolean,
   failMessage: string,
-  profile?: string | null
+  profile?: ProfileScope
 ): Promise<boolean> {
+  const owner = captureOwner(profile)
   $agentPluginBusy.set(key)
 
   try {
-    const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
-      'plugins.manage',
-      withProfile(
-        {
-          action: 'toggle',
-          key,
-          enable
-        },
-        profile
-      )
-    )
+    const result = await requestForOwner(owner)<{ ok?: boolean }>('plugins.manage', { action: 'toggle', key, enable })
 
     if (!result?.ok) {
       throw new Error(failMessage)
     }
 
-    const refreshed = result.plugin
-
-    if (refreshed) {
-      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...refreshed } : row)))
-    } else {
-      await loadAgentPlugins(request, profile)
-    }
+    await refreshAfterMutation(owner)
 
     return true
   } catch (e) {
@@ -196,46 +203,41 @@ export interface AgentPluginInstallResult {
   error?: string
 }
 
-export async function installAgentPlugin(
-  request: GatewayRequest,
-  opts: {
-    identifier: string
-    force?: boolean
-    enable?: boolean
-    /** Curated-catalog install: the backend resolves repo + pinned SHA from
-     *  its own plugin-catalog and records provenance in the sidecar. */
-    catalogName?: string
-    /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
-    ref?: string
-    /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
-    profile?: string | null
-  }
-): Promise<AgentPluginInstallResult> {
+export async function installAgentPlugin(opts: {
+  identifier: string
+  force?: boolean
+  enable?: boolean
+  /** Curated-catalog install: the backend resolves repo + pinned SHA from
+   *  its own plugin-catalog and records provenance in the sidecar. */
+  catalogName?: string
+  /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
+  ref?: string
+  /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
+  profile?: ProfileScope
+}): Promise<AgentPluginInstallResult> {
+  const owner = captureOwner(opts.profile)
+
   try {
-    const result = await request<{
+    const result = await requestForOwner(owner)<{
       ok?: boolean
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
       error?: string
-    }>(
-      'plugins.manage',
-      withProfile(
-        {
-          action: 'install',
-          identifier: opts.identifier,
-          force: Boolean(opts.force),
-          enable: opts.enable ?? true,
-          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
-          ...(opts.ref ? { ref: opts.ref } : {})
-        },
-        opts.profile
-      )
-    )
+    }>('plugins.manage', {
+      action: 'install',
+      identifier: opts.identifier,
+      force: Boolean(opts.force),
+      enable: opts.enable ?? true,
+      ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+      ...(opts.ref ? { ref: opts.ref } : {})
+    })
 
     if (!result?.ok) {
       return { ok: false, error: result?.error || 'Install failed' }
     }
+
+    await refreshAfterMutation(owner)
 
     return {
       ok: true,
@@ -251,25 +253,21 @@ export async function installAgentPlugin(
 /** Re-pin a catalog-installed plugin to the current catalog SHA (backend
  *  `plugins.manage update`; catalog installs only). Refreshes the list on
  *  success. Returns whether the update applied. */
-export async function updateAgentPlugin(
-  request: GatewayRequest,
-  name: string,
-  failMessage: string,
-  profile?: string | null
-): Promise<boolean> {
+export async function updateAgentPlugin(name: string, failMessage: string, profile?: ProfileScope): Promise<boolean> {
+  const owner = captureOwner(profile)
   $agentPluginBusy.set(name)
 
   try {
-    const result = await request<{ ok?: boolean; unchanged?: boolean }>(
-      'plugins.manage',
-      withProfile({ action: 'update', name }, profile)
-    )
+    const result = await requestForOwner(owner)<{ ok?: boolean; unchanged?: boolean }>('plugins.manage', {
+      action: 'update',
+      name
+    })
 
     if (!result?.ok) {
       throw new Error(failMessage)
     }
 
-    await loadAgentPlugins(request, profile)
+    await refreshAfterMutation(owner)
 
     return !result.unchanged
   } catch (e) {

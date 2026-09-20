@@ -2224,6 +2224,22 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // after the user moved to A with B's cached runtime dead (sleep/wake), then
     // resumed A, staged the image on A and submitted B's text into A — and
     // rebound stored B to A's runtime for every later send.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-session-a' }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([
+        ['stored-session-a', 'rt-session-a'],
+        ['stored-session-b', 'rt-session-b-dead']
+      ])
+    }
+
+    const updates: { sessionId: string; storedSessionId: null | string | undefined }[] = []
+    // What the production dispatcher can see at the moment the retried attach is
+    // issued: it translates the runtime id back to the stored session (and its
+    // owner) through exactly these bindings, so they must be published BEFORE
+    // the retry, not after it returns.
+    let bindingAtRetry: { central: boolean; map: string | undefined } | null = null
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       const sessionId = String(params?.session_id ?? '')
 
@@ -2236,20 +2252,18 @@ describe('usePromptActions submit / queue drain semantics', () => {
           throw new Error('4007 session not found')
         }
 
+        if (sessionId === 'rt-session-b-live') {
+          bindingAtRetry = {
+            central: updates.some(u => u.sessionId === 'rt-session-b-live' && u.storedSessionId === 'stored-session-b'),
+            map: runtimeIdByStoredSessionIdRef.current.get('stored-session-b')
+          }
+        }
+
         return { attached: true, path: '/tmp/shot.png' } as never
       }
 
       return {} as never
     })
-
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-session-a' }
-
-    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([
-        ['stored-session-a', 'rt-session-a'],
-        ['stored-session-b', 'rt-session-b-dead']
-      ])
-    }
 
     let handle: HarnessHandle | null = null
     render(
@@ -2258,6 +2272,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         activeSessionIdRef={activeSessionIdRef}
         getRuntimeIdForStoredSession={storedId => runtimeIdByStoredSessionIdRef.current.get(storedId) ?? null}
         onReady={h => (handle = h)}
+        onUpdateState={(sessionId, storedSessionId) => updates.push({ sessionId, storedSessionId })}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
@@ -2285,6 +2300,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // A background drain never steals the foreground, and B's binding now names B's live runtime.
     expect(activeSessionIdRef.current).toBe('rt-session-a')
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-session-b')).toBe('rt-session-b-live')
+    // …and it did so BEFORE the retried attach went out, in both places the dispatcher reads.
+    expect(bindingAtRetry).toEqual({ central: true, map: 'rt-session-b-live' })
   })
 
   it('a fromQueue drain rebinds to the centrally recorded runtime when its explicit id is stale', async () => {

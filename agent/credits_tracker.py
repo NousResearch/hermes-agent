@@ -406,6 +406,45 @@ def _warm_nous_pricing_cache() -> None:
         logger.debug("credits ▸ nous pricing warm failed", exc_info=True)
 
 
+def rewarm_pricing_before_depleted_notice(agent) -> bool:
+    """Depleted account, model the peek cannot vouch for, Nous catalog COLD: start a background warm
+    whose completion re-runs the policy, and return True so the caller leaves the depleted decision
+    to that re-run instead of flashing a banner the warm catalog would suppress.
+
+    Needed because the session-start warm is one-shot while the Nous catalog expires after
+    ``_NOUS_CATALOG_TTL_SECONDS`` — every inference header after that re-evaluated against a cold
+    peek and brought the banner back for a subscription-billed model. Returns False (decide now)
+    when the peek is warm, the agent is not on Nous, or a warm is already in flight — including the
+    warm's own re-run, which must decide against whatever the fetch produced (fail-open: a failed
+    fetch leaves the peek cold and the banner shows).
+    """
+    base_url = getattr(agent, "base_url", "") or ""
+    if getattr(agent, "provider", "") != "nous" or not base_url:
+        return False
+    try:
+        from hermes_cli.models_pricing import peek_cached_pricing
+
+        if peek_cached_pricing(base_url):
+            return False
+    except Exception:
+        return False
+    inflight = getattr(agent, "_credits_pricing_warm", None)
+    if inflight is not None and inflight.is_alive():
+        return False
+
+    def _warm_then_rerun() -> None:
+        _warm_nous_pricing_cache()
+        if callable(emit := getattr(agent, "_emit_credits_notices", None)):
+            emit()
+
+    from agent.memory_provider import spawn_context_thread
+
+    thread = spawn_context_thread(_warm_then_rerun, name="credits-pricing-warm")
+    agent._credits_pricing_warm = thread
+    thread.start()
+    return True
+
+
 def seed_credits_at_session_start(agent) -> bool:
     """Hydrate agent._credits_state from the portal account (or a dev fixture) and fire the notice policy so
     warnings show at session OPEN (TUI/desktop "ready" and plain-CLI first-turn setup). Idempotent once a seed

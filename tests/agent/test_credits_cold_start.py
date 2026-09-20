@@ -254,3 +254,76 @@ def test_bg_seed_reruns_the_policy_when_a_header_beat_it(monkeypatch):
     assert agent._credits_state is header_state  # the seed never clobbers a live header
     assert agent.emitted[0] == (["credits.depleted"], [])  # cold: shown
     assert agent.emitted[-1] == ([], ["credits.depleted"])  # warm re-run: cleared, no "restored"
+
+
+# ── inference-header path: the catalog goes cold again after the Nous TTL ────
+
+
+def _mixin_agent(model="openai/gpt-5.6-luna"):
+    """The real notice path (RateLimitCreditsMixin._emit_credits_notices) with a recording driver."""
+    from agent.rate_limit_credits import RateLimitCreditsMixin
+    from agent.status_output import StatusOutputMixin
+
+    class _Agent(RateLimitCreditsMixin, StatusOutputMixin):
+        provider = "nous"
+        base_url = _NOUS_BASE
+
+        def __init__(self):
+            self.model = model
+            self.shown: list = []
+            self.cleared: list = []
+            self.notice_callback = lambda n: self.shown.append(n.key)
+            self.notice_clear_callback = self.cleared.append
+            self._credits_state = _state(paid_access=False)
+
+    return _Agent()
+
+
+def _join_pricing_warm(agent):
+    thread = getattr(agent, "_credits_pricing_warm", None)
+    if thread is not None:
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "pricing warm hung"
+
+
+def test_header_after_ttl_expiry_rewarms_instead_of_flashing_the_banner(monkeypatch):
+    """The session-start warm is one-shot; a Nous catalog expires after _NOUS_CATALOG_TTL_SECONDS. A
+    header landing after that saw a cold peek and brought the depleted banner back for a
+    subscription-billed model. Now the cold peek starts a re-warm and the banner never shows."""
+    from agent import credits_tracker
+
+    models_pricing = _cold_pricing_cache(monkeypatch)
+    models_pricing._cache_catalog(
+        _NOUS_BASE[:-3] + models_pricing._PRICING_AUTH_KEY_PREFIX + "abc",
+        _SUBSCRIPTION_CATALOG[_NOUS_BASE[:-3]], models_pricing._NOUS_CATALOG_TTL_SECONDS)
+    agent = _mixin_agent()
+    agent._emit_credits_notices()
+    assert agent.shown == []  # warm catalog: suppressed
+    models_pricing._pricing_cache_retry_after = {  # ...then the TTL passes
+        k: v - models_pricing._NOUS_CATALOG_TTL_SECONDS - 1 for k, v in models_pricing._pricing_cache_retry_after.items()}
+    monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache",
+                        lambda: models_pricing._pricing_cache.update(_SUBSCRIPTION_CATALOG))
+
+    agent._emit_credits_notices()  # the next inference header
+    _join_pricing_warm(agent)
+    assert agent.shown == []
+    assert agent.cleared == []
+
+
+def test_header_on_a_cold_catalog_still_warns_when_the_warm_fails(monkeypatch):
+    """Fail-open guard rail: a warm that leaves the catalog cold decides against the cold peek — the
+    banner shows — and the warm's own re-run does not spawn another warm."""
+    import threading
+
+    from agent import credits_tracker
+
+    _cold_pricing_cache(monkeypatch)
+    monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache", lambda: None)
+    agent = _mixin_agent()
+    before = {t for t in threading.enumerate() if t.name == "credits-pricing-warm"}
+
+    agent._emit_credits_notices()
+    _join_pricing_warm(agent)
+    assert agent.shown == ["credits.depleted"]
+    assert len({t for t in threading.enumerate() if t.name == "credits-pricing-warm"} - before) == 0
+    assert agent._credits_pricing_warm is not None and not agent._credits_pricing_warm.is_alive()

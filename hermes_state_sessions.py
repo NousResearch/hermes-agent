@@ -15,11 +15,11 @@ from agent.session_activity import (
 )
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
-    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _picker_continuation_edge_sql, _sql_json_extract, _sql_session_last_active,
-    _sql_session_last_active_by_id, escape_like as _escape_like,
+    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
+    _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
+from hermes_state_common import _picker_continuation_edge_sql
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -1265,13 +1265,26 @@ class SessionSessionsMixin:
                     SELECT c.root_id, child.id
                     FROM chain c
                     JOIN sessions parent ON parent.id = c.cur_id
+                    JOIN sessions child ON child.parent_session_id = c.cur_id
+                    WHERE parent.end_reason = 'compression'
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+                      AND COALESCE(child.source, '') != 'tool'
+                ),
+                picker_chain(root_id, cur_id) AS (
+                    SELECT root_id, cur_id FROM chain
+                    UNION
+                    SELECT c.root_id, child.id
+                    FROM picker_chain c
+                    JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON {_picker_continuation_edge_sql('parent', 'child')}
                 ),
                 chain_max AS (
                     SELECT
                         root_id,
                         MAX({_sql_session_last_active_by_id("cur_id")}) AS effective_last_active
-                    FROM chain
+                    FROM picker_chain
                     GROUP BY root_id
                 )
                 {select_head}{_sql_session_last_active("s")} AS last_active,

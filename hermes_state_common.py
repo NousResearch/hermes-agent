@@ -210,24 +210,30 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
         f" AND NOT ({_COMPRESSION_CHILD_SQL.format(a=alias)}) AND NOT ({_RESET_CHILD_SQL.format(a=alias)}))")
 
 
-def _picker_continuation_edge_sql(parent: str = "parent", child: str = "child") -> str:
-    """A child edge that belongs to the same user-visible picker conversation.
-
-    Compression continuations carry no fork marker.  Legacy Desktop/TUI recovery rows can instead carry a
-    spurious ``_delegate_from`` marker from the v16 heuristic; only accept those when they were created after
-    their ``ws_orphan_reap`` parent ended and retain the same interactive source.  Real delegate children are
-    created while their parent is live, so they stay excluded.
-    """
+def _picker_post_reap_edge_sql(parent: str = "parent", child: str = "child") -> str:
+    """A proven Desktop/TUI continuation created after its orphan-reaped parent ended."""
     branch = _sql_json_extract(f"{child}.model_config", "$._branched_from")
-    delegate = _sql_json_extract(f"{child}.model_config", "$._delegate_from")
     return (
         f"({child}.parent_session_id = {parent}.id AND {branch} IS NULL "
-        f"AND COALESCE({child}.source, '') != 'tool' AND ("
-        f"({parent}.end_reason = 'compression' AND {delegate} IS NULL) OR "
-        f"({parent}.end_reason = 'ws_orphan_reap' AND {parent}.ended_at IS NOT NULL "
+        f"AND NOT ({_RESET_CHILD_SQL.format(a=child)}) "
+        f"AND COALESCE({child}.source, '') != 'tool' "
+        f"AND {parent}.end_reason = 'ws_orphan_reap' AND {parent}.ended_at IS NOT NULL "
         f"AND {child}.started_at >= {parent}.ended_at "
-        f"AND {child}.source = {parent}.source AND {child}.source IN ('desktop', 'tui'))))"
+        f"AND {child}.source = {parent}.source AND {child}.source IN ('desktop', 'tui'))"
     )
+
+
+def _picker_continuation_edge_sql(parent: str = "parent", child: str = "child") -> str:
+    """Compression or proven post-reap edge in one user-visible picker conversation."""
+    branch = _sql_json_extract(f"{child}.model_config", "$._branched_from")
+    delegate = _sql_json_extract(f"{child}.model_config", "$._delegate_from")
+    compression = (
+        f"({child}.parent_session_id = {parent}.id AND {parent}.end_reason = 'compression' "
+        f"AND {branch} IS NULL AND {delegate} IS NULL "
+        f"AND NOT ({_RESET_CHILD_SQL.format(a=child)}) "
+        f"AND COALESCE({child}.source, '') != 'tool')"
+    )
+    return f"({compression} OR {_picker_post_reap_edge_sql(parent, child)})"
 
 
 def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:

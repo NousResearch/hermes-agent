@@ -908,7 +908,8 @@ class AIAgent(
         _notify_context_engine_session_end(self, messages)
 
     def _sync_external_memory_for_turn(self, *, original_user_message: Any, final_response: Any, interrupted: bool,
-                                       messages: list | None = None) -> None:
+                                       messages: list | None = None, display_kind: str | None = None,
+                                       display_metadata: dict | None = None) -> None:
         """Mirror a completed turn into external memory providers (``sync_all`` + ``queue_prefetch_all``).
 
         Uses ``original_user_message`` (``user_message`` may carry injected skill content). Interrupted turns
@@ -933,10 +934,15 @@ class AIAgent(
             turn_author = getattr(self, "_turn_author", None)
             if turn_author is not None:
                 sync_kwargs["turn_author"] = turn_author
+            sync_kwargs["display_kind"] = display_kind
+            sync_kwargs["display_metadata"] = display_metadata
             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):
-                self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
+                self._memory_manager.queue_prefetch_all(
+                    user_text, session_id=self.session_id or "", display_kind=display_kind,
+                    display_metadata=display_metadata, turn_author=turn_author,
+                )
         except Exception:
             pass
 

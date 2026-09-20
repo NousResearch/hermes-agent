@@ -638,6 +638,8 @@ def finalize_turn(
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message, final_response=final_response,
         interrupted=interrupted, messages=messages,
+        display_kind=getattr(agent, "_turn_display_kind", None),
+        display_metadata=getattr(agent, "_turn_display_metadata", None),
     )
 
     # Background memory/skill review runs AFTER delivery so it never competes with the

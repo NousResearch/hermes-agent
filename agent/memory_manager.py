@@ -32,6 +32,27 @@ _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 
 
+def automatic_memory_turn_allowed(*, display_kind: Optional[str] = None,
+                                   display_metadata: Optional[Dict[str, Any]] = None,
+                                   turn_author: Optional[Dict[str, Any]] = None) -> bool:
+    """Return whether automatic memory work may use this turn as human input.
+
+    Turn provenance is shared by all providers.  A display kind marks runtime
+    traffic (notifications, handoffs, and other synthetic turns); an explicit
+    bot author is also non-human when the transport supplies one.  Content is
+    deliberately not inspected, so a human quoting a notification remains a
+    normal memory turn.
+    """
+    if display_kind:
+        return False
+    if isinstance(display_metadata, dict) and display_metadata.get("synthetic") is True:
+        return False
+    if isinstance(turn_author, dict) and turn_author.get("is_bot") is True:
+        return False
+    return True
+
+
+
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
 
 def _signature_params(fn: Callable[..., Any]):
@@ -391,8 +412,15 @@ class MemoryManager:
     # providers get just the user's instruction (None for a bare invocation).
     _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+    def prefetch_all(self, query: str, *, session_id: str = "",
+                     display_kind: Optional[str] = None,
+                     display_metadata: Optional[Dict[str, Any]] = None,
+                     turn_author: Optional[Dict[str, Any]] = None) -> str:
         """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
+        if not automatic_memory_turn_allowed(
+            display_kind=display_kind, display_metadata=display_metadata, turn_author=turn_author
+        ):
+            return ""
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
@@ -460,8 +488,15 @@ class MemoryManager:
             segments.append(f"{status.glyph} {status.provider_label} — {detail}")
         return "  ".join(segments)
 
-    def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
+    def queue_prefetch_all(self, query: str, *, session_id: str = "",
+                           display_kind: Optional[str] = None,
+                           display_metadata: Optional[Dict[str, Any]] = None,
+                           turn_author: Optional[Dict[str, Any]] = None) -> None:
         """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""
+        if not automatic_memory_turn_allowed(
+            display_kind=display_kind, display_metadata=display_metadata, turn_author=turn_author
+        ):
+            return
         providers = list(self._providers)
         clean_query = self._strip_skill_scaffolding(query) if providers else None
         if not clean_query:
@@ -479,13 +514,19 @@ class MemoryManager:
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "",
                  messages: Optional[List[Dict[str, Any]]] = None,
-                 turn_author: Optional[Dict[str, Any]] = None) -> None:
+                 turn_author: Optional[Dict[str, Any]] = None,
+                 display_kind: Optional[str] = None,
+                 display_metadata: Optional[Dict[str, Any]] = None) -> None:
         """Sync a completed turn to all providers on the background worker.
 
         Never inline: a provider's ``sync_turn`` may block for minutes, which kept ``run_conversation``
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
         ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
         """
+        if not automatic_memory_turn_allowed(
+            display_kind=display_kind, display_metadata=display_metadata, turn_author=turn_author
+        ):
+            return
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:

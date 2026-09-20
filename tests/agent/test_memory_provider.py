@@ -167,6 +167,32 @@ class TestMemoryManager:
         assert len(mgr.providers) == 1
         assert [p.name for p in mgr.providers] == ["test1"]
 
+    @pytest.mark.parametrize("kwargs", [
+        {"display_kind": "internal_notification"},
+        {"display_metadata": {"synthetic": True}},
+        {"turn_author": {"is_bot": True}},
+    ])
+    def test_automatic_memory_skips_synthetic_turns(self, kwargs):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        mgr.add_provider(provider)
+        assert mgr.prefetch_all("quoted completion text", **kwargs) == ""
+        mgr.sync_all("quoted completion text", "reply", **kwargs)
+        mgr.queue_prefetch_all("quoted completion text", **kwargs)
+        assert mgr.flush_pending(timeout=1)
+        assert provider.prefetch_queries == []
+        assert provider.synced_turns == []
+
+    def test_automatic_memory_allows_real_turn_quoting_notification(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        mgr.add_provider(provider)
+        provider._prefetch_result = "recalled memory"
+        assert mgr.prefetch_all("quoted completion text")
+        mgr.sync_all("quoted completion text", "reply")
+        assert mgr.flush_pending(timeout=1)
+        assert provider.synced_turns
+
     def test_get_provider_by_name(self):
         mgr = MemoryManager()
         p = FakeMemoryProvider("test1")
@@ -307,7 +333,7 @@ class TestMemoryManager:
         legacy = FakeMemoryProvider("legacy")
         messages_only = MessagesMemoryProvider("messages")
         author_aware = AuthorMemoryProvider("author")
-        author = {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+        author = {"id": "user:alpha", "name": "Alpha", "is_bot": False}
 
         # One manager per provider: a manager admits a single external provider.
         for p in (legacy, messages_only, author_aware):

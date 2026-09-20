@@ -783,6 +783,7 @@ def _bind_interrupt_scope(agent: Any, ra) -> None:
 
 def _memory_turn_start_and_prefetch(
     agent: Any, original_user_message: Any, turn_author: Optional[Dict[str, Any]] = None,
+    display_kind: Optional[str] = None, display_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
@@ -801,7 +802,13 @@ def _memory_turn_start_and_prefetch(
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
+            prefetch_kwargs = {"session_id": agent.session_id}
+            if display_kind is not None or display_metadata is not None or _author:
+                prefetch_kwargs.update(
+                    display_kind=display_kind, display_metadata=display_metadata,
+                    turn_author=_author,
+                )
+            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, **prefetch_kwargs) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
     # drop injected memory.
     if ext_prefetch_cache:
@@ -900,6 +907,8 @@ def build_turn_context(
     # Reset first: a cached gateway agent must never carry the previous turn's bot author into a human turn.
     turn_author = parse_turn_author(turn_author)
     agent._turn_author = turn_author
+    agent._turn_display_kind = persist_user_display_kind
+    agent._turn_display_metadata = persist_user_display_metadata
 
     # Recover a rotated session before binding log/turn ids or copying client history so
     # everything in this turn belongs to the canonical child.
@@ -1020,7 +1029,10 @@ def build_turn_context(
     )
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    ext_prefetch_cache = _memory_turn_start_and_prefetch(
+        agent, original_user_message, turn_author,
+        persist_user_display_kind, persist_user_display_metadata,
+    )
 
     # Sidecar skipped for codex_app_server/MoA.
     if (

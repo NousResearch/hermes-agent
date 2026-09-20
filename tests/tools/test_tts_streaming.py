@@ -1007,6 +1007,50 @@ def test_sync_pipeline_plays_the_artifact_the_tool_reported(monkeypatch, tmp_pat
     )
 
 
+def test_sync_pipeline_cleans_requested_path_when_artifact_lands_elsewhere(monkeypatch, tmp_path):
+    """The off-path artifact scenario must not trade a dropped sentence for a leak: when the
+    tool reports an artifact written elsewhere, the zero-byte mkstemp request is unlinked
+    too, so a long voice session does not accumulate one empty .mp3 per sentence (#115029)."""
+    from tools import tts_tool
+    from tools import tts_tool_speaker
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    ogg = tmp_path / "sentence.ogg"
+    ogg.write_bytes(b"x" * 32)
+
+    created = []
+    real_mkstemp = tempfile.mkstemp
+
+    def tracking_mkstemp(*a, **k):
+        fd, path = real_mkstemp(*a, **k)
+        created.append(path)
+        return fd, path
+
+    def fake_synth(text, output_path):
+        # Only the reported artifact is real; the requested .mp3 stays a zero-byte mkstemp file.
+        return json.dumps({
+            "success": True,
+            "file_path": str(ogg),
+            "file_paths": [str(ogg)],
+        })
+
+    played = []
+    fake_vm = MagicMock()
+    fake_vm.play_audio_file.side_effect = played.append
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_synth)
+    monkeypatch.setitem(sys.modules, "tools.voice_mode", fake_vm)
+    monkeypatch.setattr(tts_tool_speaker.tempfile, "mkstemp", tracking_mkstemp)
+
+    q = _drain_queue(["Hello there. "])
+    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+        stream_tts_to_speaker(q, threading.Event(), threading.Event())
+
+    assert played == [str(ogg)]
+    assert created, "expected the mkstemp request to have been made"
+    leftovers = [p for p in created if os.path.exists(p)]
+    assert not leftovers, f"requested temp files leaked: {leftovers}"
+
+
 def test_sync_pipeline_falls_back_to_requested_path_when_reported_missing(monkeypatch):
     """A tool envelope that reports nothing usable (None, non-JSON, missing files) keeps the
     legacy behavior: play the requested path when the tool wrote it there."""

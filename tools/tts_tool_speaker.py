@@ -130,7 +130,12 @@ class _SyncSentencePipeline:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
             raw = _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
-            return _first_written_artifact(raw, tmp_path)
+            artifact = _first_written_artifact(raw, tmp_path)
+            if artifact != tmp_path:
+                # The tool reported an artifact written elsewhere (suffix rewrite / conversion):
+                # the untouched zero-byte request must not outlive the sentence in $TMPDIR.
+                _unlink_quietly(tmp_path)
+            return artifact
         except Exception as exc:
             logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
             _unlink_quietly(tmp_path)

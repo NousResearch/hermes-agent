@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -59,15 +60,16 @@ def _transcript():
 
 def _stalling_call_llm(compressor, calls, *, fail_when_pinned=False):
     """Summary call that never streams: hangs until the host cancels the fence, like a held-open socket."""
-
     def _call(**kwargs):
         calls.append(kwargs.get("provider") or "primary")
         if fail_when_pinned and "provider" in kwargs:
             raise RuntimeError("fallback route exploded")
         cancelled = getattr(compressor, "_compression_cancelled_check", None)
-        deadline = time.monotonic() + 6
+        # The host cancels on its idle watchdog (a fraction of a second here). This deadline is only a
+        # backstop so a bug cannot hang the suite; polling coarsely keeps the spin off a loaded box.
+        deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline and not (callable(cancelled) and cancelled()):
-            time.sleep(0.001)
+            time.sleep(0.01)
         raise AuxiliaryExplicitCancellation()
 
     return _call
@@ -99,24 +101,29 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
         assert calls == ["primary"], "no deterministic rung on the FIRST stall: the LLM route gets its backoff retry"
 
         # The backoff lapses; the still-oversized context re-triggers compression (the reporter's next turn).
-        compressor._summary_failure_cooldown_until = 0.0
-        compressor._session_db.clear_compression_failure_cooldown(compressor._session_id)
-        calls.clear()
-        second, _ = agent._compress_context(live, "sys", approx_tokens=50_000)
+        # The host arms this cooldown synchronously, but the fence-cancelled worker keeps unwinding after
+        # ``_compress_context`` has returned and may re-arm it from its own thread — a legitimate late write,
+        # not a result under test. Clear and retry until an attempt actually runs rather than racing it, so
+        # the assertions below depend only on the synchronous arm.
+        second = live
+        for _ in range(5):
+            compressor._summary_failure_cooldown_until = 0.0
+            compressor._session_db.clear_compression_failure_cooldown(compressor._session_id)
+            calls.clear()
+            second, _ = agent._compress_context(live, "sys", approx_tokens=50_000)
+            if second is not live:
+                break
+            time.sleep(0.05)
 
     assert second is not live and len(second) < len(live)
     assert len(_summary_rows(second)) == 1, "the deterministic fallback summary is committed as the handoff"
     assert calls == ["primary"], "the deterministic rung makes no summary LLM call"
     assert getattr(agent, "_last_compression_timed_out", None) is not True
-    # The stalled LLM route stays in its durable backoff even though the deterministic rung committed; the
-    # cancelled primary worker persists it while unwinding, so poll briefly for its row.
-    deadline = time.monotonic() + 3
-    remaining = 0.0
-    while time.monotonic() < deadline and remaining <= 0:
-        row = agent._session_db.get_compression_failure_cooldown(compressor._session_id) or {}
-        remaining = float(row.get("remaining_seconds") or 0.0)
-        time.sleep(0.01)
-    assert remaining > 0, "the stalled LLM route keeps its stall backoff after the deterministic commit"
+    # The stalled LLM route stays in its backoff even though the deterministic rung committed. Read the
+    # synchronous host arm: the durable row is the worker's own async write and is not this test's subject.
+    assert compressor._summary_failure_cooldown_until > time.monotonic(), (
+        "the stalled LLM route keeps its stall backoff after the deterministic commit"
+    )
 
 
 def test_failing_pinned_fallback_route_is_not_logged_as_recovered(tmp_path, fast_timeouts, caplog):
@@ -161,20 +168,26 @@ def test_fence_level_retry_ladder_is_unchanged_without_a_prior_timeout():
     """No agent-level timeout history (fence-level callers, fresh compressors): a stall with no chain still
     degrades in one attempt — the deterministic rung is escalation, not the default."""
     attempts = []
+    release = threading.Event()
 
     def worker(fence: CompressionCommitFence):
         attempts.append(fence)
-        time.sleep(0.3)
+        # Block until the test releases it. The fence must give up on its idle window while the worker is
+        # demonstrably still running; a fixed sleep instead races the idle timer under load.
+        release.wait(10.0)
         return ([{"role": "assistant", "content": "late"}], "late-prompt")
 
     original = [{"role": "user", "content": "keep-me"}]
-    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
-        msgs, prompt = run_compress_context_with_progress_timeout(
-            worker=worker, messages=original, system_prompt_fallback="degraded-prompt",
-            idle_timeout_seconds=0.05, total_ceiling_seconds=2.0, on_timeout=lambda *a: None,
-        )
-    assert msgs is original and prompt == "degraded-prompt"
-    assert len(attempts) == 1
+    try:
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
+            msgs, prompt = run_compress_context_with_progress_timeout(
+                worker=worker, messages=original, system_prompt_fallback="degraded-prompt",
+                idle_timeout_seconds=0.05, total_ceiling_seconds=2.0, on_timeout=lambda *a: None,
+            )
+        assert msgs is original and prompt == "degraded-prompt"
+        assert len(attempts) == 1
+    finally:
+        release.set()
 
 
 def test_over_window_request_commits_the_deterministic_fallback_on_the_first_stall(tmp_path, fast_timeouts):

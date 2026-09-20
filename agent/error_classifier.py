@@ -136,6 +136,8 @@ _BILLING_ERROR_CODES = frozenset({
     # terminal for this credential until limits are raised.
     "credit_balance_exhausted", "organization_spend_limit_exceeded",
     "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
+    # Nous paid model behind an empty credit balance arrives as a 404 (#115702).
+    "insufficient_credits_for_paid_model",
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -996,6 +998,10 @@ def _status_403(c: _Ctx) -> Verdict:
 
 
 def _status_404(c: _Ctx) -> Verdict:
+    # Structured billing code first, as in _status_429: this handler always returns,
+    # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
+    if c.code in _BILLING_ERROR_CODES:
+        return _V_BILLING
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict

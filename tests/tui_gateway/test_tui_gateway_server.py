@@ -985,7 +985,7 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     stale.mkdir()
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_hermes_home", tmp_path / "launch-home")
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
 
     assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
@@ -1006,9 +1006,10 @@ def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_pa
     configured.mkdir()
     stale = tmp_path / "hermes-agent"
     stale.mkdir()
+    launch_home = _write_profile_cfg(tmp_path / "launch-home", str(configured))
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
     monkeypatch.setattr(server, "_profile_home", lambda _name: None)
 
     assert server._completion_cwd({}) == str(configured)
@@ -1022,14 +1023,15 @@ def test_default_session_cwd_prefers_launch_config(monkeypatch, tmp_path):
     configured.mkdir()
     stale = tmp_path / "launch-dir"
     stale.mkdir()
+    launch_home = _write_profile_cfg(tmp_path / "launch-home", str(configured))
 
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(configured)}})
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
 
     assert server._default_session_cwd() == str(configured)
 
     # No launch config → fall back to the process env var.
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    (launch_home / "config.yaml").write_text("{}", encoding="utf-8")
     assert server._default_session_cwd() == str(stale)
 
 

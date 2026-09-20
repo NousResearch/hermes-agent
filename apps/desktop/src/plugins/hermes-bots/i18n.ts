@@ -449,7 +449,8 @@ const en: BotsMessages = {
     settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
     nameLabel: 'Group name',
     compressHistory: 'Compress history',
-    compressHistoryHint: (member: string) => `Compress ${member}'s hidden room history so the member stops failing with empty replies`,
+    compressHistoryHint: (member: string) =>
+      `Compress ${member}'s hidden room history so the member stops failing with empty replies`,
     compressing: (member: string) => `Compressing ${member}'s room history…`,
     compressDone: (member: string, compressed: number, detail: string) =>
       `Compressed ${compressed} room session${compressed === 1 ? '' : 's'} for ${member}${detail ? ` — ${detail}` : ''}`,
@@ -482,7 +483,8 @@ const en: BotsMessages = {
     heldMembersStatus: members => `Paused: ${members}`,
     holdReleaseHint: 'Mention a paused bot or send @all resume to release them.',
     needsYourInput: 'A bot in this group chat needs your input',
-    noMembersToSend: group => `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
+    noMembersToSend: group =>
+      `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
     memberCount: count => `${count} bots`,
@@ -704,7 +706,8 @@ const ja: BotsMessages = {
     settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
     nameLabel: 'グループ名',
     compressHistory: '履歴を圧縮',
-    compressHistoryHint: (member: string) => `${member} の非表示のルーム履歴を圧縮し、空の応答で失敗しなくなるようにします`,
+    compressHistoryHint: (member: string) =>
+      `${member} の非表示のルーム履歴を圧縮し、空の応答で失敗しなくなるようにします`,
     compressing: (member: string) => `${member} のルーム履歴を圧縮中…`,
     compressDone: (member: string, compressed: number, detail: string) =>
       `${member} のルームセッション ${compressed} 件を圧縮しました${detail ? ` — ${detail}` : ''}`,
@@ -737,7 +740,8 @@ const ja: BotsMessages = {
     heldMembersStatus: members => `一時停止中: ${members}`,
     holdReleaseHint: '一時停止中のボットにメンションするか、@all resume を送信して再開します。',
     needsYourInput: 'このグループチャットのボットが入力を待っています',
-    noMembersToSend: group => `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
+    noMembersToSend: group =>
+      `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
     memberCount: count => `ボット${count}体`,

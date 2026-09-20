@@ -135,7 +135,7 @@ class _RuntimeStatusWriter:
                 self._writing_generation = generation
             error: Optional[BaseException] = None
             try:
-                (self._write_fn or _write_json_file)(path, payload)
+                (self._write_fn or _write_json_file)(path, _merge_over_on_disk(path, payload))
             except BaseException as exc:
                 error = exc
             with self._condition:
@@ -162,6 +162,16 @@ class _RuntimeStatusWriter:
 _runtime_status_state_lock = threading.RLock()
 _runtime_status_state_path: Optional[Path] = None
 _runtime_status_state: Optional[dict[str, Any]] = None
+
+
+def _merge_over_on_disk(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """Lay the canonical snapshot over whatever is on disk right before writing. Out-of-process
+    writers (``hermes gateway migrate --standalone`` clearing multiplex-owned status, container_boot
+    seeding ``desired_state``) stamp this file directly; the gateway's fields win, theirs survive."""
+    existing = _read_json_file(path)
+    return {**existing, **payload} if isinstance(existing, dict) else payload
+
+
 _runtime_status_writer_lock = threading.Lock()
 _runtime_status_writer: Optional[_RuntimeStatusWriter] = None
 

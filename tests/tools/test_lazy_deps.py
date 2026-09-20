@@ -634,16 +634,13 @@ class TestPipConfIndexBridge:
         assert result.success
         return captured["env"]
 
-    def test_pip_conf_index_url_bridged_when_uv_unset(self, monkeypatch, tmp_path):
+    def test_pip_conf_index_url_bridged_unless_uv_has_its_own_index(self, monkeypatch, tmp_path):
         monkeypatch.delenv("PIP_INDEX_URL", raising=False)
-        env = self._run_with_fake_uv(monkeypatch, tmp_path)
-        assert env["UV_INDEX_URL"] == self.MIRROR
+        assert self._run_with_fake_uv(monkeypatch, tmp_path)["UV_INDEX_URL"] == self.MIRROR
+
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, UV_DEFAULT_INDEX="https://custom.example/simple")
+        assert "UV_INDEX_URL" not in env
 
     def test_pip_index_url_env_beats_pip_conf(self, monkeypatch, tmp_path):
         env = self._run_with_fake_uv(monkeypatch, tmp_path, PIP_INDEX_URL="https://env.example/simple")
         assert env["UV_INDEX_URL"] == "https://env.example/simple"
-
-    def test_explicit_uv_index_knob_is_not_overridden(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
-        env = self._run_with_fake_uv(monkeypatch, tmp_path, UV_DEFAULT_INDEX="https://custom.example/simple")
-        assert "UV_INDEX_URL" not in env

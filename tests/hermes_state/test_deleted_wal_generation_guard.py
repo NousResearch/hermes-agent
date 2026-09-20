@@ -112,39 +112,11 @@ def test_iter_finds_self_after_wal_unlink(tmp_path, force_wal):
         db.close()
 
 
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="deleted-WAL /proc scan is Linux-only",
-)
-def test_iter_finds_holder_through_symlinked_home(tmp_path, force_wal):
-    """A symlinked HERMES_HOME must not hide a deleted WAL generation: /proc reports
-    the kernel-resolved dentry while the caller holds only the alias path."""
-    real_home = tmp_path / "hermes-real"
-    real_home.mkdir()
-    link_home = tmp_path / "hermes-link"
-    link_home.symlink_to(real_home)
-    alias_db = link_home / "state.db"
-
-    db = make_db(alias_db, "s", "held-through-alias")
-    require_wal(db)
-    lose_sidecars(alias_db, rename=False)
-    try:
-        holders = iter_deleted_sqlite_sidecar_holders(alias_db)
-        assert holders, "deleted WAL held under the real path must be found via the alias"
-        assert any("(deleted)" in target for _pid, target in holders)
-        with pytest.raises(DeletedWalGenerationError, match="deleted state.db-wal"):
-            refuse_deleted_wal_generation(alias_db)
-    finally:
-        db.close()
-
-
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="deleted-WAL /proc scan is Linux-only",
-)
+@pytest.mark.linux_only
 def test_second_sessiondb_open_refuses_through_symlinked_home(tmp_path, force_wal):
-    """End to end through the real open path: SessionDB stores the alias verbatim and
-    calls the guard with it before connect, so the refusal must fire via the alias."""
+    """Regression for #116450. End to end through the real open path: SessionDB stores the
+    alias verbatim and calls the guard with it before connect, so the refusal must fire via the
+    alias — /proc reports the kernel-resolved dentry while the caller holds only the symlink."""
     real_home = tmp_path / "hermes-real"
     real_home.mkdir()
     link_home = tmp_path / "hermes-link"
@@ -162,10 +134,7 @@ def test_second_sessiondb_open_refuses_through_symlinked_home(tmp_path, force_wa
         writer.close()
 
 
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="deleted-WAL /proc scan is Linux-only",
-)
+@pytest.mark.linux_only
 def test_iter_finds_holder_when_db_file_itself_is_symlink(tmp_path):
     """SQLite canonicalizes the db filename before naming sidecars, so a symlinked
     state.db puts the WAL under the target's name. The scan must still match."""

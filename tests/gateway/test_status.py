@@ -518,7 +518,7 @@ class TestRuntimeStatusBackgroundWriter:
             persisted = status.write_runtime_status(
                 gateway_state="starting", wait_timeout=0.05
             )
-            assert write_started.is_set()
+            assert write_started.wait(timeout=2.0)
             assert persisted is False
         finally:
             release_write.set()

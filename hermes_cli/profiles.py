@@ -654,7 +654,7 @@ def _served_by_running_multiplexer(profile_name: str) -> bool:
 # the TTL (deep edits). Polled callers never walk: ``lazy_skill_count`` serves the last known
 # value and refreshes stale entries on a background thread, at most once per recheck window
 # per profile — the TTL is decoupled from the poll rate (#114041).
-_SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
+_SKILL_COUNT_CACHE: dict[str, tuple[tuple[float, ...], float, int]] = {}
 _SKILL_COUNT_TTL_SECONDS = 600.0
 _SKILL_COUNT_RECHECK_SECONDS = 60.0
 _SKILL_COUNT_NEXT_CHECK: dict[str, float] = {}
@@ -690,21 +690,83 @@ def _walk_skill_count(skills_dir: Path) -> int:
     return sum(1 for _ in iter_skill_index_files(skills_dir, "SKILL.md"))
 
 
+def _collect_skills_dirs(profile_dir: Path) -> List[Path]:
+    """Return all skill directories visible to *profile_dir* in runtime
+    discovery order: profile-local ``skills/`` first, then each entry in
+    ``skills.external_dirs`` from the profile's OWN ``config.yaml``.
+
+    Unlike ``get_external_skills_dirs()`` (which reads the process-active
+    config), this resolves ``external_dirs`` from the target profile's own
+    config so that a profile list applies the correct dirs per card.
+    """
+    dirs: List[Path] = []
+
+    profile_skills = profile_dir / "skills"
+    if profile_skills.is_dir():
+        dirs.append(profile_skills)
+
+    # Read external_dirs from THIS profile's config.yaml — not the
+    # process-active one (see #75798 review by @teknium1).
+    cfg = _load_yaml_dict(profile_dir / "config.yaml")
+    if cfg:
+        skills_cfg = cfg.get("skills", {})
+        if isinstance(skills_cfg, dict):
+            from agent.skill_utils import _config_str_list, _expand_path, _home_relative
+
+            local_skills = profile_skills.resolve()
+            for entry in _config_str_list(skills_cfg.get("external_dirs")):
+                p = _home_relative(_expand_path(entry)).resolve()
+                if p == local_skills or p in dirs:
+                    continue
+                if p.is_dir():
+                    dirs.append(p)
+
+    return dirs
+
+
+def _skills_dirs_signature(dirs: List[Path]) -> tuple[float, ...]:
+    """Combined change-signature for multiple skill directories."""
+    return tuple(_skills_dir_signature(d) for d in dirs)
+
+
 def _count_skills(profile_dir: Path) -> int:
-    """Count installed skills in a profile (cached by skills-dir signature + TTL). Walks
-    synchronously when stale — detail surfaces (``hermes profile info``, ``profiles.describe``)
-    want the fresh number; polled lists go through :func:`_cached_skill_count`."""
-    skills_dir = profile_dir / "skills"
-    if not skills_dir.is_dir():
+    """Count total skills available to *profile_dir* (profile-local +
+    external_dirs from the profile's own config), cached by combined dir
+    signature + TTL. Walks synchronously when stale — detail surfaces
+    (``hermes profile info``, ``profiles.describe``) want the fresh number;
+    polled lists go through :func:`_cached_skill_count`.
+
+    Deduplicates by skill name (from YAML frontmatter) across directories so
+    a skill that appears in both the profile's own dir and an external dir is
+    counted once — matching how ``scan_skill_commands`` loads skills.
+    """
+    dirs = _collect_skills_dirs(profile_dir)
+    if not dirs:
         return 0
-    key = str(skills_dir)
-    signature = _skills_dir_signature(skills_dir)
+
+    key = ";".join(str(d) for d in dirs)
+    signatures = _skills_dirs_signature(dirs)
     now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+    if cached is not None and cached[0] == signatures and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
         return cached[2]
-    count = _walk_skill_count(skills_dir)
-    _SKILL_COUNT_CACHE[key] = (signature, now, count)
+
+    from agent.skill_utils import iter_skill_index_files, parse_frontmatter
+
+    count = 0
+    seen_names: set = set()
+    for sdir in dirs:
+        for md in iter_skill_index_files(sdir, "SKILL.md"):
+            try:
+                frontmatter, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+                name = frontmatter.get("name", md.parent.name)
+            except Exception:
+                name = md.parent.name
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            count += 1
+    _SKILL_COUNT_CACHE[key] = (signatures, now, count)
     return count
 
 
@@ -713,6 +775,12 @@ def _cached_skill_count(profile_dir: Path) -> int:
     or aged entry schedules one background :func:`_count_skills` per profile per recheck
     window (which itself re-walks only on signature change / TTL); the next poll picks the
     result up. ``0`` until the first refresh lands."""
+    # The cache key must match what _count_skills writes. _count_skills keys by
+    # ";".join(dirs), but we cannot compute dirs without I/O (reading config.yaml +
+    # stat-ing dirs). Instead we key the recheck schedule by the profile dir (stable,
+    # no I/O) and look up the cache entry by matching on profile_dir — the background
+    # thread writes the full multi-dir key, so we scan for any cache entry whose key
+    # starts with the profile's skills dir path.
     key = str(profile_dir / "skills")
     now = time.time()
     with _SKILL_COUNT_LOCK:
@@ -722,8 +790,13 @@ def _cached_skill_count(profile_dir: Path) -> int:
     if due:
         threading.Thread(target=_count_skills, args=(profile_dir,),
                          name="hermes-skill-count", daemon=True).start()
-    cached = _SKILL_COUNT_CACHE.get(key)
-    return cached[2] if cached is not None else 0
+    # The background thread writes the multi-dir cache key. Find the entry whose
+    # key starts with this profile's skills dir (the first dir in the list).
+    skills_dir_str = str(profile_dir / "skills")
+    for ck, cv in _SKILL_COUNT_CACHE.items():
+        if ck == skills_dir_str or ck.startswith(skills_dir_str + ";"):
+            return cv[2]
+    return 0
 
 
 # profile.yaml — per-profile metadata (description, role, etc.)

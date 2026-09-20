@@ -12,11 +12,24 @@ from tui_gateway.hosted_room_service import HostedRoomService
 _OWNER = 'gateway.hosted.owner.v1:'
 
 
+def _output_owner_module():
+    try:
+        from gateway import session_hosted_output_rpc
+    except ModuleNotFoundError as exc:
+        if exc.name != 'gateway.session_hosted_output_rpc':
+            raise
+        return None
+    return session_hosted_output_rpc
+
+
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
         super().__init__(None, db_path=authority.db.db_path)
+        output = _output_owner_module()
+        if output is not None:
+            output.initialize_owner_output(self)
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They
@@ -65,6 +78,10 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
         result = {'owner': owner, 'target_home': str(target_home)}
+        output = _output_owner_module()
+        if output is not None and operation in output.OUTPUT_OPERATIONS:
+            result.update(output.source_output_action_attestation(self, selector, operation, params))
+            return result
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -88,6 +105,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 manifest = payload.get('attachments', [])
                 result.update(prompt=payload['prompt'], attachments=manifest,
                               attachment_digests=source_attachment_digests(self, member, room_id, manifest))
+                if operation == 'submit' and output is not None:
+                    consent = output.source_output_admission(
+                        self, selector, params.get('task'), params.get('execution_generation'),
+                        owner=owner, target_home=str(target_home))
+                    if consent is not None:
+                        result['owner_output_admission'] = consent
         return result
 
 

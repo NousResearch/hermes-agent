@@ -62,14 +62,14 @@ def _run_state_args(type_help: str):
     )
 
 
-def _triage_sweep_args(verb: str, Verb: str, noun: str):
+def _triage_sweep_args(verb: str, Verb: str):
     """Shared ``specify`` / ``decompose`` arguments."""
     return (
         _arg("task_id", nargs="?", help=f"Task id to {verb} (required unless --all is given)"),
         _arg("--all", dest="all_triage", action="store_true", help=f"{Verb} every task currently in the triage column"),
         _arg("--tenant", help="When used with --all, restrict the sweep to this tenant"),
         _arg("--author",
-             help=f"Author name recorded on the audit comment (default: $HERMES_PROFILE or '{noun}')"),
+             help=f"Author name recorded on the audit comment (default: $HERMES_PROFILE_NAME/$HERMES_PROFILE; error if unset)"),
         _json_flag(help="Emit one JSON object per task on stdout"),
     )
 
@@ -280,7 +280,7 @@ _SPECS = [
     _cmd("comment", [
         _TASK_ID,
         _arg("text", nargs="+", help="Comment body"),
-        _arg("--author", help="Author name (default: $HERMES_PROFILE or 'user')"),
+        _arg("--author", help="Author name (default: $HERMES_PROFILE_NAME/$HERMES_PROFILE; error if unset)"),
         _arg("--max-len", type=int, help="Trim the stored comment body to this many characters"),
     ], help="Append a comment"),
     _cmd("attach", [
@@ -288,7 +288,7 @@ _SPECS = [
         _arg("path", help="Path to the local file to attach"),
         _arg("--content-type", help="MIME type (default: guessed from the file extension)"),
         _arg("--name", help="Stored filename (default: the source file's basename)"),
-        _arg("--author", help="uploaded_by label (default: $HERMES_PROFILE or 'user')"),
+        _arg("--author", help="uploaded_by label (default: $HERMES_PROFILE_NAME/$HERMES_PROFILE; error if unset)"),
     ], help="Attach a local file to a task"),
     _cmd("attachments", [_TASK_ID, _json_flag()], help="List a task's attachments"),
     _cmd("attach-rm", [_arg("attachment_id", type=int)], help="Delete an attachment by id"),
@@ -425,11 +425,11 @@ _SPECS = [
          help="List known profiles + per-profile task counts (union of ~/.hermes/profiles/ and current assignees on the board)"),
     _cmd("context", [_TASK_ID],
          help="Print the full context a worker sees for a task (title + body + parent results + comments)."),
-    _cmd("specify", _triage_sweep_args("specify", "Specify", "specifier"),
+    _cmd("specify", _triage_sweep_args("specify", "Specify"),
          help="Flesh out a triage-column task into a concrete spec (title + "
               "body) and promote it to todo. Uses the auxiliary LLM "
               "configured under auxiliary.triage_specifier."),
-    _cmd("decompose", _triage_sweep_args("decompose", "Decompose", "decomposer"),
+    _cmd("decompose", _triage_sweep_args("decompose", "Decompose"),
          help="Decompose a triage-column task into a graph of child tasks "
               "routed to specialist profiles by description. Falls back "
               "to specify-style single-task promotion when the task "

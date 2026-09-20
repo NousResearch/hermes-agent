@@ -143,6 +143,7 @@ async function mountWithPendingReplay() {
     const promise = client.connect('ws://fixture.test')
     const socket = sockets.at(-1)!
     socket.open()
+    socket.frame({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
     await promise
 
     return socket

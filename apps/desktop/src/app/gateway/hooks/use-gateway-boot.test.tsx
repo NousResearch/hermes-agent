@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopBootstrapState, DesktopConnectionsRegistry } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
-import { $desktopBoot } from '@/store/boot'
+import type * as BootStore from '@/store/boot'
+import { $desktopBoot, completeDesktopBoot } from '@/store/boot'
 import {
   $connectionsRegistry,
   _resetConnectionsForTests,
@@ -67,6 +68,14 @@ vi.mock(import('@/store/terminal-backend-warning'), () => ({
   warnIfTerminalBackendUnavailable: vi.fn(async () => false)
 }))
 
+vi.mock('@/store/boot', async importOriginal => {
+  const actual = await importOriginal<typeof BootStore>()
+
+  return {
+    ...actual,
+    completeDesktopBoot: vi.fn(actual.completeDesktopBoot)
+  }
+})
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
 // bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
 // fake WebSocket we fully control. No Docker / no real port: from the desktop's
@@ -98,13 +107,14 @@ describe('primaryRuntimeConnectionId', () => {
 })
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
-// touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
+// touches: readyState, add/removeEventListener, close(), and readiness frames.
 class FakeWebSocket {
   static OPEN = 1
   static CLOSED = 3
-  // Flipped by the test: 'open' = next socket connects; 'fail' = next socket
-  // errors (a dead remote). Mirrors a VPS going away after the first connect.
-  static mode: 'open' | 'fail' = 'open'
+  // Flipped by the test: 'open' emits transport open + gateway.ready; 'fail'
+  // errors (a dead remote); 'reject' opens then closes during the handshake.
+  static mode: 'fail' | 'open' | 'reject' = 'open'
+  static rejectCode = 4401
   static instances: FakeWebSocket[] = []
   // Ping behavior: 'pong' answers with a healthy pong frame; 'silent' swallows
   // the request (the half-open-socket simulation — connection looks OPEN but
@@ -118,13 +128,25 @@ class FakeWebSocket {
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this)
-    const willOpen = FakeWebSocket.mode === 'open'
-    // Resolve on the next microtask/macrotask so connect()'s promise wiring is
-    // in place before open/error fires (matches real async socket handshake).
+    const mode = FakeWebSocket.mode
+    // Resolve on the next task so connect()'s promise wiring is in place before
+    // open/error/close/readiness fires (matches the real async handshake).
     setTimeout(() => {
-      if (willOpen) {
+      if (mode === 'open') {
         this.readyState = FakeWebSocket.OPEN
         this.emit('open', {})
+        this.emit('message', {
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { type: 'gateway.ready' }
+          })
+        })
+      } else if (mode === 'reject') {
+        this.readyState = FakeWebSocket.OPEN
+        this.emit('open', {})
+        this.readyState = FakeWebSocket.CLOSED
+        this.emit('close', { code: FakeWebSocket.rejectCode })
       } else {
         this.readyState = FakeWebSocket.CLOSED
         this.emit('error', {})
@@ -142,13 +164,13 @@ class FakeWebSocket {
 
   close() {
     this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
+    this.emit('close', { code: 1005 })
   }
 
   // Force-drop an open socket, as a sleeping laptop / restarted remote would.
   drop() {
     this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
+    this.emit('close', { code: 1006 })
   }
 
   send(data: string) {
@@ -268,10 +290,12 @@ function fakeDesktop() {
 
 function Harness({
   beforeConnectionSwitch = () => undefined,
+  onConnectionReady = () => undefined,
   refreshHermesConfig = async () => undefined,
   refreshSessions
 }: {
   beforeConnectionSwitch?: () => void
+  onConnectionReady?: (connection: Parameters<Parameters<typeof useGatewayBoot>[0]['onConnectionReady']>[0]) => void
   refreshHermesConfig?: (force?: boolean, shouldPublish?: () => boolean) => Promise<void>
   refreshSessions?: (shouldPublish?: () => boolean) => Promise<void>
 } = {}) {
@@ -279,7 +303,7 @@ function Harness({
     beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
     handleServerRequest: () => false,
-    onConnectionReady: () => undefined,
+    onConnectionReady,
     onGatewayReady: () => undefined,
     refreshHermesConfig,
     refreshSessions: refreshSessions ?? (async () => undefined)
@@ -309,6 +333,7 @@ beforeEach(() => {
   $sessionTiles.set([])
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
+  FakeWebSocket.rejectCode = 4401
   FakeWebSocket.instances = []
   FakeWebSocket.pingMode = 'pong'
   connectionApplied = null
@@ -332,6 +357,7 @@ beforeEach(() => {
     timestamp: Date.now(),
     visible: true
   })
+  vi.mocked(completeDesktopBoot).mockClear()
 })
 
 afterEach(() => {

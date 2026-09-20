@@ -82,12 +82,13 @@ describe('JsonRpcGatewayClient heartbeat recovery', () => {
 
     const connected = client.connect('ws://gateway.test/api/ws')
     socket.emit('open')
-    await connected
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
     socket.message({
       jsonrpc: '2.0',
       method: 'event',
       params: { type: 'gateway.ready', payload: { heartbeat: true } }
     })
+    await connected
 
     await vi.advanceTimersByTimeAsync(61)
 
@@ -116,12 +117,13 @@ describe('JsonRpcGatewayClient heartbeat recovery', () => {
 
     const connected = client.connect('ws://gateway.test/api/ws')
     socket.emit('open')
-    await connected
+    // connect() now resolves on gateway.ready, not on raw open — send it first.
     socket.message({
       jsonrpc: '2.0',
       method: 'event',
       params: { type: 'gateway.ready', payload: {} }
     })
+    await connected
 
     await vi.advanceTimersByTimeAsync(1_000)
     expect(client.connectionState).toBe('open')

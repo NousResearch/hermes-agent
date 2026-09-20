@@ -80,7 +80,7 @@ export function SessionPickerDialog({ activeStoredSessionId, onOpenChange, onRes
                       </span>
                       <Check
                         className={cn(
-                          'ml-auto size-4 shrink-0 text-foreground',
+                          'ms-auto size-4 shrink-0 text-foreground',
                           session.id !== activeStoredSessionId && 'invisible'
                         )}
                       />

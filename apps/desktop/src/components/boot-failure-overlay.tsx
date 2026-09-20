@@ -559,7 +559,7 @@ export function BootFailureOverlay() {
     <BootFailureModal onDismiss={dismiss}>
       <div className="relative w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
         <DismissControl />
-        <div className="flex items-start gap-3 px-5 py-4 pr-12">
+        <div className="flex items-start gap-3 px-5 py-4 pe-12">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <DialogPrimitive.Title asChild>

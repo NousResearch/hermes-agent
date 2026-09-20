@@ -362,7 +362,7 @@ function ModelResults({
               return (
                 <CommandItem
                   className={cn(
-                    'flex items-center gap-2 pl-6 font-mono',
+                    'flex items-center gap-2 ps-6 font-mono',
                     isCurrent &&
                       'bg-primary text-primary-foreground data-[selected=true]:bg-primary data-[selected=true]:text-primary-foreground',
                     locked && 'cursor-not-allowed opacity-45'
@@ -419,7 +419,7 @@ function ModelResults({
         <CommandGroup heading={copy.customModel} key="custom-model">
           {customProviders.map(provider => (
             <CommandItem
-              className="flex items-center gap-2 pl-6 font-mono"
+              className="flex items-center gap-2 ps-6 font-mono"
               key={`custom:${provider.slug}`}
               onSelect={() => onSelectCustomModel(provider, customSlug)}
               value={`custom:${provider.slug}:${customSlug}`}
@@ -470,7 +470,7 @@ function DownloadingModelRow({
   )
 
   return (
-    <CommandItem className="flex items-center gap-2 pl-6 font-mono opacity-60" disabled value={`downloading:${jobId}`}>
+    <CommandItem className="flex items-center gap-2 ps-6 font-mono opacity-60" disabled value={`downloading:${jobId}`}>
       <span className="min-w-0 flex-1 truncate">{target}</span>
       <span
         className="flex shrink-0 items-center gap-1.5"
@@ -569,7 +569,7 @@ function LoadingResults() {
   return (
     <CommandGroup heading={<Skeleton className="h-3 w-32" />}>
       {Array.from({ length: 4 }, (_, rowIndex) => (
-        <div className="rounded-sm py-1.5 pl-6 pr-2" key={rowIndex}>
+        <div className="rounded-sm py-1.5 ps-6 pe-2" key={rowIndex}>
           <Skeleton className={cn('h-5', rowIndex % 3 === 0 ? 'w-3/5' : rowIndex % 3 === 1 ? 'w-4/5' : 'w-1/2')} />
         </div>
       ))}

@@ -208,7 +208,7 @@ function StatusbarVisibilityMenu({
 function StatusbarHideHint() {
   const hint = useKeybindHint('view.toggleStatusbar')
 
-  return hint ? <span className="ml-auto pl-2 text-(--ui-text-quaternary)">{hint}</span> : null
+  return hint ? <span className="ms-auto ps-2 text-(--ui-text-quaternary)">{hint}</span> : null
 }
 
 /** Memoized: `useStatusbarItems` rebuilds the item array whenever ANY of its

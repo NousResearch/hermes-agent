@@ -35,7 +35,7 @@ export const HUD_HEADING =
 // A short note trailing a row's label — a version, a count, a live state. Sits
 // closer than the row's icon-to-label `gap-2` because it reads as a suffix of
 // the label, not as another item in the row.
-export const HUD_NOTE = '-ml-1'
+export const HUD_NOTE = '-ms-1'
 
 // `state` marks a note the row will CHANGE (a toggle's on/off) rather than a
 // passive fact. It keeps the label's own color so the pair reads as one phrase,

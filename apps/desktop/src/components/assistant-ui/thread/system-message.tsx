@@ -157,7 +157,7 @@ export const SystemMessage: FC = () => {
             <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
           </>
         )}{' '}
-        <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ml-1.5')} />
+        <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ms-1.5')} />
       </MessagePrimitive.Root>
     )
   }
@@ -174,7 +174,7 @@ export const SystemMessage: FC = () => {
       data-slot="aui_system-message-root"
     >
       <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={text} />{' '}
-      <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ml-1.5')} />
+      <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ms-1.5')} />
     </MessagePrimitive.Root>
   )
 }

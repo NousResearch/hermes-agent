@@ -100,7 +100,7 @@ export function TipBubble({ action, anchor, keybind, onClose, side, text, title 
           </div>
           <button
             aria-label={t.tips.close}
-            className="-mr-0.5 -mt-0.5 shrink-0 cursor-pointer rounded-[3px] p-0.5 text-current/70 transition-colors hover:bg-current/15 hover:text-current"
+            className="-me-0.5 -mt-0.5 shrink-0 cursor-pointer rounded-[3px] p-0.5 text-current/70 transition-colors hover:bg-current/15 hover:text-current"
             onClick={onClose}
             type="button"
           >

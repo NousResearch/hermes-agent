@@ -290,11 +290,11 @@ export const CodingStatusRow = memo(function CodingStatusRow({
 
           {/* The counts describe what's in the review pane, so clicking them
               opens it. `contents` again: the two spans stay direct flex children
-              of the row, keeping their gap and `ml-auto` behaviour untouched. */}
+              of the row, keeping their gap and `ms-auto` behaviour untouched. */}
           {(status.ahead > 0 || status.behind > 0 || hasLineDelta || untrackedOnly) && (
             <button className="contents" onClick={onOpen} type="button">
               {(status.ahead > 0 || status.behind > 0) && (
-                <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
+                <span className="ms-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
                   {status.ahead > 0 && (
                     <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
                       <span aria-hidden>↑</span>
@@ -313,12 +313,12 @@ export const CodingStatusRow = memo(function CodingStatusRow({
               {hasLineDelta ? (
                 <DiffCount
                   added={status.added}
-                  className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+                  className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ms-auto' : ''}`}
                   removed={status.removed}
                 />
               ) : untrackedOnly ? (
                 <span
-                  className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+                  className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ms-auto' : ''}`}
                 >
                   {s.changed(status.untracked)}
                 </span>

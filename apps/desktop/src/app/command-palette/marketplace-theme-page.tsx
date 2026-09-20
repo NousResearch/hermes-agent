@@ -122,7 +122,7 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
                 {item.installs > 0 ? ` · ${copy.installs(compactNumber.format(item.installs))}` : ''}
               </span>
             </span>
-            <span className="ml-auto mt-0.5 flex shrink-0 items-center gap-1 text-[0.6875rem] text-muted-foreground">
+            <span className="ms-auto mt-0.5 flex shrink-0 items-center gap-1 text-[0.6875rem] text-muted-foreground">
               {busy ? (
                 <>
                   <Loader2 className="size-3 animate-spin" />

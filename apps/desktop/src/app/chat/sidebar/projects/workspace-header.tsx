@@ -101,7 +101,7 @@ export function WorkspaceShowMoreRow({
 
 // Reveals the next page of already-loaded rows within a workspace/worktree.
 // Hangs off the lane instead of sitting in a row, so it repeats the row's
-// trailing inset (SidebarRowShell's `pr-2`) to stay on the edge the rows stop at.
+// trailing inset (SidebarRowShell's `pe-2`) to stay on the edge the rows stop at.
 export function WorkspaceShowMoreButton({
   count,
   label,
@@ -118,7 +118,7 @@ export function WorkspaceShowMoreButton({
     <Tip label={text}>
       <button
         aria-label={text}
-        className="mr-2 ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
+        className="me-2 ms-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
         onClick={onClick}
         type="button"
       >

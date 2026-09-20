@@ -922,7 +922,7 @@ function PlatformActionBar({
         {platform.enabled ? m.enabled : m.disabled}
       </label>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ms-auto flex items-center gap-2">
         {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
         <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
           <Save />

@@ -212,14 +212,14 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
       {failingChecks.map(c => (
         <p className="px-1 text-[0.7rem] text-muted-foreground" key={c.label}>
-          <AlertTriangle className="mr-1 inline size-3" />
+          <AlertTriangle className="me-1 inline size-3" />
           {c.label}: {c.message}
         </p>
       ))}
 
       {status.error && (
         <p className="px-1 text-[0.7rem] text-muted-foreground">
-          <AlertTriangle className="mr-1 inline size-3" />
+          <AlertTriangle className="me-1 inline size-3" />
           {status.error}
         </p>
       )}

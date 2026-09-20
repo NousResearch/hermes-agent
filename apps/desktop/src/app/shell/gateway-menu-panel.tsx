@@ -224,7 +224,7 @@ export function GatewayMenuPanel({
           <div className="flex items-center justify-between gap-2">
             <SectionLabel>{copy.recentActivity}</SectionLabel>
             <Button
-              className="-mr-2 h-auto py-0 font-medium leading-none text-muted-foreground"
+              className="-me-2 h-auto py-0 font-medium leading-none text-muted-foreground"
               onClick={openSystem}
               size="xs"
               type="button"

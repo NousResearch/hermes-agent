@@ -76,7 +76,7 @@ export function CatalogDetail({
       <header className="space-y-3">
         <div className="flex min-w-0 items-start gap-3">
           <div className="min-w-0 flex-1">
-            <div className={cn('flex min-w-0 items-center gap-2', dialog && !entry.imageUrl && 'pr-7')}>
+            <div className={cn('flex min-w-0 items-center gap-2', dialog && !entry.imageUrl && 'pe-7')}>
               <Title className="min-w-0 flex-1 break-words text-lg font-semibold tracking-tight">{entry.name}</Title>
               {action && <span className="shrink-0">{action}</span>}
             </div>

@@ -648,7 +648,7 @@ export function FileDiffPanel({
   return (
     <div className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)} data-slot="file-diff-panel">
       <div
-        className={cn('absolute inset-0 overflow-auto', showLineNumbers && 'pr-2.5')}
+        className={cn('absolute inset-0 overflow-auto', showLineNumbers && 'pe-2.5')}
         onScroll={onScroll}
         ref={scrollerRef}
       >
@@ -669,7 +669,7 @@ export function FileDiffPanel({
 
                     return (
                       <div
-                        className="h-5 w-9 pr-2 text-right leading-5 tabular-nums"
+                        className="h-5 w-9 pe-2 text-right leading-5 tabular-nums"
                         key={`${index}-${line.oldNo}-${line.newNo}`}
                       >
                         {line.newNo ?? ''}

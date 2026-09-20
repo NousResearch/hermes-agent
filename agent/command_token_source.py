@@ -1,8 +1,11 @@
 """Mint a provider API key by running a command (``key_cmd``).
 
 Enterprise gateways (SSO/OIDC brokers, cloud IAM, auth proxies) issue SHORT-LIVED bearers; a key
-copied into ``.env`` goes stale within the hour. ``key_cmd`` names a command that PRINTS a token
-(the ``apiKeyHelper`` / ``gcloud auth print-access-token`` idiom). Both wire clients accept a
+copied into ``.env`` goes stale within the hour. ``key_cmd`` names an argv-style helper command
+that PRINTS a token (the ``apiKeyHelper`` / ``gcloud auth print-access-token`` idiom). Hermes
+splits the configured command line into an argument vector with the platform's command-line
+rules and executes it directly with shell interpretation disabled, so shell operators in the
+configuration are never expanded. Both wire clients accept a
 callable API key and invoke it per request; the token is cached until shortly before expiry.
 Output contract: ONLY the token on stdout, bare or as JSON with an ``access_token`` field
 (``expires_in`` / ISO ``expiry`` honoured). Precedence: explicit ``--api-key`` wins (one-off
@@ -44,14 +47,31 @@ def materialize_probe_api_key(api_key: object) -> str:
 
 
 def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
-    """Run *command*, returning ``(token, ttl_seconds_or_None)``. The helper runs FOR the profile whose
-    provider is being minted: it gets that profile's own env (secrets + HERMES_HOME), never the multiplexer's
-    launch environ — an ``op read`` / ``vault kv get`` helper must sign in as the served profile."""
+    """Run *command* as an argv-style helper, returning ``(token, ttl_seconds_or_None)``.
+
+    The helper runs FOR the profile whose provider is being minted: it gets that profile's own
+    env (secrets + HERMES_HOME), never the multiplexer's launch environ — an ``op read`` /
+    ``vault kv get`` helper must sign in as the served profile. Execution never uses a shell:
+    the command line is split with the platform's command-line rules and run as an argument
+    vector, so an operator accidentally (or adversarially) present in the configured string
+    cannot redirect, chain, or substitute commands.
+    """
+    # Lazy imports: hermes_cli.* imports agent.* at module scope.
+    from hermes_cli._subprocess_compat import split_command_line
     from tools.environments.local import served_profile_child_env
 
     try:
-        completed = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=_MINT_TIMEOUT_SECONDS,
+        argv = split_command_line(str(command or ""))
+    except ValueError as exc:
+        raise CommandTokenError(
+            f"key_cmd for provider {label!r} could not be parsed: {exc}"
+        ) from exc
+    if not argv:
+        raise CommandTokenError(f"key_cmd for provider {label!r} is empty")
+
+    try:
+        completed = subprocess.run(  # noqa: S603 — argv vector from platform parsing, never a shell
+            argv, shell=False, capture_output=True, text=True, timeout=_MINT_TIMEOUT_SECONDS,
             env=served_profile_child_env(inherit_credentials=True),
         )
     except subprocess.TimeoutExpired as exc:

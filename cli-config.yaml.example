@@ -196,14 +196,23 @@ model:
 # Enterprise gateways often issue SHORT-LIVED bearers (SSO/OIDC brokers, cloud
 # IAM, internal auth proxies) rather than static API keys, so a value copied
 # into .env via `key_env` is stale within the hour and every later request 401s.
-# `key_cmd` names a command that PRINTS a token instead: Hermes runs it per
-# request (cached until shortly before expiry), so long sessions keep working
-# with no restart.
+# `key_cmd` names an argv-style helper command that PRINTS a token instead:
+# Hermes splits the command line with the platform's command-line rules and
+# runs the resulting argument vector directly, with shell interpretation
+# disabled, per request (cached until shortly before expiry), so long sessions
+# keep working with no restart. Shell operators (pipes, redirection,
+# command substitution) are passed to the helper as literal arguments, never
+# expanded; wrap shell logic in an executable script and name that script if
+# shell composition is needed.
 #
 # Contract: print ONLY the token on stdout, either bare or as JSON with an
 # "access_token" field ("expires_in" is honoured). Same shape as OAuth 2.0
 # token endpoints, Claude Code's `apiKeyHelper`, `gcloud auth
 # print-access-token`, and `aws ecr get-login-password`.
+#
+# On Windows, Hermes uses native command-line quoting: backslashes stay path
+# separators unless they precede a double quote, so quote paths with spaces
+# with double quotes ("C:\Program Files\helper\auth.exe").
 #
 # Precedence: an explicit --api-key still wins; otherwise key_cmd is preferred
 # over inline api_key / key_env on that entry.

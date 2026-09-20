@@ -54,15 +54,8 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # Respawn guard constants
 # ---------------------------------------------------------------------------
 
-# Patterns in last_failure_error that indicate a quota / auth blocker.
-# These errors won't resolve by retrying immediately — auto-block instead.
-_RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
-    r"unauthorized|forbidden|billing|subscription|"
-    r"access[\s_]denied|permission[\s_]denied|"
-    r"invalid[\s_]api[\s_]key)\b",
-    re.IGNORECASE,
-)
+# ``_kb._is_respawn_blocker_error`` owns the shared auth/quota pattern so
+# dependency recovery can clear only the exact stale signal this guard uses.
 
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
@@ -1544,7 +1537,7 @@ def check_respawn_guard(
 
     # 2. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]
-    if err and _RESPAWN_BLOCKER_RE.search(err):
+    if _kb._is_respawn_blocker_error(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

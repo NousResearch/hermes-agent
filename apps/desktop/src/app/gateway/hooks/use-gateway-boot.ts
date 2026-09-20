@@ -312,6 +312,12 @@ export function useGatewayBoot({
     // Reset together with the backoff counters: on a STABLE open (isStableOpen)
     // or a manual/wake-driven reconnect — never on a bare 'open' that dies.
     let escalated = false
+    const resetReconnectBackoff = () => {
+      reconnectAttempt = 0
+      reconnectFailingSince = null
+      escalated = false
+    }
+
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
@@ -544,9 +550,7 @@ export function useGatewayBoot({
       }
 
       clearReconnectTimer()
-      reconnectAttempt = 0
-      reconnectFailingSince = null
-      escalated = false
+      resetReconnectBackoff()
       reconnectSecondaryGateways({ forceOpenSockets: forceOpenSocket })
 
       // Browser WebSocket state can remain OPEN after sleep even though the OS
@@ -624,7 +628,6 @@ export function useGatewayBoot({
     async function getWindowBackend(startup = false): Promise<HermesConnection> {
       const profile = windowProfileOverride()
       const peer = isPeerInstanceWindow()
-
       const route = profile
         ? { profile, connectionId: peer ? new URLSearchParams(window.location.search).get('connectionId') : null }
         : startup && !peer
@@ -708,9 +711,7 @@ export function useGatewayBoot({
         clearLivenessReprobeTimer()
         livenessProbeFailures = 0
         bootRetryAttempt = 0
-        reconnectAttempt = 0
-        reconnectFailingSince = null
-        escalated = false
+        resetReconnectBackoff()
         reauthNotified = false
         primaryReauthError = null
         bootFailed = false
@@ -989,9 +990,7 @@ export function useGatewayBoot({
         }
       } else if (st === 'closed' || st === 'error') {
         if (isStableOpen(openedAt)) {
-          reconnectAttempt = 0
-          reconnectFailingSince = null
-          escalated = false
+          resetReconnectBackoff()
         }
 
         openedAt = null
@@ -1085,9 +1084,7 @@ export function useGatewayBoot({
       reauthNotified = false
       gateway.close()
       clearReconnectTimer()
-      reconnectAttempt = 0
-      reconnectFailingSince = null
-      escalated = false
+      resetReconnectBackoff()
       await attemptReconnect({
         profile: normalizeProfileKey($activeGatewayProfile.get()),
         activationEpoch: gatewayActivationEpoch()

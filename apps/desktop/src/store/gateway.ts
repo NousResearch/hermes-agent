@@ -126,6 +126,10 @@ interface Secondary {
    * remount loop (#94769). 0 = never opened.
    */
   lastOpenedAt: number
+  /** Date.now() of the CURRENT socket's 'open'; null while not open. Stability
+   *  clock for the backoff reset (#83134) — `lastOpenedAt` persists across
+   *  closes and would make every failed redial look like a stable session. */
+  openedAt: null | number
   activeRequests: number
   connectPromise: Promise<void> | null
   offEvent: () => void
@@ -643,7 +647,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
   const desktop = window.hermesDesktop
 
   const reauthError = g.reauthFailures.get(entry.scope)?.error
-
   if (reauthError) {
     throw reauthError
   }
@@ -792,7 +795,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
       entry.wantOpen = false
       clearTimer(entry)
     }
-
     throw error
   } finally {
     if (entry.connectPromise === pending) {
@@ -825,11 +827,9 @@ function isStalledDialError(error: unknown): boolean {
 
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
   const reauthError = g.reauthFailures.get(entry.scope)?.error
-
   if (reauthError && priority !== 'foreground') {
     throw reauthError
   }
-
   g.reauthFailures.delete(entry.scope)
 
   if (entry.retiredByPool && priority !== 'foreground') {
@@ -868,7 +868,6 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   } catch (error) {
     if (isGatewayReauthRequired(error)) {
       notifyError(error, translateNow('boot.errors.gatewaySignInRequired'), { action: RECOVERY_ACTIONS.openGateways() })
-
       return
     }
 
@@ -945,6 +944,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     connection: null,
     gateway,
     lastOpenedAt: 0,
+    openedAt: null,
     activeRequests: 0,
     connectPromise: null,
     offEvent: () => {},
@@ -981,13 +981,16 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 
     if (state === 'open') {
       entry.stalledDials = 0
+      entry.openedAt = Date.now()
       clearTimer(entry)
     } else if (state === 'closed' || state === 'error') {
       // Same stable-open rule as the primary (#83134): an accept-then-close socket
       // is a failed attempt, so the ladder resets only after a socket that lived.
-      if (entry.lastOpenedAt > 0 && isStableOpen(entry.lastOpenedAt)) {
+      if (isStableOpen(entry.openedAt)) {
         entry.reconnectAttempt = 0
       }
+
+      entry.openedAt = null
 
       // A dead socket cannot emit the terminal event that normally releases
       // its turn lease. Drop the orphaned lease before deciding whether this
@@ -1354,7 +1357,6 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
   }
 
   entry.relayRetainCount += 1
-
   if (!g.reauthFailures.has(entry.scope)) {
     rearmSecondary(entry)
   }
@@ -1994,7 +1996,6 @@ function probeSecondaryLiveness(entry: Secondary): void {
       // before the turn ends, so a foreground turn mid tool call shows
       // activeRequests 0. The registry's live-scope hook supplies the turn.
       const liveScopes = g.config?.liveScopes?.()
-
       const turnInFlight =
         liveScopes && (liveScopes.has(entry.scope) || (!entry.connectionId && liveScopes.has(entry.profile))) ? 1 : 0
 
@@ -2298,7 +2299,6 @@ export function closeLegacySecondaryGateways(): void {
       g.reauthFailures.delete(scope)
     }
   }
-
   closeSecondariesWhere(isLegacySecondary)
 }
 

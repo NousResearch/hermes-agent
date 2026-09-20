@@ -21,7 +21,7 @@ def test_dock_paints_processes_under_agents_and_retires_finished_rows(monkeypatc
     monkeypatch.setattr(registry, '_active_subagents', {})
     owner = SimpleNamespace(session_id='owner')
     registry._register_subagent(dict(subagent_id='a1', owner_agent_session_id='owner',
-        goal='Check module', started_at=10, status='running', last_tool='read_file'))
+        goal='Check module', started_at=time.time() - 5, status='running', last_tool='read_file'))
     quick = process_registry.spawn_local(command="echo hello-dock; exit 3", cwd='.', task_id='t', owner_task_id='t', session_key='')
     slow = process_registry.spawn_local(command="sleep 30", cwd='.', task_id='t', owner_task_id='t', session_key='')
     quick_id, slow_id = quick.id, slow.id

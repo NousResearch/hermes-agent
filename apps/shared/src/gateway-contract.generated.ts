@@ -574,6 +574,7 @@ export interface SessionLiveInfo {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
@@ -2694,6 +2695,7 @@ export interface SessionCwdSetResult {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean

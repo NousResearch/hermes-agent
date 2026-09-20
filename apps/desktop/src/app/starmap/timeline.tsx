@@ -182,7 +182,6 @@ export const Timeline = memo(function Timeline({
 
   return (
     <div className="pointer-events-auto flex w-[28rem] max-w-full items-center gap-3 [-webkit-app-region:no-drag]">
-      <style>{'@keyframes starmap-twinkle{0%,100%{opacity:var(--o,1)}50%{opacity:calc(var(--o,1) * 0.35)}}'}</style>
 
       <button
         aria-label={playing ? 'Pause' : 'Play timeline'}

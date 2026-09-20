@@ -1465,6 +1465,19 @@ export const markComposerSelectionManual = (): void => {
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+  // The wire level is only meaningful for the effort the gateway computed it
+  // for; an optimistic pick clears it until the next session.info re-stamps.
+  $currentReasoningEffortWire.set('')
+}
+
+/** The level the route actually sends for `$currentReasoningEffort`
+ *  (`session.info.reasoning_effort_wire`): '' when unknown, equal when verbatim,
+ *  weaker when the route clamps a Hermes-internal step such as `ultra`. Never
+ *  persisted — it describes the live route, not a user preference. */
+export const $currentReasoningEffortWire = atom('')
+
+export const setCurrentReasoningEffortWire = (next: string) => {
+  $currentReasoningEffortWire.set(next)
 }
 
 // The profile's `agent.reasoning_effort`, mirrored from config so surfaces that

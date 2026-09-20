@@ -102,6 +102,12 @@ describe('transcriptPaneBudget', () => {
     expect(transcriptPaneBudget(4, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
     expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
   })
+
+  it('keeps sharing one page budget past four mounted panes (no quarter floor)', () => {
+    const page = transcriptPaneBudget(1, false)
+    expect(transcriptPaneBudget(5, false)).toBeLessThan(transcriptPaneBudget(4, false))
+    expect(transcriptPaneBudget(6, false)).toBe(Math.ceil(page / 6))
+  })
 })
 
 describe('shouldClampTranscriptBudget', () => {
@@ -257,6 +263,20 @@ describe('firstVisibleGroupIndex', () => {
     const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 5_000))
 
     expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(groups.length - 8)
+  })
+
+  it.each([8, 10])('keeps the visible-turn floor at %i mounted panes on the shared page budget', panes => {
+    // #117067 dropped the quarter-page floor from transcriptPaneBudget; its safety
+    // argument is that this floor, not the budget, guards against a degenerate
+    // pane. Control: at high pane counts the per-pane budget covers only ~3 of
+    // these turns, yet 8 stay visible and "Show earlier" still has history to reach.
+    const paneBudget = transcriptPaneBudget(panes, false)
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 20))
+
+    expect(paneBudget * panes).toBeLessThanOrEqual(600 + panes) // shared page, ceil slack only
+    expect(Math.floor(paneBudget / 20)).toBeLessThan(8)
+    expect(firstVisibleGroupIndex(groups, paneBudget, 8)).toBe(groups.length - 8)
+    expect(firstVisibleGroupIndex(groups, paneBudget, 8)).toBeGreaterThan(0)
   })
 
   it('does not force the floor to hide turns the budget already showed', () => {

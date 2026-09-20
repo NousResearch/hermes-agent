@@ -347,14 +347,24 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
 # so a new provider reaches the picker, /model and every downstream consumer without edits here.
-# Non-api-key flows need bespoke picker UX and are skipped.
+# Admission is by slug only: every in-tree non-api-key profile (OAuth, external-process, cloud
+# SDK) already owns a hand-written row above, so the old auth_type skip set never excluded an
+# in-tree provider — it only hid out-of-tree plugins. Visibility is gated downstream by
+# credentials, not here: ``models._provider_has_credentials`` / ``_lap_canonical_rows`` route
+# through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
+# credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+
+
+def _plugin_provider_enters_picker(pp) -> bool:
+    """Picker admission for a plugin model-provider profile: any slug without a built-in row."""
+    return pp.name not in _canonical_slugs
+
+
 try:
     from providers import list_providers as _list_providers_for_canonical
     for _pp in _list_providers_for_canonical():
-        if _pp.name in _canonical_slugs or _pp.auth_type in {
-            "oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex",
-        }:
+        if not _plugin_provider_enters_picker(_pp):
             continue
         _label = _pp.display_name or _pp.name
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _pp.description or f"{_label} (direct API)"))

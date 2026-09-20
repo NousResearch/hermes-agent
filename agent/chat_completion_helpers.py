@@ -642,7 +642,18 @@ def _cloud_stale_timeout(base: float, api_kwargs: dict) -> float:
 def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     """Stale-stream patience for a provider that is never a local endpoint (Bedrock):
     the OpenAI/Anthropic stale detector's budget minus its local branch."""
-    return _cloud_stale_timeout(_configured_stale_base(agent), api_kwargs)
+    return _cloud_stale_timeout_for(agent, api_kwargs)
+
+
+def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
+    """An explicit ``providers.<id>.stale_timeout_seconds`` is the operator's deadline and
+    wins over every implicit floor — the context-size tier as well as the reasoning-model
+    floor — so it can SHORTEN patience for a hung stream (#115024). Only the 180s default
+    is scaled and floored."""
+    explicit = get_provider_stale_timeout(agent.provider, agent.model)
+    if explicit is not None:
+        return explicit
+    return _cloud_stale_timeout(env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), api_kwargs)
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
@@ -1825,6 +1836,23 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             logger.debug("Fallback to %s/%s: could not attach credential pool: %s", fb_provider, fb_model, exc)
 
 
+def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider) -> None:
+    """A billing switch is a WARNING naming the profile, both models and the remedy: the gateway
+    persists the turn as a transient failure otherwise, and nothing in the log says the paid
+    model was refused for credits or how to fix it (#115702). Other reasons stay INFO."""
+    if reason != FailoverReason.billing:
+        logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+        return
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    profile = profile_name_for_home(get_hermes_home()) or "default"
+    remedy = "hermes model" if profile == "default" else f"hermes -p {profile} model"
+    logger.warning(
+        "Profile %s: %s via %s refused for billing/credits — using fallback %s via %s. "
+        "Top up credits, or run `%s` to pick a model this account can use.",
+        profile, old_model, old_provider, fb_model, fb_provider, remedy,
+    )
+
+
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
@@ -2071,7 +2099,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # provenance so the restore path only emits a recovery notice after a real fallback.
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
-            logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+            _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)
@@ -2216,7 +2244,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+            agent, api_request_id, summary_kwargs,
+            lambda request: summary_client.chat.completions.create(**bypass_chat_sdk_request_transform(request, summary_client)),
+            retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
 
@@ -3424,11 +3454,14 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._log_stream_retry(kind="exhausted", error=e, attempt=max_retries + 1,
                 max_attempts=max_retries + 1, mid_tool_call=False, diag=self.clients.diag)
             # Empty stream: "connection failed" would send users chasing network issues.
-            _what = ("Provider returned malformed streaming data after" if _is_stream_parse_err
-                     else "Provider returned an empty response stream after" if _is_empty_stream
-                     else "Connection to provider failed after")
-            self.agent._buffer_diagnostic_status(
-                f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
+            if _is_stream_parse_err or _is_empty_stream:
+                _what = ("Provider returned malformed streaming data after" if _is_stream_parse_err
+                         else "Provider returned an empty response stream after")
+                self.agent._buffer_diagnostic_status(
+                    f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
+            else:
+                from agent.stream_diag import buffer_connect_exhausted_notice
+                buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1, base_url=self.agent.base_url)
         else:
             self._maybe_disable_streaming(e)
             logger.exception("Streaming failed before delivery: %s", e)
@@ -3591,7 +3624,7 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
             return
-        self._stream_stale_timeout = _cloud_stale_timeout(base, self.api_kwargs)
+        self._stream_stale_timeout = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
 
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the

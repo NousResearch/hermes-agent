@@ -29,13 +29,13 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 # Must precede repo-level imports: standalone invocations (e.g. module reload after
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
@@ -3520,11 +3520,23 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                 return False
             try:
                 ack_path.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(ack_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
-                    json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
-                    ack_file.flush()
-                    os.fsync(ack_file.fileno())
+                # Publish via write-to-temp + atomic rename. Writing ack_path in place
+                # (the old approach) let O_CREAT make the empty file visible to the
+                # scheduler's exists()-then-read polling loop before the JSON body was
+                # written, occasionally handing it a 0-byte file and a JSONDecodeError.
+                # os.replace() is a single atomic syscall on the same filesystem, so
+                # readers only ever see the file fully absent or fully written.
+                ack_tmp_path = ack_path.with_name(f"{ack_path.name}.tmp{os.getpid()}")
+                fd = os.open(ack_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
+                        json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
+                        ack_file.flush()
+                        os.fsync(ack_file.fileno())
+                    os.replace(ack_tmp_path, ack_path)
+                except BaseException:
+                    ack_tmp_path.unlink(missing_ok=True)
+                    raise
             except Exception:
                 logger.exception(
                     "Cron external worker could not publish ready acknowledgement for %s",
@@ -3609,11 +3621,14 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
 
 
 # Dead-owner reap is throttled (opens the executions ledger). Tests may reset
-# _last_dead_owner_reap_at to None to force a reap next tick.
+# _last_dead_owner_reap_at to {} to force a reap next tick.
 # Dead-owner claim reclaim throttle (#86721): recover_interrupted_executions opens the executions ledger, so
 # the per-tick reap is rate-limited rather than run on every idle 60s cycle.
+# The throttle is keyed by profile home: under multiplex_profiles the ticker
+# ticks every profile each cycle, and a process-global slot would let the
+# first profile starve all the others.
 _DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
-_last_dead_owner_reap_at: Optional[float] = None
+_last_dead_owner_reap_at: Dict[str, float] = {}
 
 # Worktree prune throttle: the cron tick is the only reliably periodic process on gateway boxes.
 _WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
@@ -3732,22 +3747,24 @@ def _release_tick_lock(lock_fd) -> None:
 
 
 def _maybe_reap_dead_owners() -> None:
-    """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Only
-    rows whose owner process is proved gone are touched (_owner_is_live). Throttled."""
+    """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Rows
+    whose owner process is proved gone are released (_owner_is_live), as are rows whose live owner
+    holds a claim older than the derived stale bound (the process is not killed). Throttled."""
     # Dead-owner claim reclaim (#86721): execution rows carry their owner pid + process start time, but
     # recovery previously ran only at scheduler STARTUP. A one-shot `hermes cron run` that claimed a job and
     # died mid-run (its runner thread lived in the exiting CLI process) left the row 'claimed' forever while
     # the long-lived gateway ticker kept running — blocking every future run of that job. Reap provably-dead
     # owners periodically so stale claims auto-clear without a gateway restart. Throttled so idle 60s ticks
     # don't pay a ledger connection every cycle (#33612).
-    global _last_dead_owner_reap_at
+    _reap_key = hermes_home_key(_get_hermes_home())
     _reap_now = time.monotonic()
+    _last_reap = _last_dead_owner_reap_at.get(_reap_key)
     if (
-        _last_dead_owner_reap_at is not None
-        and _reap_now - _last_dead_owner_reap_at < _DEAD_OWNER_REAP_INTERVAL_SECONDS
+        _last_reap is not None
+        and _reap_now - _last_reap < _DEAD_OWNER_REAP_INTERVAL_SECONDS
     ):
         return
-    _last_dead_owner_reap_at = _reap_now
+    _last_dead_owner_reap_at[_reap_key] = _reap_now
     try:
         from cron.executions import recover_interrupted_executions
 

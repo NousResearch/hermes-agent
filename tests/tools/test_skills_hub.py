@@ -679,6 +679,66 @@ class TestCheckForSkillUpdates:
         assert "bundle" not in results[0]
         source.fetch.assert_not_called()
 
+    @staticmethod
+    def _github_source_with_tree(tree_sha: str, calls: dict) -> GitHubSource:
+        """Real ``GitHubSource`` whose API is stubbed: one tree at ``tree_sha`` holding SKILL.md
+        plus two support blobs; every file GET is counted in ``calls``."""
+        src = GitHubSource(auth=MagicMock())
+        entries = [{"path": f"demo-skill/{p}", "type": "blob", "sha": f"sha-{p}", "size": 3}
+                   for p in ("SKILL.md", "scripts/run.sh", "references/notes.md")]
+        api = {"/repos/owner/repo": {"default_branch": "main"},
+               "/repos/owner/repo/git/trees/main": {"sha": tree_sha, "tree": entries}}
+        src._github_json = lambda url, **kw: api[url.split("api.github.com", 1)[1]]
+        def _file(repo, path, **kw):
+            calls["files"] = calls.get("files", 0) + 1
+            return "---\nname: demo-skill\n---\nSee scripts/run.sh and references/notes.md\n"
+        src._fetch_file_content = _file
+        src._fetch_file_bytes = lambda repo, path, **kw: _file(repo, path, **kw).encode()
+        return src
+
+    @pytest.mark.parametrize("recorded, expected_status, expected_gets",
+                             [("a" * 40, "up_to_date", 0), ("b" * 40, "update_available", 3)])
+    def test_unchanged_upstream_revision_skips_bundle_download(
+            self, tmp_path, monkeypatch, recorded, expected_status, expected_gets):
+        """A lock entry whose recorded ``source_revision`` still matches the upstream tree
+        sha is reported ``up_to_date`` with zero file GETs; a moved tree pays the full fetch (#101454)."""
+        import tools.skills_hub as hub
+        (tmp_path / "skills" / "demo-skill").mkdir(parents=True)
+        monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill", "source": "github", "identifier": "owner/repo/demo-skill",
+            "content_hash": "installed-hash", "install_path": "demo-skill",
+            "metadata": {"source_revision": recorded},
+        }]
+        calls: dict = {}
+        source = self._github_source_with_tree("a" * 40, calls)
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert [r["status"] for r in results] == [expected_status]
+        assert calls.get("files", 0) == expected_gets
+        assert ("bundle" in results[0]) == (expected_status == "update_available")
+        if expected_status == "up_to_date":
+            assert results[0]["current_hash"] == results[0]["latest_hash"] == "installed-hash"
+
+    def test_bundle_with_a_failed_blob_fetch_records_no_revision(self):
+        """A transient blob failure installs with a gap; the lock must NOT carry the tree sha, or the
+        revision short-circuit would report the gap ``up_to_date`` forever instead of re-fetching."""
+        calls: dict = {}
+        source = self._github_source_with_tree("a" * 40, calls)
+        good_bytes = source._fetch_file_bytes
+        source._fetch_file_bytes = (
+            lambda repo, path, **kw: None if path.endswith("notes.md") else good_bytes(repo, path, **kw))
+
+        bundle = source.fetch("owner/repo/demo-skill")
+
+        assert bundle is not None and "references/notes.md" not in bundle.files
+        assert bundle.metadata["source_revision"] == ""
+        # and a clean fetch of the same tree does record it
+        source._fetch_file_bytes = good_bytes
+        assert source.fetch("owner/repo/demo-skill").metadata["source_revision"] == "a" * 40
+
 class TestCreateSourceRouter:
 
     def test_url_source_runs_before_github_source(self):

@@ -99,6 +99,14 @@ alert is delivered (it is not repeated every tick), and **no LLM call is
 made** — a misconfigured job never spends tokens. The next healthy run clears
 the blocked state so a future configuration break alerts again.
 
+A missing-credential verdict names the profile and `HERMES_HOME` the scheduler
+read, e.g. `provider credential missing: No Codex credentials stored … [profile
+'default', HERMES_HOME /opt/data]`. When an interactive session with "the same"
+credential works, compare that path with the shell's `HERMES_HOME`: a gateway
+started without the shell's environment (Docker `HOME` vs `HERMES_HOME`, a
+service unit) or a multiplexed satellite profile reads a different `auth.json`
+and `.env` than the shell does.
+
 To disable the validation and restore the old behavior (the run proceeds and
 fails during execution):
 
@@ -867,6 +875,18 @@ cron:
 A timed-out delivery is recorded in `last_delivery_error`; the bot's turn may still complete on its own.
 
 The cap bounds the bot's **turn** only. When that turn messages a teammate (`message_agent`), the delivery process stays alive afterwards — bounded by `terminal.oneshot_completion_wait_seconds` — so the teammate's reply can land in the Bot Chat; that wait is not part of the delivery and is never counted against, or cut short by, this cap.
+
+## Standalone send timeout
+
+When the live gateway adapter cannot deliver (or no gateway is running), a target is sent through the platform's standalone sender. That send is bounded by a wall-clock timeout — 60 seconds by default — so a transport that is mid-reconnect cannot pin the job run (and a pending restart drain behind it) indefinitely:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  standalone_send_timeout_seconds: 120
+```
+
+A timed-out send is recorded in `last_delivery_error` as `standalone send to <target> timed out after Ns`; the message may still land if the adapter had already accepted it.
 
 ## No-agent mode (script-only jobs)
 

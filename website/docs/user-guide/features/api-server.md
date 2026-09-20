@@ -187,6 +187,8 @@ Chain responses to maintain full context (including tool calls) across turns:
 
 The server reconstructs the full conversation from the stored response chain — all previous tool calls and results are preserved. Chained requests also share the same session, so multi-turn conversations appear as a single entry in the dashboard and session history.
 
+Each response's `output` lists only that turn's items (its `function_call` / `function_call_output` entries and final `message`), never earlier turns' tool calls — including when Hermes repaired the supplied history before the call (merged consecutive `assistant` or `user` items, dropped orphan tool results) or compacted it mid-chain. The stored chain is that repaired transcript, so the history does not grow by a second copy on every turn.
+
 #### Named conversations
 
 Use the `conversation` parameter instead of tracking response IDs:

@@ -88,28 +88,6 @@ def _message_item(text: Any) -> Dict[str, Any]:
             "content": [{"type": "output_text", "text": text}]}
 
 
-_TRANSCRIPT_IDENTITY_KEYS = ("role", "content", "tool_calls", "tool_call_id")
-
-
-def _same_transcript_prefix(agent_messages: List[Any], prefix: List[Any]) -> bool:
-    """True when ``agent_messages`` starts with ``prefix`` by what each message *says*.
-
-    The API layer builds bare ``{"role", "content"}`` dicts while the agent stamps its copies
-    with ``timestamp`` / ``_db_persisted`` / ``reasoning`` / ``finish_reason``; whole-dict
-    equality therefore never matched and every chained turn re-appended the full prior
-    transcript (#95137, #101644, #82513)."""
-    if len(agent_messages) < len(prefix):
-        return False
-    for got, want in zip(agent_messages, prefix):
-        if not isinstance(got, dict) or not isinstance(want, dict):
-            if got != want:
-                return False
-            continue
-        if any(got.get(k) != want.get(k) for k in _TRANSCRIPT_IDENTITY_KEYS):
-            return False
-    return True
-
-
 def _cap_text(text: str, keep: int) -> str:
     """Head of ``text`` plus a marker saying how much was cut (the Responses truncation rule)."""
     return text[:keep] + "...[" + str(len(text) - keep) + " more chars]"
@@ -416,19 +394,29 @@ class _ResponsesStream:
         for event in ("response.output_item.added", "response.output_item.done"):
             await self.write_event(event, {"type": event, "output_index": idx, "item": output_item})
 
+    async def emit_status(self, payload: Dict[str, Any]) -> None:
+        """Lifecycle/warning status (provider wait, auto-recovery countdown, fallback switch) as a
+        ``hermes.status`` custom event; not a Responses output item."""
+        await self.response.write(self._api._sse_frame(payload, event="hermes.status"))
+
+    # queue tag -> (method name, payload adapter)
+    _TAG_HANDLERS = {
+        "__tool_started__": ("emit_tool_started", lambda p: p),
+        "__tool_completed__": ("emit_tool_completed", lambda p: p),
+        "__commentary__": ("emit_commentary", lambda p: p["text"]),
+        "__reasoning__": ("emit_reasoning_delta", lambda p: p),
+        "__status__": ("emit_status", lambda p: p),
+    }
+
     async def dispatch(self, item: Any) -> None:
-        """Route one queue item: tool tuples emit immediately, strings are batched, others dropped."""
+        """Route one queue item: tagged tuples emit immediately, strings are batched, others dropped."""
         if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
             tag, payload = item
             await self.flush_batch()
-            if tag == "__tool_started__":
-                await self.emit_tool_started(payload)
-            elif tag == "__tool_completed__":
-                await self.emit_tool_completed(payload)
-            elif tag == "__commentary__":
-                await self.emit_commentary(payload["text"])
-            elif tag == "__reasoning__":
-                await self.emit_reasoning_delta(payload)
+            handler = self._TAG_HANDLERS.get(tag)
+            if handler is not None:
+                method, adapt = handler
+                await getattr(self, method)(adapt(payload))
         elif isinstance(item, str):
             self._batch_buf.append(item)
             if self._batch_timer is None:
@@ -563,10 +551,17 @@ class OpenAICompatRoutesMixin:
             # keep them distinct from answer text.
             if text:
                 stream_q.put_threadsafe(("__reasoning__", text))
+        def _on_status(kind, message=None):
+            # Lifecycle/warning status (provider wait, auto-recovery countdown, fallback switch) as a
+            # ``hermes.status`` event, so a client sees why the stream is silent instead of a dead socket.
+            from gateway.platforms.api_server import _redact_api_error_text
+            text = _redact_api_error_text(message if message is not None else kind or "").strip()
+            if text:
+                stream_q.put_threadsafe(("__status__", {"kind": str(kind), "text": text}))
         agent_ref = [None]
         agent_task = asyncio.ensure_future(self._run_agent(
-            stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, agent_ref=agent_ref,
-            **run_kwargs))
+            stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, status_callback=_on_status,
+            agent_ref=agent_ref, **run_kwargs))
         agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
         return agent_task, agent_ref
 
@@ -845,6 +840,8 @@ class OpenAICompatRoutesMixin:
                     # DeepSeek-style ``delta.reasoning_content`` (#99552), the field Open WebUI,
                     # opencode and the Vercel AI SDK render as a thinking block.
                     await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
+                    await response.write(_sse_frame(delta[1], event="hermes.status"))
                 else:
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
@@ -1182,17 +1179,9 @@ class OpenAICompatRoutesMixin:
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
     ) -> int:
-        """Detect transcript-shaped result["messages"] and return turn start."""
-        agent_messages = result.get("messages") if isinstance(result, dict) else None
-        if not isinstance(agent_messages, list) or not agent_messages:
-            return 0
-        prior = list(conversation_history)
-        expected_prefix = prior + [{"role": "user", "content": user_message}]
-        if _same_transcript_prefix(agent_messages, expected_prefix):
-            return len(expected_prefix)
-        if prior and _same_transcript_prefix(agent_messages, prior):
-            return len(prior)
-        return 0
+        """Index where this turn starts in a transcript-shaped result["messages"] (0 = all)."""
+        from gateway.platforms.api_server_turn_boundary import response_turn_start_index
+        return response_turn_start_index(conversation_history, user_message, result)
 
     @classmethod
     def _turn_transcript_messages(

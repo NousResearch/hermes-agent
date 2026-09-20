@@ -4237,22 +4237,29 @@ Write only the summary body. Do not include any preamble or prefix."""
         return idx
 
     @classmethod
+    def _is_real_user_turn(cls, message: Dict[str, Any]) -> bool:
+        """Actionable user turn that is not synthetic scaffolding — the row test both index scans share.
+
+        Weaker than ``agent.conversation_compression._is_real_user_message``, which also rejects
+        metadata-flagged scaffolding this pair cannot see; use that one when the question is
+        "is this a genuine inbound user message".
+        """
+        return cls._is_actionable_user_turn(message) and not cls._is_synthetic_compression_user_turn(message)
+
+    @classmethod
     def _real_user_indices_desc(cls, messages: List[Dict[str, Any]], head_end: int) -> list[int]:
         """Newest-first indices of actionable, non-synthetic user turns at or after *head_end* (no handoffs/blank echoes)."""
         return [
             i for i in range(len(messages) - 1, head_end - 1, -1)
-            if cls._is_actionable_user_turn(messages[i])
-            and not cls._is_synthetic_compression_user_turn(messages[i])
+            if cls._is_real_user_turn(messages[i])
         ]
 
     def _find_last_user_message_idx(self, messages: List[Dict[str, Any]], head_end: int) -> int:
         """Return the latest actionable user turn at or after *head_end*, or -1."""
-        # Early-exit generator: only the newest hit is needed, and this runs on every boundary
-        # computation — collecting every index (``_real_user_indices_desc``) costs a full scan.
+        # Early-exit generator: callers want the newest hit only, and collecting every index
+        # (``_real_user_indices_desc``) costs a full backward scan per call.
         return next(
-            (i for i in range(len(messages) - 1, head_end - 1, -1)
-             if self._is_actionable_user_turn(messages[i])
-             and not self._is_synthetic_compression_user_turn(messages[i])),
+            (i for i in range(len(messages) - 1, head_end - 1, -1) if self._is_real_user_turn(messages[i])),
             -1,
         )
 
@@ -4415,9 +4422,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             return compressed
 
         for msg in compressed[carrier_idx + 1:]:
-            if self._is_actionable_user_turn(
-                msg
-            ) and not self._is_synthetic_compression_user_turn(msg):
+            if self._is_real_user_turn(msg):
                 # A real request already follows the summary.
                 return compressed
 
@@ -5183,7 +5188,7 @@ def split_user_originated_turn(message: Any) -> tuple[Optional[Dict[str, Any]], 
             candidate["display_metadata"] = durable_metadata
     drop_stale_api_content(candidate)
     cls = ContextCompressor
-    if cls._is_synthetic_compression_user_turn(candidate) or not cls._is_actionable_user_turn(candidate):
+    if not cls._is_real_user_turn(candidate):
         return handoff, None
     return handoff, candidate
 
@@ -5260,10 +5265,7 @@ def reference_handoff_would_drive_next_model_call(messages: Optional[List[Dict[s
         role = message.get("role")
         if (
             role == "tool" or (role == "assistant" and message.get("tool_calls"))
-            or (
-                ContextCompressor._is_actionable_user_turn(message)
-                and not ContextCompressor._is_synthetic_compression_user_turn(message)
-            )
+            or ContextCompressor._is_real_user_turn(message)
             or (is_compaction_summary_message(message) and _handoff_carries_live_user_content(message))
         ):
             return False

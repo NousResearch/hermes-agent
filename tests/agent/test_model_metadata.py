@@ -1325,7 +1325,43 @@ class TestGetModelContextLength:
         # The local probe MUST be called exactly once
         mock_local_ctx.assert_called_once()
 
+    # ── Codex routes are keyed on the transport, not the host (#116191) ──────────────
 
+    @pytest.mark.parametrize(
+        "provider, custom_providers",
+        [
+            ("custom:codex-proxy", [{"name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses"}]),
+            ("openai-codex", None),  # HERMES_CODEX_BASE_URL / model.base_url proxy per #115902
+        ],
+    )
+    def test_codex_route_behind_proxy_resolves_codex_oauth_window(self, provider, custom_providers):
+        """A Codex model served through a generic proxy URL must get the Codex OAuth window, not the
+        direct-API catalog window: the compressor otherwise fires ~2x past the Codex limit."""
+        from agent import model_metadata as mm
+        proxy_models = {"gpt-6-astra": {"id": "gpt-6-astra"}}  # like CLIProxyAPI's /models: no context field
+        with (
+            patch.object(mm, "get_cached_context_length", return_value=1_050_000),  # stale pre-fix entry must not win
+            patch.object(mm, "fetch_endpoint_model_metadata", return_value=proxy_models),
+            patch.object(mm, "_query_ollama_api_show", return_value=None),
+            patch.object(mm, "is_local_endpoint", return_value=False),
+            patch.object(mm, "_fetch_codex_oauth_context_lengths_with_source", return_value=({}, False)),
+        ):
+            ctx = get_model_context_length(
+                "gpt-6-astra", base_url="http://127.0.0.1:8317/v1", api_key="proxy-key",
+                provider=provider, custom_providers=custom_providers,
+            )
+        assert ctx == mm._CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"]
+
+    def test_codex_proxy_route_explicit_context_length_override_still_wins(self):
+        """providers.<name>.models[].context_length beats the Codex table on a codex_responses route (#102644)."""
+        custom = [{
+            "name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses",
+            "models": {"gpt-6-astra": {"context_length": 321_000}},
+        }]
+        ctx = get_model_context_length(
+            "gpt-6-astra", base_url="http://127.0.0.1:8317/v1", provider="custom:codex-proxy", custom_providers=custom,
+        )
+        assert ctx == 321_000
 
 
 # =========================================================================

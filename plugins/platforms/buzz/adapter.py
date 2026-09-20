@@ -9,6 +9,7 @@ BUZZ_PRIVATE_KEY (nsec or hex): it reaches the CLI via the subprocess env and is
 """
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
@@ -95,7 +96,11 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
 
 
 _FETCH_LIMIT = 50  # events per poll / seed call
-_SEEN_CAP = 500  # per-channel de-dupe set bound (events)
+_SEEN_CAP = 500  # reply metadata LRU; replay IDs have a separate time window
+_WS_REPLAY_OVERLAP_SECONDS = 2 * 900 + 1
+_REPLAY_SEEN_LIMIT = 50_000
+_REPLAY_PAGE_LIMIT = 1000
+_REPLAY_MAX_PAGES = 1000
 _CURSOR_STATE_SUBDIR = "buzz"  # per-channel cursors survive a restart under HERMES_HOME
 _CURSOR_STATE_FILENAME = "channel-cursors.json"
 _DM_DISCOVERY_EVERY = 5  # re-run DM discovery every N poll sweeps
@@ -1038,7 +1043,15 @@ class BuzzAdapter(BasePlatformAdapter):
         request_filter = {"kinds": sorted(_DISPATCH_KINDS), "#h": [channel_id]}
         if last_ts:
             # Resume from the high-water mark (same-second overlap de-duped by id).
-            request_filter["since"] = max(last_ts - 1, 0)
+            floor = max(last_ts - _WS_REPLAY_OVERLAP_SECONDS, int(state.get("seen_floor") or 0), 0)
+            if state.get("replay_floor") is not None:
+                floor = min(floor, state["replay_floor"])
+            state["replay_floor"] = floor
+            state["_ws_eose"] = False
+            state["_replay_http_complete"] = False
+            self._save_cursors()
+            request_filter["since"] = floor
+            request_filter["limit"] = _REPLAY_PAGE_LIMIT
         else:
             # A conversation adopted mid-run with no high-water mark is fresh: its history IS the conversation,
             # so subscribe from the start or the message that *created* it is dropped. Seeded channels have last_ts != 0.
@@ -1049,7 +1062,7 @@ class BuzzAdapter(BasePlatformAdapter):
         """Subscribe to every watched conversation plus membership events (kind 44100 p-tagged to us) for DM discovery."""
         subscriptions: Dict[str, Optional[str]] = {}
         for index, channel_id in enumerate(list(self._channel_state)):
-            if channel_id in self._restricted_channels:
+            if channel_id in self._restricted_channels or self._channel_state[channel_id].get("replay_blocked"):
                 continue
             subscriptions[f"hermes-buzz-{index}"] = channel_id
             await self._send_channel_subscription(websocket, f"hermes-buzz-{index}", channel_id)
@@ -1114,12 +1127,15 @@ class BuzzAdapter(BasePlatformAdapter):
                         # connect() published "connected" once; a recovered socket has to say so again.
                         reconnecting = False
                         self._mark_connected()
+                    if any(state.get("replay_blocked") for state in self._channel_state.values()):
+                        self._mark_degraded()
                     backoff = 1.0
                     # Whichever side notices the dead socket first ends the connection: the read loop's idle
                     # bound, or a discovery send() raising ConnectionClosed while the read is still parked.
                     tasks = {
                         asyncio.create_task(self._ws_read_loop(websocket, subscriptions)),
                         asyncio.create_task(self._ws_discovery_loop(websocket, subscriptions)),
+                        asyncio.create_task(self._ws_replay_loop()),
                     }
                     try:
                         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -1139,6 +1155,123 @@ class BuzzAdapter(BasePlatformAdapter):
                 logger.warning("Buzz: WebSocket disconnected; retrying in %.1fs: %s", backoff, e)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    def _finish_replay(self, state: dict) -> None:
+        # HTTP exhaustion alone is insufficient: the live socket can still be
+        # draining its original historical page. Keep IDs until both finish.
+        if state.get("_ws_eose", False) and state.get("_replay_http_complete"):
+            state.pop("replay_floor", None)
+            self._trim_seen(state)
+            self._save_cursors()
+
+    def _block_replay(self, channel_id: str, state: dict, reason: str) -> None:
+        """Quarantine only this channel; preserve its uncompleted floor for an operator."""
+        state["replay_blocked"] = reason
+        logger.error("Buzz: replay blocked for channel %s: %s; cursor retained", channel_id, reason)
+        self._mark_degraded()
+        self._save_cursors()
+
+    async def _query_replay_page(self, request_filter: dict) -> List[dict]:
+        """One bounded NIP-98 HTTP snapshot, without interleaved live WS events.
+
+        Buzz /query supports the same until/before_id keyset as WS REQ. The
+        owner attestation stays a header, matching buzz-cli's HTTP bridge.
+        """
+        import httpx
+        import uuid
+        parsed = urlsplit(self.relay_url)
+        scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
+        if scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("invalid replay relay URL")
+        url = urlunsplit((scheme, parsed.netloc, parsed.path.rstrip("/") + "/query", "", ""))
+        body = json.dumps([request_filter], separators=(",", ":")).encode()
+        tags = [["u", url], ["method", "POST"], ["nonce", str(uuid.uuid4())],
+                ["payload", hashlib.sha256(body).hexdigest()]]
+        pubkey = _nostr_auth.public_key_hex(self._private_key)
+        stamp = int(time.time())
+        digest = hashlib.sha256(json.dumps([0, pubkey, stamp, 27235, tags, ""], separators=(",", ":")).encode()).digest()
+        event = {"id": digest.hex(), "pubkey": pubkey, "created_at": stamp, "kind": 27235,
+                 "tags": tags, "content": "", "sig": _nostr_auth.schnorr_sign(digest, self._private_key).hex()}
+        headers = {"Content-Type": "application/json", "Authorization": "Nostr " + base64.b64encode(
+            json.dumps(event, separators=(",", ":")).encode()).decode()}
+        if self._auth_tag:
+            headers["x-auth-tag"] = self._auth_tag
+        async with httpx.AsyncClient(timeout=_WS_AUTH_TIMEOUT, follow_redirects=False) as client:
+            async with client.stream("POST", url, content=body, headers=headers) as response:
+                response.raise_for_status()
+                payload = bytearray()
+                async for chunk in response.aiter_bytes():
+                    payload.extend(chunk)
+                    if len(payload) > _WS_MAX_MESSAGE_BYTES:
+                        raise ValueError("replay page exceeds response byte limit")
+        events = json.loads(payload)
+        if not isinstance(events, list) or len(events) > _REPLAY_PAGE_LIMIT:
+            raise ValueError("invalid replay page")
+        return events
+
+    async def _replay_channel(self, channel_id: str, state: dict) -> None:
+        floor = state.get("replay_floor")
+        if floor is None or state.get("replay_blocked"):
+            return
+        # Snapshot upper bound is fixed; history pages cannot be contaminated
+        # by asynchronous live frames on the original subscription.
+        upper = max(int(time.time()) + 900, int(state.get("last_ts") or 0))
+        previous = None
+        for _ in range(_REPLAY_MAX_PAGES):
+            query = {"kinds": sorted(_DISPATCH_KINDS), "#h": [channel_id], "since": floor,
+                     "until": upper, "limit": _REPLAY_PAGE_LIMIT}
+            if previous is not None:
+                query["until"], query["before_id"] = previous
+            events = await self._query_replay_page(query)
+            # Membership discovery may remove or replace this state while HTTP waits.
+            if self._channel_state.get(channel_id) is not state or channel_id in self._restricted_channels:
+                return
+            if not events:
+                state["_replay_http_complete"] = True
+                self._finish_replay(state)
+                return
+            positions = []
+            for event in events:
+                if not isinstance(event, dict) or not isinstance(event.get("created_at"), int) or not isinstance(event.get("id"), str):
+                    raise ValueError("invalid replay event")
+                stamp, event_id = event["created_at"], event["id"]
+                if not _HEX64_RE.fullmatch(event_id) or stamp < floor or stamp > query["until"]:
+                    raise ValueError("replay page outside requested bounds")
+                if previous and not (stamp < previous[0] or (stamp == previous[0] and event_id > previous[1])):
+                    raise ValueError("relay did not honor replay pagination")
+                tags = event.get("tags") or []
+                if not isinstance(tags, list) or not any(
+                    isinstance(tag, list) and len(tag) >= 2 and tag[:2] == ["h", channel_id]
+                    for tag in tags
+                ):
+                    raise ValueError("replay page channel mismatch")
+                positions.append((stamp, event_id))
+            cursor = min(positions, key=lambda item: (item[0], -int(item[1], 16)))
+            await self._handle_events(channel_id, state, events)
+            if state.get("replay_blocked"):
+                return
+            previous = cursor
+            # Even a short page is followed by another query. This works with
+            # a relay page clamp smaller than our request without guessing it.
+        self._block_replay(channel_id, state, "replay page budget exceeded")
+
+    async def _ws_replay_loop(self) -> None:
+        while True:
+            for channel_id, state in list(self._channel_state.items()):
+                if state.get("replay_floor") is None or state.get("replay_blocked") or state.get("_replay_http_complete"):
+                    continue
+                try:
+                    await self._replay_channel(channel_id, state)
+                    state.pop("_replay_failures", None)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    state["_replay_failures"] = state.get("_replay_failures", 0) + 1
+                    # Do not log HTTP/auth headers or response bodies.
+                    logger.warning("Buzz: replay attempt failed for %s (%s)", channel_id, type(exc).__name__)
+                    if isinstance(exc, ValueError) or state["_replay_failures"] >= 3:
+                        self._block_replay(channel_id, state, "replay failed: " + type(exc).__name__)
+            await asyncio.sleep(max(self.poll_interval, _MIN_POLL_INTERVAL))
 
     async def _ws_read_loop(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
         """Read frames until the relay closes; a close or an idle read raises ConnectionError to reconnect."""
@@ -1188,6 +1321,12 @@ class BuzzAdapter(BasePlatformAdapter):
             state = self._channel_state.get(channel_id or "")
             if channel_id and state is not None:
                 await self._handle_events(channel_id, state, [event])
+        elif message[0] == "EOSE" and len(message) >= 2:
+            channel_id = subscriptions.get(str(message[1]))
+            state = self._channel_state.get(channel_id or "")
+            if state is not None:
+                state["_ws_eose"] = True
+                self._finish_replay(state)
         elif message[0] == "CLOSED":
             detail = message[-1] if len(message) > 2 else "subscription closed"
             sub_id = str(message[1]) if len(message) > 1 else ""
@@ -1252,8 +1391,30 @@ class BuzzAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 continue
             raw_seen = entry.get("seen")
-            seen = [str(event_id) for event_id in raw_seen][-_SEEN_CAP:] if isinstance(raw_seen, list) else []
-            self._restored_cursors[str(channel_id)] = {"chat_type": str(entry.get("chat_type") or ""), "last_ts": last_ts, "seen": seen}
+            seen = [str(event_id) for event_id in raw_seen] if isinstance(raw_seen, list) else []
+            stamps = entry.get("seen_timestamps")
+            if isinstance(stamps, dict):
+                try:
+                    stamps = {str(k): int(v) for k, v in stamps.items()}
+                except (ValueError, TypeError):
+                    continue
+            else:
+                stamps = {k: last_ts for k in seen}
+            blocked = entry.get("replay_blocked")
+            if len(stamps) > _REPLAY_SEEN_LIMIT:
+                blocked = "saved replay ID capacity exceeded"
+                # Retain the file's cursor without silently dispatching from truncated state.
+                stamps = dict(list(stamps.items())[-_REPLAY_SEEN_LIMIT:])
+            try:
+                seen_floor = int(entry.get("seen_floor", max(last_ts - 1, 0)))
+                replay_floor = entry.get("replay_floor")
+                replay_floor = int(replay_floor) if replay_floor is not None else None
+            except (ValueError, TypeError):
+                continue
+            self._restored_cursors[str(channel_id)] = {
+                "chat_type": str(entry.get("chat_type") or ""), "last_ts": last_ts, "seen": stamps,
+                "seen_floor": seen_floor, "replay_floor": replay_floor, "replay_blocked": blocked,
+            }
 
     def _save_cursors(self) -> None:
         """Persist every watched channel's cursor.  Never raises."""
@@ -1261,6 +1422,10 @@ class BuzzAdapter(BasePlatformAdapter):
             channel_id: {
                 "chat_type": state.get("chat_type") or "group", "last_ts": int(state.get("last_ts") or 0),
                 "seen": list(state.get("seen") or ()),
+                "seen_timestamps": {k: int(v if v is not None else state.get("last_ts", 0)) for k, v in (state.get("seen") or {}).items()},
+                "seen_floor": int(state.get("seen_floor") or 0),
+                "replay_floor": state.get("replay_floor"),
+                "replay_blocked": state.get("replay_blocked"),
             }
             for channel_id, state in self._channel_state.items()
         }
@@ -1289,7 +1454,9 @@ class BuzzAdapter(BasePlatformAdapter):
             return False
         state = self._new_channel_state(restored["chat_type"] or chat_type)
         state["last_ts"] = restored["last_ts"]
-        state["seen"] = OrderedDict((event_id, None) for event_id in restored["seen"])
+        state["seen"] = OrderedDict(restored["seen"])
+        for key in ("seen_floor", "replay_floor", "replay_blocked"):
+            state[key] = restored.get(key)
         self._channel_state[channel_id] = state
         return True
 
@@ -1303,15 +1470,17 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.warning("Buzz: could not seed channel %s — %s", channel_id, _cli_error_message(err, code))
             # "now" so a transiently unreadable channel never replays its history later.
             state["last_ts"] = int(time.time())
+            state["seen_floor"] = max(state["last_ts"] - 1, 0)
             return
         for event in _parse_json_list(out):
             if event_id := event.get("id"):
-                state["seen"][str(event_id)] = None
+                state["seen"][str(event_id)] = int(event.get("created_at") or 0)
             state["last_ts"] = max(state["last_ts"], int(event.get("created_at") or 0))
             # History is never dispatched but feeds event_meta (post-restart replies to us must match) and latches DMs.
             # See #75826.
             self._remember_event(state, event)
             self._maybe_latch_dm(channel_id, state, event)
+        state["seen_floor"] = max(state["last_ts"] - 1, 0)
         self._trim_seen(state)
 
     async def _discover_dms(self, *, seed: bool) -> None:
@@ -1491,7 +1660,13 @@ class BuzzAdapter(BasePlatformAdapter):
         created_at = int(event.get("created_at") or 0)
         if not event_id or event_id in state["seen"]:
             return
-        state["seen"][event_id] = None
+        if state.get("replay_blocked"):
+            return
+        self._trim_seen(state)
+        if len(state["seen"]) >= _REPLAY_SEEN_LIMIT:
+            self._block_replay(channel_id, state, "replay ID capacity exceeded")
+            return
+        state["seen"][event_id] = created_at
         state["last_ts"] = max(state["last_ts"], created_at)
         if int(event.get("kind") or 0) not in _DISPATCH_KINDS:
             return
@@ -1631,8 +1806,12 @@ class BuzzAdapter(BasePlatformAdapter):
     @staticmethod
     def _trim_seen(state: dict) -> None:
         seen = state["seen"]
-        while len(seen) > _SEEN_CAP:
-            seen.popitem(last=False)
+        floor = max(int(state.get("last_ts") or 0) - _WS_REPLAY_OVERLAP_SECONDS, 0)
+        if state.get("replay_floor") is not None:
+            floor = min(floor, state["replay_floor"])
+        for event_id, stamp in list(seen.items()):
+            if stamp is not None and stamp < floor:
+                del seen[event_id]
         meta = state.get("event_meta")
         if isinstance(meta, OrderedDict):
             while len(meta) > _SEEN_CAP:
@@ -1641,8 +1820,11 @@ class BuzzAdapter(BasePlatformAdapter):
     def _mark_seen(self, channel_id: str, event_id: str) -> None:
         state = self._channel_state.get(channel_id)
         if state is not None:
-            state["seen"][event_id] = None
             self._trim_seen(state)
+            if event_id not in state["seen"] and len(state["seen"]) >= _REPLAY_SEEN_LIMIT:
+                self._block_replay(channel_id, state, "replay ID capacity exceeded")
+                return
+            state["seen"][event_id] = max(int(state.get("last_ts") or 0), int(time.time()) + 900)
 
     # ── Thread anchoring: NIP-10 replies carry ["e", root, "", "root"] + ["e", parent, "", "reply"]; a thread
     # STARTER carries a lone "reply". The gateway anchors on the trigger id, which inside a thread would nest

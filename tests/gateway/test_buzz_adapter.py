@@ -3816,7 +3816,7 @@ class TestChannelCursorPersistence:
         assert set(adapter._channel_state[CHANNEL]["seen"]) == {"e1"}
 
     @pytest.mark.asyncio
-    async def test_restored_seen_set_stays_bounded(self, adapter, tmp_path):
+    async def test_legacy_seen_ids_are_not_truncated_at_metadata_cap(self, adapter, tmp_path):
         cap = _buzz_mod._SEEN_CAP
         path = self._cursor_file(tmp_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -3838,10 +3838,10 @@ class TestChannelCursorPersistence:
         await adapter._seed_channel(CHANNEL, chat_type="group")
 
         seen = adapter._channel_state[CHANNEL]["seen"]
-        assert len(seen) == cap
-        # The newest ids are the ones worth keeping for de-dupe.
+        assert len(seen) == cap * 2
+        # Legacy IDs remain conservative dedupe evidence during migration.
         assert f"e{cap * 2 - 1}" in seen
-        assert "e0" not in seen
+        assert "e0" in seen
 
     @pytest.mark.asyncio
     async def test_idle_poll_does_not_rewrite_the_cursor(self, adapter, tmp_path):

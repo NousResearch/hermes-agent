@@ -587,7 +587,7 @@ async def test_new_subscription_without_high_water_mark_has_no_since_floor():
 @pytest.mark.asyncio
 async def test_seeded_subscription_resumes_from_high_water_mark():
     """A channel with a real high-water mark keeps the since-resume contract
-    (last_ts - 1, same-second overlap de-duped by id)."""
+    (bounded clock-skew overlap de-duped by id)."""
     adapter = _make_adapter()
     adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 1_700_000_000, "seen": {}}
 
@@ -601,8 +601,8 @@ async def test_seeded_subscription_resumes_from_high_water_mark():
     ws = _Ws()
     await adapter._send_channel_subscription(ws, "hermes-buzz-0", CHANNEL)
     req_filter = ws.sent[0][2]
-    assert req_filter["since"] == 1_699_999_999
-    assert "limit" not in req_filter
+    assert req_filter["since"] == 1_700_000_000 - _buzz_mod._WS_REPLAY_OVERLAP_SECONDS
+    assert req_filter["limit"] == _buzz_mod._REPLAY_PAGE_LIMIT
 
 
 # ── Membership-rejection phrasing (#97502 composed into #76850) ────────────

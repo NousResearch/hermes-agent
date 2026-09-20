@@ -49,7 +49,7 @@ export interface ActiveTip {
    *  tip follows an element that re-renders and leaves when it goes away. */
   targets: readonly string[]
   text: string
-  /** Catalog id. Absent for an agent-authored tip, which has nothing to retire. */
+  /** Stable id used by the seen and retirement ledgers. */
   tipId?: string
   title?: string
 }
@@ -68,6 +68,11 @@ export const $nextTipAt = persistentAtom<null | number>(
   Codecs.json(value => (typeof value === 'number' && Number.isFinite(value) ? value : null))
 )
 export const $activeTip = atom<ActiveTip | null>(null)
+
+/** Agent tips have no catalog entry, so their content is their durable identity. */
+export function agentTipId(selector: string, text: string): string {
+  return `agent:${JSON.stringify([selector, text])}`
+}
 
 // Off has to reach the agent, not just the renderer: the `tip` tool leaves the
 // model's schema entirely rather than staying on offer and being dropped.
@@ -120,6 +125,10 @@ export const $spentTipCount = computed([$retiredTips, $tipShownAt], (retired, sh
 
 /** Put a tip on screen, replacing whatever was there. */
 export function showTip(tip: ActiveTip): void {
+  if (tip.tipId && $retiredTips.get().includes(tip.tipId)) {
+    return
+  }
+
   if (tip.tipId) {
     // The cursor belongs to the rotation's walk. A campaign tip (an id the
     // catalog doesn't hold) records when it showed but must not move the
@@ -142,8 +151,7 @@ export function dismissTip(): void {
   $activeTip.set(null)
 }
 
-/** Hard close (the ✕): retire the catalog tip behind the bubble for good. An
- *  agent tip has no catalog entry, so it just closes. */
+/** Hard close (the ✕): retire the identified tip behind the bubble for good. */
 export function retireActiveTip(): void {
   const tipId = $activeTip.get()?.tipId
 

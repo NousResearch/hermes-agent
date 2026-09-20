@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from agent.account_usage import AccountUsageSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,22 @@ class ProviderProfile:
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
+    # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
+    supports_model_listing: bool = True
+
+    # ── Provider-owned auth (optional; non-api-key plugins) ──────────
+    # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
+    # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
+    # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
+    # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
+    # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
+    # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
+    # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after
+    # the generic ``transform_api_error_classification`` plugin hooks and before the built-in pipeline.
+    # Return ``{"reason": <FailoverReason name>, ...hint flags}`` to override, ``None`` to decline.
+    auth_handler: Callable[[str, Any], Any] | None = None
+    refresh_credential: Callable[[Any], Any] | None = None
+    classify_api_error: Callable[..., Any] | None = None
 
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
@@ -78,6 +97,17 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
+    # ── External-process providers (auth_type="external_process") ──
+    # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
+    # describe how to launch it; hermes_cli/auth.py's
+    # resolve_external_process_provider_credentials() reads them instead of
+    # hardcoding one vendor's binary. Env vars are checked in order and win
+    # over the static defaults, so an operator can point at a custom build.
+    process_command: str = ""            # default binary, e.g. "copilot"
+    process_args: tuple = ()             # default argv tail, e.g. ("--acp", "--stdio")
+    process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
+    process_args_env_var: str = ""       # env override for argv (shlex-split)
+
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
@@ -94,12 +124,30 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
+    unsupported_response_formats: tuple = ()
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )
     # empty = use main model
 
+    # Per-model metadata in the canonical model_overrides schema. Partial entries
+    # patch catalog metadata; explicit user overrides still win. Exact model IDs.
+    model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # ── Hooks (override in subclass for complex providers) ───
+
+    def fetch_account_usage(
+        self, *, base_url: str | None = None, api_key: str | None = None
+    ) -> AccountUsageSnapshot | None:
+        """Return an account-usage snapshot for this provider, if available.
+
+        The ``/usage`` command invokes this only when no built-in account
+        usage fetcher owns the provider. Implementations may make their
+        provider-specific request and must return an ``AccountUsageSnapshot``
+        or ``None``; exceptions fail open at the dispatch boundary.
+        """
+        return None
 
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".
@@ -167,6 +215,14 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def build_client_kwargs_extras(self, **context: Any) -> dict[str, Any]:
+        """Provider-specific OpenAI client keyword arguments.
+
+        Values are defaults: explicit runtime/custom-provider settings win.
+        The returned mapping must be cheap to build and must not perform I/O.
+        """
+        return {}
+
     def default_vision_model(self) -> str | None:
         """Return a default vision model id for this provider, or None.
 
@@ -193,6 +249,60 @@ class ProviderProfile:
         per-model.
         """
         return self.default_max_tokens
+
+    def supported_reasoning_efforts(
+        self, model: str | None
+    ) -> tuple[str, ...] | None:
+        """Declared reasoning-effort vocabulary for *model* on this provider.
+
+        Overrideable hook for providers whose gateway validates
+        ``reasoning.effort`` per model instead of ignoring or clamping
+        unknown levels server-side (Ramp Router derives this from its live
+        ``/v1/models`` catalog). The Responses transport consults it before
+        falling back to its built-in per-backend vocabularies; it is the
+        profile-declared analog of the OpenRouter catalog clamp on the
+        chat-completions path (``openrouter_model_reasoning_capabilities``).
+
+        Tri-state contract:
+          - ``None`` — unknown/undeclared: the transport keeps its default
+            vocabulary for the wire (this base implementation).
+          - ``()`` — the model accepts NO reasoning parameters at all; the
+            transport must omit reasoning fields entirely (some gateways
+            return HTTP 400 rather than ignoring them).
+          - non-empty tuple — clamp the requested effort onto these levels
+            (``agent.reasoning_effort.clamp_effort`` semantics: nearest
+            weaker supported level, never escalate).
+
+        Implementations are called on the per-request hot path and must not
+        block on network I/O — answer from a cache and return None while
+        cold.
+        """
+        return None
+
+    def create_client(self, **client_kwargs: Any) -> Any | None:
+        """Return a provider-specific client, or ``None`` for the standard one.
+
+        Most providers speak OpenAI-compatible HTTP and want the shared
+        ``openai.OpenAI`` client the core builds — they inherit this and return
+        ``None``. A provider whose wire protocol is not HTTP at all (the ACP
+        subprocess shims) or which needs a native SDK overrides this and
+        returns its own client object.
+
+        ``client_kwargs`` is the same mapping the core would have passed to
+        ``openai.OpenAI`` (``api_key``, ``base_url``, ``command``, ``args``,
+        timeouts, headers…). Unknown keys must be tolerated: the core adds to
+        this mapping over time, so an override should accept ``**kwargs`` and
+        pick what it needs rather than enumerate.
+
+        Returning ``None`` (the default) is always safe — the caller falls
+        through to its existing construction path.
+
+        This is the hook that lets a provider ship *outside* this tree: with it,
+        a profile registered from ``~/.hermes/plugins/model-providers/`` or a
+        pip entry point can supply its own transport without any core edit. See
+        ``plugins/model-providers/copilot-acp/`` for the in-tree example.
+        """
+        return None
 
     def fetch_models(
         self,
@@ -227,6 +337,8 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
+        if not self.supports_model_listing:
+            return None
         caller_base = (base_url or "").strip()
         effective_base = caller_base or self.base_url
         custom_base = bool(caller_base) and (

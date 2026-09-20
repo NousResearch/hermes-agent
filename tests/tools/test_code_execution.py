@@ -248,7 +248,7 @@ class TestExecuteCode(unittest.TestCase):
 
     def _run(self, code, enabled_tools=None):
         """Helper: run code with mocked handle_function_call."""
-        with patch("tools.code_execution_tool._rpc_server_loop") as mock_rpc:
+        with patch("tools.code_execution_rpc._rpc_server_loop") as mock_rpc:
             # Use real execution but mock the tool dispatcher
             pass
         # Actually run with full integration, mocking at the model_tools level
@@ -441,7 +441,7 @@ class TestStubSchemaDrift(unittest.TestCase):
         import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
         import tools.web_tools  # noqa: F401 - registers web_search, web_extract
 
-        for tool_name, (func_name, sig, doc, args_expr) in _TOOL_STUBS.items():
+        for tool_name, (sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)
             if not entry:
                 # Tool might not be registered yet (e.g., terminal uses a
@@ -475,10 +475,11 @@ class TestStubSchemaDrift(unittest.TestCase):
         compile(src, "hermes_tools.py", "exec")
 
         # Verify specific parameter signatures are in the source
-        # search_files must accept context, offset, output_mode
+        # search_files must accept its pagination, output, and ordering controls
         self.assertIn("context", src)
         self.assertIn("offset", src)
         self.assertIn("output_mode", src)
+        self.assertIn("order", src)
 
         # patch must accept mode and patch params
         self.assertIn("mode", src)
@@ -592,7 +593,12 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             os.environ["HERMES_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
-            self.assertEqual(child_env.get("TZ"), "America/New_York")
+            if sys.platform == "win32":
+                # The MSVC runtime only parses POSIX-form TZ; an IANA name yields a wrong
+                # offset (#112233), so Windows children keep the OS zone instead.
+                self.assertNotIn("TZ", child_env)
+            else:
+                self.assertEqual(child_env.get("TZ"), "America/New_York")
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
@@ -714,7 +720,7 @@ class TestLoadConfig(unittest.TestCase):
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
         with patch.dict("sys.modules", {"cli": mock_cli}), \
-             patch("hermes_cli.config.read_raw_config", return_value={}):
+             patch("hermes_cli.config.load_config_readonly", return_value={}):
             result = _load_config()
         self.assertEqual(result, {})
 
@@ -836,7 +842,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         Sends each dict in *requests* as a newline-delimited JSON message
         and returns the list of decoded JSON responses.
         """
-        from tools.code_execution_tool import _rpc_server_loop
+        from tools.code_execution_rpc import _rpc_server_loop
 
         # socketpair gives us a connected client end and a "server" end we
         # can hand to accept() by wrapping it in a tiny listener shim.

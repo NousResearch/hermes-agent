@@ -18,6 +18,7 @@ import {
   setCurrentFastMode,
   setCurrentPersonality,
   setCurrentReasoningEffort,
+  setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
   setSessions,
@@ -28,7 +29,12 @@ import {
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
-import { hasSessionInfoStatePatch, PRE_TURN_LIVE_SETTLE_GRACE_MS, sessionInfoStatePatch } from '../utils'
+import {
+  applySessionInfoStatePatch,
+  hasSessionInfoStatePatch,
+  PRE_TURN_LIVE_SETTLE_GRACE_MS,
+  sessionInfoStatePatch
+} from '../utils'
 
 import type { GatewayEventContext } from './types'
 
@@ -237,6 +243,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         setCurrentReasoningEffort(payload.reasoning_effort)
       }
 
+      if (typeof payload?.reasoning_effort_wire === 'string') {
+        setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
+      }
+
       if (typeof payload?.service_tier === 'string') {
         setCurrentServiceTier(payload.service_tier)
       }
@@ -253,12 +263,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     if (sessionId && hasStatePatch) {
       updateSessionState(
         sessionId,
-        state => ({
-          ...state,
-          ...statePatch,
-          branch: statePatch.branch ?? state.branch,
-          cwd: statePatch.cwd ?? state.cwd
-        }),
+        state => applySessionInfoStatePatch(state, statePatch),
         payload?.stored_session_id || undefined
       )
     }
@@ -272,11 +277,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
     if (runningChanged && sessionId) {
-      // Set when THIS event released a turn that ended without ever
-      // producing an assistant payload, so the catch-up side effects below
-      // run on that edge only. The updater is invoked exactly once,
+      // Set when THIS event releases a confirmed live turn whose terminal
+      // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.
-      let recoveredWithoutPayload = false
+      let recoveredIncompleteTurn = false
 
       const nextState = updateSessionState(
         sessionId,
@@ -348,15 +352,14 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           }
 
           // Past that gate the turn DID start and the backend now reports it
-          // finished. When no assistant payload ever arrived (gateway crash
-          // mid-stream, provider error before the first delta, agent-build
-          // failure) message.complete never fires, so this is the only event
-          // that can release the session. Bailing here instead left
+          // finished. When message.complete never fires (gateway crash
+          // mid-stream, provider error, reconnect gap), this is the only
+          // event that can release the session. Bailing here instead left
           // awaitingResponse/busy latched until app restart (#46517): the
           // per-session busy flag is authoritative for isTargetSessionBusy,
           // so submitPrompt and the slash dispatcher silently returned false
           // and the session accepted no further input.
-          recoveredWithoutPayload = state.awaitingResponse && !state.sawAssistantPayload
+          recoveredIncompleteTurn = state.turnLive
 
           return {
             ...state,
@@ -381,13 +384,13 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         payload?.stored_session_id || undefined
       )
 
-      if (recoveredWithoutPayload) {
+      if (recoveredIncompleteTurn) {
         // Stays unscoped, like the settle above: a background session's
         // sidebar row has to drop its working dot without the user opening
-        // it. This fires on the recovery edge only — once awaitingResponse
-        // is false the `state.busy === busy` guard above short-circuits
-        // every later heartbeat — so it costs one coalesced refresh per
-        // broken turn, not one per tick.
+        // it. This fires on the recovery edge only — once turnLive is false
+        // the `state.busy === busy` guard above short-circuits every later
+        // heartbeat — so it costs one coalesced refresh per broken turn,
+        // not one per tick.
         scheduleSessionsRefresh()
 
         // The transcript catch-up IS scoped. The stream died, but the turn

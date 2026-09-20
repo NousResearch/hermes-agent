@@ -1,15 +1,21 @@
 import { atom, map } from 'nanostores'
 
+// The Capabilities Skills-list query key, imported rather than re-spelled so a
+// hub (un)install updates the Skills tab, not just the hub.
+import { SKILLS_QUERY_KEY } from '@/app/capabilities/skills/skills-data'
 import {
   getActionStatus,
   installSkillFromHub,
   type ProfileScope,
+  scanSkillHub,
   uninstallSkillFromHub,
   updateSkillsFromHub
 } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 const POLL_MS = 1200
@@ -17,9 +23,10 @@ const POLL_MS = 1200
 // Shared with hub.tsx's sources useQuery so a finished action refreshes the
 // installed map.
 export const HUB_SOURCES_KEY = ['skill-hub-sources'] as const
-// The Capabilities Skills-list query key (see app/skills/index.tsx) — kept in
-// sync here so a hub (un)install updates the Skills tab, not just the hub.
-const SKILLS_LIST_KEY = ['skills-list'] as const
+// The built-in optional-skills catalog rows in the Skills tab: an install
+// flips one of them to an installed (toggle) row, so the catalog's
+// installed-flags must refetch alongside the skills list.
+export const OFFICIAL_SKILLS_KEY = ['official-skills'] as const
 // Non-identifier key for the fleet-wide "Update installed" action.
 export const UPDATE_ALL_KEY = '__update_all__'
 
@@ -118,7 +125,8 @@ async function runHubAction(
     // Refresh the hub's installed map AND the Capabilities Skills list — a hub
     // (un)install adds/removes a skill, so its count/rows must update too.
     void queryClient.invalidateQueries({ queryKey: HUB_SOURCES_KEY })
-    void queryClient.invalidateQueries({ queryKey: SKILLS_LIST_KEY })
+    void queryClient.invalidateQueries({ queryKey: SKILLS_QUERY_KEY })
+    void queryClient.invalidateQueries({ queryKey: OFFICIAL_SKILLS_KEY })
     // …and the composer's `/` list, which caches the command catalog for an
     // hour and would otherwise keep offering the skill we just removed.
     invalidateSlashCompletions()
@@ -129,7 +137,14 @@ async function runHubAction(
     // the unchanged skills list as "install did nothing" (Aug 2026 report).
     // The last log lines carry the subprocess's actual error.
     if (exitCode !== null && exitCode !== 0) {
-      const detail = ($hubActions.get()[key]?.lines ?? []).slice(-3).join('\n').trim()
+      const lines = $hubActions.get()[key]?.lines ?? []
+      const blocked = parseInstallBlocked(lines)
+
+      if (blocked) {
+        throw new HubInstallBlockedError(key, blocked.findings, blocked.unverified, lines.slice(-3).join('\n').trim())
+      }
+
+      const detail = lines.slice(-3).join('\n').trim()
 
       throw new Error(detail || `Action exited with code ${exitCode}`)
     }
@@ -168,4 +183,90 @@ export function updateHubSkills(profile?: ProfileScope): Promise<void> {
 
 export function closeHubLog(): void {
   $hubActiveLog.set(null)
+}
+
+// `hermes skills install` exits non-zero when the security scan gate refuses,
+// and its printed tail is the only signal the Desktop gets, so parse it into a
+// structured failure the toast can explain (tools-runtime-21). `--force` has
+// no Desktop route, so the remedy offered is reading the scan, not overriding
+// it. Two CLI shapes exist (`hermes_cli/skills_hub.py::_scan_block_message`):
+//   current: "Not installed: the security scan found 2 high-risk pattern(s) in
+//            'org/skill' (listed above). Hermes never installs unverified
+//            skills with high-risk findings, even with --force. ..."
+//            (the "never installs unverified" sentence only appears for a
+//            non-official source; otherwise it says "Re-run with --force").
+//   legacy:  "Installation blocked: Blocked (community source + caution
+//            verdict, 2 findings). Use --force to override."
+// The console may wrap the sentence, so whitespace between words is `\s+`.
+const INSTALL_BLOCKED_CURRENT_RE =
+  /Not installed:\s+the security scan found\s+(?:(?<findings>\d+)\s+)?high-risk\s+pattern/i
+
+const INSTALL_BLOCKED_UNVERIFIED_RE = /never installs\s+unverified/i
+
+const INSTALL_BLOCKED_LEGACY_RE =
+  /Installation blocked:.*?\((?<source>[a-z_-]+) source \+ (?<verdict>[a-z_]+) verdict, (?<findings>\d+) findings?\)/i
+
+export function parseInstallBlocked(lines: readonly string[]): { findings: number; unverified: boolean } | null {
+  const text = lines.join('\n')
+  const current = text.match(INSTALL_BLOCKED_CURRENT_RE)
+
+  if (current?.groups) {
+    return {
+      findings: current.groups.findings ? Number(current.groups.findings) : 0,
+      unverified: INSTALL_BLOCKED_UNVERIFIED_RE.test(text)
+    }
+  }
+
+  const legacy = text.match(INSTALL_BLOCKED_LEGACY_RE)
+
+  if (!legacy?.groups) {
+    return null
+  }
+
+  return { findings: Number(legacy.groups.findings), unverified: legacy.groups.source !== 'official' }
+}
+
+export class HubInstallBlockedError extends Error {
+  constructor(
+    readonly identifier: string,
+    readonly findings: number,
+    readonly unverified: boolean,
+    detail: string
+  ) {
+    super(detail)
+    this.name = 'HubInstallBlockedError'
+  }
+}
+
+/** Toast for a failed hub action: a blocked install explains the scan gate and
+ *  offers "View scan"; anything else keeps the generic summary + raw tail. */
+export function notifyHubActionFailed(err: unknown, fallbackTitle: string, skillName?: string, profile?: ProfileScope): void {
+  if (!(err instanceof HubInstallBlockedError)) {
+    notifyError(err, fallbackTitle)
+
+    return
+  }
+
+  const name = skillName || err.identifier
+
+  notify({
+    kind: 'error',
+    title: translateNow('skills.hub.installBlockedTitle', name),
+    message: translateNow('skills.hub.installBlockedMessage', err.findings, err.unverified),
+    detail: err.message || undefined,
+    action: {
+      label: translateNow('skills.hub.viewScan'),
+      onClick: () =>
+        void scanSkillHub(err.identifier, typeof profile === 'object' ? profile?.profile : profile)
+          .then(scan =>
+            notify({
+              kind: 'warning',
+              title: translateNow('skills.hub.installBlockedTitle', name),
+              message: scan.summary,
+              detail: scan.findings.map(f => `${f.severity}: ${f.description}`).join('\n') || undefined
+            })
+          )
+          .catch(scanErr => notifyError(scanErr, translateNow('skills.hub.scanFailed')))
+    }
+  })
 }

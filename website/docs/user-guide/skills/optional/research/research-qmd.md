@@ -15,13 +15,13 @@ Hybrid local search over notes, docs, and transcripts.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/qmd` |
-| Path | `optional-skills/research/qmd` |
+| Path | `optional-skills/research\qmd` |
 | Version | `1.0.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | macos, linux |
 | Tags | `Search`, `Knowledge-Base`, `RAG`, `Notes`, `MCP`, `Local-AI` |
-| Related skills | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian), [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |
+| Related skills | [`obsidian`](../../bundled/note-taking/note-taking-obsidian.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md), [`arxiv`](../../bundled/research/research-arxiv.md) |
 
 ## Reference: full SKILL.md
 
@@ -309,9 +309,9 @@ cat > ~/Library/LaunchAgents/com.qmd.daemon.plist << 'EOF'
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/qmd-daemon.log</string>
+  <string>/Users/YOU/.hermes/cache/scratch/qmd-daemon.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/qmd-daemon.log</string>
+  <string>/Users/YOU/.hermes/cache/scratch/qmd-daemon.log</string>
 </dict>
 </plist>
 EOF

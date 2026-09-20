@@ -39,6 +39,11 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
+`google-ai-studio`. On Google's native API endpoint, all use the native Gemini
+client, including its `generationConfig.thinkingConfig` translation. A custom
+OpenAI-compatible base URL continues to use the compatible client instead.
+
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
@@ -73,20 +78,23 @@ Each entry requires both `provider` and `model`. Entries missing either field ar
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | CommandCode | `commandcode` (alias `commandcode-chat`; Claude via `commandcode-anthropic`) | `COMMANDCODE_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
-| OpenCode Free | `opencode-free` | — (keyless, no credential) |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
+| Ramp Router | `router` | `RAMP_ROUTER_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
 | GMI Cloud | `gmi` | `GMI_API_KEY` |
+| Nebius Token Factory | `nebius-token-factory` | `NEBIUS_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |
 | Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
 | StepFun | `stepfun` | `STEPFUN_API_KEY` |
 | Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |
+| Tencent TokenPlan | `tencent-tokenplan` | `TOKENPLAN_API_KEY` |
 | Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
+| Mixture of Agents preset | `moa` (`model` = preset name) | A configured MoA preset whose aggregator has credentials — the fallback runs the whole preset (references + aggregator), not the aggregator alone |
 
 ### Custom Endpoint Fallback
 
@@ -108,16 +116,19 @@ The fallback activates automatically when the primary model fails with:
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately
-- **Invalid responses** — when the API returns malformed or empty responses repeatedly
+- **Invalid responses** — when the API returns malformed or empty responses repeatedly. An HTTP-200 body whose only assistant text is a router's `Connect timeout, please try again later.` with zero completion tokens counts as invalid too (streamed or not, in the main loop, the iteration-limit summary and auxiliary calls), so it is retried instead of shown as the answer. A streamed refusal (the model declining with an explanation on the refusal channel) is a terminal `content_filter` result, not an empty response, so it is surfaced rather than retried. On the native Anthropic wire a `stop_reason: refusal` arrives with an empty body; Hermes reports the reason from the response's `stop_details` (category and, when present, explanation) in the refusal message and in the log line (`native_stop_reason=… stop_details=…`).
 
 When triggered, Hermes:
 
-1. Resolves credentials for the fallback provider
-2. Builds a new API client
+1. Resolves credentials for the fallback provider (including named custom providers using `key_cmd`)
+2. Builds a new API client, preserving a dynamic credential source across timeout and request-client rebuilds
 3. Swaps the model, provider, and client in-place
-4. Resets the retry counter and continues the conversation
+4. Re-resolves the reasoning effort for the fallback model (its `agent.reasoning_overrides` entry, else the global `agent.reasoning_effort`)
+5. Resets the retry counter and continues the conversation
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
+
+The same re-resolution happens when the CLI falls back at **startup** because the primary provider's auth fails before the first request: the fallback model is sent its own configured effort, not the primary's. An explicit `hermes chat --reasoning <level>` is kept across that startup switch — it is your intent for the run.
 
 :::warning Fallback resets the prompt cache
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
@@ -126,7 +137,9 @@ Prompt caches are keyed to the model (and on most providers, the account) servin
 :::info Per-Turn, Not Per-Session
 Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
 
-The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. The moment the reset time elapses, the next turn goes back to the primary automatically. Transient 429s without a reset time keep the existing behavior: a short cooldown, then retry every turn.
+The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
+
+When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
 :::
 
 ### Examples
@@ -166,16 +179,17 @@ fallback_providers:
 ```yaml
 fallback_providers:
   - provider: openai-codex
-    model: gpt-5.3-codex
+    model: gpt-5.4
 ```
 
 ### Where Fallback Works
 
 | Context | Fallback Supported |
 |---------|-------------------|
-| CLI sessions | ✔ |
+| CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn) |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
-| Subagent delegation | ✔ (subagents inherit the parent fallback chain) |
+| Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
+| Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
 | Cron jobs | ✔ (cron agents inherit configured fallback providers) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
@@ -204,12 +218,14 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 
 ### Auto-Detection Chain
 
-When a task's provider is set to `"auto"` (the default), Hermes first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Hermes now honors user-configured fallback policy before using the built-in discovery chain:
+When a task's provider is set to `"auto"` (the default), Hermes first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Hermes follows your configured fallback policy and then stops:
 
 ```text
 Main provider + main model → auxiliary.<task>.fallback_chain →
-fallback_providers / fallback_model → built-in auxiliary discovery chain
+fallback_providers / fallback_model → skip the task (warn)
 ```
+
+A billing or quota failure quarantines only the failed custom endpoint for the auxiliary health cooldown, not every route registered as `custom`. A healthy local endpoint with a different base URL remains eligible for fallback and subsequent auto routing. Aliases for the same custom endpoint share its health state. Built-in providers retain their shared-account health checks.
 
 The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
 
@@ -227,7 +243,7 @@ Main provider (if vision-capable) → OpenRouter → Nous Portal →
 Codex OAuth → Anthropic → Custom endpoint → give up
 ```
 
-Those built-in chains are a convenience fallback for users who have not declared a task-specific or main fallback policy.
+Those built-in chains run **only when no main provider is selected** (`model.provider: auto` or unset). Once you have picked a main provider, an unavailable main route with no `fallback_chain` / `fallback_providers` skips the auxiliary task with a warning instead of guessing another provider you happen to be logged into — an expired xAI or Codex session must never bill your Nous Portal or OpenRouter balance behind your back. Declare a fallback if you want one.
 
 ### Configuring Auxiliary Providers
 
@@ -257,7 +273,7 @@ auxiliary:
     model: ""
 ```
 
-Every task above follows the same **provider / model / base_url** pattern. Each task can also declare its own `fallback_chain`; if omitted, `provider: auto` uses the top-level `fallback_providers` chain before Hermes' built-in auxiliary discovery chain.
+Every task above follows the same **provider / model / base_url** pattern. Each task can also declare its own `fallback_chain`; if omitted, `provider: auto` uses the top-level `fallback_providers` chain (the built-in discovery chain applies only when no main provider is selected).
 
 Context compression is configured under `auxiliary.compression`:
 
@@ -282,7 +298,7 @@ All three — auxiliary, compression, fallback — work the same way: set `provi
 
 ### Provider Options for Auxiliary Tasks
 
-These options apply to `auxiliary:`, `compression:`, and `fallback_providers:` entries only — `"main"` is **not** a valid value for your top-level `model.provider`. For custom endpoints, use `provider: custom` in your `model:` section (see [AI Providers](/integrations/providers)).
+These options apply to `auxiliary:`, `compression:`, and `fallback_providers:` entries only — `"main"` is **not** a valid value for your top-level `model.provider`. For custom endpoints, use `provider: custom` in your `model:` section (see [AI Providers](../../integrations/providers.md)).
 
 | Provider | Description | Requirements |
 |----------|-------------|-------------|
@@ -319,6 +335,8 @@ When you set an explicit auxiliary provider (e.g. `auxiliary.vision.provider: gl
 4. **Warn + re-raise** — if every layer fails, Hermes logs `Auxiliary <task>: ... all fallbacks exhausted` at WARNING level and re-raises the original error
 
 Transient HTTP 429 rate limits (`Retry-After: ...`) are treated as request constraints, not capacity problems — they respect your explicit provider choice and do **not** trigger the fallback ladder. Only daily/monthly quota exhaustion, payment errors, and connection failures bypass the explicit-provider gate.
+
+**Auth errors (HTTP 401) on an explicit provider** walk only step 2: if you wrote `auxiliary.<task>.fallback_chain`, its entries are tried in order (and a chain entry that dies mid-request hands off to the next one); the main agent model and the auto-detection chain are never consulted, because you did not opt that task into them. Without a chain the task fails on the auth error as before. Auth is credential-wide, so chain entries on the same provider label are skipped — point the spare at a different provider (a separate `providers:` entry counts).
 
 For users on `provider: auto` (no explicit aux provider), the existing auto-detection chain runs in place of steps 2–3. Its first step is already the main agent model, so `auto` users get the same outcome with zero config.
 
@@ -392,7 +410,7 @@ delegation:
   # api_key: "local-key"
 ```
 
-See [Subagent Delegation](/user-guide/features/delegation) for full configuration details.
+See [Subagent Delegation](./delegation.md) for full configuration details.
 
 ---
 
@@ -410,7 +428,7 @@ cronjob(
 )
 ```
 
-See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration details.
+See [Scheduled Tasks (Cron)](./cron.md) for full configuration details.
 
 ---
 
@@ -420,7 +438,7 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 |---------|-------------------|----------------|
 | Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level list) |
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
-| Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors only | `auxiliary.<task>.fallback_chain` |
+| Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
 | Skills hub | Layered (see above) | `auxiliary.skills_hub` |
@@ -428,5 +446,5 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
-| Delegation | Inherits the parent's `fallback_providers` chain; optional provider/model override | `delegation.provider` / `delegation.model` |
+| Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
 | Cron jobs | Inherit the configured `fallback_providers` chain; optional per-job provider override | Per-job `provider` / `model` |

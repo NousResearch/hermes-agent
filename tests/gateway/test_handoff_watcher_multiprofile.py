@@ -15,6 +15,7 @@ These tests pin the two halves of the fix:
 """
 
 import asyncio
+import threading
 import types
 from pathlib import Path
 
@@ -24,9 +25,8 @@ from gateway import run
 
 
 class _FakeConfig:
-    def __init__(self, multiplex, allowlist=None):
+    def __init__(self, multiplex):
         self.multiplex_profiles = multiplex
-        self.multiplex_profile_allowlist = allowlist
 
 
 def test_scopes_single_profile_gateway_is_root_only():
@@ -89,6 +89,98 @@ class _RecordingDB:
         return []
 
 
+class _ProbeDB:
+    """Probe-side store stub for the idle gate (goals SessionDB cache)."""
+
+    def __init__(self, pending):
+        self._pending = pending
+
+    def has_pending_handoffs(self):
+        return self._pending
+
+
+@pytest.mark.asyncio
+async def test_watcher_gates_profile_scope_on_pending_handoffs(monkeypatch):
+    """Idle profiles must not pay the scope entry (config/secret re-parse) every tick.
+
+    The gate probes the profile's store off-loop; only a store WITH a pending handoff gets
+    its scope entered by the tick. Both directions are the contract: no work → no scope
+    entry; work present → scope entered and the store polled. The startup reclaim is
+    exempt (once per boot, and it must also see 'running' leftovers)."""
+    scopes = [
+        (None, None),
+        ("bala", Path("/h/profiles/bala")),
+        ("medicina", Path("/h/profiles/medicina")),
+    ]
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: scopes)
+
+    from hermes_cli import goals
+
+    entered = []
+
+    class _SpyScope:
+        def __init__(self, home):
+            self.home = home
+
+        async def __aenter__(self):
+            entered.append(self.home)
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(run, "_async_profile_runtime_scope", _SpyScope)
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(run.asyncio, "sleep", _no_sleep)
+
+    homes = [h for _n, h in scopes[1:]]
+
+    async def _run_once(pending_by_home):
+        monkeypatch.setattr(
+            goals, "_DB_CACHE",
+            {str(h): _ProbeDB(pending_by_home[h]) for h in homes})
+        entered.clear()
+        db = _RecordingDB()
+        states = iter([True, False])
+
+        class _Running:
+            def __bool__(_self):
+                try:
+                    return next(states)
+                except StopIteration:
+                    return False
+
+        fake = types.SimpleNamespace()
+        fake._session_db = db
+        fake._running = _Running()
+        fake._run_in_executor_with_context = asyncio.to_thread
+
+        async def _process_handoff(row, profile_name=None):
+            return None
+
+        fake._process_handoff = _process_handoff
+        coro = run.GatewayRunner._handoff_watcher(fake, interval=0.0)
+        await asyncio.wait_for(coro, timeout=5)
+        return db
+
+    # Idle: nothing pending anywhere → the tick skips both named scopes (only the
+    # startup reclaim enters them, once each); the unscoped root poll still runs.
+    db = await _run_once({h: False for h in homes})
+    assert entered == homes, (
+        f"only the startup reclaim may enter idle profile scopes; got {entered}")
+    assert db.polls == 1, "only the root store is polled when no profile has work"
+
+    # Work in one profile → the tick enters THAT profile's scope (reclaim + tick),
+    # while the still-idle profile is entered only by the reclaim.
+    db = await _run_once({homes[0]: True, homes[1]: False})
+    assert entered == [homes[0], homes[1], homes[0]], (
+        f"tick must enter exactly the profile with pending work; got {entered}")
+    assert db.polls == 2, "root + the busy profile are polled"
+
+
 @pytest.mark.asyncio
 async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
     """Each non-root home is polled INSIDE ``_profile_runtime_scope``.
@@ -111,14 +203,14 @@ async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
         def __init__(self, home):
             self.home = home
 
-        def __enter__(self):
+        async def __aenter__(self):
             entered.append(self.home)
             return self
 
-        def __exit__(self, *exc):
+        async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(run, "_profile_runtime_scope", _SpyScope)
+    monkeypatch.setattr(run, "_async_profile_runtime_scope", _SpyScope)
 
     async def _no_sleep(_seconds):
         return None
@@ -160,6 +252,68 @@ async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_slow_profile_secret_load_does_not_block_event_loop(monkeypatch, tmp_path):
+    """A slow profile ``.env`` read must not stall unrelated loop work."""
+    profile_home = tmp_path / "profiles" / "slow"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(
+        run,
+        "_handoff_watch_scopes",
+        lambda _runner: [(None, None), ("slow", profile_home)],
+    )
+
+    from agent import secret_scope
+
+    load_started = threading.Event()
+    ticker_progressed = threading.Event()
+    ticker_progressed_while_loading = []
+
+    def _slow_build(_home):
+        load_started.set()
+        ticker_progressed_while_loading.append(
+            ticker_progressed.wait(timeout=2)
+        )
+        return {}
+
+    monkeypatch.setattr(secret_scope, "build_profile_secret_scope", _slow_build)
+
+    class _DB:
+        async def list_pending_handoffs(self):
+            return []
+
+    fake = types.SimpleNamespace(
+        _session_db=_DB(),
+        _running=False,
+    )
+
+    async def _process_handoff(_row, _profile_name=None):
+        return None
+
+    fake._process_handoff = _process_handoff
+
+    real_sleep = asyncio.sleep
+
+    async def _skip_initial_delay(seconds):
+        await real_sleep(0 if seconds == 5 else seconds)
+
+    monkeypatch.setattr(run.asyncio, "sleep", _skip_initial_delay)
+    async def _ticker():
+        assert await asyncio.to_thread(load_started.wait, 5)
+        ticker_progressed.set()
+
+    watcher = asyncio.create_task(
+        run.GatewayRunner._handoff_watcher(fake, interval=0.0)
+    )
+    ticker = asyncio.create_task(_ticker())
+    await asyncio.wait_for(asyncio.gather(watcher, ticker), timeout=5)
+
+    assert ticker_progressed_while_loading == [True], (
+        "profile secret loading blocked the asyncio event loop until the "
+        "filesystem operation completed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
     """The whole point: a DIFFERENT ``state.db`` per scope, and the profile
     name reaches ``_process_handoff`` so delivery uses that profile's adapter.
@@ -183,15 +337,15 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
         def __init__(self, home):
             self.home = home
 
-        def __enter__(self):
+        async def __aenter__(self):
             active["home"] = self.home
             return self
 
-        def __exit__(self, *exc):
+        async def __aexit__(self, *exc):
             active["home"] = None
             return False
 
-    monkeypatch.setattr(run, "_profile_runtime_scope", _SpyScope)
+    monkeypatch.setattr(run, "_async_profile_runtime_scope", _SpyScope)
 
     async def _no_sleep(_seconds):
         return None

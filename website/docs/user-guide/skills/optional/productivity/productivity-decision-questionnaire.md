@@ -15,13 +15,13 @@ Turn an unanswerable decision into a questionnaire doc.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/productivity/decision-questionnaire` |
-| Path | `optional-skills/productivity/decision-questionnaire` |
+| Path | `optional-skills/productivity\decision-questionnaire` |
 | Version | `1.0.0` |
 | Author | Matt Pocock (mattpocock/skills, to-questionnaire) + Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `questionnaire`, `decision`, `async`, `stakeholder`, `discovery`, `communication` |
-| Related skills | [`meeting-action-items`](/docs/user-guide/skills/bundled/productivity/productivity-meeting-action-items), [`document-to-action-items`](/docs/user-guide/skills/bundled/productivity/productivity-document-to-action-items) |
+| Related skills | [`meeting-action-items`](../../bundled/productivity/productivity-meeting-action-items.md), [`document-to-action-items`](../../bundled/productivity/productivity-document-to-action-items.md) |
 
 ## Reference: full SKILL.md
 

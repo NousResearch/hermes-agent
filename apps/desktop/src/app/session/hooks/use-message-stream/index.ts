@@ -15,6 +15,7 @@ import {
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
+  toolCallOwnerMessageId,
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -23,16 +24,19 @@ import {
   generatedImageEchoSources,
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
-import { parseTodos } from '@/lib/todos'
+import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
+import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
-import { setSessionTodos } from '@/store/todos'
+import { $todosBySession, setSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
 
+import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
+import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -91,6 +95,11 @@ export function useMessageStream({
       seed: () => ChatMessagePart[],
       opts: {
         pending?: (message: ChatMessage) => boolean
+        // Resolve the message an event should mutate by payload identity
+        // rather than by the current stream position. A late `tool.complete`
+        // that crosses an interim/settle boundary must attach to the bubble
+        // that still owns the call, wherever that bubble now sits.
+        eventTarget?: (state: ClientSessionState) => string | null
       } = {},
       occurredAt = Date.now() / 1000
     ) => {
@@ -104,7 +113,13 @@ export function useMessageStream({
             return state
           }
 
-          const streamId = state.streamId ?? nextStreamMessageId('assistant-stream')
+          const reconciledId = opts.eventTarget?.(state) ?? null
+          const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
+          // The event landed on a bubble that is NOT the live stream (sealed
+          // by interim commentary, a mid-turn user message, or turn settle).
+          // It is a patch to history: the bubble keeps its own pending bit
+          // and the turn's stream bookkeeping is neither consulted nor changed.
+          const patchesSealedBubble = reconciledId !== null && reconciledId !== state.streamId
           const groupId = state.pendingBranchGroup ?? undefined
           const prev = state.messages
           let nextMessages: ChatMessage[]
@@ -127,10 +142,17 @@ export function useMessageStream({
                 ? {
                     ...m,
                     parts: transform(m.parts, m),
-                    pending: opts.pending ? opts.pending(m) : true
+                    pending: patchesSealedBubble ? (m.pending ?? false) : opts.pending ? opts.pending(m) : true
                   }
                 : m
             )
+          }
+
+          if (patchesSealedBubble) {
+            // Later deltas must not append into the bubble the late event
+            // just updated, and a late event from an earlier phase must not
+            // clear the wait state of the turn now in flight.
+            return { ...state, messages: nextMessages }
           }
 
           return {
@@ -461,11 +483,11 @@ export function useMessageStream({
 
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
-      if (payload?.name === 'todo') {
-        const todos = parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args)
+      if (payload && isTodoToolName(payload.name)) {
+        const todos = nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload)
 
         if (todos) {
-          setSessionTodos(sessionId, todos)
+          setSessionTodos(sessionId, todos, parseTodoRevision(payload))
         }
       }
 
@@ -484,7 +506,18 @@ export function useMessageStream({
         sessionId,
         parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase, occurredAt)),
         () => upsertToolPart([], payload, phase, occurredAt),
-        { pending: m => phase !== 'complete' || (m.pending ?? false) },
+        {
+          pending: m => phase !== 'complete' || (m.pending ?? false),
+          // A tool event belongs to the bubble that owns the call, not to
+          // whatever is streaming now. Long tools (browser scrapes run
+          // minutes) outlive the boundary that seals their bubble (interim
+          // commentary, a message typed mid-turn, turn settle): without this
+          // lookup a completion seeds a new bubble with a duplicate row while
+          // the sealed one keeps reading "Result unavailable", and a running
+          // event for the same id seeds a second live row with its own timer
+          // under the user's message (#113035). Both phases route by id.
+          eventTarget: state => toolCallOwnerMessageId(state.messages, payload)
+        },
         occurredAt
       )
     },
@@ -650,8 +683,20 @@ export function useMessageStream({
         const prev = state.messages
         let nextMessages = prev
 
-        if (streamId && prev.some(m => m.id === streamId)) {
-          nextMessages = prev.map(m => (m.id === streamId ? completeMessage(m) : m))
+        const streamIndex = streamId ? prev.findIndex(message => message.id === streamId) : -1
+
+        let collapsed: DuplicateFinalCollapse | null = null
+
+        if (streamIndex >= 0) {
+          collapsed = collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
+            completeMessage,
+            finalText,
+            hasFailure: Boolean(failure) || Boolean(completionError),
+            interimBoundaryPending
+          })
+          nextMessages =
+            collapsed?.messages ??
+            prev.map((message, index) => (index === streamIndex ? completeMessage(message) : message))
         } else {
           const fallbackIndex = [...prev]
             .reverse()
@@ -726,8 +771,10 @@ export function useMessageStream({
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
-        const sameTurnAssistant = streamId
-          ? nextMessages.find(m => m.id === streamId)
+        const sameTurnId = collapsed?.keptId ?? streamId
+
+        const sameTurnAssistant = sameTurnId
+          ? nextMessages.find(m => m.id === sameTurnId)
           : [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
 
         const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''
@@ -744,7 +791,13 @@ export function useMessageStream({
         shouldHydrate =
           !completionError &&
           !hasInlineError &&
-          !unresolvedUserTail &&
+          // A visible user message with no reply after the terminal frame
+          // means this window never rendered the turn's output. When the
+          // frame also carries no text, the reply only exists in stored
+          // history — hydrate to catch up instead of leaving the transcript
+          // blank until restart (#88036). A non-empty frame still settles
+          // locally, so the user-tail guard keeps applying there.
+          (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
           (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
 
@@ -795,12 +848,16 @@ export function useMessageStream({
   )
 
   const failAssistantMessage = useCallback(
-    (sessionId: string, errorMessage: string, occurredAt = Date.now() / 1000) => {
+    (sessionId: string, errorMessage: string, occurredAt = Date.now() / 1000, surface?: ErrorSurface | null) => {
       updateSessionState(sessionId, state => {
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
         const error = errorMessage.trim() || 'Hermes reported an error'
+        // The `error` event carries no descriptor; the dispatcher may recover
+        // one from the text (SESSION_NOT_OWNED, disk_full) so the card gates
+        // its buttons like a classified turn.
+        const errorSurface = surface ? { errorSurface: surface } : {}
 
         const durationS = state.turnStartedAt
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
@@ -813,6 +870,7 @@ export function useMessageStream({
                     ...message,
                     completedAt: occurredAt,
                     error,
+                    ...errorSurface,
                     parts: completeOpenTimelineParts(message.parts, occurredAt),
                     pending: false,
                     ...(durationS !== undefined ? { durationS } : {})
@@ -828,6 +886,7 @@ export function useMessageStream({
                 timestamp: occurredAt,
                 completedAt: occurredAt,
                 error,
+                ...errorSurface,
                 pending: false,
                 branchGroupId: groupId,
                 ...(durationS !== undefined ? { durationS } : {})
@@ -874,11 +933,25 @@ export function useMessageStream({
     upsertToolCall
   })
 
+  // Server→client requests (clarify, approval, sudo, …) from every socket the
+  // registry owns. The request answers itself over the socket it arrived on,
+  // so no owner routing is involved here — only which card to show.
+  const handleServerRequest = useCallback(
+    (request: ScopedServerRequest): boolean =>
+      dispatchServerRequest(
+        request,
+        { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },
+        activeSessionIdRef.current
+      ),
+    [activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall]
+  )
+
   return {
     appendAssistantDelta,
     appendReasoningDelta,
     completeAssistantMessage,
     handleGatewayEvent,
+    handleServerRequest,
     finalizeInterimAssistantMessage,
     upsertToolCall
   }

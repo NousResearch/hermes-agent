@@ -7,6 +7,7 @@ import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
+import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
@@ -17,13 +18,20 @@ import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
-import { $retiredTips, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
-import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
+import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
+import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
+import {
+  $titlebarAppActionsSide,
+  setTitlebarAppActionsSide,
+  type TitlebarAppActionsSide
+} from '@/store/titlebar-app-actions'
+import { $hideCodeDiffs, $toolViewMode, setHideCodeDiffs, setToolViewMode } from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
   $translucency,
@@ -46,6 +54,7 @@ import {
   TRANSLUCENCY_STEP,
   TRANSLUCENCY_SUPPORTED
 } from '@/store/translucency'
+import { $userBubbleTransparency, setUserBubbleTransparency } from '@/store/user-bubble-transparency'
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
@@ -53,12 +62,59 @@ import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
+import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+
+import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
+import { setNested } from './helpers'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+
+// display.resume_last_session lives in the backend config record (shared with
+// config.yaml and the cold-start restore in use-desktop-integrations), not a
+// renderer store. Saves write through the shared react-query cache so the
+// restore gate sees the new value on the next launch.
+function ResumeLastSessionSetting() {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const configQuery = useHermesConfigRecord()
+  const config = configQuery.data
+  const checked = (config?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
+
+  const update = (on: boolean) => {
+    if (!config) {
+      return
+    }
+
+    const next = setNested(config, 'display.resume_last_session', on)
+    setHermesConfigCache(next)
+    // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+    // snapshot would overwrite keys other surfaces changed since it loaded.
+    void saveHermesConfig(setNested({}, 'display.resume_last_session', on))
+      .then(result => {
+        if (!result.ok) {
+          throw new Error(t.settings.config.autosaveFailed)
+        }
+      })
+      .catch(error => {
+        setHermesConfigCache(config)
+        notifyError(error, t.settings.config.autosaveFailed)
+      })
+  }
+
+  return (
+    <ToggleRow
+      checked={checked}
+      description={a.resumeLastSessionDesc}
+      disabled={!config}
+      label={a.resumeLastSessionTitle}
+      onChange={update}
+    />
+  )
+}
 
 function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
   // Preview in the *current* mode: the dark palette in Dark, and the light
@@ -347,19 +403,23 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const hideCodeDiffs = useStore($hideCodeDiffs)
+  const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
+  const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
+  const userBubbleTransparency = useStore($userBubbleTransparency)
   const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
-  const retiredTips = useStore($retiredTips)
+  const spentTips = useStore($spentTipCount)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
@@ -438,6 +498,11 @@ export function AppearanceSettings() {
     { id: 'never', label: a.tabStripNever }
   ] as const satisfies readonly { id: TabStripDefault; label: string }[]
 
+  const appActionsOptions = [
+    { id: 'right', label: a.appActionsRight },
+    { id: 'left', label: a.appActionsLeft }
+  ] as const satisfies readonly { id: TitlebarAppActionsSide; label: string }[]
+
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
     { id: 'always', label: a.embedsAlways },
@@ -473,7 +538,7 @@ export function AppearanceSettings() {
                   <input
                     className="w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
                     onChange={event => setQuery(event.target.value)}
-                    placeholder="Search your themes or the VS Code Marketplace…"
+                    placeholder={a.themeSearchPlaceholder}
                     spellCheck={false}
                     value={query}
                   />
@@ -527,7 +592,6 @@ export function AppearanceSettings() {
                                     setTheme(theme.name)
                                   }
                                 }}
-                                title={a.removeTheme}
                                 type="button"
                               >
                                 <Trash2 className="size-3.5" />
@@ -581,6 +645,8 @@ export function AppearanceSettings() {
             title={a.uiScaleTitle}
           />
 
+          <ChatFontSetting />
+
           <TerminalFontSetting />
 
           <ListRow
@@ -611,6 +677,22 @@ export function AppearanceSettings() {
             }
             description={a.tabStripDesc}
             title={a.tabStripTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTitlebarAppActionsSide(id)
+                }}
+                options={appActionsOptions}
+                value={titlebarAppActionsSide}
+              />
+            }
+            description={a.appActionsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
+            title={a.appActionsTitle}
           />
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
@@ -699,6 +781,24 @@ export function AppearanceSettings() {
 
           <ListRow
             action={
+              // Same peek as the window lever: the bubble being tuned sits
+              // behind this overlay, so the overlay ghosts while the hand is
+              // on the slider.
+              <div className="flex items-center gap-3" data-translucency-peek-scope="">
+                <TranslucencySlider
+                  label={a.userBubbleTitle}
+                  onChange={setUserBubbleTransparency}
+                  value={userBubbleTransparency}
+                />
+              </div>
+            }
+            description={a.userBubbleDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.userBubble)}
+            title={a.userBubbleTitle}
+          />
+
+          <ListRow
+            action={
               <SegmentedControl
                 onChange={id => {
                   triggerHaptic('selection')
@@ -742,6 +842,8 @@ export function AppearanceSettings() {
             onChange={setComposerPopoutGesturesEnabled}
           />
 
+          <ResumeLastSessionSetting />
+
           <ListRow
             action={
               <SegmentedControl
@@ -774,9 +876,9 @@ export function AppearanceSettings() {
                   ]}
                   value={tipsEnabled ? 'on' : 'off'}
                 />
-                {/* The ✕ on a tip is permanent, so this is the only way back.
-                    It appears once there is something to bring back. */}
-                {retiredTips.length > 0 && (
+                {/* A tip shows once (✕ or timer), so this is the only way to a
+                    second lap. It appears once there is something to bring back. */}
+                {spentTips > 0 && (
                   <Button
                     onClick={() => {
                       triggerHaptic('selection')
@@ -785,7 +887,7 @@ export function AppearanceSettings() {
                     size="inline"
                     variant="text"
                   >
-                    {a.tipsReset(retiredTips.length)}
+                    {a.tipsReset(spentTips)}
                   </Button>
                 )}
               </div>
@@ -844,6 +946,44 @@ export function AppearanceSettings() {
             description={a.toolViewDesc}
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.toolView)}
             title={a.toolViewTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setHideCodeDiffs(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={hideCodeDiffs ? 'on' : 'off'}
+              />
+            }
+            description={a.hideCodeDiffsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.hideCodeDiffs)}
+            title={a.hideCodeDiffsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setHideThreadTimeline(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={hideThreadTimeline ? 'on' : 'off'}
+              />
+            }
+            description={a.hideThreadTimelineDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.hideThreadTimeline)}
+            title={a.hideThreadTimelineTitle}
           />
 
           <ListRow

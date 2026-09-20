@@ -182,8 +182,9 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
             }}
           >
             <iframe
+              allow="clipboard-write"
               ref={frameRef}
-              sandbox="allow-scripts allow-same-origin"
+              sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
               src={HUB_PICKER_URL}
               style={{
                 width: '133.34%',
@@ -252,11 +253,11 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
                   <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">✓ added</span>
                 ) : (
                   <Button
+                    aria-label={`Install "${r.name}" and add it to the list above`}
                     className="shrink-0 px-2 font-semibold"
                     disabled={installing !== null}
                     onClick={() => void install(r.name)}
                     size="sm"
-                    title={`Install "${r.name}" and add it to the list above`}
                     variant="ghost"
                   >
                     {installing === r.name ? '…' : '+'}

@@ -11,7 +11,7 @@ This page documents Hermes' built-in tools, grouped by toolset. Availability var
 **Quick counts (current registry):** ~86 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process`), 12 desktop-GUI tools (`read_terminal`, `close_terminal`, `open_preview`, `close_preview`, `read_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `tour`, `tip` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
-In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
+In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](../user-guide/features/mcp.md) for configuration.
 :::
 
 ## `browser` toolset
@@ -22,7 +22,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `browser_click` | Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first. | — |
 | `browser_console` | Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requi… | — |
 | `browser_get_images` | Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first. | — |
-| `browser_navigate` | Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). Use browser tools when you need… | — |
+| `browser_navigate` | Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer a lightweight retrieval tool when one is available (faster, cheaper). Use browser tools when you need… | — |
 | `browser_press` | Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first. | — |
 | `browser_scroll` | Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first. | — |
 | `browser_snapshot` | Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: comp… | — |
@@ -54,7 +54,22 @@ Per-surface behavior:
 - **TUI and CLI** show a compact status list (`✓` answered / `▸` active / `·` pending) with only the active question's choices expanded. Enter locks the active answer and jumps to the next unanswered question; Tab moves between questions to answer in any order; Esc cancels the batch.
 - **Messaging platforms** (Telegram, Discord, …) fall back to asking the questions one at a time through the existing single-question prompt. If the user stops responding, the remaining questions are not sent.
 
-If the prompt times out part-way, answers the user already locked are kept: the tool result carries them plus `"timed_out": true`, with the unanswered entries left blank, so the agent can distinguish a deliberate skip from an absent user.
+If the prompt times out part-way, answers the user already locked are kept: the tool result carries them plus `"timed_out": true`, with the unanswered entries left blank, so the agent can distinguish a deliberate skip from an absent user. On messaging platforms the result also carries a `"notice"` saying why the wait ended (`[user did not respond within Nm]`, or `[clarify prompt could not be delivered]` when the platform rejected the card — Hermes first retries the question as a plain numbered-list message, and only reports this when that fails too; `[clarify prompt could not be delivered: no chat surface]` when the run has no chat to prompt in), so an undelivered prompt is never reported as user inactivity.
+
+## `connections` toolset
+
+One tool for both kinds of external app. A target is a managed connector (`"gmail"` or
+`{"name": "gmail"}`, authorized through the Nous gateway) or a local MCP server
+(`{"name": "linear", "mcp": true}`, an entry in `mcp_servers`).
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `manage_connections` | Managed actions: `status`, `connect`, `reconnect` (repairs only what is not connected; `force: true` restarts a working one). MCP actions, for `mcp: true` targets only: `install` a catalog entry, `enable` a disabled configured server, `authorize` (OAuth). On the desktop every action shows a card and blocks until each target is connected, skipped, or the deadline passes; the result lists targets as `connected`, `skipped` or `not_connected` and carries no link. On surfaces with no card (CLI, TUI, messaging) managed targets return a `connect_url` per app for the user to open, and MCP targets return `unavailable` with the `hermes mcp install <name>` / `hermes mcp login <name>` commands. Cannot disconnect or revoke an account. | — |
+
+The deadline for one call is five minutes, fixed by the backend when the call starts;
+reopening the chat or restarting the desktop never extends it. The tool is present only when the
+Nous Portal has enabled connectors for the signed-in account (the `managed_tools` claim on its
+token). Other sessions do not see it.
 
 ## `code_execution` toolset
 
@@ -100,7 +115,7 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `patch` | Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing… | — |
 | `read_file` | Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM\|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) a… | — |
 | `search_files` | Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Content search (target='content'): Regex search inside files. Output modes: full matches with line… | — |
-| `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by the write are surfaced. | — |
+| `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an existing file, call read_file first: write_file refuses (file untouched) when the task has no current full read/write of the file or the file changed on disk since — on refusal, read_file, merge, retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by the write are surfaced. | — |
 
 ## `homeassistant` toolset
 
@@ -130,7 +145,7 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 ## `kanban` toolset
 
-Registered when the agent is either (a) spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set) or (b) running in a profile that explicitly enables the `kanban` toolset. Task-scoped workers use lifecycle tools for their assigned task; orchestrator profiles additionally get board-routing tools like `kanban_list` and `kanban_unblock`. See [Kanban Multi-Agent](/user-guide/features/kanban) for the full workflow.
+Registered when the agent is either (a) spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set) or (b) running in a profile that explicitly enables the `kanban` toolset. Task-scoped workers use lifecycle tools for their assigned task; orchestrator profiles additionally get board-routing tools like `kanban_list` and `kanban_unblock`. See [Kanban Multi-Agent](../user-guide/features/kanban.md) for the full workflow.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
@@ -169,7 +184,7 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). | — |
+| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). Discovery supports time bounds (`after`/`before` — ISO dates or relative durations like `7d`, `24h`, `2w`) and `exclude_session_ids` for iterative re-finding. | — |
 
 ## `skills` toolset
 
@@ -265,20 +280,27 @@ discovery is one call for both, and the durable `data-tour` handles above name
 targets for either. One tip is on screen at a time; a new one replaces the last.
 
 The app can also show its own, walking a built-in catalog of app features in
-order. That half is on by default and switched off in Settings → Appearance,
-and it is paced like a game's loading-screen tips rather than a notification: a
-few minutes into a launch at the earliest, then at most one every six hours, and
-only at a genuinely idle moment. Closing one of its tips with the ✕ retires that
-tip for good, and the same settings row brings them back. The tool is not behind
-that switch — like `tour`, it runs in answer to the conversation rather than at
-idle. It does share the cooldown, so a tip from Hermes also buys the user six
-hours of quiet from the rotation.
+order, paced like a game's loading-screen tips rather than a notification: a few
+minutes into a launch at the earliest, then at most one every six hours, and
+only at a genuinely idle moment. A tip from Hermes shares that cooldown, so it
+also buys the user six hours of quiet from the rotation. The rotation is a single
+lap: each catalog tip shows once, whether it timed out or was closed with the ✕,
+and once every tip has had its turn the app goes quiet. The settings row starts
+the lap over.
+
+Both tips and tours are on by default and switched off in Settings → Appearance
+(`display.in_app_tips`, `display.in_app_tours`). Off covers Hermes as well as
+the app: the switch reaches the connected gateway's config and the tool leaves
+the model's schema, so the agent is never told about a surface it isn't allowed
+to use. Like every schema change, that lands on the next session — a running
+conversation keeps the toolset it started with, and the app declines the call in
+the meantime.
 
 ## `todo` toolset
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `todo` | Manage your task list for the current session. Use for complex tasks with 3+ steps or when the user provides multiple tasks. Call with no parameters to read the current list. Writing: - Provide 'todos' array to create/update items - merge=… | — |
+| `todo` | Manage your task list for the current session. Use for complex tasks with 3+ steps or when the user provides multiple tasks. Call with no parameters to read the current list. Items may nest: an item's optional `parent` field points at another item's id, making it a subtask — surfaces render the tree indented. | — |
 
 ## `vision` toolset
 
@@ -301,9 +323,11 @@ Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets
 Backends ship as plugins under `plugins/video_gen/<name>/`:
 
 - **xAI Grok-Imagine** — text-to-video and image-to-video (SuperGrok OAuth or `XAI_API_KEY`).
-- **FAL.ai** — Veo 3.1, Pixverse v6, Kling O3 (requires `FAL_KEY`).
+- **FAL.ai** — Veo 3.1, Pixverse v6, Kling 3.0 / O3 (requires `FAL_KEY`).
+- **OpenRouter** — every generative model on OpenRouter's video API (Veo 3.1, Sora 2 Pro, Kling 3, Seedance 2, Wan 3, Hailuo 3, Grok Imagine, FLUX 3 Video, …); text-to-video, image-to-video and reference-to-video; catalog and per-model limits fetched live (requires `OPENROUTER_API_KEY`, billed to your OpenRouter credit).
+- **DeepInfra** — live `video-gen` catalog over the OpenAI-compatible videos endpoint (requires `DEEPINFRA_API_KEY`).
 
-The single `video_generate` tool covers both modalities — pass `image_url` to animate a still, omit it to generate from text alone. The active backend auto-routes to the right endpoint. The tool's description is rebuilt at session start to reflect the active backend's actual capabilities (modalities, aspect ratios, resolutions, duration range, max reference images, audio support). See [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) for backend authoring.
+The single `video_generate` tool covers both modalities — pass `image_url` to animate a still, omit it to generate from text alone. The active backend auto-routes to the right endpoint. As with `image_generate`, the model is user-configured (`video_gen.model`) and not selectable by the agent — none of the video tools take a `model` argument. The tool's description is rebuilt at session start to reflect the active backend's actual capabilities (modalities, aspect ratios, resolutions, duration range, max reference images, audio support). See [Video Generation Provider Plugins](../developer-guide/video-gen-provider-plugin.md) for backend authoring.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
@@ -315,8 +339,8 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `web_search` | Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Accepts an optional `limit` (1-100, default 5). The query is passed through to the configured backend, so operators such as `site:domain`, `filetype:pdf`, `intitle:word`, `-term`, and `"exact phrase"` may work when the backend supports them. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
-| `web_extract` | Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer pointing at the full text saved on disk. Max 5 URLs per call. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY |
+| `web_search` | Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Accepts an optional `limit` (1-100, default 5). The query is passed through to the configured backend, so operators such as `site:domain`, `filetype:pdf`, `intitle:word`, `-term`, and `"exact phrase"` may work when the backend supports them. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY or PERPLEXITY_API_KEY or KEENABLE_API_KEY |
+| `web_extract` | Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer pointing at the full text saved on disk. Max 5 URLs per call. | EXA_API_KEY or PARALLEL_API_KEY or FIRECRAWL_API_KEY or TAVILY_API_KEY or PERPLEXITY_API_KEY or KEENABLE_API_KEY |
 
 ## `x_search` toolset
 

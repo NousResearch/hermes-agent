@@ -17,7 +17,7 @@ from gateway.pairing import (
     RATE_LIMIT_SECONDS,
     MAX_PENDING_PER_PLATFORM,
     MAX_FAILED_ATTEMPTS,
-    _secure_write,
+    _save_json_file,
 )
 
 
@@ -82,11 +82,11 @@ class TestProfileScopedDiscovery:
 
 
 # ---------------------------------------------------------------------------
-# _secure_write
+# _save_json_file
 # ---------------------------------------------------------------------------
 
 
-class TestSecureWrite:
+class TestSaveJsonFile:
 
     @pytest.mark.skipif(
         sys.platform.startswith("win"),
@@ -94,7 +94,7 @@ class TestSecureWrite:
     )
     def test_sets_file_permissions(self, tmp_path):
         target = tmp_path / "secret.json"
-        _secure_write(target, "data")
+        _save_json_file(target, {"data": 1})
         mode = oct(target.stat().st_mode & 0o777)
         assert mode == "0o600"
 
@@ -274,6 +274,25 @@ class TestApprovalFlow:
         assert "user_name" in result
         assert result["user_id"] == "user1"
         assert result["user_name"] == "Alice"
+
+    def test_approve_code_with_internal_spacing(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            spaced_code = "   ".join(code)
+            result = store.approve_code("telegram", f"  {spaced_code}  ")
+
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
+
+    def test_approve_code_with_words_still_fails(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            result = store.approve_code("telegram", f"code {code}")
+
+        assert result is None
 
     def test_approved_user_is_approved(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):

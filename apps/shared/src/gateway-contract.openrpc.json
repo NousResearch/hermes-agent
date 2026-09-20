@@ -5136,7 +5136,6 @@
           "payload": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5306,7 +5305,6 @@
           "payload": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5520,7 +5518,6 @@
           "payload": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5721,7 +5718,6 @@
           "payload": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -6145,7 +6141,6 @@
           "payload": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -6495,7 +6490,6 @@
             "type": "string"
           },
           "arguments": {
-            "additionalProperties": true,
             "title": "Arguments",
             "type": "object"
           },
@@ -7956,7 +7950,6 @@
           "config": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -11016,7 +11009,6 @@
             "type": "boolean"
           },
           "result": {
-            "additionalProperties": true,
             "title": "Result",
             "type": "object"
           }
@@ -11629,7 +11621,6 @@
             "type": "string"
           },
           "catalog": {
-            "additionalProperties": true,
             "title": "Catalog",
             "type": "object"
           },
@@ -11997,7 +11988,6 @@
             "type": "array"
           },
           "page": {
-            "additionalProperties": true,
             "title": "Page",
             "type": "object"
           }
@@ -12125,7 +12115,6 @@
             "title": "Event Id"
           },
           "payload": {
-            "additionalProperties": true,
             "title": "Payload",
             "type": "object"
           }
@@ -12774,7 +12763,6 @@
           "display_metadata": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -12853,7 +12841,6 @@
           "error_surface": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -13315,7 +13302,6 @@
           },
           "labels": {
             "items": {
-              "additionalProperties": true,
               "type": "object"
             },
             "title": "Labels",
@@ -13666,7 +13652,6 @@
           "variables": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -14540,7 +14525,6 @@
           "config": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -15298,6 +15282,21 @@
             ],
             "default": null,
             "title": "Can Disable Reasoning"
+          },
+          "reasoning_efforts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Efforts"
           }
         },
         "required": [
@@ -16018,7 +16017,6 @@
             "type": "string"
           },
           "params": {
-            "additionalProperties": true,
             "title": "Params",
             "type": "object"
           }
@@ -19267,7 +19265,6 @@
           "ui_meta": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -19534,7 +19531,6 @@
           "ui_meta": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -22616,7 +22612,6 @@
             "type": "string"
           },
           "result": {
-            "additionalProperties": true,
             "title": "Result",
             "type": "object"
           },
@@ -23220,7 +23215,6 @@
           },
           "pending_actions": {
             "items": {
-              "additionalProperties": true,
               "type": "object"
             },
             "title": "Pending Actions",
@@ -23281,7 +23275,6 @@
             "title": "Authority Epoch"
           },
           "payload": {
-            "additionalProperties": true,
             "title": "Payload",
             "type": "object"
           },
@@ -23583,7 +23576,6 @@
           "target": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -23652,7 +23644,6 @@
           "target": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -23775,7 +23766,6 @@
           "metadata": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -24564,7 +24554,6 @@
           "host_ack": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -25533,7 +25522,6 @@
         "properties": {
           "events": {
             "items": {
-              "additionalProperties": true,
               "type": "object"
             },
             "title": "Events",
@@ -28689,7 +28677,6 @@
           },
           "subagents": {
             "items": {
-              "additionalProperties": true,
               "type": "object"
             },
             "title": "Subagents",
@@ -28716,7 +28703,6 @@
           },
           "subagents": {
             "items": {
-              "additionalProperties": true,
               "type": "object"
             },
             "title": "Subagents",
@@ -29214,7 +29200,6 @@
           },
           "delegations": {
             "items": {
-              "additionalProperties": true,
               "type": "object"
             },
             "title": "Delegations",
@@ -29635,7 +29620,6 @@
           "payload": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -30103,7 +30087,6 @@
           "payload": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -30448,7 +30431,6 @@
         "properties": {
           "todos": {
             "items": {
-              "additionalProperties": true,
               "type": "object"
             },
             "title": "Todos",
@@ -30502,7 +30484,6 @@
           "args": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -30718,7 +30699,6 @@
           "args": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -31244,7 +31224,6 @@
           "args": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -31795,7 +31774,6 @@
           "secret": {
             "anyOf": [
               {
-                "additionalProperties": true,
                 "type": "object"
               },
               {

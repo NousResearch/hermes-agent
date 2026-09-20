@@ -29,6 +29,7 @@ import {
   normalizeEffort,
   VALID_EFFORTS,
 } from "@/lib/reasoning-effort";
+import type { ModelOptionsResult } from "@hermes/shared";
 
 interface ReasoningPickerProps {
   /** Current model string from config — re-reads the saved effort when it
@@ -53,17 +54,19 @@ export function ReasoningPicker({
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const lastFetchKeyRef = useRef("");
+  const [supportedEfforts, setSupportedEfforts] = useState<string[] | undefined>();
 
   useEffect(() => {
     const fetchKey = `${profile ?? ""}:${currentModel}:${refreshKey}`;
     if (fetchKey === lastFetchKeyRef.current) return;
     lastFetchKeyRef.current = fetchKey;
-    void api
-      .getConfig(profile)
-      .then((cfg) => {
+    void Promise.all([api.getConfig(profile), api.getModelOptions({ profile })])
+      .then(([cfg, options]: [Record<string, unknown>, ModelOptionsResult]) => {
         const agent = (cfg?.agent as Record<string, unknown> | undefined) ?? {};
         setEffort(normalizeEffort(agent.reasoning_effort));
         setLoaded(true);
+        const row = options.providers.find(provider => provider.is_current) ?? options.providers.find(provider => provider.models?.includes(currentModel));
+        setSupportedEfforts(row?.capabilities?.[currentModel]?.reasoning_efforts ?? undefined);
       })
       .catch(() => {
         // Best-effort: keep the last known value rather than blanking it.
@@ -106,7 +109,7 @@ export function ReasoningPicker({
         onValueChange={onSelect}
         value={effort}
       >
-        {EFFORT_OPTIONS.map((opt) => (
+        {EFFORT_OPTIONS.filter(opt => !supportedEfforts || supportedEfforts.includes(opt.value)).map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
             {opt.label}
           </SelectOption>

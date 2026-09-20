@@ -280,17 +280,25 @@ def _reasoning_catalog_reader(slug: str):
 def _apply_capabilities(rows: list[dict]) -> None:
     """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
-    serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
-    is deliberately NOT forwarded — it under-reports levels that work."""
+    serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``).  A declared
+    vocabulary is forwarded only when the provider positively knows it; absent data remains fail-open."""
     from hermes_cli.models import model_supports_fast_mode
 
     try:
         from agent.models_dev import get_model_capabilities
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        get_provider_profile = None  # type: ignore[assignment]
 
     for row in rows:
         slug = row.get("slug") or ""
+        try:
+            profile = get_provider_profile(slug) if get_provider_profile else None
+        except Exception:
+            profile = None
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
 
@@ -305,6 +313,14 @@ def _apply_capabilities(rows: list[dict]) -> None:
                     reasoning = True
 
             entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+
+            if profile is not None:
+                try:
+                    efforts = profile.supported_reasoning_efforts(model)
+                except Exception:
+                    efforts = None
+                if efforts is not None:
+                    entry["reasoning_efforts"] = list(efforts)
 
             if reasoning and read_reasoning_catalog is not None:
                 try:

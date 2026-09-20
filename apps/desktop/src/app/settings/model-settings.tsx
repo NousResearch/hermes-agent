@@ -554,6 +554,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   }, [providers, mainModel])
 
   const reasoningSupported = mainCaps?.reasoning ?? true
+  const mainReasoningEfforts = mainCaps?.reasoning_efforts
   const fastSupported = mainCaps?.fast ?? false
 
   // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
@@ -946,7 +947,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {REASONING_EFFORT_VALUES.map(value => (
+                    {REASONING_EFFORT_VALUES.filter(value => !mainReasoningEfforts || mainReasoningEfforts.includes(value)).map(value => (
                       <SelectItem key={value} value={value}>
                         {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
                       </SelectItem>
@@ -1102,7 +1103,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
-                              {REASONING_EFFORT_VALUES.map(value => (
+                              {REASONING_EFFORT_VALUES.filter(value => {
+                                const caps = providers.find(provider => provider.slug === auxDraft.provider)?.capabilities?.[auxDraft.model]
+                                return !caps?.reasoning_efforts || caps.reasoning_efforts.includes(value)
+                              }).map(value => (
                                 <SelectItem key={value} value={value}>
                                   {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
                                 </SelectItem>

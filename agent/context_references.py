@@ -294,7 +294,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if not (path.is_dir() if is_folder else path.is_file()):
         return f"{ref.raw}: path is not a {ref.kind}", None
     if is_folder:
-        listing = _build_folder_listing(path, cwd)
+        listing = _build_folder_listing(path, cwd, display_base=allowed_root)
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
     if _is_binary_file(path):
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
@@ -511,12 +511,24 @@ def _is_binary_file(path: Path) -> bool:
         return b"\x00" in fh.read(4096)
 
 
-def _build_folder_listing(path: Path, cwd: Path, limit: int = 200) -> str:
-    lines = [f"{path.relative_to(cwd)}/"]
+def _build_folder_listing(path: Path, cwd: Path, limit: int = 200, display_base: Path | None = None) -> str:
+    # The target may sit outside cwd when the caller widened allowed_root: show it relative to
+    # cwd when possible, else relative to the allowed root, else the absolute path.
+    shown: str | None = None
+    for base in (cwd, display_base):
+        if base is None:
+            continue
+        try:
+            shown = f"{path.relative_to(base)}/"
+            break
+        except ValueError:
+            continue
+    if shown is None:
+        shown = f"{path}/"
+    lines = [shown]
     entries = _iter_visible_entries(path, cwd, limit=limit)
-    base_depth = len(path.relative_to(cwd).parts)
     for entry in entries:
-        indent = "  " * max(len(entry.relative_to(cwd).parts) - base_depth - 1, 0)
+        indent = "  " * max(len(entry.relative_to(path).parts) - 1, 0)
         lines.append(f"{indent}- {entry.name}/" if entry.is_dir() else f"{indent}- {entry.name} ({_file_metadata(entry)})")
     if len(entries) >= limit:
         lines.append("- ...")
@@ -526,16 +538,18 @@ def _build_folder_listing(path: Path, cwd: Path, limit: int = 200) -> str:
 def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     """Files under ``path`` via ``rg --files`` (honours ignore files), else an os.walk fallback."""
     try:
-        rg = _run_quiet(["rg", "--files", str(path.relative_to(cwd))], cwd, 10)
+        # Absolute path arg: rg echoes it as the output prefix, so results stay correct even
+        # when the folder is outside cwd (a widened allowed_root target).
+        rg = _run_quiet(["rg", "--files", str(path)], cwd, 10)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         rg = None
     if rg is not None and rg.returncode == 0:
         output: list[Path] = []
         seen_dirs: set[Path] = set()
         for line in [ln.strip() for ln in rg.stdout.splitlines() if ln.strip()][:limit]:
-            full = cwd / Path(line)
+            full = cwd / Path(line)  # absolute lines pass through unchanged; defensive for relative
             for parent in full.parents:
-                if parent == cwd or parent in seen_dirs or path not in {parent, *parent.parents}:
+                if parent in seen_dirs or path not in {parent, *parent.parents}:
                     continue
                 seen_dirs.add(parent)
                 output.append(parent)

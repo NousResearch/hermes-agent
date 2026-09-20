@@ -1551,10 +1551,14 @@ class TestTodoSnapshotScaffoldingTails:
         )
         return agent
 
-    def test_repeated_snapshot_fold_preserves_role_alternation(self):
-        """A synthetic user tail must not gain an adjacent snapshot user row."""
+    def test_repeated_snapshot_fold_preserves_role_alternation(self, tmp_path: Path):
+        """A persisted synthetic tail keeps one user row and durable provenance."""
+        from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
         from tools.todo_tool import TODO_INJECTION_HEADER
 
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "TODO_SNAPSHOT_SYNTHETIC_TAIL"
+        db.create_session(session_id, source="cli")
         agent = MagicMock()
         agent._todo_store.format_for_injection.return_value = (
             f"{TODO_INJECTION_HEADER}\n- [ ] t1. task A (pending)"
@@ -1563,7 +1567,7 @@ class TestTodoSnapshotScaffoldingTails:
         compressed = [
             {
                 "role": "user",
-                "content": "Continue after recovering the empty response.",
+                "content": _EMPTY_TOOL_RESPONSE_NUDGE,
                 "_empty_recovery_synthetic": True,
             }
         ]
@@ -1572,13 +1576,21 @@ class TestTodoSnapshotScaffoldingTails:
         _fold_todo_snapshot(agent, compressed)
 
         assert len(compressed) == 1
-        assert compressed[0]["content"].count(TODO_INJECTION_HEADER) == 1
+        assert str(compressed[0]["content"]).count(TODO_INJECTION_HEADER) == 1
+        assert _EMPTY_TOOL_RESPONSE_NUDGE in str(compressed[0]["content"])
         assert compressed[0]["_empty_recovery_synthetic"] is True
         assert compressed[0]["_todo_snapshot_synthetic"] is True
         assert not any(
             previous.get("role") == current.get("role") == "user"
             for previous, current in zip(compressed, compressed[1:])
         )
+
+        db.archive_and_compact(session_id, compressed)
+        reloaded = db.get_messages_as_conversation(session_id)
+
+        assert len(reloaded) == 1
+        assert TODO_INJECTION_HEADER in str(reloaded[0]["content"])
+        assert ContextCompressor._transcript_has_real_user_turn(reloaded) is False
 
 
 

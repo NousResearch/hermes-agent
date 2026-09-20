@@ -2804,7 +2804,7 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
         # handoff, a bare stale snapshot row) must never become "real user" evidence when absorbing the
         # snapshot (#69292), so those retain synthetic provenance; a separate user row would violate strict
         # role alternation.
-        from agent.context_compressor import _append_text_to_content
+        from agent.context_compressor import ContextCompressor, _append_text_to_content
         merged = False
         _tail = compressed[-1] if compressed and isinstance(compressed[-1], dict) else None
         if _tail is not None and _tail.get("role") == "user":
@@ -2825,9 +2825,26 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 merged = True
             else:
                 # Keep synthetic user scaffolding synthetic, but fold the snapshot into it so
-                # strict providers never receive adjacent user rows.
-                _snapshot_text = f"\n\n{todo_snapshot}" if _message_text(_probe).strip() else todo_snapshot
-                _replace_message_content(_tail, _append_text_to_content(_stripped, _snapshot_text))
+                # strict providers never receive adjacent user rows. Summary carriers must keep
+                # their prefix first; other scaffolding keeps the durable todo marker first because
+                # SessionDB intentionally drops the private provenance flags.
+                if ContextCompressor._is_context_summary_message(_probe):
+                    _snapshot_text = f"\n\n{todo_snapshot}" if _message_text(_probe).strip() else todo_snapshot
+                    _merged_content = _append_text_to_content(_stripped, _snapshot_text)
+                elif isinstance(_stripped, list):
+                    _merged_content = _append_text_to_content(
+                        _stripped, f"{todo_snapshot}\n\n", prepend=True
+                    )
+                elif isinstance(_stripped, str) and _stripped:
+                    # Separate text blocks let the next snapshot refresh remove only the old
+                    # marker block while retaining the synthetic scaffolding that follows it.
+                    _merged_content = [
+                        {"type": "text", "text": todo_snapshot},
+                        {"type": "text", "text": _stripped},
+                    ]
+                else:
+                    _merged_content = todo_snapshot
+                _replace_message_content(_tail, _merged_content)
                 _tail["_todo_snapshot_synthetic"] = True
                 merged = True
         if not merged:

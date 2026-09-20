@@ -124,11 +124,11 @@ def test_folder_listing_outside_cwd_inside_widened_allowed_root(tmp_path: Path):
 
     assert result.expanded
     assert not result.warnings
-    assert "shared/" in result.message
+    # Header is the allowed_root-relative display, never the absolute path.
+    assert "\nshared/\n" in result.message
+    assert str(tmp_path) not in result.message
     assert "a.txt" in result.message
     assert "b.txt" in result.message
-
-
 
 
 def test_folder_listing_inside_cwd_unchanged(sample_repo: Path):

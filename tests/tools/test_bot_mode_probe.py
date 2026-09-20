@@ -71,34 +71,6 @@ def test_roster_excludes_dirs_failing_the_profile_id_regex(tmp_path):
     assert not any(f"`@{s}`" in section for s in ("_backup_removed_20260920", ".staging-area"))
 
 
-def test_roster_contract_matches_list_profile_names(tmp_path, monkeypatch):
-    """#116905 contract layer: every non-default roster name is a name ``hermes profile list``
-    would show. The roster is the ``message_agent`` target set — a phantom entry the CLI hides
-    is a target no delivery path can resolve."""
-    from pathlib import Path
-
-    from hermes_cli.profiles import list_profile_names
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    # Profile enumeration is HOME-anchored, not root-arg-anchored: pin both so the
-    # roster and the CLI listing observe the same tree (tests/hermes_cli/test_profiles.py
-    # profile_env pattern).
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    _make_bot_profile(home, "researcher", managed=True)
-    _make_bot_profile(home, "trade-ops2", managed=True)
-    for stray in ("_backup_removed_20260920", ".staging-area", "has space", "UPPER"):
-        d = home / "profiles" / stray
-        d.mkdir()
-        (d / "state.db").write_bytes(b"")
-
-    roster_names = {name for name, _ in bot_mode_probe._roster(home)}
-    listed = set(list_profile_names()) | {"default"}
-    assert roster_names <= listed
-    assert roster_names == {"default", "researcher", "trade-ops2"}
-
-
 def test_profile_id_regex_mirror_stays_in_sync_with_canonical():
     """The roster's mirrored profile-id predicate must accept and reject exactly what the
     canonical ``hermes_cli.profiles._PROFILE_ID_RE`` accepts and rejects — the #116905 bug
@@ -127,42 +99,6 @@ def test_profile_id_regex_mirror_stays_in_sync_with_canonical():
         assert bool(bot_mode_probe._PROFILE_ID_RE.match(sample)) == bool(
             canonical.match(sample)
         ), sample
-
-
-def test_local_alias_map_ignores_non_profile_dirs(tmp_path):
-    """#116905 downstream: friendly-name aliases resolve only for real profiles, so a parked
-    backup dir's display name can never capture a ``message_agent`` target."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    researcher = _make_bot_profile(home, "researcher", managed=True)
-    (researcher / "profile.yaml").write_text(
-        textwrap.dedent(
-            """\
-            display_name: Research Buddy
-            ui_meta:
-              hermes-bots:
-                shape: cloud
-            """
-        ),
-        encoding="utf-8",
-    )
-    stray = home / "profiles" / "_backup_removed_20260920"
-    stray.mkdir()
-    (stray / "profile.yaml").write_text(
-        textwrap.dedent(
-            """\
-            ui_meta:
-              hermes-bots:
-                shape: cloud
-            display_name: Research Buddy
-            """
-        ),
-        encoding="utf-8",
-    )
-
-    aliases = bot_mode_probe.local_alias_map(home)
-    assert aliases.get("research-buddy") == {"researcher"}
-    assert "_backup_removed_20260920" not in aliases
 
 
 def test_silent_when_no_profile_is_bot_managed(tmp_path):

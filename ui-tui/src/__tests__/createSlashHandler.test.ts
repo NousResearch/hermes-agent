@@ -1075,11 +1075,81 @@ describe('createSlashHandler', () => {
     createSlashHandler(ctx)('/save')
 
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-    expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
+    expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc', fmt: 'json' })
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('conversation saved to: /tmp/hermes_conversation_test.json')
     })
+  })
+
+  it('/save md forwards the format to session.save', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const rpc = vi.fn(() => Promise.resolve({ file: '/tmp/hermes_conversation_test.md', format: 'md' }))
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'user', text: 'hello' },
+          { role: 'assistant', text: 'hi there' }
+        ])
+      }
+    })
+
+    createSlashHandler(ctx)('/save md')
+
+    expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc', fmt: 'md' })
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('conversation saved to: /tmp/hermes_conversation_test.md')
+    })
+  })
+
+  it('/save md notes.md redact passes filename and redact through', () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const rpc = vi.fn(() => Promise.resolve({ file: '/tmp/notes.md', format: 'md' }))
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'user', text: 'hello' },
+          { role: 'assistant', text: 'hi there' }
+        ])
+      }
+    })
+
+    createSlashHandler(ctx)('/save md notes.md redact')
+
+    expect(rpc).toHaveBeenCalledWith('session.save', {
+      session_id: 'sid-abc',
+      fmt: 'md',
+      filename: 'notes.md',
+      redact: true
+    })
+  })
+
+  it('/save with an unknown format reports without calling the RPC', () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const rpc = vi.fn(() => Promise.resolve({}))
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }])
+      }
+    })
+
+    createSlashHandler(ctx)('/save pdf')
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith("unknown format 'pdf' — expected: json, md, html")
   })
 
   it('/save reports empty state without calling the RPC or slash worker', () => {

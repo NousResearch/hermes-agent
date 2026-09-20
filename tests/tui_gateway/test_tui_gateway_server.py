@@ -18934,7 +18934,30 @@ def test_session_save_proxies_to_compute_host_history(monkeypatch):
         server._sessions.pop(sid, None)
 
     assert resp["result"] == {"file": "/tmp/host-save.json"}
-    assert calls == [(sid, {"route_name": "session.save", "wait": True})]
+    assert calls == [(sid, {"route_name": "session.save", "payload": {}, "wait": True})]
+
+
+def test_session_save_forwards_format_to_compute_host(monkeypatch):
+    """/save md must carry fmt/filename/redact through the control frame to the host."""
+    sid = "save-host-fmt-sid"
+    server._sessions[sid] = _session(agent=None, _compute_host_active=True)
+    calls = []
+
+    def send_control(control_sid, **kwargs):
+        calls.append((control_sid, kwargs))
+        return {"type": "control.ack", "result": {"file": "/tmp/host-save.md", "format": "md"}}
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid, "fmt": "md",
+                                                   "filename": "notes.md", "redact": True})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert resp["result"] == {"file": "/tmp/host-save.md", "format": "md"}
+    assert calls == [(sid, {"route_name": "session.save", "wait": True,
+                           "payload": {"fmt": "md", "filename": "notes.md", "redact": True}})]
 
 
 def test_notification_event_dedup_key_preserves_distinct_watch_matches():

@@ -26789,6 +26789,28 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "fmt": {
+            "default": "json",
+            "title": "Fmt",
+            "type": "string"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Filename"
+          },
+          "redact": {
+            "default": false,
+            "title": "Redact",
+            "type": "boolean"
           }
         },
         "required": [

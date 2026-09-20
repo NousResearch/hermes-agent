@@ -279,8 +279,31 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
   {
     name: '/save',
-    description: 'Save the current transcript to JSON',
-    surface: rpc('session.save', ctx => ({ session_id: ctx.sessionId }))
+    description: 'Save the current transcript: /save [json|md|html] [filename] [redact]',
+    surface: rpc('session.save', ctx => {
+      const parts = ctx.arg.trim().split(/\s+/).filter(Boolean)
+      const redact = parts.length > 0 && ['redact', '--redact'].includes(parts[parts.length - 1].toLowerCase())
+
+      if (redact) {
+        parts.pop()
+      }
+
+      const fmt = (parts[0] || 'json').toLowerCase()
+      const params: Record<string, unknown> = {
+        session_id: ctx.sessionId,
+        fmt: fmt === 'markdown' ? 'md' : fmt
+      }
+
+      if (parts[1]) {
+        params.filename = parts[1]
+      }
+
+      if (redact) {
+        params.redact = true
+      }
+
+      return params
+    })
   },
   {
     name: '/status',

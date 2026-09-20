@@ -372,7 +372,9 @@ method("session.undo", params=SessionUndoParams, result=SessionUndoResult,
 
 
 class SessionSaveParams(SessionParams):
-    pass
+    fmt: str = "json"
+    filename: str | None = None
+    redact: bool = False
 
 
 class SessionSaveResult(Result):

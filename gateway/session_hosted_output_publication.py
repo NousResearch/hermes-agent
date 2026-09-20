@@ -83,6 +83,11 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
                     if task['status'] == 'cancelled' and task['execution_generation'] > 0:
                         if not self._reconcile_stopped_output(task):
                             continue
+                    elif task['status'] == 'failed' and not has_output:
+                        # The real terminal may beat Stop's acknowledgment. Consume
+                        # only its existing capture, independently of presentation.
+                        if not self._reconcile_stopped_output(task, existing_only=True):
+                            continue
                     if has_output or self._has_output_obligation(task):
                         metadata = self._begin_output_retry(task)
                         if metadata is None:

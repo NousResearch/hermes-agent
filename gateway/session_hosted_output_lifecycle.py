@@ -132,12 +132,14 @@ class CanonicalOutputLifecycle:
                 base['unavailable'] = 'input_binding_unavailable'
         return base, admission
 
-    def _reconcile_stopped_output(self, task, *, capture_only=False):
+    def _reconcile_stopped_output(self, task, *, capture_only=False, existing_only=False):
         key = key_for(task)
         now = float(self._artifact_clock())
         def stage(conn):
             saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
             old = json.loads(saved[0]) if saved else None
+            if existing_only and old is None:
+                return None  # A failed driver alone cannot create cleanup authority.
             if old and old['state'] == 'completed':
                 self._require_completed_identity(conn, task, old)
                 if old['version'] == 1:
@@ -205,6 +207,8 @@ class CanonicalOutputLifecycle:
             conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, json.dumps(record, sort_keys=True)))
             return record
         record = self._cleanup_write(stage)
+        if record is None:
+            return True  # No captured obligation; ordinary failure publication proceeds.
         if capture_only or record.get('blocked') or record['state'] != 'pending' or record['next_attempt_at'] > now:
             return record['state'] == 'completed'
         def complete(conn):

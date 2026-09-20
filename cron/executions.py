@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -31,6 +32,12 @@ HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
+# On macOS/Windows, psutil exposes process creation time as an epoch timestamp.
+# A wall-clock correction can shift a live process's re-read fingerprint slightly,
+# so dead-owner recovery treats a narrow near-match as live rather than rewrite a
+# durable execution record on uncertain evidence. Linux /proc start ticks remain
+# exact and retain the strongest PID-reuse guard.
+_EPOCH_START_TIME_DRIFT_TOLERANCE_CENTISECONDS = 200
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
@@ -136,7 +143,11 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     if started_at is None:
         return pid == os.getpid()
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    if current is None:
+        return True  # fail safe: a live PID without a readable fingerprint is not dead
+    if sys.platform == "linux":
+        return current == started_at
+    return abs(current - started_at) <= _EPOCH_START_TIME_DRIFT_TOLERANCE_CENTISECONDS
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:

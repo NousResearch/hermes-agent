@@ -159,15 +159,13 @@ def _merge_over_on_disk(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     return {**existing, **payload} if isinstance(existing, dict) else payload
 
 
-_runtime_status_writer_lock = threading.Lock()
 _runtime_status_writer: Optional[_RuntimeStatusWriter] = None
 
 
 def _get_runtime_status_writer() -> _RuntimeStatusWriter:
+    """Lazily create the single writer; callers serialise on ``_runtime_status_state_lock``."""
     global _runtime_status_writer
-    if _runtime_status_writer is not None:
-        return _runtime_status_writer
-    with _runtime_status_writer_lock:
+    with _runtime_status_state_lock:
         if _runtime_status_writer is None:
             _runtime_status_writer = _RuntimeStatusWriter()
         return _runtime_status_writer

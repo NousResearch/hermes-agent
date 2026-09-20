@@ -130,7 +130,26 @@ class TestCLIStatusBar:
         # stale prompt/input cells visible after resize.
         assert cli_mod._estimate_tui_input_height(["abcdef"], "⚔ ", 3) == 3
 
+    def test_input_height_raises_floor_for_empty_document(self):
+        # display.input_height raises the *starting* height even with nothing typed yet.
+        assert cli_mod._estimate_tui_input_height([""], "> ", 80, min_height=4) == 4
 
+    def test_input_height_floor_never_exceeds_content_when_larger(self):
+        # The floor never shrinks a box that content already needs to be taller than.
+        lines = ["one", "two", "three", "four", "five"]
+        assert cli_mod._estimate_tui_input_height(lines, "> ", 80, min_height=2) == 5
+
+    def test_cli_input_min_height_reads_display_config(self):
+        assert cli_mod._cli_input_min_height({"display": {"input_height": 4}}) == 4
+
+    def test_cli_input_min_height_clamps_to_max(self):
+        assert cli_mod._cli_input_min_height({"display": {"input_height": 99}}) == 8
+
+    def test_cli_input_min_height_clamps_below_one(self):
+        assert cli_mod._cli_input_min_height({"display": {"input_height": 0}}) == 1
+
+    def test_cli_input_min_height_defaults_to_one(self):
+        assert cli_mod._cli_input_min_height({"display": {}}) == 1
 
 
 

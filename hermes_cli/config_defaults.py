@@ -801,6 +801,9 @@ DEFAULT_CONFIG = {
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
         # POSIX PTYs whose plain Enter arrives as LF.
         "cli_multiline_shortcuts": True,
+        # TUI input box starting height in lines (clamped to [1, 8]). It still grows on demand up
+        # to 8; this only raises the floor so the box isn't cramped for routinely multi-line input.
+        "input_height": 1,
         # Interface bare `hermes`/`hermes chat` launches: "cli" (prompt_toolkit REPL) | "tui" (Ink).
         # Flags win: `--cli` forces the REPL, `--tui` / HERMES_TUI=1 forces the TUI.
         "interface": "cli",

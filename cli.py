@@ -2202,8 +2202,19 @@ def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
     return text, had_mouse_reports
 
 
+def _cli_input_min_height(config: Optional[Dict[str, Any]] = None, *, max_height: int = 8) -> int:
+    """``display.input_height``: TUI input box starting height in lines, clamped to ``[1, max_height]``."""
+    if config is None:
+        config = CLI_CONFIG
+    display = config.get("display") if isinstance(config, dict) else None
+    value = display.get("input_height", 1) if isinstance(display, dict) else 1
+    height = _int_or(value, 1)
+    return max(1, min(height, max(1, int(max_height or 1))))
+
+
 def _estimate_tui_input_height(
-    lines: list[str] | tuple[str, ...], prompt_text: str, terminal_columns: int, *, max_height: int = 8,
+    lines: list[str] | tuple[str, ...], prompt_text: str, terminal_columns: int, *,
+    max_height: int = 8, min_height: int = 1,
 ) -> int:
     """Input rows from live terminal cells; the BeforeInput prompt consumes cells only on line 0.
 
@@ -2222,7 +2233,8 @@ def _estimate_tui_input_height(
         display_width = get_cwidth(line or "") + (prompt_width if index == 0 else 0)
         visual_lines += max(1, -(-display_width // columns))
 
-    return min(max(visual_lines, 1), max(1, int(max_height or 1)))
+    floor = max(1, min(int(min_height or 1), max(1, int(max_height or 1))))
+    return min(max(visual_lines, floor), max(1, int(max_height or 1)))
 
 
 def _status_bar_visible_from_display_config(display_config: object) -> bool:

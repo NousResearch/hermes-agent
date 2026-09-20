@@ -1460,14 +1460,20 @@ class GatewayStartupMixin:
 
     async def start(self) -> bool:
         """Start the gateway and all configured platform adapters."""
+        try:
+            return await self._start_impl()
+        finally:
+            # Every startup path (early aborts included) ends here: bound startup on the latest
+            # diagnostic snapshot once, instead of flushing at each return.
+            await self._start_flush_runtime_status()
+
+    async def _start_impl(self) -> bool:
         logger.info("Starting Hermes Gateway...")
         self._start_install_faulthandler()
         await self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():
-            await self._start_flush_runtime_status()
             return True
         if self._start_check_access_policy():
-            await self._start_flush_runtime_status()
             return True
         await self._start_recover_previous_run()
         # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
@@ -1491,34 +1497,27 @@ class GatewayStartupMixin:
             _aborted, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
         ) = await self._start_prefilter_platforms()
         if _aborted:
-            await self._start_flush_runtime_status()
             return True
         if await self._abort_startup_if_shutdown_requested():
-            await self._start_flush_runtime_status()
             return True
         _raw = await self._start_connect_pending(_pending_connects)
         if _raw is None:
-            await self._start_flush_runtime_status()
             return True
         connected_count = await self._start_aggregate_connect_results(
             _raw, startup_retryable_errors, startup_nonretryable_errors
         )
         if await self._abort_startup_if_shutdown_requested():
-            await self._start_flush_runtime_status()
             return True
         _aborted, connected_count = await self._start_secondary_profiles(
             connected_count, _multiplex_skipped_platforms
         )
         if _aborted:
-            await self._start_flush_runtime_status()
             return True
         if self._start_handle_no_connections(
             connected_count, enabled_platform_count, startup_retryable_errors, startup_nonretryable_errors
         ):
-            await self._start_flush_runtime_status()
             return True
         if await self._abort_startup_if_shutdown_requested():
-            await self._start_flush_runtime_status()
             return True
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
@@ -1530,7 +1529,6 @@ class GatewayStartupMixin:
         self._update_runtime_status(self._serving_state())
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
-        await self._start_flush_runtime_status()
         logger.info("Press Ctrl+C to stop")
         return True
 

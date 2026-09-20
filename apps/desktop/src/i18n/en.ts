@@ -366,6 +366,7 @@ export const en: Translations = {
   },
 
   backworkspace: {
+    attachFailed: 'That image could not be added to the page.',
     askNobody: 'Mention an agent with @ to ask this page.',
     askPending: name => `${name} is answering…`,
     askFailed: name => `${name} could not answer. The page is unchanged.`,

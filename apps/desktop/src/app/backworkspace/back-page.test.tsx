@@ -151,6 +151,42 @@ describe('BackworkspacePage', () => {
     expect(askAgent.mock.calls[1][1]).toBe('and what about this?')
   })
 
+  it('stores a pasted image beside the page and links it where the caret is', async () => {
+    request.mockImplementation((_connection, _profile, method) =>
+      method === 'backworkspace.attach'
+        ? Promise.resolve({ href: 'assets/20260920_101010_abcdef.png', path: '/p/assets/x.png' })
+        : Promise.resolve({
+            page: {
+              content: 'a note',
+              id: '20260920_101010_abcdef',
+              path: '/home/u/.hermes/backworkspace/20260920_101010_abcdef.md'
+            }
+          })
+    )
+    $activeGatewayProfile.set('pasting')
+
+    renderPage()
+
+    const host = await screen.findByLabelText('Back workspace', { selector: '.cm-content' })
+    const view = EditorView.findFromDOM(host as HTMLElement)!
+    const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' })
+
+    fireEvent.paste(view.contentDOM, {
+      clipboardData: {
+        files: { item: () => image, length: 1 },
+        getData: () => '',
+        items: [{ getAsFile: () => image, kind: 'file', type: image.type }]
+      }
+    })
+
+    await vi.waitFor(() => expect(view.state.doc.toString()).toContain('![](assets/20260920_101010_abcdef.png)'))
+    expect(request.mock.calls.find(call => call[2] === 'backworkspace.attach')?.[3]).toMatchObject({
+      name: 'clipboard.png'
+    })
+    // The widget that shows the picture itself needs real layout, which jsdom
+    // has none of; `image-previews.test.ts` covers the source it resolves.
+  })
+
   it('opens the stored page in the editor, ready to type', async () => {
     request.mockResolvedValue({ page: { content: 'text from the file', id: '20260920_101010_abcdef' } })
     $activeGatewayProfile.set('with-a-page')

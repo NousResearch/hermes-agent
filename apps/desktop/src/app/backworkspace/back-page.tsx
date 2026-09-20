@@ -8,6 +8,7 @@ import { $activeConnectionId } from '@/store/connections'
 import { $activeGatewayProfile } from '@/store/profile'
 
 import { BackworkspaceEditor } from './editor'
+import { imagePreviews, imageTheme } from './image-previews'
 import {
   $backworkspacePage,
   type BackworkspacePageState,
@@ -19,6 +20,7 @@ import { quoteDecorationPlugin, quoteTheme } from './quote-decorations'
 import { $backworkspaceOpen, toggleBackworkspace } from './store'
 import { useAskAgent } from './use-ask-agent'
 import { useMentionPopup } from './use-mention-popup'
+import { usePasteImage } from './use-paste-image'
 
 // The notice sits under the same centered column the editor paints (see editor.tsx).
 const TEXT_COLUMN_CLASS = 'w-full px-[max(2rem,calc((100%_-_48rem)/2))]'
@@ -51,7 +53,8 @@ function BackworkspaceSheet() {
   const ready = page?.status === 'ready'
   const mention = useMentionPopup()
   const ask = useAskAgent(page?.path ?? null)
-  const notice = ask.notice ?? noticeFor(page, t.backworkspace)
+  const paste = usePasteImage()
+  const notice = ask.notice ?? paste.notice ?? noticeFor(page, t.backworkspace)
 
   // While this is mounted styles.css hides the shell. Tying the attribute to
   // this component's life means anything that unmounts it — turning back, or
@@ -106,7 +109,15 @@ function BackworkspaceSheet() {
         <BackworkspaceEditor
           ariaLabel={t.backworkspace.label}
           autoFocus
-          extensions={[mention.extension, ask.extension, quoteDecorationPlugin, quoteTheme]}
+          extensions={[
+            mention.extension,
+            ask.extension,
+            paste.extension,
+            imagePreviews(page.path),
+            imageTheme,
+            quoteDecorationPlugin,
+            quoteTheme
+          ]}
           initialValue={page.content}
           key={page.key}
           onChange={editBackworkspacePage}

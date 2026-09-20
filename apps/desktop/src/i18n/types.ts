@@ -405,6 +405,7 @@ export interface Translations {
   }
 
   backworkspace: {
+    attachFailed: string
     askNobody: string
     askPending: (name: string) => string
     askFailed: (name: string) => string

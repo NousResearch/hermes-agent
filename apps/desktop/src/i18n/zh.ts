@@ -325,6 +325,7 @@ export const zh = defineLocale({
   },
 
   backworkspace: {
+    attachFailed: '无法将该图片添加到页面。',
     askNobody: '用 @ 提及一个智能体，即可从此页面提问。',
     askPending: name => `${name} 正在回答…`,
     askFailed: name => `${name} 无法回答，页面未改动。`,

@@ -286,6 +286,7 @@ export const ru = defineLocale({
   },
 
   backworkspace: {
+    attachFailed: 'Не удалось добавить это изображение на страницу.',
     askNobody: 'Упомяните агента через @, чтобы спросить с этой страницы.',
     askPending: name => `${name} отвечает…`,
     askFailed: name => `${name} не смог ответить. Страница не изменилась.`,

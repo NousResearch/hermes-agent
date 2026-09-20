@@ -10,6 +10,7 @@ The Desktop's flip-side page. Contracts:
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,10 @@ def _call(method: str, params: dict) -> dict:
 def _result(envelope: dict) -> dict:
     assert "error" not in envelope, envelope
     return envelope["result"]
+
+
+def _base64_of_size(size: int) -> str:
+    return base64.b64encode(b"\0" * size).decode("ascii")
 
 
 def test_save_then_open_round_trips_one_page(tmp_path, monkeypatch):
@@ -44,6 +49,26 @@ def test_save_then_open_round_trips_one_page(tmp_path, monkeypatch):
         "content": "second",
         "path": again["path"],
     }
+
+
+def test_attach_stores_the_image_beside_the_pages(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    attached = _result(_call("backworkspace.attach", {"name": "clipboard.png", "data": "aGVsbG8="}))
+
+    page_path = Path(_result(_call("backworkspace.save", {"content": "a note"}))["path"])
+
+    assert Path(attached["path"]).read_bytes() == b"hello"
+    # The contract the page is written against: the link it carries is relative to the page's
+    # own file, so page and pictures stay one folder that can be moved or synced together.
+    assert page_path.parent / attached["href"] == Path(attached["path"])
+    # A document that can carry script is not a picture, whatever the clipboard says.
+    assert "error" in _call("backworkspace.attach", {"name": "drawing.svg", "data": "aGVsbG8="})
+    # Bigger than the Desktop will read back as a data URL is stored by nobody.
+    assert "error" in _call(
+        "backworkspace.attach",
+        {"name": "huge.png", "data": _base64_of_size(17 * 1024 * 1024)},
+    )
 
 
 @pytest.mark.parametrize("page_id", ["../config", "20260920_101010_abcdef\n"])

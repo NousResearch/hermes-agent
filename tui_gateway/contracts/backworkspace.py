@@ -41,3 +41,23 @@ method(
     result=BackworkspaceSaveResult,
     doc="Write a back-workspace page (a new page when no id is given); returns its id and file path.",
 )
+
+
+class BackworkspaceAttachParams(ProfileParams):
+    """``name`` is read for its suffix only; ``data`` is the image, base64."""
+
+    name: str | None = None
+    data: str | None = None
+
+
+class BackworkspaceAttachResult(Result):
+    path: str
+    href: str
+
+
+method(
+    "backworkspace.attach",
+    params=BackworkspaceAttachParams,
+    result=BackworkspaceAttachResult,
+    doc="Store a pasted image beside the back-workspace pages; returns its path and the page's link to it.",
+)

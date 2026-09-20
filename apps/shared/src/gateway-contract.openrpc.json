@@ -79,6 +79,24 @@
       }
     },
     {
+      "name": "backworkspace.attach",
+      "summary": "Store a pasted image beside the back-workspace pages; returns its path and the page's link to it.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/BackworkspaceAttachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/BackworkspaceAttachResult"
+        }
+      }
+    },
+    {
       "name": "backworkspace.open",
       "summary": "The most recent back-workspace page, or null before the first save.",
       "params": [
@@ -4781,6 +4799,69 @@
         ],
         "title": "AutoReloadCardKind",
         "type": "string"
+      },
+      "BackworkspaceAttachParams": {
+        "additionalProperties": false,
+        "description": "``name`` is read for its suffix only; ``data`` is the image, base64.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          }
+        },
+        "title": "BackworkspaceAttachParams",
+        "type": "object"
+      },
+      "BackworkspaceAttachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "href": {
+            "title": "Href",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "href"
+        ],
+        "title": "BackworkspaceAttachResult",
+        "type": "object"
       },
       "BackworkspaceOpenResult": {
         "additionalProperties": false,

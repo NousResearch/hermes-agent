@@ -6,6 +6,8 @@ The Desktop's titlebar flips the window over to a blank page; its text is stored
 - ``backworkspace.open`` → ``{page: {id, content, path} | null}``, the most recent page.
 - ``backworkspace.save`` → writes ``content`` to page ``id`` (a new page when ``id`` is
   omitted) and returns ``{id, path}``. The client keeps the returned id for later saves.
+- ``backworkspace.attach`` → stores a pasted image beside the pages and returns its path plus
+  the relative ``href`` the page links it by.
 
 ``path`` is the page's file on the backend host: the client can hand it to an agent, which
 reads the page with its own file tools instead of the text travelling back over the wire.
@@ -51,6 +53,18 @@ def _(rid, params: dict) -> dict:
     try:
         page_id = save_page(str(params.get("id") or "") or None, content)
         return _ok(rid, {"id": page_id, "path": str(page_path(page_id))})
+    except Exception as e:
+        return _err(rid, 5097, str(e))
+
+
+@method("backworkspace.attach")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Store a pasted image beside the pages. Result: ``{path, href}`` — the link the page uses."""
+    from tui_gateway.backworkspace import attach_image
+
+    try:
+        return _ok(rid, attach_image(str(params.get("name") or ""), str(params.get("data") or "")))
     except Exception as e:
         return _err(rid, 5097, str(e))
 

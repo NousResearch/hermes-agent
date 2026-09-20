@@ -287,6 +287,7 @@ export const zhHant = defineLocale({
   },
 
   backworkspace: {
+    attachFailed: '無法將該圖片加入頁面。',
     askNobody: '用 @ 提及一個代理，即可從此頁面提問。',
     askPending: name => `${name} 正在回答…`,
     askFailed: name => `${name} 無法回答，頁面未變動。`,

@@ -296,6 +296,7 @@ export const ja = defineLocale({
   },
 
   backworkspace: {
+    attachFailed: 'その画像をページに追加できませんでした。',
     askNobody: '@ でエージェントを指定すると、このページから質問できます。',
     askPending: name => `${name} が回答中…`,
     askFailed: name => `${name} は回答できませんでした。ページはそのままです。`,

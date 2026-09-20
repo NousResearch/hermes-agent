@@ -265,6 +265,7 @@ export const ar = defineLocale({
   },
 
   backworkspace: {
+    attachFailed: 'تعذّرت إضافة تلك الصورة إلى الصفحة.',
     askNobody: 'اذكر وكيلاً بعلامة @ لتسأل من هذه الصفحة.',
     askPending: name => `${name} يجيب الآن…`,
     askFailed: name => `${name} لم يستطع الإجابة. الصفحة لم تتغيّر.`,

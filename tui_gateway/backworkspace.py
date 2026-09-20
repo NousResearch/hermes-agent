@@ -11,12 +11,14 @@ The home is resolved per call through ``get_hermes_home()``, so the caller's pro
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
-from utils import atomic_write_text
+from utils import atomic_write_bytes, atomic_write_text
 
 # The id is a file name the client sends back; nothing but the session-id shape may reach the
 # filesystem, so a crafted id can never name a path outside the directory. Checked with
@@ -44,6 +46,43 @@ def latest_page() -> dict | None:
         "content": path.read_text(encoding="utf-8"),
         "path": str(path),
     }
+
+
+ASSETS_DIR = "assets"
+# What a page may hold beside it. The set is the one an <img> renders and a vision model reads;
+# SVG is left out on purpose — it is a document that can carry script, not a picture.
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+# Well past any screenshot, and the same ceiling the Desktop reads a local file as a data URL
+# with by default (``DATA_URL_READ_DEFAULT_MAX_MB``): storing a picture the client cannot then
+# display would leave a link to something invisible.
+_MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
+
+
+def attach_image(name: str, data_base64: str) -> dict:
+    """Store a pasted image beside the pages and return ``{path, href}``.
+
+    ``href`` is what goes in the page — a relative link, so the page and its images stay one
+    folder that can be moved or synced. The stored name is minted here: a client-supplied name
+    is read for its suffix only, never used as a path.
+    """
+    suffix = Path(name).suffix.lower()
+    if suffix not in _IMAGE_SUFFIXES:
+        raise ValueError(f"unsupported image type: {suffix or name!r}")
+    try:
+        blob = base64.b64decode(data_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("image data is not valid base64") from exc
+    if not blob:
+        raise ValueError("image data is empty")
+    if len(blob) > _MAX_ATTACHMENT_BYTES:
+        raise ValueError(
+            f"image is larger than {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB"
+        )
+
+    path = pages_dir() / ASSETS_DIR / f"{new_session_id()}{suffix}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(path, blob)
+    return {"path": str(path), "href": f"{ASSETS_DIR}/{path.name}"}
 
 
 def save_page(page_id: str | None, content: str) -> str:

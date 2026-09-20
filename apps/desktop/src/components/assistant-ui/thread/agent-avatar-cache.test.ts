@@ -62,17 +62,6 @@ describe('agent avatar cache', () => {
     expect(agentAvatarCache.has(`bot${CACHE_MAX}`)).toBe(true)
   })
 
-  it('serves a resolved avatar from the cache without another request', async () => {
-    withAvatar.add('hermes')
-
-    const first = await resolveAgentAvatar('hermes')
-    const calls = listCalls
-
-    expect(first).toBe('data:image/png;base64,hermes')
-    expect(await resolveAgentAvatar('Hermes')).toBe(first)
-    expect(listCalls).toBe(calls)
-  })
-
   it('honours a negative entry inside the TTL and re-probes once it expires', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
 

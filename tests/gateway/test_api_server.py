@@ -1034,8 +1034,12 @@ class TestSkillsEndpoint:
             {"name": "github", "description": "GitHub workflow skill", "category": "github"},
             {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
         ]
+        # autospec=True enforces the real _find_all_skills signature. Without it the
+        # kwargs-blind MagicMock swallowed a stale keyword argument and this test stayed
+        # green while the live route raised TypeError and answered 500 on every request.
         with patch(
             "tools.skills_tool._find_all_skills",
+            autospec=True,
             return_value=list(fake_skills),
         ):
             app = _create_app(adapter)

@@ -6,7 +6,6 @@ the attachment is silently dropped (#102221, #116776 — Matrix; same class in l
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 
 import pytest
@@ -32,9 +31,33 @@ def test_every_send_voice_accepts_is_voice(path: Path) -> None:
         )
 
 
-def test_base_dispatch_passes_is_voice_to_send_voice() -> None:
-    """Guards the contract from the other side: the dispatch really passes ``is_voice``."""
-    from gateway.platforms.base import BasePlatformAdapter
+@pytest.mark.asyncio
+async def test_media_dispatch_delivers_audio_through_mattermost_send_voice(tmp_path) -> None:
+    """Behavioural pin for the ``**kwargs`` class fix (line/mattermost/weixin): drive the real
+    base dispatch, which calls ``send_voice(..., is_voice=False)`` for an audio-ext MEDIA
+    attachment. Before the fix the call raised ``TypeError`` inside ``_send_one`` and the
+    attachment was recorded as a failed delivery; now the file reaches the adapter's uploader."""
+    from unittest.mock import AsyncMock
 
-    src = inspect.getsource(BasePlatformAdapter)
-    assert "self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)" in src
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import SendResult
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import Platform, SessionSource
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+    adapter = MattermostAdapter(PlatformConfig(enabled=True, token="mm-token", extra={"url": "https://mm.example"}))
+    adapter._send_local_file = AsyncMock(return_value=SendResult(success=True, message_id="post-1"))
+    adapter._notify_media_delivery_failure = AsyncMock()
+    clip = tmp_path / "clip.mp3"
+    clip.write_bytes(b"ID3")
+    event = MessageEvent(text="", source=SessionSource(platform=Platform.MATTERMOST, chat_id="chan-1"))
+    results = []
+
+    await adapter._deliver_media_attachments(
+        event, [(str(clip), False)], [], force_document_attachments=False, human_delay=0,
+        metadata={}, record_delivery=results.append)
+
+    assert [r.success for r in results] == [True]
+    adapter._notify_media_delivery_failure.assert_not_awaited()
+    args, kwargs = adapter._send_local_file.call_args
+    assert args[1] == str(clip)

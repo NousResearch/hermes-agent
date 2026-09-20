@@ -95,3 +95,35 @@ def test_external_gateway_does_not_fail_matrix(capsys):
     assert failed is False
     assert "separate checkout" in output
     assert "/srv/hermes-pinned" in output
+
+
+def test_collect_fleet_versions_classifies_separate_checkout_gateway(tmp_path, monkeypatch):
+    """The production entry point resolves the gateway's code root and reports ``external``.
+
+    A pid-guarded ``gateway_state.json`` whose argv points at a pinned checkout must
+    classify as ``external`` (never ``stale``) even though its sha is foreign.
+    """
+    import json
+
+    pinned = _checkout(tmp_path, "pinned")
+    home = tmp_path / "fleet_home"
+    home.mkdir()
+    (home / "gateway_state.json").write_text(json.dumps({
+        "gateway_state": "running", "kind": "hermes-gateway", "pid": 4242,
+        "argv": [str(pinned / "hermes_cli" / "main.py"), "gateway", "run"],
+        "code_sha": "f" * 40, "code_version": "0.0.1",
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes_cli.build_info.get_code_identity",
+        lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8, "version": "1.0", "source": "git"},
+    )
+    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no_profiles")
+    monkeypatch.setattr(update_receipt, "_socket_identity", lambda _home: None)
+    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda _home: 4242)
+
+    fleet = update_receipt.collect_fleet_versions()
+
+    assert [row["state"] for row in fleet] == ["external"]
+    assert fleet[0]["code_root"] == str(pinned.resolve())
+    assert update_receipt.print_fleet_version_matrix(fleet) is False  # matrix does not fail the update

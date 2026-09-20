@@ -1,16 +1,13 @@
-"""Tests for block_task() classification of already-blocked cards.
-
-Reproduces issue #117363: the circuit breaker parks cards untyped, and
-block_task() refuses to classify them because the WHERE clause only
-matches running/ready.
-"""
+"""block_task() classifies an untyped breaker block in place (#117363)."""
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -23,84 +20,56 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def test_classify_already_blocked_untyped_card(kanban_home):
-    """A card parked blocked with block_kind=NULL should accept a kind."""
-    with kbc.connect() as conn:
-        task_id = kb.create_task(conn, title="breaker-parked card")
-        # Simulate the circuit breaker: set status=blocked without block_kind.
+def _time_out_once(conn, tid: str) -> None:
+    kb.claim_task(conn, tid)
+    kbd._set_worker_pid(conn, tid, os.getpid())
+    started = int(time.time()) - 30
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (started, tid))
         conn.execute(
-            "UPDATE tasks SET status = 'blocked', block_kind = NULL WHERE id = ?",
-            (task_id,),
+            "UPDATE task_runs SET started_at = ? "
+            "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+            (started, tid),
         )
-        assert kb.get_task(conn, task_id).block_kind is None
-
-        result = kb.block_task(conn, task_id, kind="needs_input", reason="supervisor classifying breaker block")
-        assert result is True
-
-        task = kb.get_task(conn, task_id)
-        assert task.status == "blocked"
-        assert task.block_kind == "needs_input"
-
-        events = [e for e in kb.list_events(conn, task_id) if e.kind == "block_classified"]
-        assert len(events) == 1
-        assert events[-1].payload["kind"] == "needs_input"
-        assert events[-1].payload["previous_kind"] is None
+    assert tid in kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: None)
 
 
-def test_classify_already_blocked_typed_card(kanban_home):
-    """Re-classifying a typed blocked card should update block_kind."""
+def test_typed_block_classifies_untyped_breaker_block(kanban_home, monkeypatch):
+    """Two timeouts trip the breaker untyped; the supervisor's typed block then
+    attaches the kind without a status flap, a synthetic run, or lost evidence."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     with kbc.connect() as conn:
-        task_id = kb.create_task(conn, title="typed block")
-        kb.block_task(conn, task_id, kind="transient", reason="flaky")
+        tid = kb.create_task(conn, title="ceiling", assignee="worker", max_runtime_seconds=1)
+        _time_out_once(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+        _time_out_once(conn, tid)
+        parked = kb.get_task(conn, tid)
+        assert (parked.status, parked.block_kind, parked.block_recurrences) == ("blocked", None, 0)
 
-        task = kb.get_task(conn, task_id)
-        assert task.status == "blocked"
-        assert task.block_kind == "transient"
+        assert kb.block_task(conn, tid, reason="needs a human decision", kind="needs_input") is True
 
-        result = kb.block_task(conn, task_id, kind="needs_input", reason="escalated")
-        assert result is True
-
-        task = kb.get_task(conn, task_id)
-        assert task.block_kind == "needs_input"
-
-        events = [e for e in kb.list_events(conn, task_id) if e.kind == "block_classified"]
-        assert len(events) == 1
-        assert events[-1].payload["previous_kind"] == "transient"
+        after = kb.get_task(conn, tid)
+        assert (after.status, after.block_kind, after.block_recurrences) == ("blocked", "needs_input", 1)
+        assert after.consecutive_failures == parked.consecutive_failures
+        assert after.last_failure_error == parked.last_failure_error
+        assert after.current_run_id is None
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert (kinds.count("blocked"), kinds.count("gave_up"), kinds.count("timed_out")) == (1, 1, 2)
+        assert len(kb.list_runs(conn, tid)) == 2
 
 
-def test_classify_already_blocked_same_kind_is_idempotent(kanban_home):
-    """Classifying with the same kind should be a no-op (idempotent)."""
+def test_typed_block_still_refuses_typed_or_live_blocked_cards(kanban_home):
     with kbc.connect() as conn:
-        task_id = kb.create_task(conn, title="already classified")
-        kb.block_task(conn, task_id, kind="needs_input", reason="initial")
+        typed = kb.create_task(conn, title="typed once", assignee="worker")
+        kb.claim_task(conn, typed)
+        assert kb.block_task(conn, typed, reason="decision", kind="needs_input") is True
+        assert kb.block_task(conn, typed, reason="again", kind="capability") is False
+        assert kb.get_task(conn, typed).block_kind == "needs_input"
 
-        result = kb.block_task(conn, task_id, kind="needs_input", reason="duplicate")
-        assert result is True
-
-        events = [e for e in kb.list_events(conn, task_id) if e.kind == "block_classified"]
-        assert len(events) == 0, "idempotent classify must not emit an event"
-
-
-def test_block_task_still_blocks_running_card(kanban_home):
-    """Normal blocking of a running card should still work."""
-    with kbc.connect() as conn:
-        task_id = kb.create_task(conn, title="normal card")
-        kb.claim_task(conn, task_id, worker_pid=12345)
-
-        result = kb.block_task(conn, task_id, kind="needs_input", reason="waiting for input")
-        assert result is True
-
-        task = kb.get_task(conn, task_id)
-        assert task.status == "blocked"
-        assert task.block_kind == "needs_input"
-
-
-def test_classify_blocked_without_kind_returns_false(kanban_home):
-    """block_task() on an already-blocked card without kind should return False."""
-    with kbc.connect() as conn:
-        task_id = kb.create_task(conn, title="blocked card")
-        kb.block_task(conn, task_id, kind="transient", reason="flaky")
-
-        # Without kind, this should fail (no-op on already blocked)
-        result = kb.block_task(conn, task_id, reason="no kind given")
-        assert result is False
+        live = kb.create_task(conn, title="live run", assignee="worker")
+        kb.claim_task(conn, live)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (live,))
+        assert kb.block_task(conn, live, reason="race", kind="needs_input") is False
+        assert kb.block_task(conn, live, reason="no kind") is False
+        assert kb.get_task(conn, live).block_kind is None

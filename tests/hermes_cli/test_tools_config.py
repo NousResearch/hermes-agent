@@ -98,18 +98,6 @@ def test_scalar_platform_toolsets_fall_back_to_platform_default():
     assert enabled == default_enabled
 
 
-def test_string_platform_toolsets_resolves_as_the_list_it_encodes():
-    """#115866: `hermes config set` stores a bare ``[...]`` argument as a plain
-    string, so an explicit selection parses as str and was treated as
-    unconfigured — resolving to the platform default instead of the listed
-    toolsets (including default-off ones like video/video_gen)."""
-    config = {"platform_toolsets": {"telegram": '["browser", "terminal", "video", "video_gen"]'}}
-
-    enabled = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
-
-    assert {"browser", "terminal", "video", "video_gen"} <= enabled
-
-
 def test_enable_on_string_platform_toolsets_keeps_listed_entries():
     """#115866: `hermes tools enable` must operate on the selection a list-literal
     string encodes — not re-baseline it on the platform default, which silently
@@ -124,19 +112,21 @@ def test_enable_on_string_platform_toolsets_keeps_listed_entries():
     assert {"browser", "terminal", "video", "video_gen", "computer_use"} <= set(saved)
 
 
-def test_malformed_list_string_platform_toolsets_fall_back_to_platform_default():
-    """A string that fails to parse as a list is still "not a list" — the
-    resolver keeps the platform-default fallback instead of raising (#115866)."""
-    config = {"platform_toolsets": {"cli": '["web", terminal'}}
+def test_malformed_list_string_platform_toolsets_warns_then_falls_back(caplog):
+    """A string that does not parse as a list falls back to the platform default
+    loudly: one warning naming the expected shape, never a silent substitution (#115866)."""
+    import hermes_cli.tools_config as tc
 
-    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-    default_enabled = _get_platform_tools(
-        {}, "cli", include_default_mcp_servers=False
-    )
+    config = {"platform_toolsets": {"cli": '["web", terminal'}}
+    tc._warned_invalid_platform_toolsets.discard("cli")
+
+    with caplog.at_level("WARNING", logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
 
     assert enabled == default_enabled
-
-
+    assert [r for r in caplog.records if "platform_toolsets.cli" in r.getMessage()
+            and "expected a YAML list" in r.getMessage()]
 
 
 

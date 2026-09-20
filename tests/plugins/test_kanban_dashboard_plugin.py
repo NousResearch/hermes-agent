@@ -1304,3 +1304,26 @@ def test_touch_card_tap_opens_instead_of_dragging():
     )
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "PASS" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic severity colours follow the dashboard theme
+# ---------------------------------------------------------------------------
+
+
+def test_diag_severity_tokens_route_through_host_theme_tokens():
+    """The three ``--hermes-diag-*`` rungs must resolve through the host's
+    ``--color-warning`` / ``--color-destructive`` tokens (#115118). They were
+    literals declared on the consuming elements, which no theme override can
+    reach (the theme engine writes custom properties on ``<html>`` and an
+    element-level declaration always wins), so light themes rendered the
+    amber badge at 1.8:1 contrast with no way to fix it. Headless-Chrome
+    receipt: with the tokens set on ``<html>`` the computed colours follow;
+    with none set the shipped literals render unchanged.
+    """
+    css = (Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
+    block = css[css.index("--hermes-diag-warning"):]
+    block = block[: block.index("}")]
+    assert "--hermes-diag-warning:  var(--color-warning, #ff9e3b)" in block
+    assert "--hermes-diag-error:    var(--color-destructive, #ff6b3d)" in block
+    assert "--hermes-diag-critical: var(--color-destructive, #ff4d4d)" in block

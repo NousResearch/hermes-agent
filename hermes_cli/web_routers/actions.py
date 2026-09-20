@@ -177,14 +177,19 @@ async def gateway_drain(request: Request):
     """
     from gateway.drain_control import clear_drain_request, drain_requested, write_drain_request
 
-    try:
-        body = await request.json()
-    except Exception as exc:
-        _log.warning("Malformed JSON body on /api/gateway/drain: %r", exc)
-        raise HTTPException(
-            status_code=400,
-            detail='Malformed JSON body; expected {"action": "drain"} or {"action": "cancel"}',
-        ) from exc
+    raw_body = await request.body()
+    if raw_body.strip():
+        try:
+            body = await request.json()
+        except Exception as exc:
+            _log.warning("Malformed JSON body on /api/gateway/drain: %r", exc)
+            raise HTTPException(
+                status_code=400,
+                detail='Malformed JSON body; expected {"action": "drain"} or {"action": "cancel"}',
+            ) from exc
+    else:
+        # A bodyless authenticated POST has always meant the default drain action.
+        body = {}
     body = body or {}
     action = str(body.get("action", "drain")).strip().lower()
     # Attribute to the verified token principal when the token-auth seam attached one.

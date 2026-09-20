@@ -672,9 +672,12 @@ def _close_leaked_session_dbs():
     SIGSEGV shape of #113186, seen from ``tests/gateway/test_timestamp_sidecar_replay.py``.
     """
     yield
-    title_generator = sys.modules.get("agent.title_generator")  # never imported = nothing spawned
-    if title_generator is not None:
-        title_generator.wait_for_title_upgrades()
+    # sys.modules lookup, not import: a file that never touched title_generator spawned
+    # nothing. Tests that swap in a stub module (tui_gateway golden transcript) have no
+    # real threads either, so a stub without the helper is the same "nothing to join" case.
+    wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+    if wait is not None:
+        wait()
     try:
         from hermes_state_guard import _test_instance_registry as registry
     except Exception:

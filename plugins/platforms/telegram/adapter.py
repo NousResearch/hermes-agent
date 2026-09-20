@@ -414,6 +414,9 @@ class TelegramAdapter(BasePlatformAdapter):
     _TEXT_BATCH_FAST_DELAY_S = 0.18
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
+    # Defaults cover the observed 1.177 s server-side delivery gap without slowing short tiers.
+    _TEXT_BATCH_DEFAULT_DELAY_S = 1.5
+    _TEXT_BATCH_SPLIT_DEFAULT_DELAY_S = 2.0
 
     @staticmethod
     def _env_float_clamped(name: str, default: float, *, min_value: Optional[float] = None, max_value: Optional[float] = None) -> float:
@@ -482,9 +485,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Aggregate client-side splits of long messages into one MessageEvent; bounds are conservative
         # for Telegram's ~1 edit/s flood envelope.
         self._text_batch_delay_seconds = self._env_float_clamped(
-            "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", 0.3, min_value=0.08, max_value=2.0)
+            "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", self._TEXT_BATCH_DEFAULT_DELAY_S, min_value=0.08, max_value=2.0)
         self._text_batch_split_delay_seconds = self._env_float_clamped(
-            "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 1.0, min_value=self._text_batch_delay_seconds, max_value=4.0)
+            "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", self._TEXT_BATCH_SPLIT_DEFAULT_DELAY_S, min_value=self._text_batch_delay_seconds, max_value=4.0)
         self._drop_delayed_deliveries = False
         # Held across disconnect: PTB advances the offset before our drop-guard runs, so Telegram won't
         # redeliver — dropping is permanent loss (see _hold_inbound_event).

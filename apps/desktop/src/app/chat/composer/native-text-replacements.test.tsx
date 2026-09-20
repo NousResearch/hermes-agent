@@ -7,9 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 import { mainComposerScope } from '@/store/composer'
 
-import { ChatBar } from './index'
 import { RICH_INPUT_SLOT } from './rich-editor'
 import type { ChatBarState } from './types'
+
+import { ChatBar } from './index'
 
 const state: ChatBarState = {
   model: { canSwitch: false, model: '', provider: '' },

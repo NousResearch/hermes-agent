@@ -161,6 +161,8 @@ def _env_flag_value(arg: str) -> tuple[str, str | None] | None:
         if flag in ("--env", "--env-file"):
             return flag[2:], inline if sep else None
         return None
+    if not arg.startswith("-"):
+        return None  # positional (image/command), never a flag
     # A single dash heads a shorthand chain: every letter before the last must
     # be a boolean shorthand, and the last takes the rest of the arg (or the
     # next arg when bare) as its value.

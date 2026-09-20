@@ -1532,15 +1532,8 @@ test('buildSpawnCommand scopes umask 077 to the mkdir subshell (no leak into ser
   // umask 077 must apply only to the reservation-parent mkdir. A bare
   // umask call at the top level leaks 077 into the rest of the payload,
   // so the detached setsid backend inherits 077 instead of the login umask.
-  assert.ok(
-    cmd.includes('(umask 077 && mkdir -p'),
-    'umask 077 must be scoped to a mkdir subshell'
-  )
-  assert.doesNotMatch(
-    cmd,
-    /(^|[^(])umask 077/,
-    'no bare umask 077 may leak into the spawn chain'
-  )
+  assert.ok(cmd.includes('(umask 077 && mkdir -p'), 'umask 077 must be scoped to a mkdir subshell')
+  assert.doesNotMatch(cmd, /(^|[^(])umask 077/, 'no bare umask 077 may leak into the spawn chain')
   assert.ok(
     cmd.indexOf('(umask 077') < cmd.indexOf('serve --isolated'),
     'scoped mkdir must still precede the serve spawn'
@@ -1842,33 +1835,36 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)
 })
 
-test.skipIf(process.platform === 'win32')('capability probe survives a zsh login shell on the remote (#111949)', async t => {
-  // sshd runs the remote command under the account's LOGIN shell. A bare
-  // `set -m` is fatal in a non-interactive zsh, so the watchdog-wrapped probe
-  // used to return nothing and a current remote was reported as unsupported.
-  const zsh = await exec('command -v zsh || true').then(r => r.stdout.trim())
+test.skipIf(process.platform === 'win32')(
+  'capability probe survives a zsh login shell on the remote (#111949)',
+  async t => {
+    // sshd runs the remote command under the account's LOGIN shell. A bare
+    // `set -m` is fatal in a non-interactive zsh, so the watchdog-wrapped probe
+    // used to return nothing and a current remote was reported as unsupported.
+    const zsh = await exec('command -v zsh || true').then(r => r.stdout.trim())
 
-  // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
-  // skip, not a pass, or a wrapper regression stays green unnoticed.
-  if (!zsh) {
-    t.skip('zsh not installed')
+    // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
+    // skip, not a pass, or a wrapper regression stays green unnoticed.
+    if (!zsh) {
+      t.skip('zsh not installed')
 
-    return
+      return
+    }
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hermes-zsh-probe-'))
+
+    try {
+      const hermes = path.join(dir, 'hermes')
+      await writeFile(hermes, '#!/bin/sh\necho "--ssh-session-token-file --ssh-owner-nonce"\n', { mode: 0o700 })
+
+      const ssh = { exec: async (command: string) => (await exec(command, { shell: zsh })).stdout }
+
+      assert.equal(await remoteSupportsSshOwnership(ssh, hermes), true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   }
-
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'hermes-zsh-probe-'))
-
-  try {
-    const hermes = path.join(dir, 'hermes')
-    await writeFile(hermes, '#!/bin/sh\necho "--ssh-session-token-file --ssh-owner-nonce"\n', { mode: 0o700 })
-
-    const ssh = { exec: async (command: string) => (await exec(command, { shell: zsh })).stdout }
-
-    assert.equal(await remoteSupportsSshOwnership(ssh, hermes), true)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
+)
 
 test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)', async () => {
   let versionProbe = ''
@@ -1902,7 +1898,10 @@ test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)
 
   assert.equal(await remoteSupportsSshOwnership(helpSsh, '/x/hermes'), true)
   assert.ok(helpProbe.includes('kill -9'), 'ownership probe wrapped in the remote watchdog')
-  assert.ok(/\$\(.*\(.*serve --help.*\) <\/dev\/null &/.test(helpProbe), 'watchdog nested around the inner serve --help')
+  assert.ok(
+    /\$\(.*\(.*serve --help.*\) <\/dev\/null &/.test(helpProbe),
+    'watchdog nested around the inner serve --help'
+  )
 })
 
 test('cleanupStale escalates to SIGKILL when the backend survives the graceful wait (#91668 quit-during-active-turn)', async () => {
@@ -2041,7 +2040,10 @@ test('connect() does not declare a live dashboard dead when the liveness probe a
 
   assert.equal(result.reused, false)
   assert.equal(result.pid, 777)
-  assert.ok(!ssh.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)), 'must not reap a live backend')
+  assert.ok(
+    !ssh.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)),
+    'must not reap a live backend'
+  )
 })
 
 test('cleanupStale reaps after one lost ownership answer and keeps the lockfile when none ever settles', async () => {
@@ -2053,7 +2055,10 @@ test('cleanupStale reaps after one lost ownership answer and keeps the lockfile 
   ])
 
   await cleanupStale(flaky, OWNERSHIP_ID, ownedLock({ pid: 777 }))
-  assert.ok(flaky.calls.some(c => /kill 777 &&/.test(c)), 'must reap the owned backend')
+  assert.ok(
+    flaky.calls.some(c => /kill 777 &&/.test(c)),
+    'must reap the owned backend'
+  )
   assert.ok(flaky.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
 
   const silent = fakeSsh([[/print\("OWNED"/, '']])
@@ -2063,8 +2068,14 @@ test('cleanupStale reaps after one lost ownership answer and keeps the lockfile 
     (error: any) => error.kind === 'transient-transport-error'
   )
 
-  assert.ok(!silent.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)), 'must not kill unproven')
-  assert.ok(!silent.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)), 'record must survive for the next connect to reap')
+  assert.ok(
+    !silent.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)),
+    'must not kill unproven'
+  )
+  assert.ok(
+    !silent.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
+    'record must survive for the next connect to reap'
+  )
 })
 
 test('connect() post-spawn cleanup that cannot prove ownership keeps the original boot error', async () => {
@@ -2085,9 +2096,19 @@ test('connect() post-spawn cleanup that cannot prove ownership keeps the origina
   ])
 
   await assert.rejects(
-    connect(connectDeps(ssh, { platform: { os: 'Linux', arch: 'x86_64' }, waitForHermes: async () => { throw boot } })),
+    connect(
+      connectDeps(ssh, {
+        platform: { os: 'Linux', arch: 'x86_64' },
+        waitForHermes: async () => {
+          throw boot
+        }
+      })
+    ),
     (error: any) => error === boot && error.cleanupCause?.kind === 'transient-transport-error'
   )
 
-  assert.ok(!ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)), 'record must survive for the next connect to reap')
+  assert.ok(
+    !ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
+    'record must survive for the next connect to reap'
+  )
 })

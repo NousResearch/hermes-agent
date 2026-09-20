@@ -89,9 +89,10 @@ export function isGroupSlotWaitTimeoutText(text: unknown): boolean {
  *  message carries the coordinator phrase, else ''. Single home for the
  *  classification so the turn catch and the stranded harvest cannot drift. */
 export function groupFailureReason(error: unknown): string {
-  const typed = typeof (error as { data?: { reason?: unknown } })?.data?.reason === 'string'
-    ? String((error as { data: { reason: string } }).data.reason).trim()
-    : ''
+  const typed =
+    typeof (error as { data?: { reason?: unknown } })?.data?.reason === 'string'
+      ? String((error as { data: { reason: string } }).data.reason).trim()
+      : ''
 
   if (typed) {
     return typed

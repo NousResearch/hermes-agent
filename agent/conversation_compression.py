@@ -2319,6 +2319,17 @@ def _durable_compaction_projection(messages: list) -> tuple[list, set[int]]:
             ):
                 source, _ = projected.pop()
                 removed_source_ids.add(id(source))
+            while projected and isinstance(projected[-1][1], dict) and projected[-1][1].get("role") == "tool":
+                source, _ = projected.pop()
+                removed_source_ids.add(id(source))
+            if (
+                projected
+                and isinstance(projected[-1][1], dict)
+                and projected[-1][1].get("role") == "assistant"
+                and projected[-1][1].get("tool_calls")
+            ):
+                source, _ = projected.pop()
+                removed_source_ids.add(id(source))
             if (
                 projected
                 and isinstance(projected[-1][1], dict)
@@ -2368,6 +2379,19 @@ def _cleanup_ephemeral_todo_tail(messages: list, ephemeral_flags: tuple[str, ...
         len(messages) > 1
         and isinstance(messages[-2], dict)
         and any(messages[-2].get(flag) for flag in ephemeral_flags)
+    ):
+        messages.pop(-2)
+    while (
+        len(messages) > 1
+        and isinstance(messages[-2], dict)
+        and messages[-2].get("role") == "tool"
+    ):
+        messages.pop(-2)
+    if (
+        len(messages) > 1
+        and isinstance(messages[-2], dict)
+        and messages[-2].get("role") == "assistant"
+        and messages[-2].get("tool_calls")
     ):
         messages.pop(-2)
     if (

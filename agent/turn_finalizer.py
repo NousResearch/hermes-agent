@@ -93,6 +93,8 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
         elif _retain_durable_todo_from_ephemeral(message):
             retained.append(message)
     messages[:] = retained
+    from agent.agent_runtime_helpers import repair_message_sequence
+    repair_message_sequence(None, messages)
 
 
 def _clone_background_review_messages(messages):

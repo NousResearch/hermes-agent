@@ -1557,11 +1557,34 @@ class TestTodoSnapshotScaffoldingTails:
         [
             pytest.param([], "_empty_recovery_synthetic", "__EMPTY_RECOVERY__", False, id="empty_recovery"),
             pytest.param(
-                [{"role": "user", "content": "ship the fix"}],
+                [
+                    {"role": "user", "content": "ship the fix"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "read", "arguments": "{}"}}],
+                    },
+                    {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+                ],
+                "_empty_recovery_synthetic",
+                "__EMPTY_RECOVERY__",
+                True,
+                id="empty_recovery_after_tool",
+            ),
+            pytest.param(
+                [
+                    {"role": "user", "content": "ship the fix"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "read", "arguments": "{}"}}],
+                    },
+                    {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+                ],
                 "_dropped_toolcall_nudge",
                 "__DROPPED_TOOLCALL__",
                 True,
-                id="dropped_toolcall_after_human",
+                id="dropped_toolcall_after_tool",
             ),
         ],
     )

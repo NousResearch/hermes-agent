@@ -100,15 +100,20 @@ def _kill_port_process(port: int) -> None:
                     os.kill(pid, signal.SIGTERM)
 
 
-def _bridge_pid_is_ours(pid: int, session_path: Path, expected_start) -> bool:
-    """``pid`` alive AND still our bridge: kernel start time (definitive), else legacy ``node`` + session path in cmdline."""
+def _bridge_pid_is_ours(pid: int, expected_start) -> bool:
+    """``pid`` alive AND still our bridge: kernel start time (definitive); fail closed without it.
+
+    Legacy pidfiles record only the PID. The old fallback accepted a ``node`` + session-path cmdline
+    substring as kill evidence — but a log tail, editor, or grep that merely *mentions* the session
+    path matches that same substring (#116883), so a legacy pidfile could signal a stranger. Without
+    a start-time fingerprint the caller must reap via the bridge-port scan instead.
+    """
     from gateway import status
     if not status._pid_exists(pid):
         return False
-    if expected_start is not None:
-        return status.get_process_start_time(pid) == expected_start
-    cmdline = status._read_process_cmdline(pid)
-    return bool(cmdline) and ("node" in cmdline) and (str(session_path) in cmdline)
+    if expected_start is None:
+        return False
+    return status.get_process_start_time(pid) == expected_start
 
 
 def _unlink_quietly(path: Path) -> None:
@@ -129,13 +134,15 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     except (ValueError, OSError, TypeError, IndexError):
         _unlink_quietly(pid_file)
         return
-    if _bridge_pid_is_ours(pid, session_path, recorded_start):
+    if _bridge_pid_is_ours(pid, recorded_start):
         with suppress(OSError):  # ProcessLookupError / PermissionError included
             os.kill(pid, signal.SIGTERM)
             logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
     elif _pid_exists(pid):
-        logger.warning("[whatsapp] Not killing pidfile PID %d: it is no longer the bridge (recycled onto an unrelated process); "
-                       "skipping to avoid killing a stranger.", pid)
+        reason = ("legacy pidfile lacks a start-time fingerprint and cmdline substring evidence can name a stranger"
+                  if recorded_start is None else "it is no longer the bridge (recycled onto an unrelated process)")
+        logger.warning("[whatsapp] Not killing pidfile PID %d: %s; "
+                       "skipping to avoid killing a stranger.", pid, reason)
     _unlink_quietly(pid_file)
 
 

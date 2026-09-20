@@ -3751,6 +3751,10 @@ export const zh = defineLocale({
       fast: '快速'
     },
     modelOptions: {
+      dynamicThinking: '动态',
+      thinkingBudget: '思考预算（令牌）',
+      unverified: '未经验证的设置',
+      unknownThinking: '思考选项尚未验证',
       noOptions: '此模型没有可用选项',
       options: '选项',
       thinking: '思考',

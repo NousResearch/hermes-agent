@@ -2363,6 +2363,9 @@ def init_agent(
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
+    from providers.reasoning import resolve_provider_reasoning_config
+    reasoning_config = resolve_provider_reasoning_config(agent.provider, agent.model, reasoning_config)
+    agent.reasoning_config = reasoning_config
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,

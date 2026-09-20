@@ -236,12 +236,24 @@ class ModelPricing(Result):
     was_output: str | None = None
 
 
+class ReasoningBudget(Result):
+    min: int
+    max: int
+    dynamic: bool = False
+
+
 class ModelCapabilities(Result):
     """``hermes_cli/inventory.py::_apply_capabilities``."""
 
     fast: bool
     reasoning: bool
     can_disable_reasoning: bool | None = None
+    display_name: str | None = None
+    family_id: str | None = None
+    reasoning_control: Literal["adjustable", "default", "unsupported", "unknown"] | None = None
+    reasoning_efforts: list[str] | None = None
+    reasoning_budget: ReasoningBudget | None = None
+    default_reasoning_effort: str | None = None
 
 
 class ModelOptionProvider(OpenModel):

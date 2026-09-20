@@ -152,9 +152,9 @@ export function useModelMenuController({
     // Selecting a model row restores that model's remembered preset onto the
     // session (effort/fast). applyModelPreset owns the batched gateway write.
     applyPreset: (preset, row) => {
-      setModelPreset(row.provider, row.model, preset)
+      setModelPreset(row.provider, row.presetModel ?? row.model, preset)
 
-      void applyModelPreset(preset, {
+      return applyModelPreset(preset, {
         failMessage: t.shell.modelOptions.updateFailed,
         primary: touchesPrimary,
         request: requestGateway,
@@ -184,7 +184,7 @@ export function useModelMenuController({
       // everywhere); the active model also gets it pushed onto its OWN session.
       // Non-active edits stay preset-only — no model switch, no session write.
       if (patch.effort !== undefined || patch.fast !== undefined) {
-        setModelPreset(row.provider, row.model, patch)
+        setModelPreset(row.provider, row.presetModel ?? row.model, patch)
       }
 
       if (!row.isActive) {
@@ -192,11 +192,11 @@ export function useModelMenuController({
       }
 
       if (patch.effort !== undefined) {
-        void patchReasoning(patch.effort, currentReasoningEffort, row.provider, row.model)
+        void patchReasoning(patch.effort, currentReasoningEffort, row.provider, row.presetModel ?? row.model)
       }
 
       if (patch.fast !== undefined) {
-        void patchFast(patch.fast, row.provider, row.model)
+        void patchFast(patch.fast, row.provider, row.presetModel ?? row.model)
       }
     }
   }

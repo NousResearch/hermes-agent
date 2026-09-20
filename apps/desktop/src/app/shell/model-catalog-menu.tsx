@@ -26,7 +26,7 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
-import { reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { reasoningEffortLabel, resolveModelReasoningEffort } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -64,6 +64,13 @@ export interface ModelChoice {
   provider: string
 }
 
+export interface ModelMenuRow {
+  model: string
+  /** Stable family representative used for presets when `model` is a physical route member. */
+  presetModel?: string
+  provider: string
+}
+
 /**
  * What a surface DOES with the catalog. The menu renders and navigates; the
  * controller owns meaning — the composer writes through to a live session,
@@ -77,16 +84,13 @@ export interface ModelMenuController {
    *  `setOptions` because it is one atomic "apply this model's preset" write,
    *  not a user editing one control — surfaces that write through to a session
    *  need to batch it. Values are already capability-gated by the menu. */
-  applyPreset: (preset: { effort?: string; fast?: boolean }, row: { model: string; provider: string }) => void
+  applyPreset: (preset: { effort?: string; fast?: boolean }, row: ModelMenuRow) => Promise<void> | void
   current: ModelChoice
   presetFor: (provider: string, model: string) => { effort?: string; fast?: boolean }
   /** Commit a model row. Return false to abort (a failed session switch). */
   select: (model: string, provider: string) => Promise<boolean | void> | void
   /** Edit ONE option on a row. `isActive` says whether it's the current model. */
-  setOptions: (
-    patch: { effort?: string; fast?: boolean },
-    row: { isActive: boolean; model: string; provider: string }
-  ) => void
+  setOptions: (patch: { effort?: string; fast?: boolean }, row: ModelMenuRow & { isActive: boolean }) => void
 }
 
 interface ModelCatalogMenuProps {
@@ -286,9 +290,29 @@ export function ModelCatalogMenu({
     [moaPresets, q]
   )
 
+  const familyPreset = (family: ModelFamily, provider: ModelOptionProvider) => {
+    const canonical = controller.presetFor(provider.slug, family.id)
+
+    if (!family.memberIds.some(id => provider.capabilities?.[id]?.family_id === family.id)) {
+      return canonical
+    }
+
+    const legacyMember = family.memberIds
+      .map(id => controller.presetFor(provider.slug, id))
+      .find(preset => preset.effort !== undefined || preset.fast !== undefined)
+
+    return { ...legacyMember, ...canonical }
+  }
+
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
     const caps = provider.capabilities?.[family.id]
-    const preset = controller.presetFor(provider.slug, family.id)
+    const preset = familyPreset(family, provider)
+
+    const declared =
+      caps?.family_id != null ||
+      caps?.reasoning_control != null ||
+      caps?.reasoning_efforts != null ||
+      caps?.reasoning_budget != null
 
     // Variant-fast models (no speed param) express "fast" as a separate `-fast`
     // id, so honor the remembered preset by selecting that sibling. Param-fast
@@ -300,12 +324,19 @@ export function ModelCatalogMenu({
       return
     }
 
-    controller.applyPreset(
+    await controller.applyPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
-        fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
+        effort:
+          (caps?.reasoning ?? true)
+            ? caps?.reasoning_efforts == null && caps?.reasoning_budget == null
+              ? (preset.effort ?? defaultEffort)
+              : resolveModelReasoningEffort(preset.effort ?? '', defaultEffort, caps) || 'auto'
+            : undefined,
+        // A provider descriptor saying fast=false is authoritative and must clear
+        // a fast setting inherited from the previously selected model.
+        fast: caps?.fast || family.fastId ? (preset.fast ?? false) : declared ? false : undefined
       },
-      { model: family.id, provider: provider.slug }
+      { model: targetId, presetModel: family.id, provider: provider.slug }
     )
   }
 
@@ -349,8 +380,7 @@ export function ModelCatalogMenu({
   const rowIsCurrent = (row: KbRow) =>
     row.kind === 'moa'
       ? current.provider === 'moa' && row.preset === current.model
-      : catalogProviderMatches(row.provider, current.provider) &&
-        (row.family.id === current.model || row.family.fastId === current.model)
+      : catalogProviderMatches(row.provider, current.provider) && row.family.memberIds.includes(current.model)
 
   const autoIndex = q ? (kbRows.length > 0 ? 0 : -1) : kbRows.findIndex(row => rowIsCurrent(row))
 
@@ -488,13 +518,17 @@ export function ModelCatalogMenu({
                     // way this one family row represents both.
                     const activeId =
                       catalogProviderMatches(group.provider, current.provider) &&
-                      (current.model === family.id || current.model === family.fastId)
+                      family.memberIds.includes(current.model)
                         ? current.model
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
-                    const caps = group.provider.capabilities?.[family.id]
+                    const caps = group.provider.capabilities?.[activeId ?? family.id]
+
+                    const name =
+                      caps?.display_name ??
+                      group.provider.capabilities?.[family.id]?.display_name ??
+                      modelDisplayParts(family.id).name
 
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote
@@ -505,8 +539,14 @@ export function ModelCatalogMenu({
                     // Effective settings for this row: the live choice when it's
                     // the active model, otherwise its remembered preset. Row
                     // label AND submenu read from these so they never disagree.
-                    const preset = controller.presetFor(group.provider.slug, family.id)
-                    const effEffort = isCurrent ? current.effort : (preset.effort ?? '')
+                    const preset = familyPreset(family, group.provider)
+                    const rawEffort = isCurrent ? current.effort : (preset.effort ?? '')
+
+                    const effEffort =
+                      caps?.reasoning_efforts == null && caps?.reasoning_budget == null
+                        ? rawEffort
+                        : resolveModelReasoningEffort(rawEffort, defaultEffort, caps)
+
                     const effFast = isCurrent ? current.fast : (preset.fast ?? false)
 
                     const fastControl: FastControl = resolveFastControl(
@@ -519,7 +559,9 @@ export function ModelCatalogMenu({
                     const meta = [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                       (caps?.reasoning ?? true)
-                        ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
+                        ? caps?.reasoning_efforts != null && !effEffort
+                          ? t.shell.modelOptions.unverified
+                          : reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
                         : null
                     ]
                       .filter(Boolean)
@@ -583,17 +625,22 @@ export function ModelCatalogMenu({
                           effortWire={isCurrent ? current.effortWire : undefined}
                           fastControl={fastControl}
                           isActive={isCurrent}
-                          model={family.id}
+                          model={activeId ?? family.id}
+                          modelDefaultEffort={caps?.default_reasoning_effort}
                           onSelectModel={nextModel => controller.select(nextModel, group.provider.slug)}
                           onSetOptions={patch =>
                             controller.setOptions(patch, {
                               isActive: isCurrent,
-                              model: family.id,
+                              model: activeId ?? family.id,
+                              presetModel: family.id,
                               provider: group.provider.slug
                             })
                           }
                           provider={group.provider.slug}
                           reasoning={caps?.reasoning ?? true}
+                          reasoningBudget={caps?.reasoning_budget ?? undefined}
+                          reasoningControl={caps?.reasoning_control ?? undefined}
+                          reasoningEfforts={caps?.reasoning_efforts ?? undefined}
                         />
                       </DropdownMenuSub>
                     )
@@ -718,7 +765,7 @@ function groupModels(
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
-    const allFamilies = collapseModelFamilies(provider.models ?? [])
+    const allFamilies = collapseModelFamilies(provider.models ?? [], provider.capabilities)
 
     if (allFamilies.length === 0) {
       continue
@@ -726,7 +773,7 @@ function groupModels(
 
     const matches = (family: ModelFamily) =>
       foldIncludes(
-        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`,
+        `${family.memberIds.join(' ')} ${provider.name} ${provider.slug} ${provider.capabilities?.[family.id]?.display_name ?? displayModelName(family.id)}`,
         q
       )
 
@@ -749,7 +796,7 @@ function groupModels(
     // SEARCHING the pin is skipped: a query means "show me matches".
     const activeId =
       !q && catalogProviderMatches(provider, current.provider) && current.model
-        ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
+        ? allFamilies.find(family => family.memberIds.includes(current.model))?.id
         : undefined
 
     const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)

@@ -89,6 +89,35 @@ describe('model visibility', () => {
     expect(families.map(f => f.id)).toEqual(['claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'])
   })
 
+  it('collapses provider-declared physical routes into their representative family', () => {
+    const models = ['route-high', 'route-low']
+
+    const capabilities = {
+      'route-high': {
+        display_name: 'Provider Family',
+        family_id: 'route-low',
+        fast: false,
+        reasoning: true
+      },
+      'route-low': {
+        display_name: 'Provider Family',
+        family_id: 'route-low',
+        fast: false,
+        reasoning: true
+      }
+    }
+
+    expect(collapseModelFamilies(models, capabilities)).toEqual([
+      { fastId: null, id: 'route-low', memberIds: ['route-high', 'route-low'] }
+    ])
+
+    const declaredProvider = { ...provider('extension', models), capabilities }
+    const migrated = resolveVisibleKeys(new Set([modelVisibilityKey('extension', 'route-high')]), [declaredProvider])
+
+    expect(migrated.has(modelVisibilityKey('extension', 'route-low'))).toBe(true)
+    expect(migrated.has(modelVisibilityKey('extension', 'route-high'))).toBe(false)
+  })
+
   it('sentinel key helper produces correct format', () => {
     expect(emptyProviderSentinelKey('openai')).toBe('openai::')
     expect(isProviderSentinel('openai::')).toBe(true)

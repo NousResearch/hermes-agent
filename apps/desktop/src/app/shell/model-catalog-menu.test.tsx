@@ -60,12 +60,13 @@ afterEach(() => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(current: ModelMenuController['current'] = { effort: '', fast: false, model: '', provider: '' }) {
   const select = vi.fn()
+  const applyPreset = vi.fn()
 
   const controller: ModelMenuController = {
-    applyPreset: vi.fn(),
-    current: { effort: '', fast: false, model: '', provider: '' },
+    applyPreset,
+    current,
     presetFor: () => ({}),
     select,
     setOptions: vi.fn()
@@ -83,8 +84,47 @@ function renderMenu() {
     </QueryClientProvider>
   )
 
-  return select
+  return { applyPreset, select }
 }
+
+describe('provider-declared model families', () => {
+  it('renders one Gemini family row and never combines a physical route level with a different effort', async () => {
+    const shared = {
+      can_disable_reasoning: false,
+      display_name: 'Gemini 3.8 Flash',
+      family_id: 'gemini-3.8-flash-low',
+      fast: false,
+      reasoning: true,
+      reasoning_control: 'adjustable' as const,
+      reasoning_efforts: ['low', 'medium', 'high']
+    }
+
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: {
+            'gemini-3.8-flash-high': { ...shared, default_reasoning_effort: 'high' },
+            'gemini-3.8-flash-low': { ...shared, default_reasoning_effort: 'low' },
+            'gemini-3.8-flash-medium': { ...shared, default_reasoning_effort: 'medium' }
+          },
+          models: ['gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low'],
+          name: 'Google Antigravity',
+          slug: 'antigravity'
+        }
+      ]
+    })
+
+    renderMenu({ effort: 'high', fast: false, model: 'gemini-3.8-flash-high', provider: 'antigravity' })
+
+    const label = await screen.findByText((_, element) =>
+      Boolean(element?.classList.contains('truncate') && element.textContent === 'Gemini 3.8 Flash High')
+    )
+
+    expect(label).toBeTruthy()
+    expect(screen.queryByText(/flash low High/i)).toBeNull()
+    expect(screen.queryByText(/flash medium High/i)).toBeNull()
+  })
+})
 
 // Curation is ONE global preference, so it belongs to the catalog rather than
 // to whichever surface mounted it. If a host had to opt in, the composer and

@@ -343,6 +343,15 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     _enable_gateway_prompts()
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    if session_model_override and create_reasoning_override is not None:
+        from providers.reasoning import resolve_provider_reasoning_config
+        try:
+            with _profile_build_scope(profile_home):
+                create_reasoning_override = resolve_provider_reasoning_config(
+                    session_model_override.get("provider") or "", session_model_override["model"],
+                    create_reasoning_override, explicit=True)
+        except ValueError as exc:
+            return _err(rid, 4002, str(exc))
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {

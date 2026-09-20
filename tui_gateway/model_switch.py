@@ -276,6 +276,11 @@ def _apply_model_switch(
         custom_providers=custom_provs)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
+    if reasoning_effort:
+        from hermes_constants import parse_reasoning_effort
+        from providers.reasoning import resolve_provider_reasoning_config
+        resolve_provider_reasoning_config(result.target_provider, result.new_model,
+                                         parse_reasoning_effort(reasoning_effort), explicit=True)
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
@@ -332,6 +337,8 @@ def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_gl
         return
     if agent is not None:
         agent.reasoning_config = parsed
+        from providers.reasoning import sync_primary_reasoning
+        sync_primary_reasoning(agent)
     if one_turn or not isinstance(session, dict):
         return
     if persist_global:

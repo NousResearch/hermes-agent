@@ -1065,3 +1065,6 @@ class TestPromptCacheKeyCapability:
             request_overrides={"prompt_cache_key": "   "},
         )
         assert "prompt_cache_key" not in kwargs
+
+
+pytestmark = pytest.mark.usefixtures("gemini_reasoning_catalog")

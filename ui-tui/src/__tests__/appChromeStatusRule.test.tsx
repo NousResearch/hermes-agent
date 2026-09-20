@@ -119,6 +119,19 @@ describe('StatusRule model label', () => {
 })
 
 describe('StatusRule session title', () => {
+  it('keeps an unset effort label empty while retaining explicit effort and fast', () => {
+    for (const model of ['gemini-fixture', 'anthropic/claude-fixture']) {
+      const props = { ...baseProps, model, modelFast: true }
+      const unset = textContent(StatusRule(props))
+
+      expect(textContent(StatusRule({ ...props, modelReasoningEffort: ' Auto ' }))).toBe(unset)
+
+      for (const effort of ['high', 'none']) {
+        expect(textContent(StatusRule({ ...props, modelReasoningEffort: effort }))).toContain(`${effort} fast`)
+      }
+    }
+  })
+
   it('marks only estimated context occupancy at every visible width', () => {
     for (const cols of [80, 120, 200]) {
       for (const estimated of [true, false]) {

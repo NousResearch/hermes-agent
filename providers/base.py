@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, TypedDict
 
 if TYPE_CHECKING:
     from agent.account_usage import AccountUsageSnapshot
@@ -22,6 +22,20 @@ logger = logging.getLogger(__name__)
 
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
+
+
+class ModelDescriptor(TypedDict, total=False):
+    """Explicit picker metadata supplied by a provider profile."""
+
+    display_name: str
+    family_id: str
+    fast: bool
+    reasoning: bool
+    reasoning_control: str
+    can_disable_reasoning: bool
+    reasoning_efforts: list[str]
+    reasoning_budget: dict[str, Any]
+    default_reasoning_effort: str
 
 
 def _profile_user_agent() -> str:
@@ -60,6 +74,8 @@ class ProviderProfile:
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
+    model_catalog_authoritative: bool = False  # successful discovery replaces curated IDs
+    validate_reasoning_selection: bool = False  # opt in; other providers keep their existing policy
 
     # ── Provider-owned auth (optional; non-api-key plugins) ──────────
     # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
@@ -136,6 +152,16 @@ class ProviderProfile:
     model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def describe_models(self, *, model_ids: list[str]) -> dict[str, ModelDescriptor]:
+        """Describe catalog IDs for native pickers; empty preserves legacy behavior.
+
+        This hook must be cheap and must not access credentials or the network. ``family_id``
+        names a real representative in ``model_ids``. An explicit ``reasoning_efforts`` list is
+        authoritative; an empty list means the route has no adjustable effort. Providers must
+        use the same metadata when building requests.
+        """
+        return {}
 
     def fetch_account_usage(
         self, *, base_url: str | None = None, api_key: str | None = None

@@ -9,6 +9,7 @@ export {
   dedupeRepeatedTextInParts,
   mergeFinalAssistantText,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'

@@ -1004,6 +1004,92 @@ def socket_safe_tmpdir() -> str:
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
 
 
+def _is_managed_home() -> bool:
+    """Managed-install signal for the active home: the ``HERMES_MANAGED`` env var (set by the
+    systemd service) or a ``.managed`` marker file in the home (NixOS activation script).
+
+    Same values and precedence as ``hermes_cli.config.is_managed`` (an unreadable or empty
+    marker file still counts as managed; brew/homebrew and explicit false values do not) —
+    keep the two in sync. Lives here because constants must stay import-safe from the CLI.
+    """
+    marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
+    if marker is None:
+        marker_file = get_hermes_home() / ".managed"
+        if marker_file.exists():
+            try:
+                marker = marker_file.read_text(encoding="utf-8", errors="replace").strip().lower()
+            except OSError:
+                marker = ""
+    if marker is None or marker in ("", "brew", "homebrew", "false", "0", "no", "off"):
+        return False
+    return True
+
+
+def _container_or_chmod_skipped() -> bool:
+    """Docker/Podman/LXC detection honoring the ``HERMES_CONTAINER``/``HERMES_SKIP_CHMOD``
+    overrides — the same signals as ``hermes_cli.config._is_container``, deliberately not the
+    cached :func:`is_container` (that one ignores these env overrides)."""
+    if (os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD")
+            or os.path.exists("/.dockerenv")):
+        return True
+    try:
+        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
+            return any(m in f.read() for m in ("docker", "lxc", "kubepods"))
+    except OSError:
+        return False
+
+
+def _chown_dir_to_hermes_uid(path) -> None:
+    """Chown *path* to ``HERMES_UID:HERMES_GID`` when set; EPERM/ENOENT are non-fatal.
+
+    Same contract as ``hermes_cli.config._chown_to_hermes_uid`` — used by
+    :func:`apply_secure_dir_policy` so Docker deployments keep directory ownership consistent.
+    """
+    def env_int(name: str):
+        try:
+            return int(os.environ.get(name, "").strip() or None)
+        except (TypeError, ValueError):
+            return None
+
+    uid, gid = env_int("HERMES_UID"), env_int("HERMES_GID")
+    if uid is None and gid is None:
+        return
+    try:
+        os.chown(path, uid if uid is not None else -1, gid if gid is not None else -1)
+    except (OSError, AttributeError, NotImplementedError):
+        pass
+
+
+def apply_secure_dir_policy(path) -> None:
+    """Apply the canonical Hermes home-directory permission policy to *path*.
+
+    Owner-only ``0700`` by default, but the operator's explicit and managed sharing choices
+    win (#117347): managed installs are left exactly as the package manager / activation
+    script set them (#77579); in a container only an explicit ``HERMES_HOME_MODE`` is applied
+    (a bind-mounted data dir is often shared with sibling containers, #10757); elsewhere
+    ``HERMES_HOME_MODE`` (e.g. ``0701``, ``2770``) overrides the mode. ``HERMES_UID`` /
+    ``HERMES_GID`` ownership is applied when those env vars are set (#34107).
+
+    Import-safe twin of ``hermes_cli.config._secure_dir`` (which delegates here), so callers
+    outside the CLI package — like :func:`get_scratch_dir` — share one policy implementation.
+    """
+    if _is_managed_home():
+        return
+    explicit_mode = os.environ.get("HERMES_HOME_MODE", "").strip()
+    if _container_or_chmod_skipped() and not explicit_mode:
+        _chown_dir_to_hermes_uid(path)
+        return
+    try:
+        mode = int(explicit_mode or "700", 8)
+    except ValueError:
+        mode = 0o700
+    try:
+        os.chmod(path, mode)
+    except (OSError, NotImplementedError):
+        pass
+    _chown_dir_to_hermes_uid(path)
+
+
 def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:
     """``<home>/cache/scratch`` (created, owner-only); *home* defaults to the active Hermes home.
 
@@ -1011,13 +1097,16 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
     knowing. Entries older than ``SCRATCH_MAX_AGE_HOURS`` are pruned at most once per process
     and once per hour across processes (stamp file), so a fan-out of children stays cheap.
+
+    Permissions follow :func:`apply_secure_dir_policy`, so an explicit ``HERMES_HOME_MODE`` or
+    a managed/shared home is honored instead of a blanket ``0700`` (#117347).
     """
     base = Path(home) if home is not None else get_hermes_home()
     scratch = base / "cache" / "scratch"
     try:
         scratch.mkdir(parents=True, exist_ok=True)
         if sys.platform != "win32":
-            os.chmod(scratch, 0o700)
+            apply_secure_dir_policy(scratch)
     except OSError:
         pass
     if prune:

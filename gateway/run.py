@@ -2174,7 +2174,6 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
-    effective_stop_drain_timeout,
     read_launchd_exit_timeout_s,
     resolve_launchd_capped_drain)
 
@@ -3512,11 +3511,8 @@ class GatewayRunner(
         when ``launchctl print`` is unavailable. Logs a WARNING when the configured drain exceeds
         the live budget so the misconfiguration is visible at boot, not at the next SIGKILL.
         """
-        try:
-            exit_timeout = read_launchd_exit_timeout_s()
-        except Exception as e:  # pragma: no cover - defensive, launchctl quirks
-            logger.debug("launchd exit timeout probe failed: %s", e)
-            return None
+        # read_launchd_exit_timeout_s is already fail-open (returns None on any probe failure).
+        exit_timeout = read_launchd_exit_timeout_s()
         if exit_timeout is None:
             return None
         effective = resolve_launchd_capped_drain(drain_timeout, exit_timeout)
@@ -3533,16 +3529,6 @@ class GatewayRunner(
                 os.environ.get("XPC_SERVICE_NAME", "this job"), exit_timeout, drain_timeout,
             )
         return exit_timeout
-
-    def _effective_stop_drain_timeout(self) -> float:
-        """Drain budget for the stop in progress.
-
-        Signal-driven stops under launchd are timed by launchd's live ``ExitTimeOut``; everything
-        else (in-band SIGUSR1 restart after the turn, ``--replace`` takeover, tests) keeps the
-        configured drain. getattr-guarded: shutdown-path tests drive the stop from bare doubles
-        that skip ``__init__``.
-        """
-        return effective_stop_drain_timeout(self)
 
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
@@ -5156,10 +5142,7 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             # only kind launchd times with ExitTimeOut. In-band SIGUSR1 restarts never pass through
             # here, and a sibling-driven --replace takeover is not launchd-timed either, so both
             # keep the configured drain. _stop_impl uses this to cap the drain to the live budget.
-            try:
-                runner._stop_requested_by_signal = True
-            except Exception:
-                pass
+            runner._stop_requested_by_signal = True
         asyncio.create_task(runner.stop())
     return shutdown_signal_handler
 

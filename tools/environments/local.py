@@ -1,7 +1,6 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import contextlib
-import errno
 import logging
 import ntpath
 import os
@@ -792,29 +791,35 @@ def _kill_process_group_posix(proc) -> None:
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
-    try:
-        if pgid == os.getpgrp():
-            # The child shares OUR group (a spawner that skipped setsid): killpg would
-            # signal the caller itself — the gateway on Darwin (#107029). Tear down by PID.
-            raise PermissionError(errno.EPERM, "child shares the caller's process group")
-        os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
-        if not _wait_for_group_exit(proc, pgid, 1.0):
-            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
-            _wait_for_group_exit(proc, pgid, 2.0)
-            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                proc.wait(timeout=0.2)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
-        # macOS answers killpg with EPERM (not ESRCH) once the group's only members are
-        # unreaped zombies — rg exiting between the caller's poll() and the TERM after the
-        # drain hit its limit (#116855). Nothing group-wide is signalable, and the error
-        # must not escape: the caller still owns the output it drained. Signal the known
-        # PIDs instead so a live child (a group we may not signal) cannot outlive us.
-        for target in (proc, *descendants):
-            with contextlib.suppress(Exception):
-                target.kill()
+    if pgid == os.getpgrp():
+        # The child shares OUR group (a spawner that skipped setsid — the Darwin gateway's
+        # posix_spawn shim, #107029): killpg would signal the caller itself. Tear down by PID.
+        _kill_known_pids(proc, descendants)
+    else:
+        try:
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+            if not _wait_for_group_exit(proc, pgid, 1.0):
+                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+                _wait_for_group_exit(proc, pgid, 2.0)
+                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                    proc.wait(timeout=0.2)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # macOS answers killpg with EPERM (not ESRCH) once the group's only members are
+            # unreaped zombies — rg exiting between the caller's poll() and the TERM after the
+            # drain hit its limit (#116855). Nothing group-wide is signalable, and the error
+            # must not escape: the caller still owns the output it drained. Signal the known
+            # PIDs instead so a live child (a group we may not signal) cannot outlive us.
+            _kill_known_pids(proc, descendants)
     _sweep_escaped_descendants(descendants, pgid)
+
+
+def _kill_known_pids(proc, descendants) -> None:
+    """KILL the wrapper and its snapshotted descendants by PID (idempotent on zombies)."""
+    for target in (proc, *descendants):
+        with contextlib.suppress(Exception):
+            target.kill()
 
 
 def _kill_process_windows(proc) -> None:

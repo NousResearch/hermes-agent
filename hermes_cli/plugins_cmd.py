@@ -677,24 +677,55 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
 
 
 def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
-    """Move the validated clone into place and persist metadata; on any failure restore the
-    previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
-    replaced_existing = target.exists()
-    if replaced_existing:
-        os.replace(target, backup)
+    """Keep rollback data outside the caller's automatically cleaned clone directory."""
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.install-", dir=target.parent))
+    previous = staging / "previous-plugin"
+    recovery = staging / "recovery.json"
+    moved_existing = published = False
     try:
+        recovery.write_text(json.dumps({
+            "target": str(target.absolute()), "backup": str(previous.absolute()),
+            "metadata": old_metadata,
+        }), encoding="utf-8")
+        if target.exists():
+            os.replace(target, previous)
+            moved_existing = True
         os.replace(tmp_target, target)
+        published = True
         _write_install_metadata(new_metadata)
     except Exception:
-        if target.exists():
-            shutil.rmtree(target)
-        if replaced_existing and backup.exists():
-            os.replace(backup, target)
-        if old_metadata:
-            _write_install_metadata(old_metadata)
-        else:
-            _install_metadata_path().unlink(missing_ok=True)
+        try:
+            # Restore before deleting anything: read-only Git objects or locked
+            # files must not prevent the previous installation from surviving.
+            if published:
+                os.replace(target, tmp_target)
+            if moved_existing:
+                os.replace(previous, target)
+            if published:
+                if old_metadata:
+                    _write_install_metadata(old_metadata)
+                else:
+                    _install_metadata_path().unlink(missing_ok=True)
+        except Exception as restore_exc:
+            raise PluginOperationError(
+                f"Plugin rollback incomplete; original metadata is retained at {recovery}. "
+                f"The previous tree is at {previous} or has already been restored to {target}."
+            ) from restore_exc
+        recovery.unlink(missing_ok=True)
+        staging.rmdir()
         raise
+    # Only a committed install may hand the old tree to TemporaryDirectory's
+    # cleanup (which already handles Windows read-only Git objects).
+    try:
+        if moved_existing:
+            os.replace(previous, backup)
+        recovery.unlink()
+        staging.rmdir()
+    except OSError as cleanup_exc:
+        raise PluginOperationError(
+            f"Plugin installed, but cleanup is incomplete at {staging}; "
+            "the previous metadata snapshot is not the active installation."
+        ) from cleanup_exc
 
 
 def _install_plugin_core(

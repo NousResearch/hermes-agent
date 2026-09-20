@@ -2,6 +2,7 @@ import {
   type GatewayEvent,
   isGatewayReauthRequired,
   isGatewayWebSocketUrl,
+  isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
   reconnectBackoffDelayMs,
@@ -129,11 +130,6 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // window instead of tearing down every secondary socket on each signal (#94769).
 const WAKE_RECONNECT_HOLDOFF_MS = 15_000
 
-// A socket only counts as recovered once it has stayed open this long. A proxy
-// that ACCEPTS the upgrade and then closes on the first frame (#83134) would
-// otherwise reset the backoff on every 'open' and get redialed at attempt 0
-// forever (~150ms mean) — the reconnect storm the backoff exists to prevent.
-const RECONNECT_STABLE_OPEN_MS = 5_000
 
 // Bounded self-heal for a failed REMOTE boot (#82679): main classifies every
 // fault it can see (via getBootProgress().retryable); the renderer adds the one
@@ -277,9 +273,9 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
-    // Wall-clock of the current socket's 'open'; null while not open. The
-    // backoff counters above/below reset only once an open proves stable
-    // (RECONNECT_STABLE_OPEN_MS), judged when the socket closes.
+    // Wall-clock of the current socket's 'open'; null while not open.
+    // reconnectAttempt, reconnectFailingSince and escalated reset only once an
+    // open proves stable (isStableOpen), judged when the socket closes.
     let openedAt: number | null = null
     // Consecutive unanswered liveness probes (#95327): a busy-but-healthy
     // backend can fail one probe; only a STREAK proves a genuinely dead
@@ -314,7 +310,8 @@ export function useGatewayBoot({
 
     // Raised once the reconnect loop has been failing for
     // RECONNECT_ESCALATE_AFTER_MS so we fire a single non-blocking toast.
-    // Reset on a clean open or a manual/wake-driven reconnect.
+    // Reset together with the backoff counters: on a STABLE open (isStableOpen)
+    // or a manual/wake-driven reconnect — never on a bare 'open' that dies.
     let escalated = false
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
@@ -628,6 +625,7 @@ export function useGatewayBoot({
     async function getWindowBackend(startup = false): Promise<HermesConnection> {
       const profile = windowProfileOverride()
       const peer = isPeerInstanceWindow()
+
       const route = profile
         ? { profile, connectionId: peer ? new URLSearchParams(window.location.search).get('connectionId') : null }
         : startup && !peer
@@ -978,7 +976,6 @@ export function useGatewayBoot({
         openedAt = Date.now()
         reauthNotified = false
         primaryReauthError = null
-        escalated = false
         livenessProbeFailures = 0
         clearReconnectTimer()
         clearLivenessReprobeTimer()
@@ -992,9 +989,10 @@ export function useGatewayBoot({
           completeDesktopBoot()
         }
       } else if (st === 'closed' || st === 'error') {
-        if (openedAt !== null && Date.now() - openedAt >= RECONNECT_STABLE_OPEN_MS) {
+        if (isStableOpen(openedAt)) {
           reconnectAttempt = 0
           reconnectFailingSince = null
+          escalated = false
         }
 
         openedAt = null

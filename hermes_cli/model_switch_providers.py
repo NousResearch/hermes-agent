@@ -553,6 +553,15 @@ def _entry_credentials(entry: dict, *key_env_keys: str) -> tuple[Any, str, str]:
     return inline_api_key, key_env, inline_api_key or (f"env:{key_env}" if key_env else "")
 
 
+def _resolve_probe_key(inline_api_key: Any, key_env: str, read_env) -> Any:
+    """Probe credential: ``api_key: "${VAR}"`` is indirection, not a literal — the runtime resolves
+    it, and the discovery probe must too or every ``/models`` call goes out with the placeholder
+    string and 401s, collapsing the picker row to the single configured model."""
+    if isinstance(inline_api_key, str) and inline_api_key.startswith("${") and inline_api_key.endswith("}"):
+        return read_env(inline_api_key[2:-1].strip())
+    return inline_api_key or read_env(key_env)
+
+
 def _discover_flag(entry: dict):
     """``discover_models`` (default True); ``"false"/"no"/"0"`` strings mean False."""
     discover = entry.get("discover_models", True)
@@ -971,7 +980,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             ep_groups[group_key] = {
                 "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
                 "has_explicit_models": False,
-                "api_key": inline_api_key or _scoped_key_env(key_env),
+                "api_key": _resolve_probe_key(inline_api_key, key_env, _scoped_key_env),
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),
                 "discovery_allowed": bool(api_url) and _discover_flag(ep_cfg), "raw_names": [], "aliases": set()}
         grp = ep_groups[group_key]
@@ -1051,7 +1060,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         if not raw_name or not api_url:
             continue
         inline_api_key, key_env, cred_identity = _entry_credentials(entry, "key_env")
-        api_key = inline_api_key or _scoped_key_env(key_env)
+        api_key = _resolve_probe_key(inline_api_key, key_env, _scoped_key_env)
         api_mode = _entry_api_mode(entry)
         discover = _discover_flag(entry)
         entry_extra_headers = _extra_headers_from_config(entry)

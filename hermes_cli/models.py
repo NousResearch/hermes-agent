@@ -2336,6 +2336,23 @@ def probe_api_models(
         models = _fetch_github_models(api_key=api_key, timeout=timeout)
         return _probe_result(models, COPILOT_MODELS_URL, COPILOT_BASE_URL)
 
+    if api_key:
+        from hermes_cli.models_databricks import probe_databricks_gateway
+
+        databricks_result = probe_databricks_gateway(
+            normalized,
+            api_key,
+            timeout=timeout,
+            get_json=_get_json,
+            user_agent=_HERMES_USER_AGENT,
+            ssl_context=_custom_provider_ssl_context(normalized),
+        )
+        if databricks_result is not None and databricks_result[0]:
+            models, catalog_url = databricks_result
+            return _probe_result(models, catalog_url, normalized)
+        # An unavailable or empty Databricks catalog falls through to the
+        # generic probe so native Anthropic /v1/models remains a fallback.
+
     alternate_base = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates: list[tuple[str, bool]] = [(normalized, False)]
     if alternate_base and alternate_base != normalized:
@@ -2352,7 +2369,15 @@ def probe_api_models(
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if urllib.parse.urlparse(normalized).hostname == "generativelanguage.googleapis.com":
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_HERMES_VERSION}"
+    _anthropic_wants_bearer = False
     if api_key and api_mode == "anthropic_messages":
+        # Some Anthropic-compatible endpoints (Databricks AI Gateway, Palantir
+        # Foundry, ...) reject x-api-key with 401 and require Bearer. Mirror the
+        # adapter's allowlist so discovery uses the same scheme as inference.
+        from agent.anthropic_endpoints import _requires_bearer_auth
+
+        _anthropic_wants_bearer = _requires_bearer_auth(normalized)
+    if api_key and api_mode == "anthropic_messages" and not _anthropic_wants_bearer:
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
     elif api_key:

@@ -225,3 +225,30 @@ def test_user_profile_replaces_existing_auth_alias_owner(_isolated_registries, m
 
     assert providers.get_provider_profile(LATE_ALIAS) is providers.get_provider_profile(LATE)
     assert auth_mod.PROVIDER_REGISTRY[LATE_ALIAS] is auth_mod.PROVIDER_REGISTRY[LATE]
+
+
+def test_user_profile_replaces_retained_bundled_alias_owner(_isolated_registries, monkeypatch, tmp_path):
+    """A same-name replacement also owns aliases retained from the bundled profile."""
+    from hermes_cli.auth import ProviderConfig
+
+    monkeypatch.setattr(providers, "_discover_entry_point_providers", lambda: None)
+    monkeypatch.setattr(providers, "_BUNDLED_PLUGINS_DIR", tmp_path)
+    monkeypatch.setattr(providers, "_user_plugins_dir", lambda: None)
+    monkeypatch.setattr(providers, "_installed_plugins_dir", lambda: None)
+    providers._discover_providers()
+    with providers._registration_owned_by("bundled"):
+        providers.register_provider(ProviderProfile(
+            name=LATE, display_name="Bundled", env_vars=("PROBE_102123_LATE_KEY",),
+            aliases=(LATE_ALIAS,),
+        ))
+    bundled = ProviderConfig(LATE, "Bundled", "api_key")
+    auth_mod.PROVIDER_REGISTRY[LATE] = bundled
+    auth_mod.PROVIDER_REGISTRY[LATE_ALIAS] = bundled
+
+    providers.register_provider(ProviderProfile(
+        name=LATE, display_name="Replacement", auth_type="oauth_external",
+        base_url="https://replacement.example/v1",
+    ))
+
+    assert providers.get_provider_profile(LATE_ALIAS) is providers.get_provider_profile(LATE)
+    assert auth_mod.PROVIDER_REGISTRY[LATE_ALIAS] is auth_mod.PROVIDER_REGISTRY[LATE]

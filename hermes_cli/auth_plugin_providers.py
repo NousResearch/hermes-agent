@@ -42,6 +42,7 @@ def register_plugin_provider(pp: Any) -> None:
     gate ("Unknown provider"); OAuth-shaped plugins carry their own login via ``auth_handler``.
     """
     from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig, _api_key_provider
+    from providers import _active_aliases_for_provider, _provider_name_is_user_owned
 
     if pp.name in _REGISTRY_PLUGIN_SKIP:
         return
@@ -57,8 +58,7 @@ def register_plugin_provider(pp: Any) -> None:
         pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, pp.auth_type, inference_base_url=pp.base_url)
     PROVIDER_REGISTRY[pp.name] = pconfig
     PLUGIN_MIRRORED_PROVIDERS.add(pp.name)
-    for alias in pp.aliases:  # so resolve_provider() resolves them too
-        from providers import _provider_name_is_user_owned
+    for alias in _active_aliases_for_provider(pp.name):  # so resolve_provider() resolves them too
         if alias not in PROVIDER_REGISTRY or _provider_name_is_user_owned(alias):
             PROVIDER_REGISTRY[alias] = pconfig
 

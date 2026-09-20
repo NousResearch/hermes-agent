@@ -79,6 +79,11 @@ def _provider_name_is_user_owned(name: str) -> bool:
     return _REGISTRATION_OWNERS.get(canonical) == "user"
 
 
+def _active_aliases_for_provider(name: str) -> tuple[str, ...]:
+    """Return every alias that currently resolves to one canonical provider name."""
+    return tuple(alias for alias, canonical in _ALIASES.items() if canonical == name)
+
+
 def _sync_auth_registry() -> None:
     """Mirror profiles into ``hermes_cli.auth.PROVIDER_REGISTRY`` if that module is loaded.
 

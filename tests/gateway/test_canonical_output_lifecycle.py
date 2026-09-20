@@ -287,4 +287,3 @@ async def test_unknown_requires_explicit_exact_discard_before_cleanup(tmp_path, 
             assert len(rows) == 1 and rows[0]['status'] == 'terminal' and rows[0]['outcome'] == 'interrupted'
         finally:
             service.runtime._thread = None
-

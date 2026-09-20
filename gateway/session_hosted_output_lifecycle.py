@@ -12,6 +12,7 @@ from gateway.hosted_room_artifacts import RoomArtifactError, RoomArtifactOutbox,
 from gateway.hosted_room_output_discard import OutputCleanupUnavailable, retire_exact, cleanup_exact
 from gateway.hosted_room_output_fence import require_output_task
 from gateway.session_hosted_output_retry import retryable
+from gateway.hosted_room_output_completion import compact_completed, completion_identity
 
 PREFIX = 'gateway.hosted.output_cleanup.v1:'
 BATCH = 64
@@ -54,7 +55,7 @@ class CanonicalOutputLifecycle:
             self._reconcile_stopped_output(captured, capture_only=True)
         return captured
 
-    def _cleanup_snapshot(self, conn, task):
+    def _cleanup_snapshot(self, conn, task, *, identity_only=False):
         if self.authority.db is not self._output_db:
             raise RoomArtifactError('Group Chat cleanup owner replaced')
         self._output_owner(conn)
@@ -89,6 +90,14 @@ class CanonicalOutputLifecycle:
                 or self.profile_homes().get(payload['target_profile']) != self.root
                 or self.root.parent.name == 'profiles'):
             return dict(base, unavailable='unsupported_output_route'), None
+        scope = RoomArtifactScope.from_mapping(dict(room_id=identity.room_id, task_id=identity.task_id,
+            execution_generation=row['execution_generation'], member_id=member, target_profile=payload['target_profile'],
+            home_install_id=room['authority_gateway_id'], target_install_id=room['authority_gateway_id'],
+            authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch']))
+        require_output_task(conn, scope, row['cancel_generation'], status=row['status'])
+        base.update(scope=scope.as_mapping(), scope_key=scope.key, lineage_identity=scope.lineage_json)
+        if identity_only:
+            return base, None
         request = 'hosted:' + json.dumps([asdict(identity), row['execution_generation']], sort_keys=True, separators=(',', ':'))
         admissions = conn.execute('SELECT * FROM session_admissions WHERE request_id=? AND principal_id=?',
                                   (request, owner[0])).fetchall()
@@ -98,8 +107,10 @@ class CanonicalOutputLifecycle:
         from gateway.session_local_recovery import local_identity
         binding = json.dumps([identity.room_id, member, payload['target_profile']], separators=(',', ':'))
         sid = local_identity(self.authority.profile_id, owner[0], 'hosted:' + hashlib.sha256(binding.encode()).hexdigest())
+        unclaimed = (admission['generation'] is None and (admission['status'] == 'queued'
+            or (admission['status'] == 'terminal' and admission['outcome'] == 'cancelled')))
         if (admission['target_session_id'] != sid or admission['owner_epoch'] != self._output_epoch
-                or type(admission['generation']) is not int or admission['generation'] < 1):
+                or not (unclaimed or (type(admission['generation']) is int and admission['generation'] >= 1))):
             raise RoomArtifactError('Group Chat cleanup admission changed')
         admitted_payload = json.loads(admission['payload_json'])
         from hermes_state_runtime import admission_fingerprint
@@ -108,23 +119,16 @@ class CanonicalOutputLifecycle:
             raise RoomArtifactError('Group Chat cleanup admitted payload changed')
         if not payload.get('attachments') and admitted_payload.get('text') != payload['prompt']:
             raise RoomArtifactError('Group Chat cleanup task input changed')
-        scope = RoomArtifactScope.from_mapping(dict(room_id=identity.room_id, task_id=identity.task_id,
-            execution_generation=row['execution_generation'], member_id=member, target_profile=payload['target_profile'],
-            home_install_id=room['authority_gateway_id'], target_install_id=room['authority_gateway_id'],
-            authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch']))
-        require_output_task(conn, scope, row['cancel_generation'], status=row['status'])
-        base.update(scope=scope.as_mapping(), scope_key=scope.key, lineage_identity=scope.lineage_json,
-                    admission={k: admission[k] for k in (
+        base.update(admission={k: admission[k] for k in (
             'admission_id', 'request_id', 'principal_id', 'target_session_id', 'owner_epoch', 'generation',
             'payload_json', 'payload_digest', 'intent')})
         if payload.get('attachments'):
             from gateway.hosted_room_input_retained import retained_hosted_input
             from hermes_state_runtime import RuntimeStoreError
-            import sqlite3
             try:
                 base['input_binding'] = retained_hosted_input(conn, self.authority.db,
                     room_id=identity.room_id, member_id=member, task_payload=payload, admission=admission)
-            except (RuntimeStoreError, sqlite3.OperationalError):
+            except RuntimeStoreError:
                 base['unavailable'] = 'input_binding_unavailable'
         return base, admission
 
@@ -132,14 +136,40 @@ class CanonicalOutputLifecycle:
         key = key_for(task)
         now = float(self._artifact_clock())
         def stage(conn):
-            snapshot, admission = self._cleanup_snapshot(conn, task)
             saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
             old = json.loads(saved[0]) if saved else None
+            if old and old['state'] == 'completed':
+                self._require_completed_identity(conn, task, old)
+                if old['version'] == 1:
+                    old = compact_completed(old)
+                    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(old, sort_keys=True), key))
+                return old
+            snapshot, admission = self._cleanup_snapshot(conn, task)
             if old and old['state'] == 'pending':
                 # Damaged inventory does not spend attempts or mutate the exact
                 # retained physical obligation, much less initialize a store.
                 RoomArtifactOutbox.borrow_existing(self.authority.db, conn)
             if old is not None and old['binding'] != snapshot:
+                prior = old['binding']
+                # Only retained per-task input proof damage is a durable blocked
+                # outcome. Owner/epoch/cancel/admission drift remains fatal. Keep
+                # the immutable intent and physical obligation byte-for-byte.
+                evidence_fields = {'input_binding', 'unavailable'}
+                if (snapshot.get('unavailable') == 'input_binding_unavailable'
+                        and 'input_binding' in prior
+                        and {k: v for k, v in prior.items() if k not in evidence_fields}
+                            == {k: v for k, v in snapshot.items() if k not in evidence_fields}):
+                    blocked = dict(old, blocked=True, reason_code='input_binding_unavailable')
+                    conn.execute('UPDATE state_meta SET value=? WHERE key=?',
+                                 (json.dumps(blocked, sort_keys=True), key))
+                    return blocked
+                # A queued admission has no canonical generation yet. Accept only
+                # that exact tuple's real claim, not a guessed hosted generation.
+                previous_admission = prior.get('admission')
+                claimed = (old['state'] == 'waiting' and admission is not None
+                    and previous_admission is not None and previous_admission['generation'] is None
+                    and type(admission['generation']) is int and admission['generation'] >= 1
+                    and {**prior, 'admission': {**previous_admission, 'generation': admission['generation']}} == snapshot)
                 # Existing exact explicit discard may resolve unknown. It does
                 # not readmit the input or transfer the original owner binding.
                 prior = old['binding']
@@ -149,11 +179,11 @@ class CanonicalOutputLifecycle:
                     and snapshot['cancel_generation'] == prior['cancel_generation'] + 1
                     and {k: v for k, v in prior.items() if k not in {'cancel_generation', 'cancel_id'}}
                         == {k: v for k, v in snapshot.items() if k not in {'cancel_generation', 'cancel_id'}})
-                if not resolved:
+                if not (resolved or claimed):
                     raise RoomArtifactError('Group Chat cleanup commitment changed')
                 old = dict(old, binding=snapshot, original_binding=prior)
-            if old and old['state'] == 'completed':
-                return old
+            if old and old.get('blocked'):
+                old = dict(old, blocked=False)
             record = old or dict(version=1, room_id=task['identity'].room_id,
                 task_id=task['identity'].task_id, member_id=snapshot['member_id'],
                 execution_generation=task['execution_generation'], binding=snapshot,
@@ -170,10 +200,12 @@ class CanonicalOutputLifecycle:
                     record = self._inventory_cleanup(conn, task, snapshot, record)
                 except OutputCleanupUnavailable:
                     record['reason_code'] = 'inventory_unavailable'
+            if record['state'] == 'completed':
+                record = compact_completed(record)
             conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, json.dumps(record, sort_keys=True)))
             return record
         record = self._cleanup_write(stage)
-        if capture_only or record['state'] != 'pending' or record['next_attempt_at'] > now:
+        if capture_only or record.get('blocked') or record['state'] != 'pending' or record['next_attempt_at'] > now:
             return record['state'] == 'completed'
         def complete(conn):
             self._require_cleanup_binding(conn, task, record['binding'], terminal=True)
@@ -183,7 +215,7 @@ class CanonicalOutputLifecycle:
             outbox = RoomArtifactOutbox.borrow_existing(self.authority.db, conn)
             cleanup_exact(outbox, conn, RoomArtifactScope.from_mapping(record['binding']['scope']),
                 record['items'], record['blobs'], authorize=lambda c: self._require_cleanup_binding(c, task, record['binding'], terminal=True))
-            done = dict(record, state='completed', blobs=[], reason_code='completed', next_attempt_at=0)
+            done = compact_completed(dict(record, state='completed', blobs=[], reason_code='completed', next_attempt_at=0))
             conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(done, sort_keys=True), key))
         try:
             self._cleanup_write(complete)
@@ -208,6 +240,14 @@ class CanonicalOutputLifecycle:
             'ORDER BY created_at,artifact_id LIMIT ?', (scope.key, BATCH + 1)).fetchall()
         if len(rows) > BATCH:
             return dict(record, reason_code='inventory_limit')
+        if snapshot['admission']['generation'] is None:
+            # Queued cancellation never executed. It is not destructive authority
+            # for any unexpected row, even one carrying the hosted coordinates.
+            if rows:
+                return dict(record, reason_code='unclaimed_output_inventory')
+            outbox._retire_generation(conn, scope)
+            return dict(record, state='completed', reason_code='completed',
+                        completion={'operation': 'never_executed'})
         items = [outbox._manifest(r) for r in rows]
         if items:
             blobs = retire_exact(outbox, conn, scope, items,
@@ -226,13 +266,22 @@ class CanonicalOutputLifecycle:
             return
         record = json.loads(saved[0])
         if record['state'] == 'completed':
+            self._require_completed_identity(conn, task, record)
             return
         current, _ = self._cleanup_snapshot(conn, task)
         if record['binding'] != current or record['state'] != 'waiting':
             raise RoomArtifactError('Group Chat cleanup disposition changed')
-        done = dict(record, state='completed', reason_code='completed',
-                    completion=dict(metadata=metadata, operation=operation), next_attempt_at=0)
+        done = compact_completed(dict(record, state='completed', reason_code='completed',
+                    completion=dict(metadata=metadata, operation=operation), next_attempt_at=0))
         conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(done, sort_keys=True), key))
+
+    def _require_completed_identity(self, conn, task, record):
+        current, _ = self._cleanup_snapshot(conn, task, identity_only=True)
+        completed = compact_completed(record)
+        if (completed['completion_identity'] != completion_identity(current)
+                or any(completed[k] != current[k] for k in (
+                    'room_id', 'task_id', 'member_id', 'execution_generation'))):
+            raise RoomArtifactError('Group Chat cleanup completion changed')
 
     def _require_cleanup_binding(self, conn, task, expected, *, terminal=False):
         current, admission = self._cleanup_snapshot(conn, task)

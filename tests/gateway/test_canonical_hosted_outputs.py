@@ -61,8 +61,8 @@ async def owner(tmp_path, monkeypatch):
         store._db.close()
 
 
-async def execute_group_turn(authority, service, *, event_id="request", before_admission=None, defer_publication=False, input_manifest=None):
-    service.send(room_id="room", event_id=event_id, payload=dict(thread_id="thread", text="@writer Write the report",
+async def execute_group_turn(authority, service, *, event_id="request", before_admission=None, defer_publication=False, input_manifest=None, thread_id="thread"):
+    service.send(room_id="room", event_id=event_id, payload=dict(thread_id=thread_id, text="@writer Write the report",
         **({"attachments": input_manifest} if input_manifest else {})))
     task = tasks.list_tasks(service.db_path, room_id="room", status="queued")[0]
     if before_admission is not None:

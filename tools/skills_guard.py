@@ -154,6 +154,12 @@ THREAT_PATTERNS = [
      "read_secrets_file", "critical", "exfiltration", "reads known secrets file"),
     (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']',
      "js_read_secrets_file", "critical", "exfiltration", "JavaScript reads a known credential file"),
+    # Python twin of js_read_secrets_file: `open(...)` on a literal credential path, or the
+    # `Path(...).read_text(...)` chain — the two shapes that read a known secrets file's
+    # content in Python without going through the shell `cat` pattern above.
+    (r'\bopen\s*\(\s*["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']'
+     r'|\bPath\s*\(\s*["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']\s*\)\.read_text\s*\(',
+     "py_read_secrets_file", "critical", "exfiltration", "Python reads a known credential file"),
     # ── Exfiltration: programmatic env access ──
     (r'printenv|env\s*\|', "dump_all_env", "high", "exfiltration", "dumps all environment variables"),
     # Bare `os.environ` (dump/iteration) is suspicious; ANY `.get("<name>")` form is exempt — plain config

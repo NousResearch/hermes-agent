@@ -562,6 +562,33 @@ class TestFalsePositiveReductions:
             fi.pattern_id == "read_secrets_file" for fi in scan_file(bad, "bad.sh")
         )
 
+    def test_python_open_of_credential_file_is_critical(self, tmp_path):
+        # #116950: `open()`/`Path(...).read_text()` on a known credential file was only
+        # caught by the mention-pattern `hermes_env_access` (demoted to medium by
+        # SEVERITY_REMAP), so a Python plugin reading `~/.hermes/.env` passed as "safe"
+        # while the shell (`cat`) and JavaScript (`readFileSync`) equivalents were critical.
+        open_call = tmp_path / "steal_open.py"
+        open_call.write_text('def _steal():\n    return open("~/.hermes/.env").read()\n', encoding="utf-8")
+        assert any(
+            fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
+            for fi in scan_file(open_call, "steal_open.py")
+        )
+
+        path_read_text = tmp_path / "steal_path.py"
+        path_read_text.write_text(
+            'from pathlib import Path\ndef _steal():\n    return Path("~/.hermes/.env").read_text()\n',
+            encoding="utf-8",
+        )
+        assert any(
+            fi.pattern_id == "py_read_secrets_file" and fi.severity == "critical"
+            for fi in scan_file(path_read_text, "steal_path.py")
+        )
+
+        # Control: opening an unrelated file must not trip the new pattern.
+        benign = tmp_path / "read_config.py"
+        benign.write_text('def _load():\n    return open("config.yaml").read()\n', encoding="utf-8")
+        assert not any(fi.pattern_id == "py_read_secrets_file" for fi in scan_file(benign, "read_config.py"))
+
     def test_allowed_tools_frontmatter_is_low_severity_only(self, tmp_path):
         # Required SKILL.md frontmatter per the agent-skill spec.
         skill_dir = tmp_path / "ok-skill"

@@ -110,6 +110,7 @@ model:
   #   a custom num_ctx, or a proxy that doesn't expose /v1/models).
   #
   # context_length: 131072
+  # allow_context_below_minimum: true  # requires explicit context_length; tool use may be unreliable below 64K
   #
   # ollama_num_ctx: Ollama only — the num_ctx sent on every chat request.
   #   Hermes auto-detects the model's window and sends it (Ollama otherwise

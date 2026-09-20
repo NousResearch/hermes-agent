@@ -380,6 +380,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # worker and on session switch/shutdown, so a late or superseded worker
         # whose captured generation is stale can never publish into the slot.
         self._prefetch_generation = 0
+        # Session id installed by the last boundary (initialize/on_session_switch),
+        # NOT the synced-in _session_id: a queued sync_all for the previous session
+        # can re-stamp _session_id after an inline switch (e.g. compression's, which
+        # bypasses the manager's serialized boundary task), which would blind a gate
+        # that read _session_id. Empty means unconstrained (callers without an id).
+        self._prefetch_session_id = ""
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
 
@@ -700,6 +706,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = str(session_id or "").strip()
+        self._prefetch_session_id = self._session_id
         self._parent_session_id = str(kwargs.get("parent_session_id", "") or "").strip()
         # Status channel for the retain indicator (recall reports via recall_status()).
         if callable(kwargs.get("status_callback")):
@@ -998,6 +1005,16 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Prefetch: prior worker still running; skipping this warm")
             return
 
+        # A queued prefetch can outlive an inline session switch (compression's
+        # on_session_switch bypasses the manager's serialized boundary task, so a
+        # pending prefetch from the previous turn may drain after the rotation).
+        # Its recall belongs to a session that no longer owns the slot — drop it
+        # here rather than spending a daemon recall nobody will use. Empty ids
+        # stay unconstrained: some callers have no session id yet.
+        if session_id and session_id != self._prefetch_session_id:
+            logger.debug("Prefetch: query belongs to a superseded session; skipping")
+            return
+
         with self._prefetch_lock:
             self._prefetch_generation += 1
             generation = self._prefetch_generation
@@ -1246,6 +1263,10 @@ class HindsightMemoryProvider(MemoryProvider):
             # belongs to the new session.
             self._prefetch_generation += 1
             self._prefetch_result = ""
+            # Owner of the prefetch slot from here on. Written only here (and in
+            # initialize) — never by sync_turn, whose queued calls can land after
+            # an inline switch and re-stamp _session_id with the previous id.
+            self._prefetch_session_id = new_id
 
         # 3. Rotate to the new session.
         if parent_session_id:

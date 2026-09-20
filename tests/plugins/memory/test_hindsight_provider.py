@@ -1396,6 +1396,64 @@ class TestPrefetchGenerationFence:
         assert "Memory 1" in result
         assert "Memory 2" in result
 
+    def test_late_prefetch_for_superseded_session_is_dropped(self, provider):
+        """Compression switches sessions inline, bypassing the manager's serialized
+        boundary task, so a prefetch queued at the previous turn can drain after the
+        rotation. Its recall belongs to a session that no longer owns the slot."""
+        # The previous turn's prefetch, still queued on the memory worker.
+        provider.queue_prefetch("old session query", session_id="parent-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        # The inline switch (compression) rotates the slot's owner.
+        provider.on_session_switch("child-sid", parent_session_id="parent-sid")
+
+        # The queued task now drains: same query, superseded session.
+        provider.queue_prefetch("old session query", session_id="parent-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == ""
+        assert provider.prefetch("child query") == ""
+        # And the recall was never spent on a session nobody will read.
+        assert provider._client.arecall.await_count == 0
+
+    def test_post_switch_prefetch_for_current_session_still_publishes(self, provider):
+        """The session gate must not degenerate into 'drop everything': the new
+        session's own prefetch still warms the slot, and callers without a
+        session id stay unconstrained."""
+        provider.on_session_switch("child-sid", parent_session_id="parent-sid")
+
+        provider.queue_prefetch("child query", session_id="child-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        assert "Memory 1" in provider.prefetch("child query")
+
+        provider.queue_prefetch("child query")  # empty session_id = unconstrained
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        assert "Memory 1" in provider.prefetch("child query")
+
+    def test_sync_turn_revert_cannot_blind_the_session_gate(self, provider):
+        """sync_turn re-stamps _session_id from its kwarg; a queued sync for the
+        previous session lands after an inline switch and un-rotates it. The gate
+        must key off a boundary-owned id, not _session_id."""
+        provider.queue_prefetch("old session query", session_id="parent-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        provider.on_session_switch("child-sid", parent_session_id="parent-sid")
+        # Queued sync_all(parent) drains late and reverts _session_id.
+        provider.sync_turn("x", "y", session_id="parent-sid")
+        assert provider._session_id == "parent-sid"  # the un-rotation is real
+
+        provider.queue_prefetch("old session query", session_id="parent-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == ""
+        assert provider.prefetch("child query") == ""
+
 
 # ---------------------------------------------------------------------------
 # Client lifecycle lock (#11923: concurrent construction must not orphan a client)

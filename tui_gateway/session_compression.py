@@ -39,6 +39,21 @@ def _compressor_ctor_default(name: str, fallback: Any) -> Any:
         return fallback
 
 
+def _default_threshold_tokens_cap():
+    """The cap a fresh agent build installs when the key is absent: DEFAULT_CONFIG's
+    ``compression.threshold_tokens``. agent_init reads the MERGED config, so "no key in
+    config.yaml" still installs the 256K default at construction; key removal here must
+    restore that same value. ``None`` instead would re-derive the uncapped ratio trigger
+    (500K on a 1M-window model) and the default cap would be gone after the first turn
+    (#117093). An explicit ``threshold_tokens: null`` stays ratio-only — the key is present,
+    so ``.get`` returns it untouched."""
+    try:
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        return (DEFAULT_CONFIG.get("compression") or {}).get("threshold_tokens")
+    except Exception:
+        return None
+
+
 def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
     """Default compaction threshold when ``compression.threshold`` is unset. Mirrors agent_init: ctor
     global default, then per-model resolution (Codex autoraise etc.) via the SAME
@@ -153,7 +168,9 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         # next access (construction's deferred resolution); re-applies the small-context floor too.
         set_config_context_length(agent, None)
         cc._resolved_context_length = None
-    cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(compression.get("threshold_tokens"))
+    cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(
+        compression.get("threshold_tokens", _default_threshold_tokens_cap())
+    )
     # Invalidate the cached trigger so the next preflight re-derives from percent/window, then the cap.
     cc._threshold_tokens = cc._tail_token_budget = None
 

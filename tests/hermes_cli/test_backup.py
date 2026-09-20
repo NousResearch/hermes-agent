@@ -2047,6 +2047,48 @@ class TestRestoreConfigModelSettingsIfRewritten:
             "zyphra/zamba-3-large"
         )
 
+    def test_restores_rewritten_tts_provider(self, tmp_path):
+        """Same failure class as #64160 for the voice pipeline: an update/repair
+        cycle silently reverts a user-pinned tts.provider (e.g. a local voice
+        clone daemon) back to the schema default (piper), and the user only
+        notices when the voice sounds wrong again."""
+        import yaml
+        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        cfg = hermes_home / "config.yaml"
+        cfg.write_text(
+            "_config_version: 39\n"
+            "tts:\n"
+            "  provider: voiceforge\n"
+            "  providers:\n"
+            "    voiceforge:\n"
+            "      command: /home/lexed/work/voiceforge2/vf-say.sh\n",
+            encoding="utf-8",
+        )
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # The update flow rewrites config.yaml back to the schema default.
+        cfg.write_text(
+            "_config_version: 40\ntts:\n  provider: piper\n", encoding="utf-8"
+        )
+
+        result = restore_config_model_settings_if_rewritten(
+            snap_id, hermes_home=hermes_home
+        )
+        assert result is not None
+        assert result["restored"] is True
+        assert "tts.provider" in result["keys"]
+        assert "tts.providers" in result["keys"]
+
+        after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+        assert after["tts"]["provider"] == "voiceforge"
+        assert after["tts"]["providers"]["voiceforge"]["command"] == (
+            "/home/lexed/work/voiceforge2/vf-say.sh"
+        )
+
     def test_noop_when_config_untouched(self, tmp_path):
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
 

@@ -121,7 +121,10 @@ def read_launchd_exit_timeout_s(
     if not label:
         return None
     if uid is None:
-        uid = os.getuid()  # only reachable on darwin: launchd_service_label() is None elsewhere
+        getuid = getattr(os, "getuid", None)  # absent on Windows; label is None there anyway
+        if getuid is None:
+            return None
+        uid = getuid()
     domain = "system" if uid == 0 else f"gui/{uid}"
     try:
         proc = run(

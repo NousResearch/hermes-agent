@@ -59,6 +59,17 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_show_json_includes_runtime_limit(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="bounded task", max_runtime_seconds=2700
+        )
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+
+    assert payload["task"]["max_runtime_seconds"] == 2700
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

@@ -6,6 +6,7 @@ import sqlite3
 
 def require_independent_completion(conn: sqlite3.Connection, task_id: str, assignee: str | None) -> str:
     """Check under the board write lock; reassignment must not race acceptance."""
+    # Keep these helpers lazy because kanban_db imports this module.
     from hermes_cli.kanban_db import _json_dict, _latest_event, _nonblank_str
     from hermes_cli.profiles import get_active_profile_name
 

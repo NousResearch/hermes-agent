@@ -1753,6 +1753,7 @@ _RETRYABLE_ERROR_PATTERNS = (
 
 # Handler result: str (reply), ``EphemeralReply`` (auto-delete) or None (already delivered).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+ExclusiveInboundHandler = Callable[[MessageEvent], Awaitable[bool]]
 
 
 def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str | None = None) -> str | None:
@@ -1864,6 +1865,8 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Runner-owned exact-chat admission, invoked by adapters before any debounce or enqueue.
+        self._exclusive_inbound_handler: Optional[ExclusiveInboundHandler] = None
         self._no_message_handler_logged: bool = False
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
@@ -2219,6 +2222,15 @@ class BasePlatformAdapter(ABC):
     def set_message_handler(self, handler: MessageHandler) -> None:
         """Set the incoming-message handler (MessageEvent -> optional response str)."""
         self._message_handler = handler
+
+    def set_exclusive_inbound_handler(self, handler: Optional[ExclusiveInboundHandler]) -> None:
+        """Set the runner-owned terminal admission boundary for normalized events."""
+        self._exclusive_inbound_handler = handler
+
+    async def dispatch_exclusive_inbound(self, event: MessageEvent) -> bool:
+        """Return whether an exact-chat exclusive claim consumed *event*."""
+        handler = self._exclusive_inbound_handler
+        return False if handler is None else await handler(event)
 
     def set_platform_event_handler(
         self, handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]]) -> None:

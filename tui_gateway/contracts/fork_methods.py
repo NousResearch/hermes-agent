@@ -7,10 +7,7 @@ contract-registry completeness test happy.
 
 from __future__ import annotations
 
-from pydantic import Field
-
 from .base import Params, Result
-from .common import ProfileParams
 from .registry import method
 
 
@@ -24,14 +21,6 @@ class RespondResult(Result):
     pass
 
 
-class WorktreeCleanupParams(Params):
-    session_id: str = ""
-
-
-class WorktreeCleanupResult(Result):
-    cleaned: bool = False
-
-
 # Passthrough respond methods (lambda handlers in server.py)
 method("mcp.setup.respond", params=RespondParams, result=RespondResult, doc="MCP setup respond passthrough")
 method("preview.act.respond", params=RespondParams, result=RespondResult, doc="Preview act respond passthrough")
@@ -41,7 +30,3 @@ method("sudo.respond", params=RespondParams, result=RespondResult, doc="Sudo res
 method("terminal.read.respond", params=RespondParams, result=RespondResult, doc="Terminal read respond passthrough")
 method("tour.respond", params=RespondParams, result=RespondResult, doc="Tour respond passthrough")
 method("window.read.respond", params=RespondParams, result=RespondResult, doc="Window read respond passthrough")
-
-# Worktree cleanup
-method("session.worktree_cleanup", params=WorktreeCleanupParams, result=WorktreeCleanupResult,
-       doc="Clean up a conversation worktree")

@@ -132,7 +132,7 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
 
 
 # Hidden from human listings (sub-agent runs, kanban workers); a deny-list so new platforms surface automatically.
-_LISTING_DENY_SOURCES = frozenset({"kanban", "tool"})
+_LISTING_DENY_SOURCES = frozenset({"kanban", "tool", "oneshot"})
 
 
 def _denied_source(row: dict) -> bool:
@@ -344,6 +344,7 @@ def _(rid, params: dict) -> dict:
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
+            "auth_user_id": _transport_auth_user_id(current_transport()),
             "transport": current_transport() or _stdio_transport}
         _register_session_cwd(_sessions[sid])
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded branch children.

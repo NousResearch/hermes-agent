@@ -11,6 +11,7 @@
 
 import {
   atom,
+  host,
   type PluginOs,
   type PluginRestOptions,
   type PluginStorage,
@@ -118,11 +119,20 @@ function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => 
     return
   }
 
-  void queryClient.invalidateQueries({ queryKey: ['kanban', 'board'] })
-  // Any event can change a board's card count — keep the switcher badge honest.
-  void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
+  queryClient.setQueriesData<KanbanBoard>({ queryKey: ['kanban', 'board', slug] }, cached =>
+    cached ? applyHeartbeatEvents(cached, events) : cached
+  )
 
-  for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
+  if (eventsNeedBoardRefresh(events)) {
+    scheduleBoardRefresh()
+  }
+
+  const changedTaskIds = events
+    .filter(event => event.kind !== 'heartbeat' && event.kind !== 'respawn_guarded')
+    .map(event => event.task_id)
+    .filter(Boolean)
+
+  for (const taskId of new Set(changedTaskIds)) {
     void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
   }
 
@@ -167,6 +177,19 @@ export function bindApi(
 
   let socketGeneration = 0
   let close: (() => void) | null = null
+  let boardRefreshTimer: null | ReturnType<typeof setTimeout> = null
+
+  const scheduleBoardRefresh = () => {
+    if (boardRefreshTimer !== null) {
+      return
+    }
+
+    boardRefreshTimer = setTimeout(() => {
+      boardRefreshTimer = null
+      void queryClient.invalidateQueries({ queryKey: ['kanban', 'board', $boardSlug.get()] })
+      void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
+    }, 500)
+  }
 
   const open = (slug: string) => {
     close?.()
@@ -198,6 +221,11 @@ export function bindApi(
     socketGeneration += 1
     unsubs.forEach(unsub => unsub())
     close?.()
+
+    if (boardRefreshTimer !== null) {
+      clearTimeout(boardRefreshTimer)
+      boardRefreshTimer = null
+    }
     rest = null
     os = null
   }

@@ -3230,19 +3230,19 @@
     },
     {
       "name": "session.worktree_cleanup",
-      "summary": "Clean up a conversation worktree",
+      "summary": "Inspect or explicitly remove one managed conversation worktree.",
       "params": [
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/WorktreeCleanupParams"
+            "$ref": "#/components/schemas/SessionWorktreeCleanupParams"
           }
         }
       ],
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/WorktreeCleanupResult"
+          "$ref": "#/components/schemas/SessionWorktreeCleanupResult"
         }
       }
     },
@@ -16206,42 +16206,6 @@
           "pane"
         ],
         "title": "PaneRevealPayload",
-        "type": "object"
-      },
-      "PasswordRespondParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "request_id": {
-            "title": "Request Id",
-            "type": "string"
-          },
-          "password": {
-            "default": "",
-            "title": "Password",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "request_id"
-        ],
-        "title": "PasswordRespondParams",
         "type": "object"
       },
       "PasteCollapseParams": {
@@ -30654,42 +30618,6 @@
         "title": "TerminalResizeResult",
         "type": "object"
       },
-      "TextRespondParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "request_id": {
-            "title": "Request Id",
-            "type": "string"
-          },
-          "text": {
-            "default": "",
-            "title": "Text",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "request_id"
-        ],
-        "title": "TextRespondParams",
-        "type": "object"
-      },
       "TipShowPayload": {
         "additionalProperties": false,
         "description": "``tools/tip_tool.py``.",
@@ -32016,42 +31944,6 @@
           "available"
         ],
         "title": "UsageModel",
-        "type": "object"
-      },
-      "ValueRespondParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "request_id": {
-            "title": "Request Id",
-            "type": "string"
-          },
-          "value": {
-            "default": "",
-            "title": "Value",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "request_id"
-        ],
-        "title": "ValueRespondParams",
         "type": "object"
       },
       "ValueResult": {
@@ -33925,30 +33817,6 @@
           "disabled_persisted"
         ],
         "title": "WakeStopResult",
-        "type": "object"
-      },
-      "WorktreeCleanupParams": {
-        "additionalProperties": false,
-        "properties": {
-          "session_id": {
-            "default": "",
-            "title": "Session Id",
-            "type": "string"
-          }
-        },
-        "title": "WorktreeCleanupParams",
-        "type": "object"
-      },
-      "WorktreeCleanupResult": {
-        "additionalProperties": false,
-        "properties": {
-          "cleaned": {
-            "default": false,
-            "title": "Cleaned",
-            "type": "boolean"
-          }
-        },
-        "title": "WorktreeCleanupResult",
         "type": "object"
       },
       "_SessionScoped": {

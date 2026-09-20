@@ -2624,7 +2624,7 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
         raise
 
 
-def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str, dict]:
+def _resolve_agent_model_runtime(model_override, provider_override, *, include_notice: bool = False):
     """(model, runtime) for a new agent; a per-session override (/model switch or a resumed row's persisted
     runtime) wins over global config/env. Older rows stored the resolved provider "custom" (no named entry
     matches) — recover the identity from the persisted base_url or the rebuild fails "No LLM provider
@@ -2641,8 +2641,14 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             if override_base_url:
                 # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
                 resolve_kwargs["explicit_base_url"] = override_base_url
-        resolve_kwargs.update(requested=requested_provider, target_model=model or None)
         overrides = {k: model_override.get(k) for k in ("base_url", "api_key", "api_mode")}
+        from hermes_cli.models import opencode_provider_family
+        if opencode_provider_family(requested_provider) is not None:
+            # OpenCode routes are model-scoped: old rows can carry the wire and relay URL of a different
+            # model family. Re-derive both from the selected model; fixed-wire providers still honor them.
+            overrides.pop("base_url", None)
+            overrides.pop("api_mode", None)
+        resolve_kwargs.update(requested=requested_provider, target_model=model or None)
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -2655,12 +2661,22 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
-        return resolution.selected_model, resolution.runtime
+        primary_provider = requested_provider
+        if not primary_provider:
+            configured_model = _load_cfg().get("model")
+            if isinstance(configured_model, dict):
+                primary_provider = str(configured_model.get("provider") or "").strip() or None
+        primary_provider = primary_provider or "configured provider"
+        notice = (f"↻ Switched to fallback: {primary_provider}/{model} → "
+                  f"{resolution.runtime.get('provider') or 'configured provider'}/{resolution.selected_model}")
+        result = (resolution.selected_model, resolution.runtime)
+        return (*result, notice) if include_notice else result
     if resolution.runtime.get("source") == "local-runtime":
         # Live supervisor beat any persisted loopback URL for this identity.
         overrides.pop("base_url", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
-    return model, resolution.runtime
+    result = (model, resolution.runtime)
+    return (*result, None) if include_notice else result
 
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
@@ -2737,7 +2753,8 @@ def _make_agent(
     worktree_note = _conversation_worktree_prompt_fragment(conversation_worktree)
     if worktree_note:
         system_prompt = "\n\n".join(part for part in (system_prompt, worktree_note) if part)
-    model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    model, runtime, fallback_notice = _resolve_agent_model_runtime(
+        model_override, provider_override, include_notice=True)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
@@ -2764,7 +2781,6 @@ def _make_agent(
             checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
             pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
             skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
-            user_id=_session_auth_user_id(session),
             **_agent_cbs(sid))
     finally:
         if cwd_token is not None:
@@ -2772,6 +2788,8 @@ def _make_agent(
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    if fallback_notice:
+        agent._pending_fallback_notice = fallback_notice
     return agent
 
 

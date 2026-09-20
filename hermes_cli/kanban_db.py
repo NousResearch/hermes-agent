@@ -2701,36 +2701,13 @@ def release_stale_claims(
             continue
         with write_txn(conn):
             retry_status = _retry_status_for_run(conn, row["id"])
-            # A claim that expired with no worker pid means the claimer never spawned a
-            # worker — count it as a non-success attempt toward the circuit breaker.
-            no_spawn = row["worker_pid"] is None
-            gave_up = False
-            if no_spawn:
-                cur_failures = int(row["consecutive_failures"] or 0)
-                new_failures = cur_failures + 1
-                effective_limit = (
-                    int(row["max_retries"]) if row["max_retries"] is not None
-                    else int(failure_limit)
-                )
-                if new_failures >= effective_limit:
-                    retry_status = "blocked"
-                    gave_up = True
-                cur = conn.execute(
-                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = consecutive_failures + 1 "
-                    "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                    "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                    (retry_status, row["id"], row["claim_lock"], now),
-                )
-            else:
-                cur = conn.execute(
-                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL "
-                    "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                    "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                    (retry_status, row["id"], row["claim_lock"], now),
-                )
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "AND claim_expires IS NOT NULL AND claim_expires < ?",
+                (retry_status, row["id"], row["claim_lock"], now),
+            )
             if cur.rowcount != 1:
                 continue
             run_id = _record_reclaim(
@@ -2747,10 +2724,6 @@ def release_stale_claims(
                     "retry_status": retry_status,
                 },
             )
-            if gave_up:
-                _append_event(conn, row["id"], "gave_up",
-                              {"reason": "no_spawn_breaker", "retry_status": retry_status},
-                              run_id=run_id)
             reclaimed += 1
         # A claim released without a worker verdict is a failed attempt too;
         # otherwise claim -> reclaim loops never reach the configured breaker.
@@ -3665,34 +3638,52 @@ def request_review(
                 *(() if reviewer is None else (reviewer,)), task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
             )
-        staged_artifacts: list[str] = []
-        if isinstance(metadata, dict):
-            _stage_completion_artifacts(
-                conn, task_id, metadata, int(time.time()), retain_staged_paths=True,
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'review', claim_lock = NULL, claim_expires = NULL,
+                       worker_pid = NULL
+                """ + assignee_sql + """
+                 WHERE id = ? AND status IN ('running', 'ready')
+                """ + run_guard,
+                params,
             )
-            staged_artifacts = list(metadata.get("_staged_artifacts", []))
-            metadata.pop("_staged_artifacts", None)
-        try:
-            run_id = _end_or_synthesize_run(
-                conn, task_id, outcome="review_requested", status="review",
-                summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
-            )
-        except BaseException:
+            if cur.rowcount != 1:
+                return _ret(
+                    False, "task is not in running/ready (or expected_run_id did not match the current run)",
+                )
+            staged_artifacts: list[str] = []
             if isinstance(metadata, dict):
-                _discard_staged_completion_artifacts(metadata, staged_artifacts)
-            raise
-        _append_event(
-            conn,
-            task_id,
-            "review_requested",
-            {
-                "summary": _first_line(summary, 400) or None,
-                "implementer": implementer,
-                "reviewer": reviewer,
-                "artifacts": metadata.get("artifacts") if isinstance(metadata, dict) else None,
-            },
-            run_id=run_id,
-        )
+                _stage_completion_artifacts(
+                    conn, task_id, metadata, int(time.time()), retain_staged_paths=True,
+                )
+                staged_artifacts = list(metadata.get("_staged_artifacts", []))
+                metadata.pop("_staged_artifacts", None)
+            try:
+                run_id = _end_or_synthesize_run(
+                    conn, task_id, outcome="review_requested", status="review",
+                    summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+                )
+            except BaseException:
+                if isinstance(metadata, dict):
+                    _discard_staged_completion_artifacts(metadata, staged_artifacts)
+                raise
+            _append_event(
+                conn,
+                task_id,
+                "review_requested",
+                {
+                    "summary": _first_line(summary, 400) or None,
+                    "implementer": implementer,
+                    "reviewer": reviewer,
+                    "artifacts": metadata.get("artifacts") if isinstance(metadata, dict) else None,
+                },
+                run_id=run_id,
+            )
+    except BaseException:
+        if isinstance(metadata, dict):
+            _discard_staged_completion_artifacts(metadata, staged_artifacts)
+        raise
     return _ret(True)
 
 

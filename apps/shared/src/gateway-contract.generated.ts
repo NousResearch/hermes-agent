@@ -945,12 +945,6 @@ export interface VerificationEvidenceRow {
 export type RespondParams = Record<string, never>
 /** Passthrough respond methods return nothing structured. */
 export type RespondResult = Record<string, never>
-export interface WorktreeCleanupParams {
-  session_id?: string
-}
-export interface WorktreeCleanupResult {
-  cleaned?: boolean
-}
 export interface GroupsCapabilitiesParams {
   profile?: string | null
 }
@@ -4569,8 +4563,8 @@ export interface RpcMethods {
   'session.usage': { params: SessionUsageParams; result: SessionUsageResult }
   /** Re-home a stored session's workspace; git identity is replaced and a live agent follows. */
   'session.workspace.move': { params: SessionWorkspaceMoveParams; result: SessionWorkspaceMoveResult }
-  /** Clean up a conversation worktree */
-  'session.worktree_cleanup': { params: WorktreeCleanupParams; result: WorktreeCleanupResult }
+  /** Inspect or explicitly remove one managed conversation worktree. */
+  'session.worktree_cleanup': { params: SessionWorktreeCleanupParams; result: SessionWorktreeCleanupResult }
   /** Strict provider check through the same runtime resolution the agent uses on session creation. */
   'setup.runtime_check': { params: SetupRuntimeCheckParams; result: SetupRuntimeCheckResult }
   /** Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile. */

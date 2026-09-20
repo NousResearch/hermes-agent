@@ -215,12 +215,12 @@ class PluginDispatchMixin:
                     ret = self._invoke_hook_callback(cb, kwargs)
                 if ret is not None:
                     results.append(ret)
-            except Exception as exc:
+            except (Exception, SystemExit) as exc:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
         return results
 
     def _report_hook_failure(
-        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], exc: Exception, *, surface: str = "Hook"
+        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], exc: BaseException, *, surface: str = "Hook"
     ) -> None:
         """One WARNING per distinct (hook, callback, error); identical repeats at DEBUG.
 
@@ -273,7 +273,7 @@ class PluginDispatchMixin:
         context = contextvars.copy_context()
         done = threading.Event()
         outcome: Dict[str, Any] = {}
-        failure: Dict[str, Exception] = {}
+        failure: Dict[str, BaseException] = {}
 
         def _release_token() -> None:
             with self._hook_timeout_lock:
@@ -288,7 +288,7 @@ class PluginDispatchMixin:
         def _runner() -> None:
             try:
                 outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
-            except Exception as exc:
+            except BaseException as exc:
                 failure["exc"] = exc
             finally:
                 _release_token()

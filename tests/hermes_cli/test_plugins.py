@@ -1120,6 +1120,22 @@ class TestForceReloadSymmetry:
         mgr._hooks["post_tool_call"] = [boom, lambda **_kw: "survived"]
         assert mgr.invoke_hook("post_tool_call") == ["survived"]
 
+    def test_system_exit_is_reported_under_timeout_path(self, monkeypatch, caplog):
+        """Bounded hooks isolate SystemExit without losing its failure report."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+
+        def exits(**_kwargs):
+            raise SystemExit("bounded plugin requested process exit")
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [exits, lambda **_kw: "survived"]
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            assert mgr.invoke_hook("post_tool_call") == ["survived"]
+        assert "bounded plugin requested process exit" in caplog.text
+
     def test_hook_callback_timeout_reads_config(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes_test"
         hermes_home.mkdir(parents=True, exist_ok=True)
@@ -1153,6 +1169,42 @@ class TestForceReloadSymmetry:
         caller = threading.current_thread()
         assert mgr.invoke_hook("subagent_stop", parent_session_id="p1") == ["ok"]
         assert seen["thread"] is caller
+
+    def test_system_exit_from_caller_thread_hook_is_isolated(self, monkeypatch, caplog):
+        """A plugin dependency calling sys.exit() must not terminate hook dispatch."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+
+        def exits(**_kwargs):
+            raise SystemExit("plugin requested process exit")
+
+        mgr = PluginManager()
+        mgr._hooks["subagent_stop"] = [exits, lambda **_kw: "survived"]
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            assert mgr.invoke_hook("subagent_stop", parent_session_id="p1") == ["survived"]
+        assert "plugin requested process exit" in caplog.text
+
+    def test_keyboard_interrupt_from_caller_thread_hook_propagates(self, monkeypatch):
+        """Plugin isolation must not swallow an operator's Ctrl-C."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+        later_calls = []
+
+        def interrupts(**_kwargs):
+            raise KeyboardInterrupt
+
+        mgr = PluginManager()
+        mgr._hooks["subagent_stop"] = [
+            interrupts,
+            lambda **_kw: later_calls.append(True),
+        ]
+
+        with pytest.raises(KeyboardInterrupt):
+            mgr.invoke_hook("subagent_stop", parent_session_id="p1")
+        assert later_calls == []
 
     def test_hung_callback_suppresses_repeat_fires(self, monkeypatch):
         """A still-running timed-out callback must not spawn another worker."""

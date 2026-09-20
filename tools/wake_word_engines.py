@@ -327,6 +327,9 @@ class _WhisperEngine(_Engine):
         self._silence_duration = float(_num(sub, "silence_duration", 0.5))
         self._min_speech = float(_num(sub, "min_speech_seconds", 0.3))
         self._max_speech = float(_num(sub, "max_speech_seconds", 3.0))
+        # When a window is cut at max_speech_seconds without a match, its last second is carried
+        # into the next window so a phrase straddling the boundary is still heard whole.
+        self._overlap = float(_num(sub, "window_overlap_seconds", 1.0))
         # 0..1 sensitivity → minimum text similarity (0.6 → 0.79; 1.0 → 0.95; 0.0 → 0.55).
         self._min_similarity = 0.55 + 0.4 * ww._sensitivity(cfg)
         phrase = str(ww._get(cfg, "phrase") or "hey hermes").strip()
@@ -355,18 +358,32 @@ class _WhisperEngine(_Engine):
             self._trailing = 0.0
         else:
             self._trailing += seconds
-        if self._trailing < self._silence_duration and self._buffered < self._max_speech:
+        ended_by_silence = self._trailing >= self._silence_duration
+        if not ended_by_silence and self._buffered < self._max_speech:
             return False
         audio, speech = self._buffer, self._speech
         self.reset()
         if speech < self._min_speech:
             return False
-        return self._match(self._transcribe(np.concatenate(audio)))
+        if self._match(self._transcribe(np.concatenate(audio))):
+            return True
+        if not ended_by_silence and self._overlap > 0:
+            # Cut mid-speech with no match: keep the tail so the next decode sees a phrase that
+            # straddles the boundary from its start.
+            keep = max(1, int(round(self._overlap / seconds))) if seconds > 0 else 0
+            tail = audio[-keep:]
+            self._buffer = list(tail)
+            self._buffered = self._speech = len(tail) * seconds
+        return False
 
     def _transcribe(self, pcm) -> str:
         np = self._np
         pad = np.zeros(int(_WHISPER_PAD_SECONDS * _ww().SAMPLE_RATE), dtype=np.float32)
         audio = np.concatenate([pad, pcm.astype(np.float32) / 32768.0, pad])
+        # The wake phrase is the initial_prompt on purpose: names outside Whisper's vocabulary
+        # ("Juca") are otherwise not transcribed at all — ablation with the `base` model on pt-BR
+        # TTS: 6/6 positives with the prompt vs 0/6 without; false accepts 4/32 vs 3/32, all on
+        # phonetic near-misses ("Ei Luca", sentences containing "Juca"). `sensitivity` tunes that.
         segments, _info = self._model.transcribe(
             audio, language=self._language, beam_size=1, initial_prompt=self._prompt,
             condition_on_previous_text=False, vad_filter=False, without_timestamps=True)

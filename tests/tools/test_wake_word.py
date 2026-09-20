@@ -890,11 +890,29 @@ def test_phrase_similarity_and_normalization():
     assert _phrase_similarity("ei juca", "") == 0.0
 
 
-def test_build_engine_dispatches_whisper_aliases(monkeypatch):
+def test_build_engine_dispatches_whisper(monkeypatch):
     monkeypatch.setattr(ww, "_WhisperEngine", lambda cfg: "whisper")
-    for alias in ("whisper", "stt", "asr"):
-        assert ww._build_engine({"provider": alias}) == "whisper"
+    assert ww._build_engine({"provider": "whisper"}) == "whisper"
     assert ww._PROVIDERS["whisper"][1] == "wake.whisper"
+    for alias in ("stt", "asr"):  # dropped: "stt" is a config section, not a wake engine
+        with pytest.raises(ValueError):
+            ww._build_engine({"provider": alias})
+
+
+def test_whisper_engine_carries_the_window_tail_across_the_cap(monkeypatch):
+    # A phrase straddling the 3 s window boundary: the first decode (cut mid-speech, no match)
+    # must leave the last second in the buffer so the second decode hears the phrase whole.
+    calls = _install_fake_whisper(monkeypatch, ["bom dia hoje eu", "ei juca desliga o ar"])
+    eng = ww._WhisperEngine(_whisper_cfg())
+    cap_frames = 38                      # 38 × 80 ms = 3.04 s ≥ max_speech_seconds
+    fired = _feed(eng, _speech_frames(cap_frames + 4))  # runs 4 frames past the cap
+    assert not any(fired)
+    pad = 2 * int(0.3 * 16000)
+    assert calls["transcribe"][0][0] - pad == cap_frames * 1280  # the capped window
+    fired = _feed(eng, _silent_frames(8))
+    assert fired.count(True) == 1
+    # second decode = 1 s tail (12 frames) + 4 frames past the cap + 7 silent frames to the gate
+    assert calls["transcribe"][1][0] - pad == (12 + 4 + 7) * 1280
 
 
 def test_wake_whisper_lazy_feature_pins_track_local_stt():

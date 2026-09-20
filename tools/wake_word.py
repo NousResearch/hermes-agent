@@ -49,7 +49,7 @@ _PROVIDERS: Dict[str, tuple[str, str]] = {
     "porcupine": ("_PorcupineEngine", "wake.porcupine"),
     **{k: ("_SherpaKwsEngine", "wake.sherpa") for k in ("sherpa", "sherpa-onnx", "kws", "open")},
     **{k: ("_OpenWakeWordEngine", "wake.openwakeword") for k in ("openwakeword", "oww", "local")},
-    **{k: ("_WhisperEngine", "wake.whisper") for k in ("whisper", "stt", "asr")},
+    "whisper": ("_WhisperEngine", "wake.whisper"),
 }
 
 

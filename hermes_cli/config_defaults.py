@@ -1226,6 +1226,7 @@ DEFAULT_CONFIG = {
             "silence_duration": 0.5,
             "min_speech_seconds": 0.3,
             "max_speech_seconds": 3.0,
+            "window_overlap_seconds": 1.0,  # tail carried into the next window when cut mid-speech
         },
         "porcupine": {
             # built-in keyword ("jarvis", "computer", ...) or path to a custom .ppn

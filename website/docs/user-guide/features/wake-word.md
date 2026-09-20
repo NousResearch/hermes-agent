@@ -271,8 +271,9 @@ Each utterance costs one short decode (about 0.2–0.4 s for `tiny`/`base` on a
 laptop CPU), so the wake fires roughly half a second after you stop speaking.
 The speech gate is tunable under `whisper:` — `silence_threshold` (RMS, default
 200), `silence_duration` (0.5 s), `min_speech_seconds` (0.3) and
-`max_speech_seconds` (3.0, longer speech is checked in windows). Higher
-`sensitivity` demands a closer text match.
+`max_speech_seconds` (3.0, longer speech is checked in windows that overlap by
+`window_overlap_seconds`, 1.0, so a phrase crossing a window boundary is still
+heard whole). Higher `sensitivity` demands a closer text match.
 
 ### Option B — openWakeWord (free, trained model)
 

@@ -4,7 +4,7 @@ import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, u
 
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
-import { composerFloatingStrip, composerInputSurface } from '@/components/chat/composer-dock'
+import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
 import { $chatOnboardingSolo, $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
 import { OnboardingSkip } from '@/components/onboarding-chat/skip'
 import { OnboardingStart } from '@/components/onboarding-chat/start'
@@ -1149,6 +1149,7 @@ export function ChatBar({
           // guard forever (#44135). Clear unconditionally: by the time blur
           // runs there is nothing left composing in this editor.
           composingRef.current = false
+
           if (blurCloseTimer.current !== null) {
             window.clearTimeout(blurCloseTimer.current)
           }
@@ -1407,7 +1408,7 @@ export function ChatBar({
               >
                 <div
                   aria-hidden
-                  className={cn('pointer-events-none absolute inset-0 -z-10 rounded-[inherit]', composerInputSurface)}
+                  className={composerInputBacking}
                 />
                 {!guidedChat && (
                   <CodingStatusRow
@@ -1528,7 +1529,7 @@ export function ChatBarFallback() {
       <div className="composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]">
         <div
           aria-hidden
-          className={cn('pointer-events-none absolute inset-0 -z-10 rounded-[inherit]', composerInputSurface)}
+          className={composerInputBacking}
         />
       </div>
     </div>

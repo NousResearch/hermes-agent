@@ -3437,8 +3437,7 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* The composer surface paints TWO layers: the surface itself, plus an
-   `absolute inset-0 -z-10` fill+glass div behind it (composerFill /
-   composerSurfaceGlass). Two stacked fills read as a box inside a box, so the
+   `absolute inset-0 -z-10` fill div behind it (composerInputBacking). Two stacked fills read as a box inside a box, so the
    backing layer goes and the surface carries the single fill. */
 [data-hud-shell] [data-slot='composer-surface'] > .pointer-events-none.absolute.inset-0 {
   display: none !important;

@@ -532,10 +532,11 @@ def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Op
     return kind
 
 
-def welcome_route_refusal_copy(kind: str, *, in_chat: bool = True) -> str:
+def welcome_route_refusal_copy(kind: str, *, in_chat: bool = True, door: bool = True) -> str:
     template = _WELCOME_ROUTE_COPY.get(kind) or "The Nous inference gateway refused this route."
     return template.format(
-        host=DEFAULT_NOUS_WELCOME_URL, signin=_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL)
+        host=DEFAULT_NOUS_WELCOME_URL,
+        signin=(_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL) if door else "").rstrip()
 
 
 def note_model_switch(agent: Any, headers: Any) -> Optional[str]:

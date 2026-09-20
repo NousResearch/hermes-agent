@@ -187,8 +187,9 @@ def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bo
 
 def _profile_create(args):
     from hermes_cli.profiles import (
-        _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_profile,
-        create_wrapper_script, get_active_profile_name, seed_profile_skills,
+        SHARED_PROFILE_HONCHO_MARKER, _get_default_hermes_home, _get_wrapper_dir,
+        _is_wrapper_dir_in_path, check_alias_collision, create_profile, create_wrapper_script,
+        get_active_profile_name, seed_profile_skills,
     )
     name = args.profile_name
     clone = getattr(args, "clone", False)
@@ -226,7 +227,11 @@ def _profile_create(args):
             clone_honcho_for_profile = None  # Honcho plugin not installed
         if clone_honcho_for_profile is not None:
             try:
-                if clone_honcho_for_profile(name):
+                clone_kwargs = {}
+                default_home = _get_default_hermes_home()
+                if (default_home / SHARED_PROFILE_HONCHO_MARKER).is_file():
+                    clone_kwargs["config_path"] = default_home / "honcho.json"
+                if clone_honcho_for_profile(name, **clone_kwargs):
                     print(f"Honcho config cloned (peer: {name})")
             except ConfigWriteRefused as e:
                 print(f"Honcho config not cloned: {e}")

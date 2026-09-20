@@ -31,6 +31,7 @@ def test_shared_profile_auth_symlink_resolves_to_one_atomic_store(tmp_path, monk
     root = tmp_path / "root"
     profile = root / "profiles" / "worker"
     profile.mkdir(parents=True)
+    (root / ".share-profile-auth").write_text("enabled\n", encoding="utf-8")
     root_auth = root / "auth.json"
     root_auth.write_text(
         json.dumps({"version": 1, "providers": {"openai-codex": {"tokens": {"access_token": "a"}}}}),
@@ -38,6 +39,8 @@ def test_shared_profile_auth_symlink_resolves_to_one_atomic_store(tmp_path, monk
     )
     profile_auth = profile / "auth.json"
     profile_auth.symlink_to(root_auth)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
     monkeypatch.setattr(auth, "get_hermes_home", lambda: profile)
 
     assert auth._auth_file_path() == root_auth.resolve()
@@ -48,6 +51,31 @@ def test_shared_profile_auth_symlink_resolves_to_one_atomic_store(tmp_path, monk
 
     assert profile_auth.is_symlink(), "atomic refresh must not replace the shared-store alias"
     assert json.loads(root_auth.read_text(encoding="utf-8"))["providers"]["openai-codex"]["last_refresh"] == "rotated"
+
+
+@pytest.mark.parametrize("via_default_store", [False, True], ids=["direct", "chained"])
+def test_profile_auth_symlink_to_unrelated_json_is_rejected(
+    tmp_path, monkeypatch, via_default_store
+):
+    root = tmp_path / "root"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    (root / ".share-profile-auth").write_text("enabled\n", encoding="utf-8")
+    unrelated = tmp_path / "unrelated.json"
+    unrelated.write_text('{"keep":"me"}\n', encoding="utf-8")
+    target = unrelated
+    if via_default_store:
+        target = root / "auth.json"
+        target.symlink_to(unrelated)
+    (profile / "auth.json").symlink_to(target)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr(auth, "get_hermes_home", lambda: profile)
+
+    with pytest.raises(RuntimeError, match="shared auth symlink"):
+        auth._save_auth_store({"version": auth.AUTH_STORE_VERSION, "providers": {}})
+
+    assert unrelated.read_text(encoding="utf-8") == '{"keep":"me"}\n'
 
 
 @pytest.fixture

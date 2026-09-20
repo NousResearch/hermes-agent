@@ -250,11 +250,11 @@ def _session_manager(hcfg, client):
     return mgr, session_key
 
 
-def _ensure_peer_exists(host_key: str | None = None) -> bool:
+def _ensure_peer_exists(host_key: str | None = None, *, config_path: Path | None = None) -> bool:
     """Create the AI (and user) peer in Honcho if missing. Idempotent; False on failure."""
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
-        hcfg = HonchoClientConfig.from_global_config(host=host_key)
+        hcfg = HonchoClientConfig.from_global_config(host=host_key, config_path=config_path)
         if not hcfg.enabled or not (hcfg.api_key or hcfg.base_url):
             return False
         client = get_honcho_client(hcfg)
@@ -277,10 +277,14 @@ def _inherit_defaults(block: dict, default_block: dict, cfg: dict, keys: tuple[s
         block["peerName"] = peer_name
 
 
-def clone_honcho_for_profile(profile_name: str) -> bool:
+def clone_honcho_for_profile(profile_name: str, *, config_path: Path | None = None) -> bool:
     """Create a host block for a new profile, cloned from the default host block
     (called during profile creation). False if Honcho isn't configured or the block exists."""
-    cfg = _read_config()
+    cfg = (
+        _ReadConfig(read_json_or_empty(config_path), config_path)
+        if config_path is not None
+        else _read_config()
+    )
     if not cfg:
         return False
     default_block, has_key = _default_block_and_key(cfg)
@@ -300,8 +304,11 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if _resolve_api_key(cfg, new_block, env=False):
         new_block["enabled"] = default_block.get("enabled", True)
     cfg.setdefault("hosts", {})[new_host] = new_block
-    _write_config(cfg)
-    _ensure_peer_exists(new_host)  # eager so the peer exists before first message
+    _write_config(cfg, path=config_path)
+    if config_path is None:
+        _ensure_peer_exists(new_host)
+    else:
+        _ensure_peer_exists(new_host, config_path=config_path)
     return True
 
 

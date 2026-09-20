@@ -157,6 +157,28 @@ class TestCreateProfile:
         assert profile_auth.is_symlink()
         assert profile_auth.samefile(root_auth)
 
+    def test_shared_auth_policy_persists_before_default_store_exists(self, profile_env, monkeypatch):
+        from hermes_cli import auth as auth_mod
+
+        default_home = profile_env / ".hermes"
+        root_auth = default_home / "auth.json"
+        (default_home / ".share-profile-auth").write_text("enabled\n", encoding="utf-8")
+
+        profile_dir = create_profile("coder", no_alias=True)
+        profile_auth = profile_dir / "auth.json"
+
+        assert profile_auth.is_symlink()
+        assert not profile_auth.exists()
+        assert not Path(os.readlink(profile_auth)).is_absolute()
+
+        monkeypatch.setattr(Path, "home", lambda: profile_env / "native-home")
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        auth_mod._save_auth_store({"version": auth_mod.AUTH_STORE_VERSION, "providers": {"nous": {}}})
+
+        assert profile_auth.is_symlink()
+        assert profile_auth.samefile(root_auth)
+        assert json.loads(root_auth.read_text(encoding="utf-8"))["providers"] == {"nous": {}}
+
     def test_shared_honcho_policy_seeds_new_profile_host(self, profile_env, monkeypatch):
         """An opted-in install creates the profile's Honcho identity during every
         profile creation path, not only clone-based CLI creation."""
@@ -173,13 +195,43 @@ class TestCreateProfile:
             }},
         }), encoding="utf-8")
         (default_home / ".sync-profile-honcho").write_text("enabled\n", encoding="utf-8")
-        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: True)
+        monkeypatch.setattr(
+            honcho_cli, "_ensure_peer_exists", lambda host_key=None, config_path=None: True
+        )
 
         create_profile("coder", no_alias=True)
 
         cfg = json.loads((default_home / "honcho.json").read_text(encoding="utf-8"))
         assert cfg["hosts"]["hermes_coder"]["aiPeer"] == "coder"
         assert cfg["hosts"]["hermes_coder"]["workspace"] == "alesia"
+
+    def test_shared_honcho_policy_writes_default_config_from_named_home(self, profile_env, monkeypatch):
+        from plugins.memory.honcho import cli as honcho_cli
+
+        default_home = profile_env / ".hermes"
+        default_cfg = {
+            "apiKey": "default-key",
+            "hosts": {"hermes": {"workspace": "default-workspace", "aiPeer": "default"}},
+        }
+        (default_home / "honcho.json").write_text(json.dumps(default_cfg), encoding="utf-8")
+        (default_home / ".sync-profile-honcho").write_text("enabled\n", encoding="utf-8")
+        launch_home = default_home / "profiles" / "launch"
+        launch_home.mkdir(parents=True)
+        launch_cfg = {
+            "apiKey": "launch-key",
+            "hosts": {"hermes": {"workspace": "launch-workspace", "aiPeer": "launch"}},
+        }
+        (launch_home / "honcho.json").write_text(json.dumps(launch_cfg), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(launch_home))
+        monkeypatch.setattr(
+            honcho_cli, "_ensure_peer_exists", lambda host_key=None, config_path=None: True
+        )
+
+        create_profile("coder", no_alias=True)
+
+        saved_default = json.loads((default_home / "honcho.json").read_text(encoding="utf-8"))
+        assert saved_default["hosts"]["hermes_coder"]["workspace"] == "default-workspace"
+        assert json.loads((launch_home / "honcho.json").read_text(encoding="utf-8")) == launch_cfg
 
 
     def test_fresh_profile_inherits_a_usable_model(self, profile_env):

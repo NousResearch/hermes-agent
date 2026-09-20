@@ -1160,8 +1160,6 @@ def _link_shared_profile_auth(profile_dir: Path) -> bool:
     if not (default_home / SHARED_PROFILE_AUTH_MARKER).is_file():
         return False
     root_auth = default_home / "auth.json"
-    if not root_auth.is_file():
-        return False
     profile_auth = profile_dir / "auth.json"
     if profile_auth.exists() or profile_auth.is_symlink():
         profile_auth.unlink()
@@ -1178,7 +1176,7 @@ def _sync_shared_profile_honcho(canon: str) -> bool:
         return False
     try:
         from plugins.memory.honcho.cli import clone_honcho_for_profile
-        return bool(clone_honcho_for_profile(canon))
+        return bool(clone_honcho_for_profile(canon, config_path=default_home / "honcho.json"))
     except Exception as exc:
         logger.warning("profile %s: shared Honcho identity sync failed: %s", canon, exc)
         return False

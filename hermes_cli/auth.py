@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
+from hermes_constants import OPENROUTER_BASE_URL, get_default_hermes_root, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, atomic_yaml_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
@@ -445,12 +445,20 @@ def _nonempty_str(value: Any) -> bool:
 
 def _auth_file_path() -> Path:
     path = get_hermes_home() / "auth.json"
-    # A profile may explicitly opt into one fleet-wide credential store by symlinking its
-    # auth.json to the root store. Resolve before choosing the lock and atomic-write target:
-    # otherwise refresh would lock the alias separately and os.replace() would destroy the link,
-    # forking a single-use OAuth refresh-token chain across profiles.
+    # Shared auth is an install-level opt-in with one permitted target. Reject every other
+    # symlink before lock/write selection so a profile cannot redirect atomic writes elsewhere.
     if path.is_symlink():
-        path = path.resolve(strict=True)
+        default_home = get_default_hermes_root()
+        try:
+            resolved = path.resolve(strict=False)
+            expected = default_home.resolve(strict=False) / "auth.json"
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(f"Refusing invalid shared auth symlink: {path}") from exc
+        if not (default_home / ".share-profile-auth").is_file() or resolved != expected:
+            raise RuntimeError(
+                f"Refusing unexpected shared auth symlink: {path} -> {resolved}"
+            )
+        path = expected
     # Seat belt: under pytest, refuse to touch the real user's auth store (tests that forgot to
     # monkeypatch HERMES_HOME or escaped the hermetic conftest). In production: one dict lookup.
     if (os.environ.get("PYTEST_CURRENT_TEST")

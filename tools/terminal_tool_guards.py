@@ -142,12 +142,8 @@ def _foreground_background_guidance(command: str) -> str | None:
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
 
 
-_GREP_RECURSIVE_FLAG_RE = re.compile(
-    r"(?:^|[\s;|&])(?:grep|egrep|fgrep)\s+-[A-Za-z]*[rR][A-Za-z]*\b"
-    r"|(?:^|[\s;|&])(?:grep|egrep|fgrep)\s+[^\n]*?--recursive\b"
-)
-_RG_BIN_RE = re.compile(r"(?:^|[\s;|&])(?:rg|ripgrep)\b")
-_FIND_BIN_RE = re.compile(r"(?:^|[\s;|&])find\b")
+_RECURSIVE_BINS = frozenset({"rg", "ripgrep", "find"})
+_GREP_BINS = frozenset({"grep", "egrep", "fgrep"})
 _DENIED_SEARCH_ERROR = (
     "Blocked: recursive search of {root}. Use a seeded repo path."
 )
@@ -167,17 +163,34 @@ def _denied_search_root_paths(home: Path | None = None) -> tuple[Path, ...]:
     return tuple(roots)
 
 
-def _looks_like_recursive_search(command: str) -> bool:
-    """True for grep -r, rg (recursive by default), or find."""
+def _tokenize_command(command: str) -> list[str]:
+    """Split the original command so quoted roots like \"$HOME\" survive."""
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.split()
+
+
+def _is_grep_recursive_flag(token: str) -> bool:
+    """True for --recursive or a short cluster that contains r/R (-r, -rln, -nR)."""
+    if token == "--recursive":
+        return True
+    if token.startswith("--") or not token.startswith("-") or len(token) < 2:
+        return False
+    letters = token[1:]
+    return "r" in letters or "R" in letters
+
+
+def _looks_like_recursive_search(command: str, tokens: list[str]) -> bool:
+    """True for grep with -r/-R/--recursive anywhere in argv, rg, or find."""
     if _looks_like_help_or_version_command(command):
         return False
-    unquoted = _strip_quotes(command)
-    if _GREP_RECURSIVE_FLAG_RE.search(unquoted):
-        return True
-    if _RG_BIN_RE.search(unquoted):
-        return True
-    if _FIND_BIN_RE.search(unquoted):
-        return True
+    for i, token in enumerate(tokens):
+        base = Path(token).name
+        if base in _GREP_BINS and any(_is_grep_recursive_flag(t) for t in tokens[i + 1:]):
+            return True
+        if base in _RECURSIVE_BINS:
+            return True
     return False
 
 
@@ -221,13 +234,10 @@ def recursive_search_root_block(
     Project subdirectories under home remain allowed. Returns the JSON error
     envelope when blocked, else None.
     """
-    if not _looks_like_recursive_search(command):
+    tokens = _tokenize_command(command)
+    if not _looks_like_recursive_search(command, tokens):
         return None
     denied = _denied_search_root_paths(home)
-    try:
-        tokens = shlex.split(_strip_quotes(command), posix=True)
-    except ValueError:
-        tokens = command.split()
     # Relative "." / empty path list uses cwd as the search root.
     if cwd:
         hit = _path_is_denied_search_root(".", cwd=cwd, denied=denied)

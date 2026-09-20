@@ -189,8 +189,8 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
             if not _notif_claim_turn(session):
                 mgr.abandon_tick()
                 return
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, payload["message"])
+            # Releases the claim on failure: the swallow below would otherwise leave the session busy for good.
+            _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
             return
     except Exception:
         pass
@@ -456,7 +456,16 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
-    if (claim := claim_event_delivery(evt, "tui-poller")) is None:
+    try:
+        claim = claim_event_delivery(evt, "tui-poller")
+    except Exception as exc:  # shared ledger busy/unreadable: the durable row stays pending and replays
+        _notif_log_failure("notification delivery claim failed", exc)
+        claim = None
+    if claim is None:
+        # Another consumer holds the durable row — a gateway sharing this home claims before it verifies
+        # the target. No turn will run, and nothing else clears ``running``: a busy session is exempt
+        # from the reaper, keeps its lease, and never reaches its bot mailbox again.
+        _notif_release_turn(session)
         return
     kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
               if evt.get("type") == "async_delegation" else {})
@@ -539,10 +548,19 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         if deferred is None:
             time.sleep(0.25)
         return
-    claimed = [(event, text, claim) for event, text in notifications
-               if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None]
-    batch = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed))
-    text = batch.render(registry)
+    claimed: list = []
+    try:
+        for event, event_text in notifications:
+            if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None:
+                claimed.append((event, event_text, claim))
+        batch = ProcessNotificationBatch(tuple((event, event_text) for event, event_text, _claim in claimed))
+        text = batch.render(registry)
+    except Exception as exc:
+        _notif_log_failure("completion batch preparation failed", exc)
+        _notif_release_turn(session)
+        for event, _text, claim in claimed:
+            release_event_delivery(event, claim)
+        return
     if text is None:
         _notif_release_turn(session)
     try:
@@ -705,7 +723,12 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
                 ready.append(queue.get_nowait())
             except Exception:
                 break
-        handle(ready, None)
+        try:
+            handle(ready, None)
+        except Exception as exc:
+            # This thread is the session's only path to notifications, /loop, /heartbeat and its
+            # bot mailbox; one bad event must not end all four.
+            _notif_log_failure("notification dispatch failed", exc)
     # Drain remaining events after the stop signal so nothing is lost on shutdown; foreign and orphaned-delegation
     # events are handed back to the shared queue afterwards.
     deferred: list = []

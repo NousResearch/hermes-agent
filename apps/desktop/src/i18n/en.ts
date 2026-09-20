@@ -732,6 +732,8 @@ export const en: Translations = {
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       hideCodeDiffsTitle: 'Hide code diffs',
       hideCodeDiffsDesc: 'Show file edits as inline tool rows with added/removed line counts, without the code.',
+      hideThreadTimelineTitle: 'Hide thread timeline bars',
+      hideThreadTimelineDesc: 'Hide the navigation bars along the right edge of each conversation.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
       uiScaleTitle: 'UI Scale',

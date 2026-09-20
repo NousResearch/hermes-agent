@@ -643,18 +643,17 @@ PLUGIN_USAGE_HOOK_DEADLINE_S = 10.0
 
 
 def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
-    """Run the profile hook on a daemon thread; past the deadline (or on any exception) → None."""
-    import contextvars
-    import threading
-    result: list = []
-    context = contextvars.copy_context()  # the hook may read profile-scoped secrets
-    worker = threading.Thread(
-        target=lambda: result.append(
-            context.run(profile.fetch_account_usage, base_url=base_url, api_key=api_key)),
-        name="plugin-account-usage", daemon=True)
-    worker.start()
-    worker.join(PLUGIN_USAGE_HOOK_DEADLINE_S)
-    return result[0] if result else None
+    """Run the profile hook under the shared deadline; past it → None. Exceptions re-raise in the
+    caller so ``fetch_account_usage`` fails open without a worker-thread traceback on ``/usage``."""
+    from agent.deadline import run_bounded_sync
+    from providers.base import ProviderProfile
+
+    if type(profile).fetch_account_usage is ProviderProfile.fetch_account_usage:
+        return None  # base no-op: no thread to spawn
+    bounded = run_bounded_sync(
+        lambda: profile.fetch_account_usage(base_url=base_url, api_key=api_key),
+        PLUGIN_USAGE_HOOK_DEADLINE_S, label="plugin-account-usage")
+    return None if bounded.timed_out else bounded.value
 
 
 def fetch_account_usage(

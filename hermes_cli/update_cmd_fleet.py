@@ -53,6 +53,11 @@ def _fleet_restart_pending_marker_path() -> Path:
 
 def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: list[dict] | None = None) -> None:
     """Drop the pull→restart obligation breadcrumb. Never raises."""
+    if runtimes == []:
+        # An explicit empty inventory owes no restart (e.g. Desktop-hosted `serve` with no
+        # gateway services). Arming the marker here leaves a breadcrumb nothing can discharge:
+        # a no-gateway host would then fail every later ``hermes update`` (#115311).
+        return
     from hermes_cli.update_cmd import _m
     path = _fleet_restart_pending_marker_path()
     if _m()._pytest_owns_live_checkout(path.parent):
@@ -145,10 +150,13 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     )
 
 
+_SUPERVISED_SERVE_BACKENDS = frozenset({"manual-serve", "desktop", "systemd", "launchd", "windows-service", "service"})
+
+
 def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tuple[str, str]] | None:
     """Pure coverage classification after manual retention of this receipt snapshot.
 
-    Empty means this receipt owes no gateways, not that an independent marker owes none. Unknown identities and failed manual transfers make coverage unverified.
+    Empty means this receipt owes no gateways, not that an independent marker owes none. Unknown identities, unclassified serve backends and failed manual transfers make coverage unverified.
     """
     plan = receipt.get("plan") or {}
     entries: list[tuple[object, str | None]] = [(entry, None) for entry in plan.get("runtimes") or []]
@@ -162,7 +170,13 @@ def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tup
             continue
         kind = entry.get("kind", default_kind)
         profile = entry.get("profile")
-        if kind in ("serve", "dashboard") and entry.get("supervisor") == "manual-serve" and entry not in pending_manual:
+        # A serve/dashboard row is outside the gateway matrix's evidence, not evidence against the
+        # gateways it does cover: a supervised backend (desktop, systemd, launchd) is its
+        # supervisor's to restart, and a manual-serve row outside the retention list is the serve
+        # obligation mechanism's — a host running a dashboard carries such a row in every receipt,
+        # and a blanket veto made the gateway warning permanently undischargeable there (#115090).
+        # Only an unclassified backend or a failed manual transfer still makes coverage unverified.
+        if kind in ("serve", "dashboard") and entry.get("supervisor") in _SUPERVISED_SERVE_BACKENDS and entry not in pending_manual:
             continue
         if kind != "gateway" or not profile or profile == "unknown":
             unverified = True
@@ -215,7 +229,14 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
 def _marker_only_restart_obsolete() -> bool:
     """Settle only the inventory stored with this marker's target SHA.
 
-    Historical receipts cannot narrow this obligation. Legacy, malformed or unsupported inventories stay fail-closed; empty discovery never proves a stopped gateway recovered.
+    Historical receipts cannot narrow this obligation. Malformed or unsupported inventories stay
+    fail-closed; empty discovery never proves a stopped gateway recovered. Two shapes record no
+    obligation and settle without one: an explicit empty inventory (a pull that found no gateway,
+    #115311) clears outright, and an inventory-less marker (the pre-inventory writer, or a tail
+    that died before its inventory was recorded, #115638) clears once every live gateway is
+    current on the checkout — there is no recorded owed set, so the fleet running the code on disk
+    is the whole of the evidence the marker's warning can be about, even after HEAD moved past
+    ``expected_sha`` by an out-of-band pull.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -228,30 +249,41 @@ def _marker_only_restart_obsolete() -> bool:
             fields[key] = value
         expected_sha = fields.get("expected_sha", "").strip()
         inventory = json.loads(fields.get("inventory", "null"))
-        if not isinstance(inventory, dict) or inventory.get("version") != 1:
-            return False
-        runtimes = inventory.get("runtimes")
-        if not isinstance(runtimes, list) or not runtimes:
-            return False
-        owed = set()
-        for runtime in runtimes:
-            if not isinstance(runtime, dict):
+        owed: set[tuple[str, str]] | None = None
+        if inventory is not None:
+            if not isinstance(inventory, dict) or inventory.get("version") != 1:
                 return False
-            if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
-                continue
-            if runtime.get("kind") != "gateway":
+            runtimes = inventory.get("runtimes")
+            if not isinstance(runtimes, list):
                 return False
-            profile = runtime.get("profile")
-            if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
-                return False
-            owed.add(("gateway", profile))
+            owed = set()
+            for runtime in runtimes:
+                if not isinstance(runtime, dict):
+                    return False
+                if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
+                    continue
+                if runtime.get("kind") != "gateway":
+                    return False
+                profile = runtime.get("profile")
+                if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
+                    return False
+                owed.add(("gateway", profile))
     except (OSError, UnicodeError, ValueError):
         return False
+    if owed is not None and not owed:
+        # A pull that recorded no gateway runtime owes no restart; clearing avoids the
+        # stuck "Fleet restart incomplete" loop on Desktop-hosted (no-service) installs.
+        _clear_fleet_restart_pending_marker()
+        logger.debug("Fleet-restart-pending marker discharged: no gateway obligation recorded")
+        return True
     if not expected_sha:
         return False
     checkout_sha = _current_checkout_sha()
-    if checkout_sha != expected_sha:
+    if owed is not None and checkout_sha != expected_sha:
         return False  # a newer pull moved HEAD; it owns a fresh obligation
+    target_sha = expected_sha if owed is not None else checkout_sha
+    if not target_sha:
+        return False
     try:
         from hermes_cli.update_receipt import collect_fleet_versions
         fleet = collect_fleet_versions()
@@ -264,14 +296,14 @@ def _marker_only_restart_obsolete() -> bool:
     if covered is None:
         return False  # unidentified runtime: the matrix cannot vouch for it
     for row in fleet:
-        if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
+        if row.get("state") != "current" or str(row.get("code_sha")) != target_sha:
             return False  # stale / down / unknown-identity row still owes the restart
-    if not owed <= covered:
+    if owed is not None and not owed <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
     _clear_fleet_restart_pending_marker()
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",
-        len(fleet), expected_sha[:10],
+        len(fleet), target_sha[:10],
     )
     return True
 
@@ -760,7 +792,8 @@ def _restart_macos_launchd_gateways(
     cannot leave the rest of the fleet on old code (#68523).
     """
     from hermes_cli.gateway import (
-        get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
+        get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, legacy_launchd_labels_for_install,
+        _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
     if require_supervision:
@@ -773,7 +806,15 @@ def _restart_macos_launchd_gateways(
     failed_or_stale_units.extend(_failed)
     current_label = get_launchd_label()
 
-    for label in launchd_gateway_labels_for_install():
+    derived_labels = launchd_gateway_labels_for_install()
+    # Units labelled before the profile-name suffix scheme (ai.hermes.gateway-<hash>) are invisible
+    # to the derivation; legacy_launchd_labels_for_install() credits one only when its plist is
+    # provably this install's, so the #41403 boundary (never touch another install's fleet) holds.
+    # See #115254.
+    legacy_labels = legacy_launchd_labels_for_install(exclude=set(derived_labels) | {current_label})
+    if legacy_labels:
+        print(f"  ↻ legacy-labelled units of this install join the restart: {', '.join(legacy_labels)}")
+    for label in derived_labels + legacy_labels:
         if label == current_label:
             continue
         try:
@@ -848,6 +889,13 @@ _SERVE_SKIP_REASON = (
     " systemd unit pass when it owns a hermes-serve* unit, else left running for explicit"
     " operator restart"
 )
+# A launchd-owned backend (#116503): the fresh child has no per-label kickstart for serve/dashboard
+# jobs, but the post-update dashboard cleanup pass kickstarts the loaded job — never a detached
+# argv respawn, which would fight the job's own KeepAlive.
+_LAUNCHD_SERVE_SKIP_REASON = (
+    "launchd job owns this backend; the post-update dashboard cleanup kickstarts the job through"
+    " launchd, never a detached argv respawn that would fight its KeepAlive"
+)
 
 
 def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) -> tuple[dict[str, str], list[dict]]:
@@ -879,7 +927,12 @@ def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) 
                     continue
                 reason = _MANUAL_GATEWAY_SKIP_REASON
             elif kind in ("serve", "dashboard"):
-                reason = _DESKTOP_SERVE_SKIP_REASON if supervisor == "desktop" else _SERVE_SKIP_REASON
+                if supervisor == "desktop":
+                    reason = _DESKTOP_SERVE_SKIP_REASON
+                elif supervisor == "launchd":
+                    reason = _LAUNCHD_SERVE_SKIP_REASON
+                else:
+                    reason = _SERVE_SKIP_REASON
             else:
                 continue
             skipped.append({"profile": profile, "kind": str(kind), "supervisor": str(supervisor), "reason": reason})

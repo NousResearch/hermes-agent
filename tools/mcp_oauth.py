@@ -261,10 +261,19 @@ def get_oauth_reauth_staging_home(server_name: str, *, hermes_home: str | Path |
 def oauth_reauth_staging(server_name: str, *, hermes_home: str | Path | None = None):
     key = _oauth_reauth_key(server_name, hermes_home)
     staging_home = Path(key[0]) / "mcp-reauth" / _safe_filename(server_name) / secrets.token_hex(8)
+    # A fresh authorization must ignore old credentials, but it may need the
+    # discovered authorization-server metadata to avoid falling back to the
+    # MCP origin's guessed authorize URL. Stage metadata only; tokens, client
+    # registration, and CIMD rejection state deliberately start empty.
+    source_storage = HermesTokenStorage(server_name, hermes_home=hermes_home)
+    staged_storage = HermesTokenStorage(server_name, hermes_home=staging_home)
+    metadata = _read_json(source_storage._meta_path())
+    if metadata is not None:
+        _write_json(staged_storage._meta_path(), metadata)
     with _oauth_reauth_staging_lock:
         _oauth_reauth_staging_homes[key] = staging_home
     try:
-        yield HermesTokenStorage(server_name, hermes_home=staging_home)
+        yield staged_storage
     finally:
         with _oauth_reauth_staging_lock:
             _oauth_reauth_staging_homes.pop(key, None)
@@ -677,11 +686,14 @@ class HermesTokenStorage:
         """True when this server has refused our metadata document before."""
         return self._cimd_rejected_path().exists()
 
-    def remove(self) -> None:
-        """Delete all stored OAuth state for this server."""
+    def remove(self, *, keep_metadata: bool = False) -> None:
+        """Delete all stored OAuth state for this server; ``keep_metadata`` spares ``.meta.json`` so a
+        re-login can still announce the discovered ``authorization_endpoint`` when the authorization
+        server's metadata document cannot be re-fetched (#115329)."""
         # The ``.refresh.lock`` sidecar is deliberately kept: flock is inode-bound, so unlinking it
         # while a peer holds the fence would let the next acquirer lock a fresh inode (two holders).
-        for p in (*self._state_paths(), self._cimd_rejected_path()):
+        for p in (self._tokens_path(), self._client_info_path(), self._cimd_rejected_path(),
+                  *(() if keep_metadata else (self._meta_path(),))):
             p.unlink(missing_ok=True)
 
     def snapshot(self) -> dict[str, bytes]:
@@ -781,13 +793,25 @@ def _make_callback_handler() -> tuple[type, dict]:
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = _parse_redirect_query(urlparse(self.path).query)
-            result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
-            body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
-                    else f"<h2>Authorization Failed</h2><p>Error: {html.escape(parsed['error'] or 'unknown')}</p>")
-            self.send_response(200)
+            status = 200
+            if not parsed["code"] and not parsed["error"]:
+                # Browsers follow the real /callback with queryless fetches (/favicon.ico); an unconditional
+                # update here wrote four Nones over the code before the 500 ms waiter poll saw it (#116278).
+                status, body = 404, "<h2>Not Found</h2>"
+            elif _result_taken(result):
+                # First terminal result (HTTP or paste) wins; a duplicate or refreshed callback never replaces it.
+                body = "<h2>Authorization already received</h2><p>You can close this tab and return to Hermes.</p>"
+            else:
+                result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
+                body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
+                        else f"<h2>Authorization Failed</h2><p>Error: {html.escape(parsed['error'] or 'unknown')}</p>")
+            self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(f"<html><body>{body}</body></html>".encode())
+
+        def log_request(self, code: str = "-", size: str = "-") -> None:  # noqa: N802
+            logger.debug("OAuth callback: %s %s", self.command, urlparse(self.path).path)  # never the query (carries the code)
 
         def log_message(self, fmt: str, *args: Any) -> None:
             logger.debug("OAuth callback: %s", fmt % args)

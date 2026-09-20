@@ -24,6 +24,7 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import {
   $titlebarAppActionsSide,
@@ -403,6 +404,7 @@ export function AppearanceSettings() {
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const hideCodeDiffs = useStore($hideCodeDiffs)
+  const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
@@ -963,6 +965,25 @@ export function AppearanceSettings() {
             description={a.hideCodeDiffsDesc}
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.hideCodeDiffs)}
             title={a.hideCodeDiffsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setHideThreadTimeline(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={hideThreadTimeline ? 'on' : 'off'}
+              />
+            }
+            description={a.hideThreadTimelineDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.hideThreadTimeline)}
+            title={a.hideThreadTimelineTitle}
           />
 
           <ListRow

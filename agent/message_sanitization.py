@@ -159,6 +159,46 @@ def _loads_ok(text: str) -> bool:
         return False
 
 
+_JSON_CLOSERS = {"{": "}", "[": "]"}
+
+
+def _rebalance_json_closers(raw: str) -> str | None:
+    """Close a JSON prefix's open braces/brackets in stack order, ignoring delimiters
+    inside string values (``{"code": "}"}`` keeps one open brace, not a balanced
+    document). A closer that does not match the stack top but does match a deeper opener
+    gets the missing inner closers inserted BEFORE it: ``{"a": [{"b": 1}}`` → the model
+    dropped the ``]`` and let the neighbouring ``}`` close in its place, so the counts
+    balance and nothing can be appended. ``None`` when the text ends inside an
+    unterminated string — that content is unrecoverable and must not be guessed.
+    """
+    out: list[str] = []
+    stack: list[str] = []
+    in_string = False
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if in_string:
+            if ch == "\\":
+                out.append(raw[i:i + 2])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in _JSON_CLOSERS:
+            stack.append(ch)
+        elif ch in "}]" and ch in (_JSON_CLOSERS[o] for o in stack):
+            while _JSON_CLOSERS[stack[-1]] != ch:
+                out.append(_JSON_CLOSERS[stack.pop()])
+            stack.pop()
+        out.append(ch)
+        i += 1
+    if in_string:
+        return None
+    return "".join(out) + "".join(_JSON_CLOSERS[ch] for ch in reversed(stack))
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
     control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
@@ -182,10 +222,13 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
-    # Passes 1-3: strip trailing commas, close unclosed structures, trim excess closers (bounded).
-    fixed = re.sub(r',\s*([}\]])', r'\1', raw_stripped)
-    fixed += '}' * max(0, fixed.count('{') - fixed.count('}'))
-    fixed += ']' * max(0, fixed.count('[') - fixed.count(']'))
+    # Passes 2-4: strip trailing commas, close unclosed structures, trim excess closers
+    # (bounded). Bracket counting is string-aware: delimiters inside string values
+    # ({"code": "}"}) are not structure, and the closers land in stack order — a truncated
+    # {"items": [{"n": 1}, {"n": 2 needs "}]}" appended, and a misnested
+    # {"a": [{"b": 1}, {"c": 2}} needs "]" inserted before the misplaced "}".
+    fixed = re.sub(r",\s*([}\]])", r"\1", raw_stripped)
+    fixed = _rebalance_json_closers(fixed) or fixed
     for _ in range(50):
         if _loads_ok(fixed) or not (
             (fixed.endswith('}') and fixed.count('}') > fixed.count('{'))
@@ -198,7 +241,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], fixed[:80])
         return fixed
 
-    # Pass 4: escape control chars inside strings (strict=False alone fails when other
+    # Pass 5: escape control chars inside strings (strict=False alone fails when other
     # malformations are present too), then retry.
     escaped = _escape_invalid_chars_in_json_strings(fixed)
     if escaped != fixed and _loads_ok(escaped):

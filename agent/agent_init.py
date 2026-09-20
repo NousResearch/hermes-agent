@@ -466,12 +466,15 @@ def _finalize_routing(agent, api_mode, credential_pool):
     # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
     # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
     # exceptions live in _provider_model_requires_responses_api.
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+
     _base_lower = str(agent.base_url or "").lower()
     if (
         # GPT-5.x models usually require the Responses API path, but some providers have exceptions (for
         # example Copilot's gpt-5-mini still uses chat completions). ACP runtimes are excluded: an ACP
         # client handles its own routing and does not implement the Responses API surface. Keyed on the
-        # `acp://` scheme, not one vendor, so every ACP client is covered. When api_mode was explicitly
+        # `acp://` scheme AND the profile's external_process auth_type (an `<X>_ACP_BASE_URL` override
+        # can carry an https marker), not one vendor, so every ACP client is covered. When api_mode was explicitly
         # provided, respect it — the user knows what their endpoint supports (#10473). Exception: Azure
         # OpenAI serves gpt-5.x on /chat/completions and does NOT support the Responses API — skip the
         # upgrade for Azure (openai.azure.com), even though it looks OpenAI-compatible.
@@ -479,6 +482,7 @@ def _finalize_routing(agent, api_mode, credential_pool):
         and agent.api_mode == "chat_completions"
         and not is_actual_route(agent.provider, agent.base_url)
         and not _base_lower.startswith(("acp://", "acp+tcp://"))
+        and not _is_external_process_provider(agent.provider)
         and not agent._is_azure_openai_url()
         and (
             agent._is_direct_openai_url()
@@ -794,15 +798,11 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     # ACP/subprocess providers take launch kwargs instead of HTTP credentials. Keyed on the
     # provider profile's auth_type, not one vendor slug, so out-of-tree external_process
     # plugin providers get the same launch path as the built-in copilot-acp (#102421).
-    try:
-        from providers import get_provider_profile
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
-        profile = get_provider_profile(agent.provider)
-        if profile is not None and profile.auth_type == "external_process":
-            client_kwargs["command"] = agent.acp_command
-            client_kwargs["args"] = agent.acp_args
-    except Exception as exc:
-        logger.debug("External-process launch kwargs unavailable for %s: %s", agent.provider, exc)
+    if _is_external_process_provider(agent.provider):
+        client_kwargs["command"] = agent.acp_command
+        client_kwargs["args"] = agent.acp_args
     _headers_for = _host_default_headers_factory(base_url)
     if _headers_for is not None:
         client_kwargs["default_headers"] = _headers_for(api_key, base_url)

@@ -136,6 +136,8 @@ _BILLING_ERROR_CODES = frozenset({
     # terminal for this credential until limits are raised.
     "credit_balance_exhausted", "organization_spend_limit_exceeded",
     "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
+    # Nous paid model behind an empty credit balance arrives as a 404 (#115702).
+    "insufficient_credits_for_paid_model",
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -341,13 +343,15 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = (
 # Per-prompt safety-filter blocks: deterministic for the unchanged request, so
 # fallback immediately. Each phrase is verbatim from one provider (Codex cyber
 # flags #18028, OpenAI moderation, Anthropic safety, Azure token, MiniMax
-# #32421) — never a generic word like "policy" that collides with billing/auth.
+# #32421, CommandCode gateway moderation #115218) — never a generic word like
+# "policy" that collides with billing/auth.
 # "content_filter" deliberately excludes the space variant seen in echoed config.
 _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "flagged for possible cybersecurity risk", "trusted access for cyber",
     "violates our usage policies", "violates openai's usage policies", "your request was flagged by",
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
+    "content exists risk",
 )
 
 # Auth patterns (non-status-code signals).
@@ -728,7 +732,14 @@ def _profile_verdict(c: _Ctx) -> Optional[Verdict]:
             return None
     if not isinstance(reason, FailoverReason):
         return None
-    verdict = _v(reason, **{k: bool(result[k]) for k in _HINT_FLAGS if k in result})
+    hints = {k: bool(result[k]) for k in _HINT_FLAGS if k in result}
+    # turn_api_error walks the fallback chain only for non-retryable verdicts outside
+    # RETRYABLE_CLIENT_REASONS; the built-in terminal verdicts (billing, auth, model_not_found …) pin
+    # retryable=False, the rate-limit family stays retryable and reaches fallback after backoff. Give
+    # a hook that asks for fallback the built-in default for its reason, so it cascades like one.
+    if hints.get("should_fallback") and "retryable" not in hints and reason not in RETRYABLE_CLIENT_REASONS:
+        hints["retryable"] = False
+    verdict = _v(reason, **hints)
     if isinstance(result.get("error_context"), dict):
         verdict["error_context"] = result["error_context"]
     logger.info("API error classified by provider profile: %s (provider=%s, status=%s)",
@@ -737,6 +748,14 @@ def _profile_verdict(c: _Ctx) -> Optional[Verdict]:
 
 
 _HINT_FLAGS = ("retryable", "should_compress", "should_rotate_credential", "should_fallback")
+
+# Reasons the retry loop keeps retrying (with backoff) even though the verdict may also carry
+# ``should_fallback``: the cascade for these runs after the backoff budget, not immediately.
+RETRYABLE_CLIENT_REASONS = frozenset({
+    FailoverReason.rate_limit, FailoverReason.upstream_rate_limit, FailoverReason.overloaded,
+    FailoverReason.context_overflow, FailoverReason.payload_too_large, FailoverReason.long_context_tier,
+    FailoverReason.thinking_signature,
+})
 
 
 # A welcome-host 403 that spells one of these out is a safety block or a billing wall, not the
@@ -996,6 +1015,10 @@ def _status_403(c: _Ctx) -> Verdict:
 
 
 def _status_404(c: _Ctx) -> Verdict:
+    # Structured billing code first, as in _status_429: this handler always returns,
+    # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
+    if c.code in _BILLING_ERROR_CODES:
+        return _V_BILLING
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict

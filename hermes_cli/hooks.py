@@ -210,9 +210,16 @@ def _cmd_test(args) -> None:
 def _print_run_result(result: Dict[str, Any]) -> None:
     if result.get("error"):
         print(f"      ✗ error: {result['error']}")
+        parsed = result.get("parsed")
+        if parsed:
+            print(f"      parsed (Hermes wire shape): {json.dumps(parsed)}")
         return
+
     if result.get("timed_out"):
         print(f"      ✗ timed out after {result['elapsed_seconds']}s")
+        parsed = result.get("parsed")
+        if parsed:
+            print(f"      parsed (Hermes wire shape): {json.dumps(parsed)}")
         return
     print(f"      exit={result.get('returncode')}  elapsed={result.get('elapsed_seconds', 0)}s")
     for stream in ("stdout", "stderr"):

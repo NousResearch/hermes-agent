@@ -269,20 +269,6 @@ method("clarify.lock", params=ClarifyLockParams, result=ClarifyLockResult,
        doc="Lock one answer of a batch clarify request (editable until every question is locked).")
 
 
-class RequestAnswerParams(Params):
-    id: str  # the open server→client request id
-    result: dict[str, JsonValue]
-    profile: str | None = None
-
-
-class RequestAnswerResult(Result):
-    status: ClarifyLockStatus
-
-
-method("request.answer", params=RequestAnswerParams, result=RequestAnswerResult,
-       doc="Answer an open server→client request from a client that never received the frame.")
-
-
 # ── approvals ─────────────────────────────────────────────────────────────────────────────────
 
 

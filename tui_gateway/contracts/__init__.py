@@ -7,6 +7,7 @@ from . import (  # noqa: F401
     config_free_tier_control,
     connectors_operation,
     events,
+    fork_methods,
     groups_bot_relay,
     liveness,
     profiles_vault_complete_foreign_subagents,

@@ -14,7 +14,9 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
+from tools.delegate_tool_child_run import (
+    _attach_child, _close_child, _detach_child, _fabricated_entry, _signal_child_stop,
+)
 from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
@@ -144,6 +146,12 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
                 results.extend(_entry_of(f, futures[f]) for f in pending)
+                for future in pending:
+                    if future.cancel():
+                        # This worker will never enter _run_single_child, so the dispatcher owns its cleanup.
+                        child = _child_by_index.get(futures[future])
+                        _detach_child(parent_agent, child)
+                        _close_child(child, "Failed to close queued interrupted child")
                 interrupted = True
                 break
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
@@ -165,8 +173,7 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                         push_task_failure_notice(
                             batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
     finally:
-        # Abandoned workers unwind on their own (daemon threads, and the
-        # child-run layer already applies the deferred-close transport drain).
+        # Running abandoned workers unwind on their own; queued children were closed above.
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
     results.sort(key=lambda r: r["task_index"])  # match input order
 

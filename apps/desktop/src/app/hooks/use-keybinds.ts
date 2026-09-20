@@ -39,7 +39,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
-import { openBrowserTab } from '@/store/preview'
+import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
   cycleProfile,
@@ -256,7 +256,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleProfileRail': toggleProfileRailVisible,
     'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
     'view.showFiles': showFiles,
-    'view.showBrowser': openBrowserTab,
+    'view.showBrowser': toggleBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
     'view.showTerminal': () => togglePaneVisible('terminal'),
     // Create first so the pane's open-effect ensure sees a non-empty set and

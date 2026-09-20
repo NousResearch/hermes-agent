@@ -1262,14 +1262,15 @@ class TestLaunchdPlistRespawnGovernance:
         """
         import re
 
-        from gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S
+        from gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S, LAUNCHD_STOP_CLEANUP_RESERVE_S
         from hermes_cli.gateway import generate_launchd_plist
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         plist = generate_launchd_plist()
         m = re.search(r"<key>ExitTimeOut</key>\s*<integer>(\d+)</integer>", plist)
         assert m, plist
-        assert int(m.group(1)) == LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S == 60
+        # Ask for the whole gui-domain clamp, and leave room for post-drain cleanup inside it.
+        assert int(m.group(1)) >= LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S > LAUNCHD_STOP_CLEANUP_RESERVE_S
 
 
 class TestPermissionErrorOnLockFile:

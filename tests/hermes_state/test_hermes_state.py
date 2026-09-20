@@ -5858,6 +5858,41 @@ class TestDisplayMetadataReadPaths:
             target.close()
 
 
+class TestUnknownBlobColumnSurvivesRead:
+    """A `messages` column added by a future migration must not take every reader down with it.
+
+    Every reader here does ``SELECT *``, so a BLOB column reaches the dict unfiltered. FastAPI's
+    response encoder calls ``.decode()`` on any raw ``bytes`` value and dies with
+    ``UnicodeDecodeError`` the moment the bytes are not valid utf-8 — this already happened for
+    the ``display_identity BLOB`` column (hermes_state_common.py) before it got an explicit pop;
+    the next binary column would repeat it with no reader-side defense. See #116510.
+    """
+
+    @staticmethod
+    def _seed_with_future_blob(db):
+        db.create_session("s1", source="desktop")
+        message_id = db.append_message("s1", "user", "hello")
+
+        def _migrate(conn):
+            conn.execute("ALTER TABLE messages ADD COLUMN future_blob BLOB")
+            conn.execute(
+                "UPDATE messages SET future_blob = ? WHERE id = ?", (b"\xff\xfe not utf-8", message_id))
+
+        db._execute_write(_migrate)
+        return message_id
+
+    def test_get_messages_drops_unknown_blob_and_stays_json_safe(self, db):
+        self._seed_with_future_blob(db)
+        messages = db.get_messages("s1")
+        assert messages[0]["content"] == "hello"
+        assert "future_blob" not in messages[0]
+        json.dumps(messages)  # raises TypeError on a raw bytes value, same class of failure as FastAPI's encoder
+
+    def test_get_messages_around_drops_unknown_blob_and_stays_json_safe(self, db):
+        message_id = self._seed_with_future_blob(db)
+        window = db.get_messages_around("s1", message_id)["window"]
+        assert "future_blob" not in window[0]
+        json.dumps(window)
 
 
 class TestGatewayRoutingPkHeal:

@@ -513,6 +513,7 @@ def _set_defaults(agent, table: Dict[str, Any]) -> None:
 # Control-flow state (interrupts / steer / redirect / delegation / background review).
 _CONTROL_STATE: Dict[str, Any] = {
     "_executing_tools": False,  # lets _vprint print while tools run with stream consumers on
+    "_trim_after_tool_batch": False,  # a >=1 MB tool result was committed; trim once the batch unwinds
     "_tool_guardrails": ToolCallGuardrailController,
     "_tool_guardrail_halt_decision": None,
     # Interrupts. Hard cancellation is separate from redirect/message state; the Event makes

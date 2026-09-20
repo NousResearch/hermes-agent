@@ -19,6 +19,7 @@ from tests.agent.test_start_order_gate import (  # noqa: F401 — autouse fixtur
 
 def _agent_returning(monkeypatch, payload):
     agent = _make_agent(monkeypatch)
+    agent._trim_after_tool_batch = False  # _set_defaults (agent_init._CONTROL_STATE) does this on a real AIAgent
     agent._tool_guardrails = MagicMock()
     agent._tool_guardrails.before_call = lambda name, args: MagicMock(allows_execution=True)
     agent._invoke_tool = MagicMock(return_value=payload)
@@ -47,7 +48,7 @@ def test_large_result_flags_the_batch_and_small_does_not(monkeypatch):
         assert [m["role"] for m in messages] == ["tool"]
         assert seen == []  # the commit never trims in-frame: the raw result is still referenced here
     assert big._trim_after_tool_batch is True
-    assert getattr(small, "_trim_after_tool_batch", False) is False
+    assert small._trim_after_tool_batch is False
 
 
 def test_execute_tool_calls_trims_once_after_every_executor_frame_unwound(monkeypatch):

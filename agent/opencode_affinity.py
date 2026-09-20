@@ -5,10 +5,12 @@ Two sources, one merge point:
 * ``x-opencode-session`` — OpenCode (opencode.ai Zen/Go relay) pins requests that share this
   value to the same upstream backend, which keeps its prompt cache warm across the turns of one
   conversation. Always sent to OpenCode targets.
-* ``providers.<name>.session_affinity_header`` — an opt-in header NAME on a custom provider entry
-  (default off). Session-aware proxies fronting a stateful backend (LiteLLM's ``x-litellm-session-id``,
-  self-hosted Claude/OpenAI gateways) otherwise classify an agent-loop request whose last message is
-  a ``tool_result`` as a new conversation and replay the whole history upstream (#86241, #104449).
+* ``providers.<name>.session_affinity_header`` — an opt-in header NAME (or list of names) on a
+  custom provider entry (default off). Session-aware proxies fronting a stateful backend (LiteLLM's
+  ``x-litellm-session-id``, self-hosted Claude/OpenAI gateways) otherwise classify an agent-loop
+  request whose last message is a ``tool_result`` as a new conversation and replay the whole history
+  upstream (#86241, #104449). A gateway with several independent session-aware readers can declare a
+  list, one entry per header name, all carrying the same affinity value (#116779).
 
 The value only has to be opaque and consistent per conversation, so it is derived the same way as
 the other affinity hints Hermes already sends (OpenRouter's sticky ``session_id``, xAI's
@@ -115,17 +117,18 @@ def custom_provider_session_affinity_headers(
     base_url: Optional[str],
     session_id: Optional[str] = None,
 ) -> dict[str, str]:
-    """Return ``{<session_affinity_header>: <key>}`` when the route's provider entry declares one, else ``{}``."""
+    """Return ``{<name>: <key>, ...}`` for every ``session_affinity_header`` name the route's
+    provider entry declares, else ``{}``."""
     try:
-        from hermes_cli.config import get_custom_provider_session_affinity_header
+        from hermes_cli.config import get_custom_provider_session_affinity_headers
 
-        header = get_custom_provider_session_affinity_header(str(base_url or ""))
+        headers = get_custom_provider_session_affinity_headers(str(base_url or ""))
     except Exception:
         return {}
-    if not header:
+    if not headers:
         return {}
     key = resolve_affinity_key(session_id)
-    return {header: key} if key else {}
+    return {header: key for header in headers} if key else {}
 
 
 def merge_session_affinity_headers(

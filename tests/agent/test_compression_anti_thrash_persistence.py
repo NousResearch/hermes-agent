@@ -19,6 +19,7 @@ The counter now round-trips the durable session-state channel exactly like
   threshold still clears the counter (update_from_response), and that clear
   is durable too.
 """
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -106,6 +107,36 @@ class TestCounterRoundTripsBindSessionState:
             "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {}
         )
         assert persisted["count"] == first._FREQUENT_COMPACTION_LIMIT + 1
+
+    def test_stale_compressor_does_not_overwrite_frequency_guard_after_read_failure(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        first = _compressor(db, "s1")
+        stale = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(first._FREQUENT_COMPACTION_LIMIT):
+                first.record_completed_compaction()
+
+        with (
+            patch.object(
+                db,
+                "get_session_model_config_value",
+                side_effect=sqlite3.OperationalError("one-shot read failure"),
+            ),
+            patch("agent.context_compressor.time.time", return_value=1_300.0),
+        ):
+            stale.record_completed_compaction()
+
+        persisted = db.get_session_model_config_value(
+            "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {}
+        )
+        assert persisted["count"] == first._FREQUENT_COMPACTION_LIMIT
+
+        with patch("agent.context_compressor.time.time", return_value=1_300.0):
+            _refresh_persisted_compression_guards(stale)
+            assert stale.should_compress(10**9) is False
+            assert stale._compression_block_reason().startswith("frequency:")
 
     def test_rebind_to_other_session_does_not_leak_counter(self, tmp_path):
         """The counter is per-session: switching sessions must not carry it."""

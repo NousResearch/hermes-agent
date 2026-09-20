@@ -856,6 +856,21 @@ class TestUnifiedSearchRelevanceRerank:
                                  relevance_scorer=boom)
         assert [r.identifier for r in results] == ["official/s", "x/s2"]
 
+    def test_relevance_cannot_outrank_trust(self):
+        # Cross-trust invariant: a high-scoring community hit must not push
+        # a low-scoring builtin past the limit cut — relevance orders within
+        # a rank, trust orders across ranks.
+        official = SkillMeta(name="s", description="", source="official",
+                             identifier="official/s", trust_level="builtin")
+        community = SkillMeta(name="s2", description="", source="x",
+                              identifier="x/s2", trust_level="community")
+        scores = {"official/s": 0.0, "x/s2": 10.0}
+        results = unified_search("s", [self._make_source("x", [community]),
+                                       self._make_source("official", [official])],
+                                 limit=1,
+                                 relevance_scorer=lambda _q, _c: scores)
+        assert [r.identifier for r in results] == ["official/s"]
+
 
 # ---------------------------------------------------------------------------
 # GitHub tap provider labeling + index search/filter

@@ -2,11 +2,13 @@
 
 Optional, disabled by default. When ``skills.hub_relevance_rerank.enabled``
 is true in config.yaml, ``rerank_by_relevance`` scores each merged
-``SkillMeta`` against the query with a Jev Score question and re-orders the
-trust-sorted list so the limit cut drops the least-relevant instead of the
-slowest source's hits. The scorer is dependency-injected (defaults to the
-Jev ``/v1/systemone`` Score client below); any scorer failure fails open to
-the input order. No network happens when disabled or when no scorer resolves.
+``SkillMeta`` against the query with a Jev Score question and re-orders
+*within* each trust rank so the limit cut still never drops a
+builtin/official entry for a community one: relevance decides order inside a
+rank, trust decides across ranks. The scorer is dependency-injected
+(defaults to the Jev ``/v1/systemone`` Score client below); any scorer
+failure fails open to the input order. No network happens when disabled or
+when no scorer resolves.
 """
 
 from __future__ import annotations
@@ -59,12 +61,12 @@ def jev_score_relevance(
     if not api_key:
         raise RuntimeError("TYPESAFE_API_KEY is not set")
     questions = {
-        meta.identifier: {
+        f"{i}:{meta.identifier}": {
             "type": "score",
             "instructions": "How relevant is this skill to the search query?",
             "criteria": RELEVANCE_LEVELS,
         }
-        for meta in candidates
+        for i, meta in enumerate(candidates)
     }
     body = json.dumps({
         "model": JEV_MODEL,
@@ -83,9 +85,13 @@ def jev_score_relevance(
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     answers = payload.get("answers", {}) if isinstance(payload, dict) else {}
+    if not isinstance(answers, dict):
+        answers = {}
     scores: Dict[str, float] = {}
-    for meta in candidates:
-        answer = answers.get(meta.identifier, {})
+    for i, meta in enumerate(candidates):
+        answer = answers.get(f"{i}:{meta.identifier}", {})
+        if not isinstance(answer, dict):
+            answer = {}
         try:
             scores[meta.identifier] = (
                 float(answer.get("score", 0.0)) / (len(RELEVANCE_LEVELS) - 1) * 10.0
@@ -104,6 +110,8 @@ def rerank_by_relevance(
 ) -> List[Any]:
     """Stable re-order of trust-sorted ``results`` by query relevance.
 
+    Rerank runs *within* each trust rank: trust decides across ranks (the
+    trust-before-truncate invariant holds), relevance decides inside a rank.
     ``scorer`` maps ``(query, candidates)`` to ``{identifier: 0-10 score}``;
     the default is the Jev Score client. Stable: ties keep trust order.
     Any scorer failure fails open to the input order (logged at debug).
@@ -114,6 +122,10 @@ def rerank_by_relevance(
         lambda q, cands: jev_score_relevance(q, cands, timeout=timeout)
     )
     try:
+        from tools.skills_hub_models import TRUST_RANK as _TRUST_RANK
+    except Exception:
+        _TRUST_RANK = {}
+    try:
         scores = score_fn(query, results)
     except Exception as e:
         logger.debug("Skills Hub relevance rerank failed; keeping trust order: %s", e)
@@ -121,7 +133,11 @@ def rerank_by_relevance(
     try:
         ranked = sorted(
             range(len(results)),
-            key=lambda i: (-float(scores.get(results[i].identifier, 0.0)), i),
+            key=lambda i: (
+                -_TRUST_RANK.get(results[i].trust_level, 0),
+                -float(scores.get(results[i].identifier, 0.0)),
+                i,
+            ),
         )
     except (TypeError, ValueError, AttributeError) as e:
         logger.debug("Skills Hub relevance rerank failed; keeping trust order: %s", e)

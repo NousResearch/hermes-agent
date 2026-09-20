@@ -666,11 +666,12 @@ Unfiltered searches (CLI, TUI, and the dashboard) are answered from a cached cen
 
 Merged results are ordered by source trust (official first), so within one
 trust rank the order reflects whichever source answered first. To order by
-query relevance instead, enable the optional relevance rerank: every merged
-candidate is scored 0–10 against the query with a TypeSafe Jev Score call
-before the result limit is applied, so the cut drops the least-relevant
-hits. It is off by default (no extra network call), fails open to trust
-order when the scorer is unreachable, and needs `TYPESAFE_API_KEY` in
+query relevance instead, enable the optional relevance rerank: within each
+trust rank, candidates are scored 0–10 against the query with a TypeSafe
+Jev Score call before the result limit is applied, so the cut drops the
+least-relevant hits without ever letting a community result outrank an
+official one. It is off by default (no extra network call), fails open to
+trust order when the scorer is unreachable, and needs `TYPESAFE_API_KEY` in
 `~/.hermes/.env`:
 
 ```yaml

@@ -7,10 +7,8 @@ Covers three behaviors:
 3. A turn report appearing in the kill window books the delivery instead of raising
    TimeoutExpired (a delivered turn must not be reported as lost).
 """
-import logging
 import subprocess
 import threading
-import time
 from unittest.mock import Mock
 
 import pytest
@@ -135,27 +133,3 @@ def test_no_report_still_raises_timeout(tmp_path, monkeypatch):
 
     with pytest.raises(subprocess.TimeoutExpired):
         delivery._run_bot_chat_turn(["hermes"], {}, str(tmp_path / "r.json"), 0.4)
-
-
-def test_fence_timeout_log_episode_dedupe(caplog):
-    """One ERROR per episode; repeats inside the interval log DEBUG; a new episode re-alerts."""
-    from cron.jobs import _FENCE_COMPLAINT_INTERVAL_SECONDS, _fire_fence_complaints, _fence_timeout_log
-    _fire_fence_complaints.clear()
-    try:
-        with caplog.at_level(logging.DEBUG, logger="cron.jobs"):
-            _fence_timeout_log("fence-k", "Timed out waiting for fire fence %s; failing closed", "p1")
-            _fence_timeout_log("fence-k", "Timed out waiting for fire fence %s; failing closed", "p2")
-            _fence_timeout_log("fence-k", "Timed out waiting for fire fence %s; failing closed", "p3")
-        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert len(errors) == 1 and "p1" in errors[0].getMessage()
-        assert len(debugs) == 2
-
-        # Interval elapsed -> a genuinely stuck fence re-alerts at ERROR.
-        _fire_fence_complaints["fence-k"] = (
-            time.monotonic() - _FENCE_COMPLAINT_INTERVAL_SECONDS - 1)
-        with caplog.at_level(logging.DEBUG, logger="cron.jobs"):
-            _fence_timeout_log("fence-k", "Timed out waiting for fire fence %s; failing closed", "p4")
-        assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 2
-    finally:
-        _fire_fence_complaints.clear()

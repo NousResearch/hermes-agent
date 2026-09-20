@@ -235,12 +235,12 @@ def run_isolation_diagnostic(
     before = _manifest(source)
     source_fingerprint = _source_fingerprint(source)
 
-    from hermes_cli.config import load_config_readonly
-    source_token = set_hermes_home_override(source)
-    try:
-        source_config = load_config_readonly()
-    finally:
-        reset_hermes_home_override(source_token)
+    # Use the raw diagnostic reader plus the normal effective-config transform. The
+    # general loader seeds profile files and writes last-known-good backups, which would
+    # violate isolate mode's source-byte invariant merely by observing the profile.
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.config_effective import _effective
+    source_config = _effective(read_user_config_raw(source / "config.yaml"))
     runtime = runtime_override or _resolve_source_runtime(source_config)
     runtime = dict(runtime)
     # A diagnostic request must not bench/rotate/persist a source credential pool.

@@ -14,6 +14,7 @@ import { $chatFontFamily } from '@/themes/chat-font'
 
 import { hermesConfigKey } from '../hooks/use-config-record'
 
+import { ResumeLastSessionSetting } from './appearance-settings'
 import { ChatFontSetting } from './chat-font-setting'
 import { TerminalFontSetting } from './terminal-font-setting'
 
@@ -21,9 +22,14 @@ const mocks = vi.hoisted(() => ({ save: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesModule>()),
   getHermesConfigRecord: vi.fn(async (owner: ProfileScope) => {
-    const font = typeof owner === 'object' && owner?.connectionOwner?.token === 'synthetic-b' ? 'B Font' : 'A Font'
+    const isGatewayB = typeof owner === 'object' && owner?.connectionOwner?.token === 'synthetic-b'
+    const font = isGatewayB ? 'B Font' : 'A Font'
 
-    return { desktop: { font_family: font }, terminal: { font_family: font } }
+    return {
+      desktop: { font_family: font },
+      display: { resume_last_session: !isGatewayB },
+      terminal: { font_family: font }
+    }
   }),
   saveHermesConfig: (...args: unknown[]) => mocks.save(...args)
 }))
@@ -151,3 +157,22 @@ it.each(cases)(
     }
   }
 )
+
+it('Resume last session reads and writes the same exact Settings owner as the font controls', async () => {
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ResumeLastSessionSetting />
+    </QueryClientProvider>
+  )
+  await settle()
+
+  const ownerA = $settingsOwner.get()
+  fireEvent.click(screen.getByRole('switch'))
+  expect(mocks.save).toHaveBeenLastCalledWith({ display: { resume_last_session: false } }, ownerA)
+
+  act(() => $connection.set({ ...gatewayA, token: 'synthetic-b' } as never))
+  await settle()
+  const ownerB = $settingsOwner.get()
+  fireEvent.click(screen.getByRole('switch'))
+  expect(mocks.save).toHaveBeenLastCalledWith({ display: { resume_last_session: true } }, ownerB)
+})

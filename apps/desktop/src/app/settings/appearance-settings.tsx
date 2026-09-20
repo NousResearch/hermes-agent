@@ -7,7 +7,7 @@ import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
-import { saveHermesConfig } from '@/hermes'
+import { profileScopeKey, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
@@ -23,6 +23,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $settingsOwner } from '@/store/settings-scope'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
@@ -62,7 +63,7 @@ import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { appearanceSubpageForSetting, type AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
@@ -70,6 +71,7 @@ import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
+import { SettingsProfileScope } from './profile-scope'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
@@ -78,31 +80,50 @@ import { useDeepLinkHighlight } from './use-deep-link-highlight'
 // config.yaml and the cold-start restore in use-desktop-integrations), not a
 // renderer store. Saves write through the shared react-query cache so the
 // restore gate sees the new value on the next launch.
-function ResumeLastSessionSetting() {
+export function ResumeLastSessionSetting() {
+  const settingsOwner = useStore($settingsOwner)
+
+  return (
+    <ResumeLastSessionSettingInner
+      key={settingsOwner ? profileScopeKey(settingsOwner) : 'unavailable'}
+      settingsOwner={settingsOwner}
+    />
+  )
+}
+
+function ResumeLastSessionSettingInner({ settingsOwner }: { settingsOwner: ReturnType<typeof $settingsOwner.get> }) {
   const { t } = useI18n()
   const a = t.settings.appearance
-  const configQuery = useHermesConfigRecord()
+  const configQuery = useHermesConfigRecord(settingsOwner ?? undefined, Boolean(settingsOwner))
   const config = configQuery.data
-  const writeScope = configQuery.writeScope
   const checked = (config?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
 
   const update = (on: boolean) => {
-    if (!config) {
+    if (!config || !settingsOwner || $settingsOwner.get() !== settingsOwner) {
       return
     }
 
     const next = setNested(config, 'display.resume_last_session', on)
-    setHermesConfigCache(next)
+    const writeConfigCache = hermesConfigCacheWriter(settingsOwner)
+    writeConfigCache(next)
     // Sparse patch: PUT /api/config deep-merges, and echoing the cached
     // snapshot would overwrite keys other surfaces changed since it loaded.
-    void saveHermesConfig(setNested({}, 'display.resume_last_session', on), writeScope)
+    void saveHermesConfig(setNested({}, 'display.resume_last_session', on), settingsOwner)
       .then(result => {
+        if ($settingsOwner.get() !== settingsOwner) {
+          return
+        }
+
         if (!result.ok) {
           throw new Error(t.settings.config.autosaveFailed)
         }
       })
       .catch(error => {
-        setHermesConfigCache(config)
+        if ($settingsOwner.get() !== settingsOwner) {
+          return
+        }
+
+        writeConfigCache(config)
         notifyError(error, t.settings.config.autosaveFailed)
       })
   }
@@ -525,6 +546,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
   return (
     <SettingsContent>
+      {(show('general') || show('typography')) && <SettingsProfileScope className="mb-5" />}
       <div>
         {subpage === undefined && (
           <>

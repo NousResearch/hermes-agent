@@ -744,7 +744,11 @@ def _count_skills(profile_dir: Path) -> int:
     if not dirs:
         return 0
 
-    key = ";".join(str(d) for d in dirs)
+    # Cache key is the profile's skills dir path — same key
+    # _cached_skill_count uses for O(1) lookup. The combined signature
+    # of all dirs (stored as the value's first element) handles invalidation
+    # when any dir in the set changes.
+    key = str(profile_dir / "skills")
     signatures = _skills_dirs_signature(dirs)
     now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
@@ -775,12 +779,6 @@ def _cached_skill_count(profile_dir: Path) -> int:
     or aged entry schedules one background :func:`_count_skills` per profile per recheck
     window (which itself re-walks only on signature change / TTL); the next poll picks the
     result up. ``0`` until the first refresh lands."""
-    # The cache key must match what _count_skills writes. _count_skills keys by
-    # ";".join(dirs), but we cannot compute dirs without I/O (reading config.yaml +
-    # stat-ing dirs). Instead we key the recheck schedule by the profile dir (stable,
-    # no I/O) and look up the cache entry by matching on profile_dir — the background
-    # thread writes the full multi-dir key, so we scan for any cache entry whose key
-    # starts with the profile's skills dir path.
     key = str(profile_dir / "skills")
     now = time.time()
     with _SKILL_COUNT_LOCK:
@@ -790,13 +788,8 @@ def _cached_skill_count(profile_dir: Path) -> int:
     if due:
         threading.Thread(target=_count_skills, args=(profile_dir,),
                          name="hermes-skill-count", daemon=True).start()
-    # The background thread writes the multi-dir cache key. Find the entry whose
-    # key starts with this profile's skills dir (the first dir in the list).
-    skills_dir_str = str(profile_dir / "skills")
-    for ck, cv in _SKILL_COUNT_CACHE.items():
-        if ck == skills_dir_str or ck.startswith(skills_dir_str + ";"):
-            return cv[2]
-    return 0
+    cached = _SKILL_COUNT_CACHE.get(key)
+    return cached[2] if cached is not None else 0
 
 
 # profile.yaml — per-profile metadata (description, role, etc.)

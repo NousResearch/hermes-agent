@@ -54,6 +54,7 @@ const {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   gatewayActivationEpoch,
+  gatewayModeForProfile,
   disposeSecondariesForConnection,
   openGatewayForAgent,
   pruneSecondaryGateways,
@@ -92,6 +93,82 @@ afterEach(() => {
 })
 
 describe('requestGatewayForProfile', () => {
+  it('reads exact registry owner modes without borrowing a same-named profile or primary', async () => {
+    const primary = makePrimary()
+
+    const getConnection = vi.fn(async (profile: null | string) => ({
+      mode: 'local',
+      port: 5151,
+      profile,
+      token: 'local-token'
+    }))
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({
+      connectionId,
+      mode: 'remote',
+      port: 6161,
+      profile,
+      token: 'remote-token'
+    }))
+
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(getConnection)
+    window.hermesDesktop.getConnectionFor = getConnectionFor as never
+    await ensureGatewayForProfile('default')
+    setPrimaryGatewayConnection({ connectionId: 'local', mode: 'local' })
+    await ensureGatewayForProfile('worker')
+    // A registered local profile may delegate to its remote override.
+    await ensureGatewayForAgent('local', 'worker')
+    await ensureGatewayForAgent('ssh', 'default')
+    getConnection.mockClear()
+    getConnectionFor.mockClear()
+
+    expect(gatewayModeForProfile('default', 'local')).toBe('local')
+    expect(gatewayModeForProfile('default', 'ssh')).toBe('remote')
+    expect(gatewayModeForProfile('worker')).toBe('local')
+    expect(gatewayModeForProfile('worker', 'local')).toBe('remote')
+    expect(gatewayModeForProfile('worker', 'ssh')).toBeNull()
+    expect(gatewayModeForProfile('default', 'unopened')).toBeNull()
+    expect(getConnection).not.toHaveBeenCalled()
+    expect(getConnectionFor).not.toHaveBeenCalled()
+  })
+
+  it('reads each profile owner mode across foreground switches without dialing another backend', async () => {
+    for (const primaryMode of ['local', 'remote'] as const) {
+      closeSecondaryGateways()
+      const primary = makePrimary()
+      const secondaryMode = primaryMode === 'local' ? 'remote' : 'local'
+
+      const getConnection = vi.fn(async (profile: null | string) => ({
+        mode: secondaryMode,
+        port: 5151,
+        profile,
+        token: 'secondary-token'
+      }))
+
+      setPrimaryGateway(primary as never, 'default')
+      installDesktop(getConnection)
+      await ensureGatewayForProfile('default')
+      setPrimaryGatewayConnection({ mode: primaryMode })
+      await ensureGatewayForProfile('worker')
+
+      expect(gatewayModeForProfile('default')).toBe(primaryMode)
+      expect(gatewayModeForProfile('worker')).toBe(secondaryMode)
+
+      await ensureGatewayForProfile('default')
+      getConnection.mockClear()
+
+      expect(gatewayModeForProfile(' default ')).toBe(primaryMode)
+      expect(gatewayModeForProfile(' worker ')).toBe(secondaryMode)
+      expect(gatewayModeForProfile('unopened')).toBeNull()
+      expect(getConnection).not.toHaveBeenCalled()
+      expect($gateway.get()).toBe(primary)
+
+      closeSecondaryGateways()
+      expect(gatewayModeForProfile('worker')).toBeNull()
+    }
+  })
+
   it('requests through a pooled profile gateway without changing the active gateway', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

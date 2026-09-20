@@ -746,7 +746,9 @@ def _(rid, params: dict) -> dict:
             path_token, remainder = _split_path_input(raw)
             image_path = _resolve_attachment_path(path_token)
             if image_path is None:
-                return _err(rid, 4016, f"image not found: {path_token}")
+                # Failed resolution cannot distinguish a spaced path from trailing
+                # text. Preserve the input so diagnostics do not truncate the path.
+                return _err(rid, 4016, f"image not found: {raw}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
         session.setdefault("attached_images", []).append(str(image_path))

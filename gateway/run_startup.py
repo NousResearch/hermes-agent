@@ -84,18 +84,25 @@ class GatewayStartupMixin:
         queue = getattr(self, "_startup_restore_queue", None) or []
         while queue:
             event = queue.pop(0)
-            source = getattr(event, "source", None)
-            adapter = self._intake_adapter_for(source)
-            if adapter is None:
-                logger.debug(
-                    "Dropping startup-restore queued message: adapter unavailable for %s",
-                    getattr(getattr(source, "platform", None), "value", None),
-                )
+            try:
+                source = getattr(event, "source", None)
+                adapter = self._intake_adapter_for(source)
+                if adapter is None:
+                    logger.debug(
+                        "Dropping startup-restore queued message: adapter unavailable for %s",
+                        getattr(getattr(source, "platform", None), "value", None),
+                    )
+                    continue
+                # Mark the replay so _handle_message does not re-queue it while the restore gate is closed.
+                with suppress(Exception):
+                    setattr(event, "_hermes_startup_restore_replay", True)
+                await adapter.handle_message(event)
+            except Exception:
+                # One bad replay must not abort the drain: the remaining queued
+                # events still deserve their turn, and a raise here used to skip
+                # the gate release in _finish_startup_restore entirely.
+                logger.warning("Startup-restore queued replay failed; continuing drain", exc_info=True)
                 continue
-            # Mark the replay so _handle_message does not re-queue it while the restore gate is closed.
-            with suppress(Exception):
-                setattr(event, "_hermes_startup_restore_replay", True)
-            await adapter.handle_message(event)
             drained += 1
         return drained
 
@@ -216,8 +223,14 @@ class GatewayStartupMixin:
         self._startup_restore_tasks = []
         # Warm the turn machinery BEFORE the queue drains: inbound turns must not build skeleton prompts.
         await self._await_startup_warmup()
-        drained = await self._drain_startup_restore_queue()
-        self._startup_restore_in_progress = False
+        drained = 0
+        try:
+            drained = await self._drain_startup_restore_queue()
+        finally:
+            # The inbound gate must open even if the drain raises: a stuck
+            # _startup_restore_in_progress would queue every non-internal
+            # inbound forever (run_inbound.py reads this flag first).
+            self._startup_restore_in_progress = False
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
 

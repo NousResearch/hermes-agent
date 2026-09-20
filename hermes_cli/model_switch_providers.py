@@ -1302,20 +1302,23 @@ def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
-    non_blocking_catalogs: bool = False) -> List[dict]:
+    non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,
+    probe_current_custom_provider: bool = False) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
     snapshot filtered against the live catalog) and rows left with no models are dropped — except
     custom endpoints, where the user may supply their own model set through config.
-    ``non_blocking_catalogs`` is forwarded unchanged (cache-only catalogs, background warm)."""
+    ``non_blocking_catalogs`` makes every catalog read cache-only (OpenRouter's included, stale disk
+    copy over a live GET) with a background warm; the ``probe_*`` flags are forwarded unchanged."""
     from hermes_cli.model_switch import list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
         user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
-        non_blocking_catalogs=non_blocking_catalogs)
+        non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
+        probe_current_custom_provider=probe_current_custom_provider)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
@@ -1323,7 +1326,7 @@ def list_picker_providers(
     for p in providers:
         if str(p.get("slug", "")).lower() == "openrouter":
             try:
-                live_ids = [mid for mid, _ in fetch_openrouter_models()]
+                live_ids = [mid for mid, _ in fetch_openrouter_models(cache_only=non_blocking_catalogs)]
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)

@@ -3878,13 +3878,16 @@ def _launchd_reload_budget() -> float:
 
 
 def _launchctl_label_supervising_process(label: str) -> bool:
-    """True when launchd knows ``label`` AND runs a process for it. ``launchctl list`` exits 0 for a
-    mere registered definition (``state = not running`` on macOS 26+), so a positive PID is required."""
+    """True when launchd knows ``label`` and runs a process for it.
+
+    Probe the explicit GUI/user domains because legacy ``launchctl list``
+    derives its domain from the caller and can hide a live LaunchAgent.
+    """
     try:
-        result = subprocess.run(["launchctl", "list", label], check=False, timeout=10, **_CAPTURE_TEXT)
+        _domain, pid = _locate_launchd_gateway_service(label)
     except (subprocess.TimeoutExpired, OSError):
         return False
-    return result.returncode == 0 and _parse_launchd_pid_from_list_output(result.stdout) is not None
+    return pid is not None
 
 
 def _retry_launchctl_bootstrap_until_registered(
@@ -4598,15 +4601,16 @@ def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
     try:
-        result = subprocess.run(["launchctl", "list", label], timeout=10, **_CAPTURE_TEXT)
-        service_listed = result.returncode == 0
-        list_output = result.stdout
+        # Domain-qualified ``print`` is the source of truth. Legacy
+        # ``launchctl list <label>`` infers the caller's domain and can miss a
+        # live GUI LaunchAgent even while macOS is supervising it.
+        launchd_domain, launchd_pid = _locate_launchd_gateway_service(label)
+        service_listed = launchd_domain is not None
+        list_output = f"{launchd_domain}/{label}" if launchd_domain else ""
     except subprocess.TimeoutExpired:
         service_listed = False
         list_output = ""
-
-    # `launchctl list` exits 0 for any registered definition (even `state = not running`); only a PID proves a process.
-    launchd_pid = _parse_launchd_pid_from_list_output(list_output) if service_listed else None
+        launchd_pid = None
 
     # Hermes PID may be a detached fallback process; when launchd IS supervising both PIDs match — don't double-count.
     from gateway.status import get_running_pid

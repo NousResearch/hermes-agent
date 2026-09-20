@@ -374,7 +374,7 @@ class TestGeneratedSystemdUnits:
         local_bin.mkdir(parents=True)
         profile_node_bin.mkdir(parents=True)
         real_node = profile_node_bin / "node"
-        real_node.write_text("#!/bin/sh\n")
+        real_node.write_text("#!/bin/sh\n", encoding="utf-8")
         link_node = local_bin / "node"
         link_node.symlink_to(real_node)
 
@@ -392,7 +392,7 @@ class TestGeneratedSystemdUnits:
         local_bin.mkdir(parents=True)
         profile_node_bin.mkdir(parents=True)
         real_node = profile_node_bin / "node"
-        real_node.write_text("#!/bin/sh\n")
+        real_node.write_text("#!/bin/sh\n", encoding="utf-8")
         link_node = local_bin / "node"
         link_node.symlink_to(real_node)
 
@@ -700,12 +700,12 @@ class TestLaunchdServiceRecovery:
 
         def fake_run(cmd, check=False, **kwargs):
             run_calls.append(cmd)
-            if cmd[:2] == ["launchctl", "list"]:
+            if cmd[:2] == ["launchctl", "print"]:
                 # Post-bootstrap launchd reports a supervised PID; without one
                 # the success check correctly refuses to stop retrying.
                 return SimpleNamespace(
                     returncode=0,
-                    stdout='{\n\t"PID" = 5150;\n\t"Label" = "ai.hermes.gateway";\n};',
+                    stdout="pid = 5150\n",
                     stderr="",
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -752,6 +752,27 @@ class TestLaunchdServiceRecovery:
 
 
     # ── launchd_status with active supervision ───────────────────────────
+
+    def test_launchd_status_uses_domain_qualified_probe(self, tmp_path, monkeypatch, capsys):
+        """A GUI-domain service must not be hidden by caller-relative launchctl lookup."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_locate_launchd_gateway_service",
+            lambda label: ("gui/501", 4242),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 4242)
+        monkeypatch.setattr(gateway_cli, "_launchd_unsupported_marker_exists", lambda: False)
+
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "Gateway is supervised by launchd (PID 4242)" in out
+        assert "Gateway service is not loaded" not in out
 
     def test_launchd_status_reports_fallback_when_unsupported_and_pid_running(self, tmp_path, monkeypatch, capsys):
         """When the unsupported marker exists and a fallback PID is running."""
@@ -1357,7 +1378,7 @@ class TestSystemUnitHermesHome:
         managed_bin = tmp_path / ".hermes" / "node" / "bin"
         managed_bin.mkdir(parents=True)
         node = managed_bin / "node"
-        node.write_text("#!/bin/sh\n")
+        node.write_text("#!/bin/sh\n", encoding="utf-8")
         node.chmod(0o644)
         monkeypatch.setattr(
             gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
@@ -1379,7 +1400,7 @@ class TestSystemUnitHermesHome:
         managed_bin = target_hermes / "node" / "bin"
         managed_bin.mkdir(parents=True)
         node = managed_bin / "node"
-        node.write_text("#!/bin/sh\n")
+        node.write_text("#!/bin/sh\n", encoding="utf-8")
         node.chmod(0o755)
         root_hermes.mkdir(parents=True)
 
@@ -1902,7 +1923,7 @@ class TestSystemUnitPathRemapping:
         project.mkdir(parents=True)
         venv_bin = project / "venv" / "bin"
         venv_bin.mkdir(parents=True)
-        (venv_bin / "python").write_text("")
+        (venv_bin / "python").write_text("", encoding="utf-8")
 
         target_home = "/home/alice"
 
@@ -2353,7 +2374,7 @@ class TestSystemdInstallOffersLegacyRemoval:
         assert remove_called["invoked"] is False
         # New unit should still have been written
         assert unit_path.exists()
-        assert unit_path.read_text() == "unit text\n"
+        assert unit_path.read_text(encoding="utf-8") == "unit text\n"
 
     def test_install_skips_legacy_check_when_none_present(
         self, tmp_path, monkeypatch
@@ -2446,9 +2467,9 @@ class TestSystemScopeWizardPreCheck:
         sys_dir.mkdir()
         usr_dir.mkdir()
         if system_present:
-            (sys_dir / "hermes-gateway.service").write_text("[Unit]\n")
+            (sys_dir / "hermes-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         if user_present:
-            (usr_dir / "hermes-gateway.service").write_text("[Unit]\n")
+            (usr_dir / "hermes-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         monkeypatch.setattr(
             gateway_cli,
             "get_systemd_unit_path",
@@ -2499,7 +2520,7 @@ class TestGatewayCommandCatchesSystemScopeError:
         usr_dir = tmp_path / "usr"
         sys_dir.mkdir()
         usr_dir.mkdir()
-        (sys_dir / "hermes-gateway.service").write_text("[Unit]\n")
+        (sys_dir / "hermes-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         monkeypatch.setattr(
             gateway_cli,
             "get_systemd_unit_path",
@@ -2727,7 +2748,7 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     """`_retry_launchctl_bootstrap_until_registered` — salvage of #53277.
 
     Covers the three review findings the salvage hardens: retry until the
-    label is actually LISTED (not just a zero bootstrap exit), TimeoutExpired
+    label is actually running (not just a zero bootstrap exit), TimeoutExpired
     is retried (not escaped leaving the service unloaded), and the retry is
     bounded by a wall-clock deadline rather than a fixed short window.
     """
@@ -2736,22 +2757,21 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     PLIST = "/tmp/ai.hermes.gateway.plist"
     LABEL = "ai.hermes.gateway"
 
-    # `launchctl list <label>` output for a job launchd is actively running.
-    # Success requires a PID here, not just exit 0 — exit 0 alone also covers a
-    # registered-but-not-running definition (macOS 26+ `state = not running`).
-    RUNNING_LIST_OUTPUT = '{\n\t"PID" = 4242;\n\t"Label" = "ai.hermes.gateway";\n};'
+    # `launchctl print <domain>/<label>` output for a job launchd is actively
+    # running. Success requires a PID here, not just exit 0.
+    RUNNING_PRINT_OUTPUT = "pid = 4242\n"
 
     def test_returns_true_once_label_is_registered(self, monkeypatch):
-        """Success requires launchctl list to confirm a supervised process, not
-        just a zero bootstrap exit."""
-        list_results = iter([1, 0])  # first check: not registered, second: registered
+        """Success requires launchctl print to confirm a supervised process,
+        not just a zero bootstrap exit."""
+        print_results = iter([1, 0])  # first check: not loaded, second: running
 
         def fake_run(cmd, check=False, **kwargs):
-            if cmd[:2] == ["launchctl", "list"]:
-                rc = next(list_results)
+            if cmd[:2] == ["launchctl", "print"]:
+                rc = next(print_results)
                 return SimpleNamespace(
                     returncode=rc,
-                    stdout=self.RUNNING_LIST_OUTPUT if rc == 0 else "",
+                    stdout=self.RUNNING_PRINT_OUTPUT if rc == 0 else "",
                     stderr="",
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -2776,12 +2796,12 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
                 if attempts["bootstrap"] == 1:
                     raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
-            if cmd[:2] == ["launchctl", "list"]:
-                # registered only after the second (successful) bootstrap
+            if cmd[:2] == ["launchctl", "print"]:
+                # running only after the second (successful) bootstrap
                 ok = attempts["bootstrap"] >= 2
                 return SimpleNamespace(
                     returncode=0 if ok else 1,
-                    stdout=self.RUNNING_LIST_OUTPUT if ok else "",
+                    stdout=self.RUNNING_PRINT_OUTPUT if ok else "",
                     stderr="",
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -2798,20 +2818,19 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     def test_registered_but_not_running_is_not_success(self, monkeypatch):
         """A definition with no PID must not end the loop.
 
-        `launchctl list` exits 0 for a registered-but-not-running job (macOS
-        26+ `state = not running`), so exit-0 alone would report success for a
-        gateway launchd is not actually running. Verified against live launchd
-        on 2026-08-05.
+        `launchctl print` exits 0 for a loaded job even when no process is
+        running, so exit-0 alone would report success for a gateway launchd is
+        not actually running.
         """
-        list_calls = {"n": 0}
+        print_calls = {"n": 0}
 
         def fake_run(cmd, check=False, **kwargs):
-            if cmd[:2] == ["launchctl", "list"]:
-                list_calls["n"] += 1
-                # Registered (exit 0) but no PID line — never running.
+            if cmd[:2] == ["launchctl", "print"]:
+                print_calls["n"] += 1
+                # Loaded (exit 0) but no PID line — never running.
                 return SimpleNamespace(
                     returncode=0,
-                    stdout='{\n\t"Label" = "ai.hermes.gateway";\n};',
+                    stdout="state = not running\n",
                     stderr="",
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -2824,7 +2843,7 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
             deadline=gateway_cli.time.monotonic() - 1,  # already expired
         )
         assert ok is False
-        assert list_calls["n"] >= 1
+        assert print_calls["n"] >= 1
 
 
 class TestTimeoutStopSecCoversCronFloor:

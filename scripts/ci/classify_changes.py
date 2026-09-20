@@ -12,7 +12,8 @@ Lanes:
 * ``python``      — pytest / ruff / ty / footguns.
 * ``python_prod`` — Python changes OUTSIDE tests/. A tests-only PR keeps
   ``python`` (pytest must run) while this stays off.
-* ``docker_meta`` — Dockerfiles etc.
+* ``docker_meta`` — the container lint inputs: ``Dockerfile``, ``docker/``, and
+  ``.hadolint.yaml`` (the rules ``scripts/ci/lint_docker.sh`` reads).
 * ``docker``      — the image build: docker meta, the dependency manifests, PM,
   and the image's own tests.
 * ``nix``         — ``nix flake check``: the flake files and the dependency

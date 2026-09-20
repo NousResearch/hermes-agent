@@ -1,4 +1,4 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { cleanup, render } from '@testing-library/react'
 import { type RefObject, StrictMode, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -35,8 +35,6 @@ class FakeResizeObserver implements ResizeObserver {
   }
 }
 
-// Measurements coalesce into one requestAnimationFrame (#99889), so a delivered
-// resize is observable only after the frame runs.
 const deliverResize = () => {
   for (const observer of observers) {
     const entries = [...observer.targets].map(target => ({ target }) as ResizeObserverEntry)
@@ -45,10 +43,6 @@ const deliverResize = () => {
       observer.callback(entries, observer)
     }
   }
-
-  act(() => {
-    vi.advanceTimersToNextFrame()
-  })
 }
 
 const sized =
@@ -88,34 +82,12 @@ const surfaceOf = (container: HTMLElement) => container.querySelector<HTMLElemen
 describe('useComposerMetrics — published clearance survives an effect replay', () => {
   beforeEach(() => {
     observers.length = 0
-    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] })
     vi.stubGlobal('ResizeObserver', FakeResizeObserver)
   })
 
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
-    vi.useRealTimers()
-  })
-
-  it('coalesces a burst of resize notifications into one measurement per frame', () => {
-    const { container } = render(<Harness dockHeight={200} surfaceHeight={120} />)
-    deliverResize()
-    const dock = container.querySelector('form')!.parentElement!
-    const measure = vi.spyOn(dock, 'getBoundingClientRect')
-
-    for (const observer of observers) {
-      const entries = [...observer.targets].map(target => ({ target }) as ResizeObserverEntry)
-      observer.callback(entries, observer)
-      observer.callback(entries, observer)
-      observer.callback(entries, observer)
-    }
-
-    expect(measure).not.toHaveBeenCalled()
-    act(() => {
-      vi.advanceTimersToNextFrame()
-    })
-    expect(measure).toHaveBeenCalledTimes(1)
   })
 
   it('republishes the dock height after StrictMode replays the cleanup', () => {

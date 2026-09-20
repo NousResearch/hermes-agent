@@ -1,5 +1,5 @@
 import { useAuiState } from '@assistant-ui/react'
-import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   chatSurfaceRoot,
@@ -9,7 +9,6 @@ import {
   setSurfaceVar
 } from '@/app/chat/surface-vars'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { rafCoalesce } from '@/lib/raf-coalesce'
 
 import {
   COMPOSER_COMPACT_PILL_PX,
@@ -116,7 +115,7 @@ export function useComposerMetrics({
   const poppedOutRef = useRef(poppedOut)
   poppedOutRef.current = poppedOut
 
-  const measureComposerMetrics = useCallback(() => {
+  const syncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
     // The dock is the full docked footprint — strips, status stack, composer —
     // so it, not the composer alone, is what the thread has to clear.
@@ -181,11 +180,6 @@ export function useComposerMetrics({
     }
   }, [composerDockRef, composerRef, composerSurfaceRef, editorRef])
 
-  // setSurfaceVar changes layout, which re-fires the observer that wrote it; coalesce to one
-  // measurement per frame so at most one style invalidation is scheduled per frame (#99889).
-  const coalescedMeasure = useMemo(() => rafCoalesce<true>(() => measureComposerMetrics()), [measureComposerMetrics])
-  const syncComposerMetrics = useCallback(() => coalescedMeasure.push(true), [coalescedMeasure])
-
   useResizeObserver(syncComposerMetrics, composerDockRef, composerRef, composerSurfaceRef, editorRef)
 
   // Toggling pop-out changes whether the composer reserves thread clearance.
@@ -204,7 +198,6 @@ export function useComposerMetrics({
     const root = chatSurfaceRoot(composerRef.current)
 
     return () => {
-      coalescedMeasure.cancel()
       clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
       clearSurfaceVar(root, COMPOSER_SURFACE_HEIGHT_VAR)
       // The bucket refs mirror what is published, so clearing the vars must
@@ -218,7 +211,7 @@ export function useComposerMetrics({
       lastBucketedHeightRef.current = 0
       lastBucketedSurfaceHeightRef.current = 0
     }
-  }, [coalescedMeasure, composerRef])
+  }, [composerRef])
 
   // Every decision comes from the composer's OWN measured width, never the
   // viewport's. There used to be a `(max-width: 30rem)` media query in here as

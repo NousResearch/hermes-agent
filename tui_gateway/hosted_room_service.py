@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -262,9 +263,20 @@ class HostedRoomService:
                 except PeerRunsHTTPError as exc:
                     if not _grant_revoke_is_terminal(exc):
                         raise
+            def authenticated_save(conn, record):
+                previous = setup_guard(conn, record)
+                if record is not None:
+                    # Same transaction as canonical setup/renewal's final CAS.
+                    # A consumer writer failure cannot turn a committed renewal
+                    # into failure or lose its authenticated recovery notification.
+                    key = 'gateway.hosted.route.recovered.v1:' + json.dumps([room_id, member_id], separators=(',', ':'))
+                    value = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+                    conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
+                                 'ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, value))
+                return previous
             hosted_room_links.save_room_link(
                 self.db_path, stored, expected_grant_sha256=previous_hash,
-                **({'setup_guard': setup_guard} if setup_guard is not None else {}),
+                **({'setup_guard': authenticated_save} if setup_guard is not None else {}),
             )
             if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
                 raise hosted_rooms.HostedRoomError(
@@ -614,18 +626,23 @@ class HostedRoomService:
                 "discussion_event_id": decision.discussion_event_id},
             authority_gateway_id=gateway_id, authority_epoch=epoch)
 
+    def _prepare_terminal_tasks(self, room):
+        return self._publish_terminal_tasks(room)
+
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
             room = self._room(binding.room_id)
-            snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
-            try:
-                changed = self._publish_terminal_tasks(room)
-            except hosted_rooms.EventCursorConflictError:
-                # Rebuild publication next poll; the settled task is never readmitted.
-                return
-            if changed:
-                room = self._room(binding.room_id)
-                snapshot = self._policy_snapshot(room)
+            self._policy_snapshot(room)
+        try:
+            self._prepare_terminal_tasks(room)
+        except hosted_rooms.EventCursorConflictError:
+            # Rebuild publication next poll; never readmit the settled task.
+            return
+        with self._policy_lock:
+            # Output may make independent progress or await a peer. Reconstruct
+            # from the current journal, not the cursor from before that I/O.
+            room = self._room(binding.room_id)
+            snapshot = self._policy_snapshot(room)
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
             driver.prune_published_terminal_tasks(
                 self.db_path, room_id=binding.room_id, clock=self.runtime.clock)

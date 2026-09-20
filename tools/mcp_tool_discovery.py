@@ -411,7 +411,12 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
     if _was_interrupted:
         _set_interrupt(False)
     try:
-        _loop._run_on_mcp_loop(lambda: _discover_all(new_servers), timeout=120)
+        # Budget scales with the concurrency cap: a bounded gather finishes in
+        # ceil(N/cap) waves, so N > cap multiplies the wall clock the base
+        # (unbounded) gather never needed. 120s per wave keeps the original
+        # per-wave ceiling; a slow fleet aborts later, not never.
+        waves = max(1, -(-len(new_servers) // _DISCOVERY_CONNECT_CONCURRENCY))
+        _loop._run_on_mcp_loop(lambda: _discover_all(new_servers), timeout=120 * waves)
     except (TimeoutError, InterruptedError) as _e:
         # Stranded _server_connecting entries would block future reconnects.
         how = "timed out" if isinstance(_e, TimeoutError) else "interrupted"

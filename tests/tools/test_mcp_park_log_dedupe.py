@@ -138,13 +138,16 @@ def test_park_after_revival_warns_again(monkeypatch, tmp_path, caplog):
     assert [r.levelno >= logging.WARNING for r in reconnect_parks] == [True, False]
 
 
-def test_log_park_first_warns_repeat_debugs(caplog):
+def test_park_for_a_different_reason_warns_again(caplog):
+    """The dedupe is keyed on the park line, not on \"still parked\": a server parked on a
+    connection error that re-parks on an auth error carries new information and warns again;
+    only an identical repeat is demoted to DEBUG."""
     task = MCPServerTask("t")
-    task._was_parked = False
     with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
-        task._log_park("first park of %s", "t")
-        assert caplog.records[-1].levelno == logging.WARNING
-        caplog.clear()
-        task._was_parked = True
-        task._log_park("repeat park of %s", "t")
-        assert caplog.records[-1].levelno == logging.DEBUG
+        task._log_park("MCP server '%s' parked: %s", "t", "ConnectionError: refused")
+        task._was_parked = True  # _park() latches this on the first park
+        task._log_park("MCP server '%s' parked: %s", "t", "ConnectionError: refused")
+        task._log_park("MCP server '%s' parked: %s", "t", "OAuthError: token revoked")
+        task._log_park("MCP server '%s' parked: %s", "t", "OAuthError: token revoked")
+    assert [r.levelno for r in caplog.records] == [
+        logging.WARNING, logging.DEBUG, logging.WARNING, logging.DEBUG]

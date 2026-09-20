@@ -174,11 +174,15 @@ class MCPServerRunMixin:
         """Park chatter control (#115713): re-parking a server that never revived is not a state
         transition — ``hermes mcp list`` already surfaces the parked state, so one identical
         WARNING per self-probe carries no new information. The first park (and the revived line
-        in ``_mark_session_proven``) stays a WARNING; repeats while still parked are demoted to
-        DEBUG so a long-lived gateway's error log is not flooded (10k+ identical lines/month)."""
-        if self._was_parked:
+        in ``_mark_session_proven``) stays a WARNING; an identical repeat while still parked is
+        demoted to DEBUG so a long-lived gateway's error log is not flooded (10k+ identical
+        lines/month). A park for a DIFFERENT reason (auth error after connection refused) is new
+        information and warns again."""
+        line = msg % args if args else msg
+        if self._was_parked and line == self._last_park_line:
             logger.debug(msg, *args)
         else:
+            self._last_park_line = line
             logger.warning(msg, *args)
 
     async def _park(self, revival_reason: str) -> bool:

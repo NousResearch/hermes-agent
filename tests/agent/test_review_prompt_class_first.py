@@ -246,3 +246,31 @@ def test_combined_review_prompt_forbids_dual_store_writes():
         "must not instruct writing the same preference lesson to both a skill and memory"
     )
     assert "never both" in prompt, "must state the one-store rule for preference lessons"
+
+
+# ---------------------------------------------------------------------------
+# Memory consent (#116788). A background reviewer once proposed adding a
+# sensitive fact whose own text recorded the user's no-save request, and the
+# ungated 'add' would have applied it unattended. The prompts must carry an
+# explicit consent rule so the reviewer declines such facts up front (the
+# memory tool stages self-reporting adds as a second, fail-closed line of
+# defense).
+# ---------------------------------------------------------------------------
+
+
+def test_memory_prompts_forbid_persisting_no_save_facts():
+    """Both memory-writing prompts must override review judgment with the user's no-save
+    request, including the trap of recording the request itself as a memory entry."""
+    for label, prompt in (
+        ("_MEMORY_REVIEW_PROMPT", AIAgent._MEMORY_REVIEW_PROMPT),
+        ("_COMBINED_REVIEW_PROMPT", AIAgent._COMBINED_REVIEW_PROMPT),
+    ):
+        lower = prompt.lower()
+        assert "consent" in lower, f"{label}: must frame no-save requests as a consent rule"
+        assert "not to save" in lower or "don't save" in lower or "don't remember" in lower, (
+            f"{label}: must name the no-save request shape"
+        )
+        assert "never" in lower, f"{label}: must be an absolute prohibition"
+        assert "request itself" in lower or "record the request" in lower, (
+            f"{label}: must cover recording the request as the fact (the #116788 near-miss shape)"
+        )

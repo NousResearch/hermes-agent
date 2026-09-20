@@ -4547,6 +4547,34 @@ def _configure_quiet_agent(agent) -> None:
     agent.tool_progress_mode = "off"
 
 
+def _kanban_worker_startup_guard() -> bool:
+    """Return whether this dispatcher-spawned worker still owns a runnable claim.
+
+    Claiming happens in the dispatcher before the subprocess starts. A board
+    mutation can win the race after that claim, so verify task, run, and lock
+    together before initializing a session or charging a failure.
+    """
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return True
+    try:
+        run_id = int((os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip())
+    except (TypeError, ValueError):
+        return False
+    claim_lock = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    if not claim_lock:
+        return False
+    try:
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli.kanban_db_connect import connect_closing
+        with connect_closing() as conn:
+            task = _kb.get_task(conn, task_id)
+        return bool(task and task.status == "running" and task.current_run_id == run_id and task.claim_lock == claim_lock)
+    except Exception:
+        logger.debug("kanban worker startup guard failed", exc_info=True)
+        return False
+
+
 def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
     ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
@@ -4569,6 +4597,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
     from hermes_cli.quiet_single_query import exit_single_query
+    if os.environ.get("HERMES_KANBAN_TASK") and not _kanban_worker_startup_guard():
+        exit_single_query(0)
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(1)
     try:

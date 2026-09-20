@@ -185,10 +185,17 @@ class TestShouldExclude:
 
     def test_excludes_browser_use_cli_profiles(self):
         """Browser Use CLI writes HERMES_HOME/browser_profiles/ (underscore).
-        Hyphen spellings are already excluded; the underscore dir holds Login Data
-        and Cookies and must not enter the archive."""
-        from hermes_cli.backup import _EXCLUDED_DIRS, _should_exclude
-        assert "browser_profiles" in _EXCLUDED_DIRS
+        Match at profile-home roots only; a skill's same-named dir is user data."""
+        from hermes_cli.backup import (
+            LOCAL_RUNTIME_ROOT_DIRS,
+            _EXCLUDED_BACKUP_ROOT_DIRS,
+            _EXCLUDED_DIRS,
+            _EXCLUDED_ROOT_DIRS,
+            _should_exclude,
+        )
+        assert "browser_profiles" not in _EXCLUDED_DIRS
+        assert "browser_profiles" in _EXCLUDED_BACKUP_ROOT_DIRS
+        assert _EXCLUDED_ROOT_DIRS is LOCAL_RUNTIME_ROOT_DIRS
         assert _should_exclude(Path("browser_profiles/browser-use-default/Default/Login Data"))
         assert _should_exclude(
             Path("browser_profiles/browser-use-default/Default/Network/Cookies")
@@ -196,7 +203,8 @@ class TestShouldExclude:
         assert _should_exclude(
             Path("profiles/coder/browser_profiles/browser-use-default/Default/Cookies")
         )
-        # Hyphen forms stay excluded.
+        assert not _should_exclude(Path("skills/example/browser_profiles/notes.md"))
+        # Hyphen forms stay any-depth (pre-existing).
         assert _should_exclude(Path("browser-profile/chrome/Default/Cookies"))
         assert _should_exclude(Path("browser-profiles/Default/Cookies"))
 

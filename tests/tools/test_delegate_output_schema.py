@@ -115,6 +115,22 @@ class TestPromptPlumbing:
         assert "'city' is a required property" in msg
         assert "JSON" in msg
 
+    def test_retry_message_repastes_schema_when_given(self):
+        """A compacted child cannot see the contract it is being held to.
+
+        Without the schema in the retry turn, children answer "output contract schema
+        was not provided" — and against a permissive schema that refusal VALIDATES,
+        replacing real findings with an empty shell. The retry must restate the
+        contract and tell the child to re-derive rather than report the gap.
+        """
+        msg = build_retry_message(["$: 'city' is a required property"], ADDRESS_SCHEMA)
+        assert '"city"' in msg
+        assert "Do NOT report" in msg
+
+    def test_retry_message_without_schema_is_unchanged(self):
+        """One-arg callers keep the original wording."""
+        assert '"properties"' not in build_retry_message(["boom"])
+
 
 # ---------------------------------------------------------------------------
 # Tool-schema surface (one-time static field)

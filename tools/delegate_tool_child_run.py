@@ -446,8 +446,10 @@ def _validate_child_output_schema(
     if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
         return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
 
-    # Exactly one retry turn, carrying the validation errors verbatim (no
-    # schema re-paste — the child already holds the contract in its context).
+    # Exactly one retry turn, carrying the validation errors verbatim, the schema
+    # itself, and the child's own transcript — its original context may have been
+    # compacted away by now, and a child that can see neither answers with a
+    # refusal that can itself validate and REPLACE its real findings.
     _retry_result = None
     try:
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
@@ -455,7 +457,14 @@ def _validate_child_output_schema(
         from agent.delegation_context import delegated_child_context
         with delegated_child_context(str(getattr(child, "session_id", "") or "")):
             _retry_result = child.run_conversation(
-                user_message=build_retry_message(_schema_errors), task_id=child_task_id,
+                user_message=build_retry_message(_schema_errors, _output_schema), task_id=child_task_id,
+                # The retry must carry the child's own transcript. build_turn_context seeds a turn
+                # with `list(conversation_history) if conversation_history else []`, so omitting this
+                # hands the child an EMPTY transcript: it then truthfully answers that it has no
+                # context, and against a permissive schema that answer validates and REPLACES the
+                # real findings. Observed on a source-teardown subagent whose complete extraction
+                # was overwritten by an empty object.
+                conversation_history=result.get("messages") or None,
                 stream_callback=relay_child_text,
             )
     except Exception as _retry_exc:

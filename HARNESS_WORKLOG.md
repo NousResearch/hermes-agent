@@ -24,7 +24,7 @@
   変更したPythonファイルの Ruff、`git diff --check` も成功。
 - 自動lintの停滞を含んだ verification_evidence テストは31.9秒→1.8秒程度。
   全タスクの高速化率ではなく、依存未導入環境における待ち時間の除去。
-- 実設定ローダーでCLIツール集合、Docker backend / network=false / mount_cwd=false、停止・検証有効化を確認。
+- 実設定ローダーでCLIツール集合、Docker backend / network=false / project-only mount、停止・検証有効化を確認。
 - `.venv` は lockfile 通りに作成。既存ユーザー設定・稼働環境は変更していない。
 
 未解決: 実利用タスクの品質・速度の比較、モデルAPI/実コンテナとの E2E。

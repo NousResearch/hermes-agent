@@ -21,7 +21,9 @@ terminal:
   container_memory: 4096
   container_persistent: true
   docker_network: false
-  docker_mount_cwd_to_workspace: false
+  # Expose only the checkout from which Hermes was launched; host home, sockets,
+  # and other directories remain outside the container.
+  docker_mount_cwd_to_workspace: true
   docker_volumes: []
   docker_forward_env: []
   env_passthrough: []

@@ -147,12 +147,12 @@ def _stage_session_file_attachment(
         except Exception:
             _detect_file_drop = None
         if _detect_file_drop is not None:
-            dropped = _detect_file_drop(raw_path)
+            dropped = _detect_file_drop(raw_path, base_dir=workspace)
             if dropped:
                 resolved = Path(dropped["path"]).resolve()
             else:
                 path_token, _remainder = _split_path_input(raw_path)
-                found = _resolve_attachment_path(path_token)
+                found = _resolve_attachment_path(path_token, base_dir=workspace)
                 resolved = Path(found).resolve() if found is not None else None
     if resolved is not None:
         try:

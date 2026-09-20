@@ -190,7 +190,7 @@ def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     Hosted providers multiplex requests independently and keep the turn-start timing.
     """
     provider = str((main_runtime or {}).get("provider") or "").strip().lower()
-    if provider != "custom" and not provider.startswith("custom:"):
+    if provider not in {"custom", "lmstudio"} and not provider.startswith("custom:"):
         return False
     try:
         cfg = _title_config()

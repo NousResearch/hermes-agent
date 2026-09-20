@@ -119,12 +119,6 @@ class _RuntimeStatusWriter:
             )
             return False if no_more_work else None
 
-    def _wait_forever_for(self, generation: int) -> bool:
-        with self._condition:
-            while (state := self.settled(generation)) is None:
-                self._condition.wait()
-            return state
-
     def _run(self) -> None:
         while True:
             with self._condition:
@@ -211,7 +205,9 @@ async def flush_runtime_status_async(timeout: float = 2.0) -> bool:
     landed: asyncio.Future[bool] = loop.create_future()
 
     def _relay() -> None:
-        state = writer._wait_forever_for(generation)
+        with writer._condition:
+            while (state := writer.settled(generation)) is None:
+                writer._condition.wait()
         try:
             loop.call_soon_threadsafe(lambda: landed.done() or landed.set_result(state))
         except RuntimeError:  # loop closed while we waited
@@ -1107,10 +1103,10 @@ def write_runtime_status(
             reload_existing=reload_existing)
         writer = _get_runtime_status_writer()
         generation = writer.submit(path, payload)
-    persisted = writer.wait(generation, timeout=wait_timeout)
-    if persisted:
-        _emit_runtime_status_transition(previous_payload, payload)
-    return persisted
+    # Report the transition once it is queued (matching ``publish_runtime_status``): a
+    # timed-out update is still written by the background writer, so its transition happened.
+    _emit_runtime_status_transition(previous_payload, payload)
+    return writer.wait(generation, timeout=wait_timeout)
 
 
 def publish_runtime_status(

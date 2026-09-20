@@ -1167,6 +1167,51 @@ class TestQuarantineBundleBinaryAssets:
         assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
         assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"
 
+    def test_quarantine_bundle_writes_text_files_without_newline_translation(self, tmp_path, monkeypatch):
+        """Text members must land on disk byte-for-byte as the bundle carries them.
+
+        Path.write_text(newline=None) translates "\\n" to os.linesep on Windows, so a
+        CRLF copy became the installed content while bundle_content_hash re-encodes
+        the str as LF — every hub skill then reported update_available forever (#117181).
+        """
+        import pathlib
+
+        import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
+
+        def windows_text_mode_write_text(self, data, encoding=None, errors=None, newline=None):
+            # Emulate the platform translation newline=None performs on Windows;
+            # newline="" is the documented opt-out quarantine must rely on.
+            if newline != "":
+                data = data.replace("\n", "\r\n")
+            self.write_bytes(data.encode(encoding or "utf-8"))
+
+        monkeypatch.setattr(pathlib.Path, "write_text", windows_text_mode_write_text)
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="crlfskill",
+                files={
+                    "SKILL.md": "---\nname: crlfskill\n---\n\nBody line one.\nBody line two.\n",
+                    "assets/binary.bin": b"\x00\x01raw",
+                },
+                source="official",
+                identifier="official/mlops/models/crlfskill",
+                trust_level="builtin",
+            )
+
+            q_path = quarantine_bundle(bundle)
+
+        assert (q_path / "SKILL.md").read_bytes() == bundle.files["SKILL.md"].encode("utf-8")
+        assert content_hash(q_path) == bundle_content_hash(bundle)
+
     def test_quarantine_bundle_rejects_traversal_file_paths(self, tmp_path):
         import tools.skills_hub as hub
 

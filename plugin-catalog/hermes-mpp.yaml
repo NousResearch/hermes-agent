@@ -1,12 +1,15 @@
-# Draft pin: update to the released packaging commit before admission.
 name: hermes-mpp
 repo: https://github.com/tempoxyz/hermes-mpp
-sha: 2a962a831f1fac1eea67b24d8321b00e9d40c2b6
+sha: a0782b7024ad0256cceede338754b466ded1df06
+version: "0.1.3+a0782b7"
 subdir: src/hermes_mpp
 description: >-
   Pay supported HTTP 402 MPP challenges on Tempo through mpp_fetch and
-  in-process HTTPX clients. Uses a dedicated wallet and an optional origin
-  allowlist; configured requests can authorize real payments automatically.
+  in-process HTTPX clients. Uses a dedicated wallet.
+  Disclosure — with MPP_ALLOWED_ORIGINS unset, any supported HTTP 402 MPP
+  challenge returned to core HTTPX traffic (not only mpp_fetch) is auto-paid
+  from the Tempo wallet with no per-payment cap or confirmation; the origin
+  allowlist is the operator's control.
 maintainer: tempoxyz
 tier: community
 category: tools

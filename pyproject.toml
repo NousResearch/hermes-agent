@@ -119,7 +119,18 @@ dependencies = [
   # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
-  "psutil==7.2.2",
+  #
+  # `psutil` does NOT ship Android wheels (no `*-android-*.whl` filenames on
+  # PyPI) and its build backend explicitly refuses `platform android`, so
+  # the official Termux install path (`pip install -e ".[termux]"`) cannot
+  # install it from a constraints file (constraints only restrict, never
+  # relax an exact `==` pin declared on a direct dependency).  The supported
+  # Android installer recreates a `venv --system-site-packages` after
+  # `pkg install python-psutil`; nothing in this venv needs psutil on
+  # Android — Termux lacks `/proc` semantics psutil expects, and the few
+  # call sites already gate on POSIX vs Windows.  Skip the dep on Android
+  # entirely so a fresh Termux install does not fail out of the box.
+  "psutil==7.2.2; sys_platform != 'android'",
   # Browser CDP supervisor + browser_dialog import this directly. Keep core
   # so browser tool discovery doesn't fail on lean installs.
   "websockets==15.0.1",

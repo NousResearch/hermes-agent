@@ -2819,13 +2819,42 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
             elif (
                 _stripped != _tail.get("content") and not _message_text({"role": "user", "content": _stripped}).strip()
             ):
-                # The tail was nothing but an earlier snapshot row —
+                # The tail was nothing but an earlier snapshot row—
                 # refresh it in place instead of stacking a duplicate.
                 _replace_message_content(_tail, todo_snapshot)
                 _tail["_todo_snapshot_synthetic"] = True
                 merged = True
         if not merged:
-            compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
+            # The trailing row isn't a real user turn, but a user row may still exist
+            # earlier in `compressed`. Naively appending a synthetic user row here
+            # creates user,user adjacency when the tail is an assistant/tool row —
+            # route the snapshot through the last real user message instead.
+            if _tail is None or _tail.get("role") != "user":
+                _tail = None
+                for _i in range(len(compressed) - 1, -1, -1):
+                    _msg = compressed[_i] if isinstance(compressed[_i], dict) else None
+                    if _msg is not None and _msg.get("role") == "user":
+                        _tail = _msg
+                        break
+            if _tail is not None:
+                _stripped = _strip_stale_todo_snapshot(_tail.get("content"))
+                _probe = {key: value for key, value in _tail.items() if key != "content"}
+                _probe["content"] = _stripped
+                if _is_real_user_message(_probe):
+                    _snapshot_text = (
+                        f"\n\n{todo_snapshot}" if isinstance(_stripped, str) and _stripped else todo_snapshot
+                    )
+                    _replace_message_content(_tail, _append_text_to_content(_stripped, _snapshot_text))
+                    merged = True
+                elif (
+                    _stripped != _tail.get("content")
+                    and not _message_text({"role": "user", "content": _stripped}).strip()
+                ):
+                    _replace_message_content(_tail, todo_snapshot)
+                    _tail["_todo_snapshot_synthetic"] = True
+                    merged = True
+            if not merged:
+                compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:

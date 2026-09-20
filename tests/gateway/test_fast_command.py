@@ -223,7 +223,7 @@ async def test_fast_global_picker_persists_to_originating_profile(
     runner = _make_runner()
     runner.config = SimpleNamespace(multiplex_profiles=True)
     runner._resolve_profile_home_for_source = lambda _source: named_home
-    runner._adapter_for_source = lambda _source: adapter
+    runner._delivery_adapter_for = lambda _source: adapter
     runner._thread_metadata_for_source = lambda _source, anchor=None: {}
     runner._reply_anchor_for_event = lambda _event: None
     event = _make_event("/fast --global" if persist else "/fast")

@@ -269,8 +269,9 @@ _DECISION_MESSAGES: dict[str, str] = {
         "This looks like a runaway search loop. Work with the results you already have and give the user your answer."
     ),
     "loop_subagent_cap": (
-        "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
-        "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
+        "Blocked delegate_task: spawning {requested} more subagents would exceed this turn's "
+        "limit of {cap} ({count} already reserved). "
+        "Finish the work with the results you have and answer the user."
     ),
 }
 
@@ -546,8 +547,8 @@ class ToolCallGuardrailController:
         cap_field, count_attr, code = spec
         cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
         increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
-        if increment and cap and count >= cap:
-            return self._decide("block", code, tool_name, count, signature, cap=cap)
+        if increment and cap and count + increment > cap:
+            return self._decide("block", code, tool_name, count, signature, cap=cap, requested=increment)
         setattr(self, count_attr, count + increment)
         return None
 

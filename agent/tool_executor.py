@@ -660,15 +660,17 @@ def _dispatch_authorized_once(
             callback()
 
     block_message, block_error_type = scope_block, "tool_scope_block"
-    if block_message is None:
+    # A batch may still have queued calls after an earlier call halted the turn.
+    # Refuse them before hooks/dispatch, while preserving one result per call id.
+    guardrail_decision = agent._tool_guardrails.halt_decision
+    if block_message is None and guardrail_decision is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
 
-    guardrail_decision = None
-    if block_message is None:
-        guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
+    if block_message is None and guardrail_decision is None:
+        guardrail_decision = agent._tool_guardrails.halt_decision or agent._tool_guardrails.before_call(ref.name, ref.args)
         if guardrail_decision.allows_execution:
             guardrail_decision = None
 

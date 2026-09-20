@@ -1,0 +1,71 @@
+# Seed for scripts/dev-sandbox.sh --from scripts/sandbox-coding.
+# Requires Docker and a prepared image with the project's test toolchain.
+agent:
+  max_turns: 40
+  run_budget_seconds: 600
+  budget_warning_ratio: 0.75
+  verify_on_stop: true
+  stall_guards: true
+  parallel_tool_call_guidance: true
+  disabled_toolsets: [browser, messaging, cronjob, connections, code_execution]
+
+platform_toolsets:
+  cli: [terminal, file, todo, delegation]
+
+terminal:
+  backend: docker
+  cwd: /workspace
+  timeout: 120
+  home_mode: profile
+  container_cpu: 2
+  container_memory: 4096
+  container_persistent: true
+  docker_network: false
+  docker_mount_cwd_to_workspace: false
+  docker_volumes: []
+  docker_forward_env: []
+  env_passthrough: []
+  docker_snap_compat: false
+
+approvals:
+  mode: manual
+  timeout: 60
+  single_query_mode: deny
+  unattended_mode: deny
+  cron_mode: deny
+
+delegation:
+  max_concurrent_children: 2
+  max_iterations: 12
+  child_timeout_seconds: 120
+  max_spawn_depth: 1
+  orchestrator_enabled: false
+  subagent_auto_approve: false
+  inherit_mcp_toolsets: false
+
+tool_loop_guardrails:
+  hard_stop_enabled: true
+  non_interactive_hard_stop_enabled: true
+  warnings_enabled: true
+  hard_stop_after:
+    exact_failure: 3
+    same_tool_failure: 6
+    idempotent_no_progress: 4
+  loop_caps:
+    max_web_searches: 8
+    max_subagents: 4
+
+security:
+  protected_instruction_files: true
+  allow_lazy_installs: false
+  allow_private_urls: false
+  redact_secrets: true
+  approval:
+    transport: builtin
+    transport_fallback: deny
+
+tools:
+  connectors:
+    enabled: false
+
+mcp_servers: {}

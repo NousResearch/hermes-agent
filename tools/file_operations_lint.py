@@ -17,7 +17,8 @@ from tools.file_operations_common import LintResult
 LINTERS = {
     '.py': 'python -m py_compile {file} 2>&1',
     '.js': 'node --check {file} 2>&1',
-    '.ts': 'npx tsc --noEmit {file} 2>&1',
+    # Saving a file must never fetch or install a compiler from the registry.
+    '.ts': 'npx --offline --no-install tsc --noEmit {file} 2>&1',
     '.go': 'go vet {file} 2>&1',
     '.rs': 'rustfmt --check {file} 2>&1',
 }
@@ -35,6 +36,8 @@ _LINTER_UNUSABLE_PATTERNS = {
         'this is not the tsc command you are looking for',  # tsc not installed locally
         'could not determine executable to run',
         'not found in npm registry',
+        'enotcached',  # offline, no installed/cached compiler
+        'npx canceled due to missing packages',
     ),
     'rustfmt': (
         'no input filename given',  # outside a Cargo project

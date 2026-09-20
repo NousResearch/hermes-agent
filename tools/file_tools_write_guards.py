@@ -323,9 +323,15 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     try:
         from agent.file_safety import is_write_approval_required
     except Exception:
-        return None
+        return "BLOCKED: cannot check write approval because the file safety subsystem is unavailable."
 
-    targets = [p for p in paths if is_write_approval_required(p)]
+    # Relative paths belong to the task's workspace, not the agent process cwd.
+    # Use the same resolver as write_file/patch, including symlink resolution.
+    try:
+        targets = [str(_resolve_path_for_task(p, task_id)) for p in paths]
+        targets = [p for p in targets if is_write_approval_required(p)]
+    except (OSError, ValueError, RuntimeError):
+        return "BLOCKED: cannot resolve the write target to check approval."
     if not targets:
         return None
 

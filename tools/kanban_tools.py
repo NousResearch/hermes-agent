@@ -518,9 +518,16 @@ def heartbeat_current_worker_from_env() -> bool:
     _auto_heartbeat_last_attempt = now
     try:
         from hermes_cli import kanban_db_dispatch as kbd
+        # ``set_current_session_id`` publishes HERMES_SESSION_ID process-wide, so an
+        # in-process cron job leaves its own id here and first-write-wins would latch it
+        # permanently. The beat itself must stay unguarded: that same cron job is the
+        # worker's only liveness signal while it runs.
+        stamp = (_stamp_worker_session_metadata(tid, None)
+                 if _is_dispatcher_owned_worker() else None)
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
-                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
+                   (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid),
+                                           "metadata": stamp}))
             succeeded = True
             for fn, kwargs in ops:
                 op = fn.__name__
@@ -835,7 +842,8 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
         ok = kbd.heartbeat_worker(
-            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
+            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid),
+            metadata=_stamp_worker_session_metadata(tid, None))
         _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
         return _ok(task_id=tid)
 

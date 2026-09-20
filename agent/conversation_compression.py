@@ -1191,7 +1191,11 @@ def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
 
 def _refresh_persisted_compression_guards(compressor: Any, *, include_cooldown: bool = True) -> None:
     """Refresh durable automatic-compression guards on a built-in compressor."""
-    method_calls = [("_load_fallback_compression_streak", {}), ("_load_ineffective_compression_count", {})]
+    method_calls = [
+        ("_load_fallback_compression_streak", {}),
+        ("_load_ineffective_compression_count", {}),
+        ("_load_compression_frequency_state", {}),
+    ]
     if include_cooldown:
         method_calls.insert(0, ("get_active_compression_failure_cooldown", {"refresh": True}))
     for method_name, kwargs in method_calls:

@@ -22,7 +22,8 @@ The counter now round-trips the durable session-state channel exactly like
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, ContextCompressor
+from agent.conversation_compression import _refresh_persisted_compression_guards
 from hermes_state import SessionDB
 
 
@@ -84,6 +85,27 @@ class TestCounterRoundTripsBindSessionState:
         with patch("agent.context_compressor.time.time", return_value=1_300.0):
             assert second.should_compress(10**9) is False
             assert second._compression_block_reason() == "frequency:300"
+
+    def test_stale_compressor_refreshes_frequency_guard_before_entry(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        first = _compressor(db, "s1")
+        stale = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(first._FREQUENT_COMPACTION_LIMIT):
+                first.record_completed_compaction()
+
+        assert stale._compression_frequency_state() == (0.0, 0)
+        with patch("agent.context_compressor.time.time", return_value=1_300.0):
+            _refresh_persisted_compression_guards(stale)
+            assert stale._compression_block_reason() == "frequency:300"
+            stale.record_completed_compaction()
+
+        persisted = db.get_session_model_config_value(
+            "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {}
+        )
+        assert persisted["count"] == first._FREQUENT_COMPACTION_LIMIT + 1
 
     def test_rebind_to_other_session_does_not_leak_counter(self, tmp_path):
         """The counter is per-session: switching sessions must not carry it."""

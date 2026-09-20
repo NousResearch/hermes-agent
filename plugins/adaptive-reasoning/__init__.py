@@ -792,7 +792,7 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
     # (same model — different models carry different native scales) can
     # only come from the user (e.g. /reasoning high). Stand down for the
     # rest of the session when that happens.
-    memory_key = "%s|%s" % (session_id, model)
+    memory_key = "%s|%s|%s" % (session_id, provider, model)
     wire_effort = _wire_effort(request)
     last_observed = _SESSION_EFFORT_MEMORY.get(memory_key)
     if wire_effort is not None and last_observed is not None \

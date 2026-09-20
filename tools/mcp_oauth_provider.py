@@ -164,6 +164,15 @@ class HermesProviderMixin:
         untouched, so the SEP-2352 credential binding still uses the advertised identifier (stable across
         runs), while the RFC 9207 ``iss`` check and Hermes' refresh-token binding use the document's issuer.
         Every other response goes back to the SDK unchanged, including its issuer check."""
+        # This compatibility shim is only for authorization-server metadata
+        # responses. Never consume arbitrary 200 responses here: MCP resource
+        # responses may be long-lived SSE streams (for example GET /v2/mcp),
+        # and response.aread() would wait for that stream to end while holding
+        # the OAuth state semaphore.
+        req = getattr(response, "request", None)
+        if req is None or not any(path in str(req.url) for path in _ASM_DISCOVERY_PATHS):
+            return response
+
         from mcp.shared.auth import OAuthMetadata
         from pydantic import ValidationError
         try:

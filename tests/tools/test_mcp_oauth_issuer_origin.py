@@ -10,6 +10,7 @@ rejected.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -20,6 +21,23 @@ RESOURCE = "https://res.example/mcp"
 AS_ORIGIN = "https://as.example"
 ADVERTISED = f"{AS_ORIGIN}/mcp-issuer"
 PATH_DOC = "/.well-known/oauth-authorization-server/mcp-issuer"
+
+
+@pytest.mark.asyncio
+async def test_origin_issued_metadata_shim_does_not_read_mcp_resource_response():
+    from tools.mcp_oauth_provider import HermesProviderMixin
+
+    class ResourceResponse:
+        status_code = 200
+        request = SimpleNamespace(url=RESOURCE)
+
+        async def aread(self):
+            raise AssertionError("normal MCP resource response must not be consumed as OAuth metadata")
+
+    provider = HermesProviderMixin.__new__(HermesProviderMixin)
+    response = ResourceResponse()
+
+    assert await provider._hermes_accept_origin_issued_metadata(response) is response
 
 
 def _asm(issuer):

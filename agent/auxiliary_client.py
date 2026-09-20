@@ -5568,8 +5568,17 @@ def _vision_auto_route(
 
 
 # ZAI vision must use the OpenAI-compatible endpoint: the Anthropic wire rejects max_tokens on
-# multimodal calls (error 1210).
-_ZAI_OPENAI_VISION_URLS = ("https://open.bigmodel.cn/api/paas/v4", "https://api.z.ai/api/paas/v4")
+# multimodal calls (error 1210). General surfaces lead (registry default + ZAI_ENDPOINTS probe
+# order); coding variants trail as payable fallbacks — ZAI bills the two surfaces separately, so
+# a Coding Plan key on a general surface gets 429 code 1113, and a general key on coding the
+# mirror image. The main runtime's own resolved endpoint is tried before this ladder (see the
+# zai branch in resolve_vision_provider_client).
+_ZAI_OPENAI_VISION_URLS = (
+    "https://open.bigmodel.cn/api/paas/v4",
+    "https://api.z.ai/api/paas/v4",
+    "https://open.bigmodel.cn/api/coding/paas/v4",
+    "https://api.z.ai/api/coding/paas/v4",
+)
 
 
 def resolve_vision_provider_client(
@@ -5601,7 +5610,21 @@ def resolve_vision_provider_client(
         sync_client, default_model = _resolve_strict_vision_backend(requested, resolved_model)
         return _finalize_vision_client(requested, sync_client, default_model, resolved_model, async_mode)
     if requested == "zai":
-        for _zai_url in _ZAI_OPENAI_VISION_URLS:
+        # The main runtime's own resolved endpoint leads when it is a ZAI surface: a Coding Plan
+        # key only has balance on /api/coding/paas/v4, so trying the static general URLs first is
+        # a guaranteed 429 (code 1113 "insufficient balance") that reads like a vision failure.
+        # Non-ZAI hosts never enter — this stays ZAI routing, not a generic relay. Move-to-front,
+        # not just prepend: the runtime endpoint may itself sit later in the static ladder.
+        _zai_ladder = list(_ZAI_OPENAI_VISION_URLS)
+        _runtime_base = str(runtime.get("base_url") or "").strip().rstrip("/")
+        if _runtime_base and (
+            base_url_host_matches(_runtime_base, "open.bigmodel.cn")
+            or base_url_host_matches(_runtime_base, "api.z.ai")
+        ):
+            if _runtime_base in _zai_ladder:
+                _zai_ladder.remove(_runtime_base)
+            _zai_ladder.insert(0, _runtime_base)
+        for _zai_url in _zai_ladder:
             client, final_model = _get_cached_client(
                 requested, resolved_model, async_mode, base_url=_zai_url,
                 api_key=resolved_api_key or None, api_mode="chat_completions", main_runtime=runtime,

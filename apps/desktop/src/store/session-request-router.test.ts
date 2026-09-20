@@ -74,7 +74,10 @@ const {
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForProfile,
+  openGatewayForProfile,
+  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
+  retainGatewayForSessionTurn,
   retireLocalProfileGateways,
   setPrimaryGateway,
   SECONDARY_MIN_LIFETIME_MS
@@ -587,5 +590,69 @@ describe('requestForSessionProfile', () => {
     expect(ambient.mock.calls.map(args => args.length)).toEqual([2, 3, 4])
     expect(ambient).toHaveBeenNthCalledWith(2, 'session.usage', params, 1_800_000)
     expect(ambient).toHaveBeenNthCalledWith(3, 'session.usage', params, undefined, controller.signal)
+  })
+})
+
+// The retirement is main's, the parking is the renderer's: main stops a pooled
+// backend for idle (`pool-limits.json` idleMs) and broadcasts
+// `hermes:pool:retiring`, which parks every scope riding that key. Every later
+// background dial to a parked key is refused — re-arming it would queue for the
+// slot the retirement just freed — and that refusal is what a user sees as
+// `Backend for "<profile>" was retired; open it explicitly to reconnect.` on
+// their next send in that chat. A user turn therefore says 'foreground' and
+// gets the chat back; everything else keeps the refusal.
+describe('requestForSessionProfile: a retired pool backend', () => {
+  it('refuses background work but re-arms for a foreground turn', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+
+    await openGatewayForProfile('loki')
+    expect(secondaryGateways).toHaveLength(1)
+
+    // What `hermes:pool:retiring` does to the renderer for that pool key.
+    expect(parkSecondariesForRetiredBackend('loki')).toHaveLength(1)
+
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    // Not evidence of a user waiting: stays refused.
+    await expect(
+      requestForSessionProfile('loki', ambient as never, 'session.usage', { session_id: 'rt-parked' })
+    ).rejects.toThrow(/retired; open it explicitly to reconnect/i)
+    expect(ambient).not.toHaveBeenCalled()
+
+    // A turn-starting RPC that takes NO lease of its own (only prompt.submit
+    // retains one) is decided by the DIAL: /skill-sync's slash.exec is exactly
+    // this shape, and it is what a parked backend refused.
+    const slashResult = await requestForSessionProfile<{ method: string; params: Record<string, unknown> }>(
+      'loki',
+      ambient as never,
+      'slash.exec',
+      { command: 'skill-sync --prune', session_id: 'rt-parked' },
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
+
+    expect(slashResult).toEqual({
+      method: 'slash.exec',
+      params: { command: 'skill-sync --prune', session_id: 'rt-parked' }
+    })
+    expect(ambient).not.toHaveBeenCalled()
+
+    // The lease a send takes FIRST must re-arm on its own too: it is dialed
+    // before any request, so without the priority it is the throw.
+    expect(parkSecondariesForRetiredBackend('loki')).toHaveLength(1)
+
+    const release = await retainGatewayForSessionTurn(null, 'loki', 'rt-parked', {
+      spawnPriority: 'foreground'
+    })
+
+    release()
+
+    expect(secondaryGateways[0].request).toHaveBeenCalledWith('slash.exec', {
+      command: 'skill-sync --prune',
+      session_id: 'rt-parked'
+    })
   })
 })

@@ -1507,11 +1507,16 @@ function releaseTurnLeasesForScope(scope: string): void {
  * detaches the runtime session while the model is still working; the gateway's
  * 20-second orphan guard then interrupts it as `client_gone`. Hold one lease per
  * (route, runtime session) until message.complete/session.info settles the turn.
+ *
+ * `spawnPriority` is the lease's own dial policy: a lease held for a USER turn
+ * passes 'foreground' so a pool backend retired underneath the chat is re-armed
+ * instead of refused (@see SessionRouteOptions).
  */
 export async function retainGatewayForSessionTurn(
   connectionId: null | string,
   profile: string,
-  sessionId: string
+  sessionId: string,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
 ): Promise<() => void> {
   // Primary events do not flow through a Secondary's terminal-event listener.
   // Registering a no-op lease here would leave a phantom key that can suppress
@@ -1533,7 +1538,12 @@ export async function retainGatewayForSessionTurn(
     return () => undefined
   }
 
-  const releaseRoute = await retainGatewayForAgent(connectionId, profile)
+  // Same arity discipline as the dials: only a foreground lease carries the
+  // policy object; every existing caller keeps its exact call shape.
+  const releaseRoute =
+    spawnPriority === 'foreground'
+      ? await retainGatewayForAgent(connectionId, profile, { spawnPriority })
+      : await retainGatewayForAgent(connectionId, profile)
 
   // Only a Secondary's own terminal-event listener releases this lease, so a route with no
   // Secondary can never release one: retainGatewayForAgent and gatewayForProfile both hand back a

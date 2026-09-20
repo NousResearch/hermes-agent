@@ -62,6 +62,24 @@ export interface SessionRpcDispatcherDeps {
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
 }
 
+/**
+ * Methods only a USER gesture starts: the composer's send, the slash pipeline
+ * (`slash.exec` → `command.dispatch`), and `/btw`. No poller, roster hydration
+ * or sidebar sweep calls them, and a queued drain still carries the user's own
+ * message — so these are the RPCs allowed to RE-ARM a pool backend that was
+ * retired underneath the chat. Main refuses a BACKGROUND dial to a retired key
+ * by design ("Backend for X was retired; open it explicitly to reconnect"),
+ * which is how a send became a failed reply instead of a reconnect; the same
+ * 'foreground' tag the first-send / New-session / explicit bot-open dials
+ * already carry (#102281, #105104, #113269) is what fixes it here.
+ */
+const USER_TURN_METHODS: ReadonlySet<string> = new Set([
+  'command.dispatch',
+  'prompt.btw',
+  'prompt.submit',
+  'slash.exec'
+])
+
 export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): AmbientGatewayRequest {
   const { ambientRequest, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef } = deps
 
@@ -112,7 +130,15 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
     assertSessionOwnerResolved(owner, { method, sessionId: paramSessionId ? routingSessionId : null })
 
     try {
-      return await requestForSessionProfile<T>(owner, ambientRequest, method, params ?? {}, timeoutMs, signal)
+      return await requestForSessionProfile<T>(
+        owner,
+        ambientRequest,
+        method,
+        params ?? {},
+        timeoutMs,
+        signal,
+        USER_TURN_METHODS.has(method) ? { spawnPriority: 'foreground' } : undefined
+      )
     } catch (error) {
       // A missed session.reclaimed leaves later RPCs answering 4001 against a
       // still-resumable stored row. Prompt actions already retry their own

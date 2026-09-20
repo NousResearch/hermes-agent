@@ -141,10 +141,20 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
 
     await expect(request('prompt.submit', { session_id: 'rt-omar', text: 'again' })).resolves.toEqual({ routed: true })
 
-    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'omar', 'prompt.submit', {
-      session_id: 'rt-omar',
-      text: 'again'
-    })
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith(
+      'local',
+      'omar',
+      'prompt.submit',
+      {
+        session_id: 'rt-omar',
+        text: 'again'
+      },
+      undefined,
+      undefined,
+      // A send is a user gesture: the dial must be able to RE-ARM a pool
+      // backend retired underneath the chat instead of being refused by it.
+      { spawnPriority: 'foreground' }
+    )
     expect(ambientRequest).not.toHaveBeenCalled()
     expect(probe.resolveSessionOwner).not.toHaveBeenCalled()
   })
@@ -201,10 +211,18 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
     setMessagingSessions([makeSessionInfo({ connection_id: 'homelab', id: 'stored-tg', profile: 'bots' })])
 
     await expect(request('prompt.submit', { session_id: 'stored-tg', text: 'hi' })).resolves.toEqual({ routed: true })
-    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith('homelab', 'bots', 'prompt.submit', {
-      session_id: 'stored-tg',
-      text: 'hi'
-    })
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith(
+      'homelab',
+      'bots',
+      'prompt.submit',
+      {
+        session_id: 'stored-tg',
+        text: 'hi'
+      },
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
   })
 })
 
@@ -234,10 +252,18 @@ describe('createSessionRpcDispatcher: routes by the session OWNING connection wh
       routed: true
     })
 
-    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'default', 'prompt.submit', {
-      session_id: 'rt-local',
-      text: 'again'
-    })
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith(
+      'local',
+      'default',
+      'prompt.submit',
+      {
+        session_id: 'rt-local',
+        text: 'again'
+      },
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
     expect(gatewayMocks.requestGatewayForProfile).not.toHaveBeenCalled()
     expect(ambientRequest).not.toHaveBeenCalled()
   })
@@ -312,5 +338,43 @@ describe('createSessionRpcDispatcher: stale runtime recovery', () => {
     await expect(request('session.activate', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
 
     expect(sessionMocks.requestSessionResume).not.toHaveBeenCalled()
+  })
+})
+
+// Main refuses a BACKGROUND dial to a pool key it retired for idle:
+// `Backend for "<profile>" was retired; open it explicitly to reconnect.`
+// The RPCs a user's OWN gesture starts must therefore say 'foreground', or the
+// send is lost with that message instead of reconnecting the chat. Pollers,
+// hydration sweeps and approvals keep the background default — re-arming them
+// would queue for the slot the retirement just freed.
+describe('createSessionRpcDispatcher: a user turn may re-arm a retired pool backend', () => {
+  it('tags every turn-starting method foreground', async () => {
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    const { request } = dispatcher()
+
+    for (const method of ['command.dispatch', 'prompt.btw', 'prompt.submit', 'slash.exec']) {
+      await request(method, { session_id: 'rt-omar' })
+
+      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith(
+        'local',
+        'omar',
+        method,
+        { session_id: 'rt-omar' },
+        undefined,
+        undefined,
+        { spawnPriority: 'foreground' }
+      )
+    }
+  })
+
+  it('keeps a non-turn RPC on the background default', async () => {
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    const { request } = dispatcher()
+
+    await request('session.usage', { session_id: 'rt-omar' })
+
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenLastCalledWith('local', 'omar', 'session.usage', {
+      session_id: 'rt-omar'
+    })
   })
 })

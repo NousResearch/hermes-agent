@@ -131,6 +131,7 @@ def initialize_owner_output(service) -> bool:
         authority.db.db_path, root=home / "hosted-room-artifact-outbox"
     )
     service._owner_output_owner = _owner_identity(authority)
+    retry_owner_output_cleanups(service)
     return True
 
 
@@ -441,6 +442,356 @@ def _stored_payload_digest(conn, admission_id):
     if row is None:
         raise RuntimeStoreError("permission_denied")
     return row[0]
+
+
+def _failure_key(admission_id):
+    return FAILURE_PREFIX + _digest([_identifier(admission_id, "admission_id")])
+
+
+@dataclass(frozen=True)
+class UnknownOwnerOutputContext:
+    authority: object
+    service: object
+    source_home: str
+    selector: dict
+    peer_subject: str
+    owner: str
+    source_discard_digest: str
+
+
+def capture_unknown_output_context(authority, binding, attested, peer_subject, params):
+    """Bind reverse-attested cleanup facts without opening the source database."""
+    service = getattr(authority, "hosted_room_service", None)
+    digest = attested.get("source_discard_digest") if isinstance(attested, dict) else None
+    try:
+        _provider(service)
+    except (AttributeError, RuntimeStoreError):
+        return None
+    if (
+        _named_home(authority) is None
+        or not isinstance(peer_subject, str)
+        or not peer_subject
+        or not isinstance(digest, str)
+        or digest != params.get("_source_discard_digest")
+        or _HEX.fullmatch(digest) is None
+        or not isinstance(attested.get("owner"), str)
+        or not attested["owner"]
+    ):
+        return None
+    return UnknownOwnerOutputContext(
+        authority=authority,
+        service=service,
+        source_home=binding["source_home"],
+        selector=copy.deepcopy(binding["selector"]),
+        peer_subject=peer_subject,
+        owner=attested["owner"],
+        source_discard_digest=digest,
+    )
+
+
+def _owner_cleanup_snapshot(
+    authority, row, scope, consent_json, conn, *, allowed, context=None
+):
+    service = authority.hosted_room_service
+    outbox = _provider(service, conn)
+    raw = _admission(conn, row["admission_id"])
+    current = _row(raw)
+    loaded = _load_consent(conn, {**current, "payload_digest": raw["payload_digest"]})
+    if loaded is None:
+        raise RoomArtifactError("Group Chat output cleanup consent is unavailable")
+    _, encoded, consent, saved_scope = loaded
+    terminal = (current["status"], current.get("outcome"))
+    if (
+        encoded != consent_json
+        or saved_scope != scope
+        or current["target_session_id"] != row["target_session_id"]
+        or current["principal_id"] != row["principal_id"]
+        or current["request_id"] != row["request_id"]
+        or current["generation"] != row["generation"]
+        or terminal not in allowed
+        or consent["target"]["profile_id"] != authority.profile_id
+        or consent["task"]["task_id"] != scope.task_id
+        or consent["hosted_execution_generation"] != scope.execution_generation
+    ):
+        raise RoomArtifactError("Group Chat output cleanup binding changed")
+    if context is not None and (
+        type(context) is not UnknownOwnerOutputContext
+        or context.authority is not authority
+        or context.service is not service
+        or consent["selector"] != context.selector
+        or consent["source"]["home_key"] != _home_key(context.source_home)
+        or consent["source"]["owner_subject"] != context.owner
+        or consent["source"]["peer_subject_sha256"]
+            != hashlib.sha256(context.peer_subject.encode()).hexdigest()
+    ):
+        raise RoomArtifactError("Group Chat output cleanup source changed")
+    return outbox, current, consent
+
+
+def _stage_owner_cleanup(authority, row, scope, consent_json, *, reason, allowed, context=None):
+    key = _failure_key(row["admission_id"])
+    consent_digest = hashlib.sha256(consent_json.encode()).hexdigest()
+    commitment = {
+        "version": 1,
+        "admission_id": row["admission_id"],
+        "target_session_id": row["target_session_id"],
+        "execution_generation": row["generation"],
+        "scope": scope.as_mapping(),
+        "consent_digest": consent_digest,
+        "reason_code": reason,
+        "source_discard_digest": (
+            context.source_discard_digest if context is not None else None
+        ),
+    }
+
+    def stage(conn):
+        outbox, _, _ = _owner_cleanup_snapshot(
+            authority, row, scope, consent_json, conn, allowed=allowed, context=context
+        )
+        saved = conn.execute("SELECT value FROM state_meta WHERE key=?", (key,)).fetchone()
+        old = json.loads(saved[0]) if saved is not None else None
+        if old is not None:
+            if old.get("commitment") != commitment:
+                raise RoomArtifactError("Group Chat output cleanup commitment changed")
+            return old
+        rows = conn.execute(
+            "SELECT * FROM hosted_room_output_artifacts WHERE scope_key=? "
+            "ORDER BY created_at,artifact_id LIMIT 9",
+            (scope.key,),
+        ).fetchall()
+        if len(rows) > 8:
+            raise RoomArtifactError("Group Chat output cleanup inventory is too large")
+        items = [outbox._manifest(saved) for saved in rows]
+        if items:
+            authorize = lambda checked: _owner_cleanup_snapshot(
+                authority, row, scope, consent_json, checked,
+                allowed=allowed, context=context,
+            )
+            from gateway.hosted_room_output_discard import retire_exact
+            blobs = retire_exact(outbox, conn, scope, items, authorize=authorize)
+            state = "pending"
+        else:
+            outbox._retire_generation(conn, scope)
+            blobs, state = [], "completed"
+        record = {
+            "version": 1,
+            "commitment": commitment,
+            "state": state,
+            "items": items,
+            "blobs": blobs,
+            "removed": len(items),
+            "attempts": 0,
+            "last_error": None,
+        }
+        conn.execute(
+            "INSERT INTO state_meta(key,value) VALUES(?,?)", (key, _canonical(record))
+        )
+        return record
+
+    record = authority.db._execute_write(stage)
+    if record["state"] == "completed":
+        return True
+    return _complete_owner_cleanup(
+        authority, row, scope, consent_json, record,
+        allowed=allowed, context=context,
+    )
+
+
+def _complete_owner_cleanup(
+    authority, row, scope, consent_json, record, *, allowed, context=None
+):
+    key = _failure_key(row["admission_id"])
+    try:
+        def complete(conn):
+            outbox, _, _ = _owner_cleanup_snapshot(
+                authority, row, scope, consent_json, conn,
+                allowed=allowed, context=context,
+            )
+            saved = conn.execute("SELECT value FROM state_meta WHERE key=?", (key,)).fetchone()
+            current = json.loads(saved[0]) if saved is not None else None
+            if current != record:
+                raise RoomArtifactError("Group Chat output cleanup reservation changed")
+            if current["state"] == "completed":
+                return current
+            from gateway.hosted_room_output_discard import cleanup_exact
+            authorize = lambda checked: _owner_cleanup_snapshot(
+                authority, row, scope, consent_json, checked,
+                allowed=allowed, context=context,
+            )
+            cleanup_exact(
+                outbox, conn, scope, current["items"], current["blobs"],
+                authorize=authorize,
+            )
+            done = {**current, "state": "completed", "blobs": [], "last_error": None}
+            conn.execute("UPDATE state_meta SET value=? WHERE key=?", (_canonical(done), key))
+            return done
+        authority.db._execute_write(complete)
+        return True
+    except Exception as exc:
+        def retain(conn):
+            saved = conn.execute("SELECT value FROM state_meta WHERE key=?", (key,)).fetchone()
+            current = json.loads(saved[0]) if saved is not None else None
+            if current != record:
+                return
+            pending = {
+                **current,
+                "attempts": min(2147483647, current["attempts"] + 1),
+                "last_error": (
+                    "storage_unavailable"
+                    if isinstance(exc, (OSError, RoomArtifactError))
+                    else "cleanup_unavailable"
+                ),
+            }
+            conn.execute("UPDATE state_meta SET value=? WHERE key=?", (_canonical(pending), key))
+        authority.db._execute_write(retain)
+        return False
+
+
+def capture_failed_owner_output(authority, row, binding):
+    """Commit named target cleanup before exposing a failed/interrupted terminal."""
+    if not hasattr(binding, "consent_json"):
+        raise RoomArtifactError("Group Chat named output consent is unavailable")
+    with authority.db._read_ctx() as conn:
+        binding.check_write(conn, binding.scope)
+    return _stage_owner_cleanup(
+        authority, row, binding.scope, binding.consent_json,
+        reason="producer_failed",
+        allowed={("started", None)},
+    )
+
+
+def discard_unknown_owner_output(authority, row, task, generation, context):
+    """Resolve target-local Output before an unknown admission becomes terminal."""
+    if context is None:
+        return True
+    with authority.db._read_ctx() as conn:
+        raw = _admission(conn, row["admission_id"])
+        loaded = _load_consent(conn, {**_row(raw), "payload_digest": raw["payload_digest"]})
+    if loaded is None:
+        return True
+    _, consent_json, consent, scope = loaded
+    if consent["task"] != asdict(task) or scope.execution_generation != generation:
+        raise RuntimeStoreError("permission_denied")
+    complete = _stage_owner_cleanup(
+        authority, _row(raw), scope, consent_json,
+        reason="unknown_discard",
+        allowed={("unknown", None), ("terminal", "interrupted")},
+        context=context,
+    )
+    if not complete:
+        raise RuntimeStoreError("storage_unavailable")
+    return True
+
+
+def retry_owner_output_cleanups(service):
+    """Replay owner-local committed cleanup intents at owner preparation."""
+    authority = service.authority
+    with authority.db._read_ctx() as conn:
+        rows = conn.execute(
+            "SELECT value FROM state_meta WHERE key LIKE ? "
+            "AND json_extract(value,'$.state')='pending' ORDER BY key LIMIT 64",
+            (FAILURE_PREFIX + "%",),
+        ).fetchall()
+    for saved in rows:
+        try:
+            record = json.loads(saved[0])
+            commitment = record["commitment"]
+            scope = RoomArtifactScope.from_mapping(commitment["scope"])
+            with authority.db._read_ctx() as conn:
+                raw = _admission(conn, commitment["admission_id"])
+                loaded = _load_consent(conn, {**_row(raw), "payload_digest": raw["payload_digest"]})
+            if loaded is None or hashlib.sha256(loaded[1].encode()).hexdigest() != commitment["consent_digest"]:
+                continue
+            allowed = (
+                {("unknown", None), ("terminal", "interrupted")}
+                if commitment["reason_code"] == "unknown_discard"
+                else {("started", None), ("terminal", "failed"), ("terminal", "interrupted")}
+            )
+            _complete_owner_cleanup(
+                authority, _row(raw), scope, loaded[1], record, allowed=allowed
+            )
+        except Exception:
+            continue
+
+
+def compact_owner_output_for_retirement(conn, raw):
+    """Block pending named Output and compact completed target-only evidence."""
+    row = _row(raw)
+    key = consent_key(row["target_session_id"], row["principal_id"], row["request_id"])
+    saved = conn.execute("SELECT value FROM state_meta WHERE key=?", (key,)).fetchone()
+    if saved is None:
+        return
+    consent = json.loads(saved[0])
+    if consent.get("version") == 2:
+        return
+    loaded = _load_consent(conn, {**row, "payload_digest": raw["payload_digest"]})
+    if loaded is None:
+        raise RuntimeStoreError("storage_unavailable")
+    _, consent_json, _, scope = loaded
+    result_key = RESULT_PREFIX + row["admission_id"]
+    result_row = conn.execute("SELECT value FROM state_meta WHERE key=?", (result_key,)).fetchone()
+    if result_row is None:
+        raise RuntimeStoreError("storage_unavailable")
+    result_wrapper = json.loads(result_row[0])
+    result = result_wrapper.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeStoreError("storage_unavailable")
+    failure_key = _failure_key(row["admission_id"])
+    failure_row = conn.execute("SELECT value FROM state_meta WHERE key=?", (failure_key,)).fetchone()
+    failure = json.loads(failure_row[0]) if failure_row is not None else None
+    artifacts = conn.execute(
+        "SELECT acknowledged_at,blob_reclaimed_at FROM hosted_room_output_artifacts "
+        "WHERE scope_key=?", (scope.key,),
+    ).fetchall()
+
+    if failure is not None:
+        if failure.get("state") != "completed" or failure.get("blobs") != []:
+            raise RuntimeStoreError("session_busy")
+        disposition = {"kind": "cleanup", "digest": _digest(failure),
+                       "removed": failure.get("removed")}
+    elif result.get("owner_output_receipt") is not None:
+        ack = result_wrapper.get("owner_output_ack")
+        discard = result_wrapper.get("owner_output_discard")
+        if ack is not None and discard is None:
+            fence = conn.execute(
+                "SELECT retired_generation FROM hosted_room_output_generation_fences "
+                "WHERE lineage_identity=?", (scope.lineage_json,),
+            ).fetchone()
+            if (fence is None or int(fence[0]) < scope.execution_generation
+                    or any(item["acknowledged_at"] is None
+                           or item["blob_reclaimed_at"] is None for item in artifacts)):
+                raise RuntimeStoreError("session_busy")
+            disposition = {"kind": "ack", "digest": _digest(ack)}
+        elif (discard is not None and ack is None
+              and discard.get("state") == "completed"
+              and discard.get("blobs") == [] and not artifacts):
+            disposition = {"kind": "discard", "digest": _digest(discard)}
+        else:
+            raise RuntimeStoreError("session_busy")
+    else:
+        if artifacts:
+            raise RuntimeStoreError("session_busy")
+        disposition = {"kind": "unused", "digest": _digest([scope.key, row["admission_id"]])}
+
+    compact = {
+        "version": 2, "state": "completed",
+        "consent_digest": hashlib.sha256(consent_json.encode()).hexdigest(),
+        "scope_digest": _digest(scope.as_mapping()),
+        "disposition_digest": _digest(disposition),
+    }
+    conn.execute("UPDATE state_meta SET value=? WHERE key=?", (_canonical(compact), key))
+    if failure is not None:
+        compact_failure = {
+            "version": 2, "state": "completed",
+            "commitment_digest": _digest(failure["commitment"]),
+            "disposition_digest": _digest(disposition),
+            "removed": failure.get("removed"), "attempts": failure.get("attempts"),
+        }
+        conn.execute("UPDATE state_meta SET value=? WHERE key=?",
+                     (_canonical(compact_failure), failure_key))
+    compact_result = {"result": {"owner_output_retirement": disposition}, "usage": {}}
+    conn.execute("UPDATE state_meta SET value=? WHERE key=?",
+                 (_canonical(compact_result), result_key))
 
 
 def capture_owner_output_receipt(authority, row, binding, result):

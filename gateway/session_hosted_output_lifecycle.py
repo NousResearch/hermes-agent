@@ -86,9 +86,9 @@ class CanonicalOutputLifecycle:
             "AND kind='room.stop_requested' AND seq>? ORDER BY seq LIMIT 1",
             (identity.room_id, payload['source_event_seq'])).fetchone()
         base['stop_event'] = dict(stop) if stop else None
+        target_home = self.profile_homes().get(payload['target_profile'])
         if (participant.get('target', {}).get('kind', 'local') != 'local'
-                or self.profile_homes().get(payload['target_profile']) != self.root
-                or self.root.parent.name == 'profiles'):
+                or target_home is None or self.root.parent.name == 'profiles'):
             return dict(base, unavailable='unsupported_output_route'), None
         scope = RoomArtifactScope.from_mapping(dict(room_id=identity.room_id, task_id=identity.task_id,
             execution_generation=row['execution_generation'], member_id=member, target_profile=payload['target_profile'],
@@ -96,6 +96,32 @@ class CanonicalOutputLifecycle:
             authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch']))
         require_output_task(conn, scope, row['cancel_generation'], status=row['status'], cleanup=True)
         base.update(scope=scope.as_mapping(), scope_key=scope.key, lineage_identity=scope.lineage_json)
+        if target_home != self.root:
+            from gateway.session_hosted_controls import _discard_key, _digest
+            retained = conn.execute(
+                'SELECT value FROM state_meta WHERE key=?', (_discard_key(task),)
+            ).fetchone()
+            saved = json.loads(retained[0]) if retained is not None else None
+            expected_result = {
+                'discarded': True, 'status': 'cancelled',
+                'task_id': identity.task_id,
+                'execution_generation': row['execution_generation'],
+            }
+            if (not isinstance(saved, dict) or saved.get('state') != 'completed'
+                    or saved.get('task') != asdict(identity)
+                    or saved.get('execution_generation') != row['execution_generation']
+                    or saved.get('member_id') != member
+                    or saved.get('target_profile') != payload['target_profile']
+                    or saved.get('authority_gateway_id') != room['authority_gateway_id']
+                    or saved.get('authority_epoch') != room['authority_epoch']
+                    or saved.get('cancel_id') != row['cancel_id']
+                    or saved.get('cancel_generation') != row['cancel_generation'] - 1
+                    or saved.get('target_result_digest') != _digest(expected_result)):
+                return dict(base, unavailable='target_cleanup_pending'), None
+            return dict(base, named_owner_discard={
+                'reservation_digest': saved['reservation_digest'],
+                'target_result_digest': saved['target_result_digest'],
+            }), None
         if identity_only:
             return base, None
         request = 'hosted:' + json.dumps([asdict(identity), row['execution_generation']], sort_keys=True, separators=(',', ':'))
@@ -233,7 +259,16 @@ class CanonicalOutputLifecycle:
                     and snapshot['cancel_generation'] == prior['cancel_generation'] + 1
                     and {k: v for k, v in prior.items() if k not in {'cancel_generation', 'cancel_id'}}
                         == {k: v for k, v in snapshot.items() if k not in {'cancel_generation', 'cancel_id'}})
-                if not (resolved or claimed):
+                named_resolved = (old['state'] == 'waiting'
+                    and prior.get('unavailable') == 'target_cleanup_pending'
+                    and snapshot.get('named_owner_discard') is not None
+                    and snapshot['cancel_id'] == f"discard:{snapshot['execution_generation']}"
+                    and snapshot['cancel_generation'] == prior['cancel_generation'] + 1
+                    and {k: v for k, v in prior.items()
+                         if k not in {'cancel_generation', 'cancel_id', 'unavailable'}}
+                        == {k: v for k, v in snapshot.items()
+                            if k not in {'cancel_generation', 'cancel_id', 'named_owner_discard'}})
+                if not (resolved or claimed or named_resolved):
                     raise RoomArtifactError('Group Chat cleanup commitment changed')
                 old = dict(old, binding=snapshot, original_binding=prior)
             if old and old.get('blocked'):
@@ -243,7 +278,13 @@ class CanonicalOutputLifecycle:
                 execution_generation=task['execution_generation'], binding=snapshot,
                 state='waiting', reason_code='waiting_for_terminal', attempts=0,
                 next_attempt_at=0, items=[], blobs=[], removed=0)
-            if snapshot.get('unavailable'):
+            if snapshot.get('named_owner_discard'):
+                record.update(
+                    state='completed', reason_code='completed', items=[], blobs=[], removed=0,
+                    completion={'operation': 'target_owner_discard',
+                                'proof': snapshot['named_owner_discard']},
+                )
+            elif snapshot.get('unavailable'):
                 record['reason_code'] = snapshot['unavailable']
             elif admission['status'] != 'terminal':
                 record['reason_code'] = 'unknown_execution' if admission['status'] == 'unknown' else 'waiting_for_terminal'

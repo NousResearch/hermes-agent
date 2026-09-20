@@ -30,6 +30,8 @@ def retire_terminal_receipts(conn, session_ids):
             raise RuntimeStoreError('unknown_execution' if 'unknown' in states else 'session_busy')
         for raw in admissions:
             row = dict(raw)
+            from gateway.session_hosted_output_rpc import compact_owner_output_for_retirement
+            compact_owner_output_for_retirement(conn, raw)
             # Keep the digest for exact retries, not another copy of user input/history.
             row['payload_json'] = '{}'
             row['lineage_json'] = '[]'

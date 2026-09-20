@@ -201,6 +201,12 @@ def capture_failed_output(authority, row, binding):
             or binding.row.get("generation") != row.get("generation")
         ):
             raise RoomArtifactError("Group Chat output owner changed")
+        if hasattr(binding, "consent_json"):
+            from gateway.session_hosted_output_rpc import capture_failed_owner_output
+            complete = capture_failed_owner_output(authority, row, binding)
+            binding.cleanup_pending = not complete
+            binding.cleanup_reason = None if complete else "cleanup_pending"
+            return binding.cleanup_reason
         service = getattr(authority, "hosted_room_service", None)
         capture = getattr(service, "_capture_failed_output", None)
         if not callable(capture):

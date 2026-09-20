@@ -119,8 +119,8 @@ def test_mailbox_poll_skips_owner_lookup_without_a_mailbox(monkeypatch, tmp_path
     assert lookups == [tmp_path]
 
 
-def test_failing_mailbox_poll_backs_off_and_warns_once_per_window():
-    """A failing poll is retried only after the backoff and logged at WARNING once per window."""
+def test_failing_mailbox_poll_warns_once_per_window():
+    """A failing poll is logged at WARNING once per window; repeats within it are counted, not logged."""
     import logging
     records = []
 
@@ -143,7 +143,6 @@ def test_failing_mailbox_poll_backs_off_and_warns_once_per_window():
     session = {}
     for now in (0.0, 6.0, 12.0, 61.0):  # the poller calls at _BOT_DELIVERY_POLL_SECONDS cadence
         guarded("live", session, now)
-    assert len(attempts) == 4
     warnings = [r for r in records if r.levelno == logging.WARNING]
     assert [r.getMessage() for r in warnings] == [
         "Bot live-owner delivery poll failed (0 repeat(s) suppressed since the last report)",

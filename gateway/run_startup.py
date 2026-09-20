@@ -207,29 +207,29 @@ class GatewayStartupMixin:
         (NOT cancelled) — safe because ``_schedule_resume_pending_sessions`` claims each
         ``_running_agents`` slot SYNCHRONOUSLY first, so drained inbound queues behind."""
         from gateway.run import _startup_restore_drain_timeout_secs
-        tasks = list(getattr(self, "_startup_restore_tasks", []) or [])
-        if tasks:
-            # Tasks outliving the gate get a late-failure callback (their done-callback only discards them).
-            done = await self._wait_bounded_or_release(
-                set(tasks), _startup_restore_drain_timeout_secs(),
-                "Startup-restore gate released after %.0fs with %d boot auto-resume turn(s) "
-                "still running; draining inbound queue now (resume slots already claimed, so no "
-                "duplicate agents). Slow turn(s) continue in the background.",
-                "background startup auto-resume task failed after gate release", level=logging.DEBUG,
-            )
-            report = self._late_failure_callback("startup auto-resume task failed", level=logging.DEBUG)
-            for task in done:
-                report(task)
-        self._startup_restore_tasks = []
-        # Warm the turn machinery BEFORE the queue drains: inbound turns must not build skeleton prompts.
-        await self._await_startup_warmup()
         drained = 0
         try:
+            tasks = list(getattr(self, "_startup_restore_tasks", []) or [])
+            if tasks:
+                # Tasks outliving the gate get a late-failure callback (their done-callback only discards them).
+                done = await self._wait_bounded_or_release(
+                    set(tasks), _startup_restore_drain_timeout_secs(),
+                    "Startup-restore gate released after %.0fs with %d boot auto-resume turn(s) "
+                    "still running; draining inbound queue now (resume slots already claimed, so no "
+                    "duplicate agents). Slow turn(s) continue in the background.",
+                    "background startup auto-resume task failed after gate release", level=logging.DEBUG,
+                )
+                report = self._late_failure_callback("startup auto-resume task failed", level=logging.DEBUG)
+                for task in done:
+                    report(task)
+            self._startup_restore_tasks = []
+            # Warm the turn machinery BEFORE the queue drains: inbound turns must not build skeleton prompts.
+            await self._await_startup_warmup()
             drained = await self._drain_startup_restore_queue()
         finally:
-            # The inbound gate must open even if the drain raises: a stuck
-            # _startup_restore_in_progress would queue every non-internal
-            # inbound forever (run_inbound.py reads this flag first).
+            # The inbound gate must open no matter what raised above it (bounded wait, warm-up,
+            # drain): a stuck _startup_restore_in_progress would queue every non-internal inbound
+            # forever (run_inbound.py reads this flag first). See #116514.
             self._startup_restore_in_progress = False
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)

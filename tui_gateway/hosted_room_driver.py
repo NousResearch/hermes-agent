@@ -9,6 +9,8 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 import uuid
@@ -1003,6 +1005,31 @@ def _bounded_terminal_result(receipt: Mapping[str, Any]) -> dict[str, Any]:
         **({"truncated": True} if truncated or error_truncated else {})}
 
 
+def _legacy_artifact_receipt_is_held(message: Mapping[str, Any]) -> bool:
+    """Recognize only the old manifest/run pair that lacks canonical authority."""
+    artifacts, run_id = message.get("artifacts"), message.get("run_id")
+    peer_fields = (
+        "peer_run_id", "peer_admission_id", "peer_execution_generation", "peer_result_digest"
+    )
+    if (
+        not isinstance(run_id, str)
+        or not 0 < len(run_id) <= 256
+        or "artifact_scope" in message
+        or any(field in message for field in peer_fields)
+        or not isinstance(artifacts, Mapping)
+        or set(artifacts) != {"version", "manifest_digest", "items"}
+        or artifacts.get("version") != 1
+        or not isinstance(artifacts.get("items"), list)
+        or not artifacts["items"]
+        or not isinstance(artifacts.get("manifest_digest"), str)
+    ):
+        return False
+    digest = hashlib.sha256(
+        json.dumps(artifacts["items"], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return artifacts["manifest_digest"] == digest
+
+
 def _find_terminal_receipt(
     history: Sequence[Mapping[str, Any]], identity: state.TaskIdentity, execution_generation: int
 ) -> _TerminalReceipt | None:
@@ -1013,6 +1040,8 @@ def _find_terminal_receipt(
             or message.get("execution_generation") != execution_generation
             or message.get("role") != "assistant" or status not in {"settled", "failed"}):
             continue
+        if _legacy_artifact_receipt_is_held(message):
+            return None
         receipt_id = message.get("message_id")
         if not isinstance(receipt_id, str) or not receipt_id:
             receipt_id = f"reply:{identity.task_id}:{execution_generation}"

@@ -140,6 +140,12 @@ def resolve_session_takeover(config: Any) -> bool:
                 raw = session_cfg.get("allow_takeover")
     else:
         raw = getattr(config, "allow_session_takeover", None)
+        if raw is None:
+            session_obj = getattr(config, "session", None)
+            if isinstance(session_obj, dict):
+                raw = session_obj.get("allow_takeover")
+            elif session_obj is not None:
+                raw = getattr(session_obj, "allow_takeover", None)
     if isinstance(raw, str):
         return raw.strip().lower() in {"1", "true", "yes", "on"}
     return bool(raw)
@@ -589,10 +595,10 @@ def try_acquire_active_session(
                     _write_entries(state_path, entries)
                     return lease, None
                 if takeover:
-                    # Opted in: the newest surface becomes the single owner and
-                    # the previous one is evicted, so there is still exactly ONE
-                    # lease per session. This hands the chat over; it does not
-                    # create a second concurrent writer.
+                    # Opted in: the newest surface replaces the active registry
+                    # lease, transferring registry ownership so exactly ONE
+                    # registry entry remains. On a multi-runtime gateway, sibling
+                    # runtimes are evicted and interrupted on claim.
                     logger.info(
                         "Session %s taken over from pid=%s surface=%s by surface=%s "
                         "(allow_session_takeover)",

@@ -1,7 +1,11 @@
 name: remarkable
 repo: https://github.com/cygnostik/hermes-plugin-remarkable
 sha: 98a0cade0fdc097ad2fca476245597f3bf1ee480
-description: Unofficial reMarkable cloud transfers, library management, backups, typed text, and bounded native notebook rendering.
+description: >-
+  Unofficial reMarkable cloud transfers, library management, backups, typed text, and bounded native notebook rendering.
+  Disclosure — talks to reMarkable cloud with a device token under ~/.hermes/credentials/remarkable/; remarkable_upload
+  sends model-chosen local PDF/EPUB files to your account; the cloud sidecar (Node 22+) and renderer venv are installed
+  only by the human-run setup commands; USB/SSH off by default.
 maintainer: cygnostik
 tier: community
 category: tools

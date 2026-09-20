@@ -48,6 +48,7 @@ import {
   $groupChatWorkspace,
   assignLegacyThreads,
   handleSessionsGatewayTransition,
+  hydrateGroupChatTombstones,
   pullGroupChatServerState,
   scheduleGroupChatServerSync,
   setGroupChatSyncDisposed,
@@ -222,6 +223,17 @@ export default {
 
     // Hydrate persisted group-chat room logs (epoch/running are runtime-only
     // and always reset — a loop can't survive a window reload anyway).
+    try {
+      // Disband memory must be in place before the first gateway pull merges
+      // a mirror that may still project a disbanded room (#105275).
+      // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
+      Promise.resolve(ctx.storage?.get?.('group-chat-tombstones'))
+        .then(value => hydrateGroupChatTombstones(value))
+        .catch(() => undefined)
+    } catch {
+      /* no storage — no remembered disbands this window */
+    }
+
     try {
       // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
       Promise.resolve(ctx.storage?.get?.('group-chats'))

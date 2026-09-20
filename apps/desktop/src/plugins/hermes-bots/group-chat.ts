@@ -95,6 +95,57 @@ const groupChatSyncRetryTimers = new Map<string, ReturnType<typeof setTimeout>>(
 const groupChatSyncRetryCounts = new Map<string, number>()
 export let groupChatSyncDisposed = false
 
+// Durable disband memory in the mirror's own tombstone shape (room key ->
+// tombstone revision). A pending sync job forgets its deletedRooms once the
+// retry ladder gives up or the window closes, and "missing remote rooms are
+// not deletions" — so a gateway mirror that missed the tombstone push would
+// re-merge the room on every later pull. This map rides every publish and
+// every pull merge until the room is gone from every mirror (#105275).
+const groupChatTombstones: Record<string, number> = {}
+const GROUP_CHAT_TOMBSTONES_KEY = 'group-chat-tombstones'
+
+export function groupChatTombstoneMemory(): Record<string, number> {
+  return { ...groupChatTombstones }
+}
+
+/** Remember a disband durably, keyed by the room's durable key so a same-name
+ *  recreate with a fresh roomId is never blocked. Revision = the room's last
+ *  known sync revision + 1, the ordering the live tombstone merge applies. */
+export function rememberGroupChatTombstone(name: string, roomId?: null | string, syncRevision?: number) {
+  const key = typeof roomId === 'string' && roomId ? `id:${roomId}` : `name:${name}`
+  groupChatTombstones[key] = Math.max(Number(groupChatTombstones[key] || 0), Math.max(0, Number(syncRevision || 0)) + 1)
+
+  for (const stale of Object.keys(groupChatTombstones)
+    .sort((left, right) => groupChatTombstones[right] - groupChatTombstones[left])
+    .slice(64)) {
+    delete groupChatTombstones[stale]
+  }
+
+  try {
+    return Promise.resolve(getPluginCtx()?.storage?.set?.(GROUP_CHAT_TOMBSTONES_KEY, { ...groupChatTombstones })).catch(
+      () => undefined
+    )
+  } catch {
+    return Promise.resolve()
+  }
+}
+
+export function hydrateGroupChatTombstones(value: unknown) {
+  for (const key of Object.keys(groupChatTombstones)) {
+    delete groupChatTombstones[key]
+  }
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return
+  }
+
+  for (const [key, revision] of Object.entries(value as Record<string, unknown>)) {
+    if (key.startsWith('id:') || key.startsWith('name:')) {
+      groupChatTombstones[key] = Math.max(0, Number(revision || 0))
+    }
+  }
+}
+
 /** Cut one room body to a per-message budget and mark the cut (the sync
  *  projection and the per-turn delta window share the convention).
  *  Receivers used to see a silent mid-sentence slice with no signal that the
@@ -606,9 +657,22 @@ function groupChatSyncEnvelope(
 export function mergeRemoteGroupChatSnapshotIntoRooms(
   remote: GroupChatSyncSnapshot | null | undefined,
   current: Record<string, GroupChat> = $groupChats.get(),
-  { preserveRooms = [], deletedRooms = [] }: { deletedRooms?: string[]; preserveRooms?: string[] } = {}
+  {
+    preserveRooms = [],
+    deletedRooms = [],
+    tombstones = {}
+  }: { deletedRooms?: string[]; preserveRooms?: string[]; tombstones?: Record<string, number> } = {}
 ) {
   const remoteNorm = normalizeGroupChatSyncSnapshot(remote)
+
+  // Remote tombstones plus this Desktop's durable disband memory: a mirror
+  // that missed the tombstone push still projects the room, and without the
+  // local memory it would resurrect here on every pull (#105275).
+  const deleted: Record<string, number> = { ...tombstones }
+
+  for (const [key, at] of Object.entries(remoteNorm.deleted || {})) {
+    deleted[key] = Math.max(Number(deleted[key] || 0), Math.max(0, Number(at || 0)))
+  }
 
   const rooms: Record<string, GroupChat> = {
     ...(current || {})
@@ -746,7 +810,17 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     }
   }
 
-  for (const [key, deletedAt] of Object.entries(remoteNorm.deleted || {})) {
+  // Re-index by roomId: a resurrected projection room may have just landed
+  // under a roomId no local twin carried when the index was first built.
+  localByRoomId.clear()
+
+  for (const [name, room] of Object.entries(rooms)) {
+    if (typeof room?.roomId === 'string' && room.roomId) {
+      localByRoomId.set(room.roomId, name)
+    }
+  }
+
+  for (const [key, deletedAt] of Object.entries(deleted)) {
     const deletedRoomId = key.startsWith('id:') ? key.slice(3) : null
 
     const targetName =
@@ -929,7 +1003,8 @@ export async function pullGroupChatServerState(connectionId: string = groupChatS
 
   const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote, $groupChats.get(), {
     preserveRooms: pending?.changedRooms || [],
-    deletedRooms: pending?.deletedRooms || []
+    deletedRooms: pending?.deletedRooms || [],
+    tombstones: groupChatTombstones
   })
 
   $groupChats.set(merged)
@@ -1020,7 +1095,9 @@ async function flushGroupChatServerSync(connectionId?: string) {
 
   try {
     const remoteState = await groupChatRemoteSnapshot(job)
-    const local = groupChatSyncSnapshot($groupChats.get())
+    // The local snapshot carries the durable disband memory, so every publish
+    // re-tombstones a mirror whose original tombstone push was lost.
+    const local = groupChatSyncSnapshot($groupChats.get(), groupChatTombstones)
     const writeRevision = remoteState.revision + 1
 
     const snapshot = mergeGroupChatSyncSnapshots(remoteState.snapshot, local, {
@@ -1042,7 +1119,8 @@ async function flushGroupChatServerSync(connectionId?: string) {
 
         const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(remoteState.snapshot, $groupChats.get(), {
           preserveRooms: pending?.changedRooms || [],
-          deletedRooms: pending?.deletedRooms || []
+          deletedRooms: pending?.deletedRooms || [],
+          tombstones: groupChatTombstones
         })
 
         $groupChats.set(mergedRooms)
@@ -1097,7 +1175,8 @@ async function flushGroupChatServerSync(connectionId?: string) {
 
       const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(confirmedState.snapshot, $groupChats.get(), {
         preserveRooms: pending?.changedRooms || [],
-        deletedRooms: pending?.deletedRooms || []
+        deletedRooms: pending?.deletedRooms || [],
+        tombstones: groupChatTombstones
       })
 
       $groupChats.set(mergedRooms)
@@ -1195,7 +1274,7 @@ export function scheduleGroupChatServerSync(
   // debounce fires.
   const activeId = String(groupChatSyncConnectionId() || '')
 
-  const queueFor = (connectionId: string) => {
+  const queueFor = (connectionId: string, coalesced?: GroupChatSyncJob) => {
     const id = String(connectionId || '')
     const retryTimer = groupChatSyncRetryTimers.get(id)
 
@@ -1208,9 +1287,9 @@ export function scheduleGroupChatServerSync(
       id,
       mergeGroupChatSyncJobs(groupChatSyncPendingByConnection.get(id), {
         connectionId: id,
-        allowEmpty,
-        changedRooms,
-        deletedRooms
+        allowEmpty: Boolean(allowEmpty || coalesced?.allowEmpty),
+        changedRooms: [...new Set([...(coalesced?.changedRooms || []), ...changedRooms])],
+        deletedRooms: [...new Set([...(coalesced?.deletedRooms || []), ...deletedRooms])]
       })
     )
   }
@@ -1220,9 +1299,15 @@ export function scheduleGroupChatServerSync(
     groupChatSyncTimer = null
     void groupChatSyncTargetConnections()
       .then(targets => {
+        // An ordinary update inside the debounce window replaces the timer,
+        // so secondaries must inherit the active job's coalesced intent —
+        // a disband's deletedRooms included — or the tombstone lands on the
+        // active gateway only (#105275).
+        const coalesced = groupChatSyncPendingByConnection.get(activeId)
+
         for (const target of targets) {
           if (String(target || '') !== activeId) {
-            queueFor(target)
+            queueFor(target, coalesced)
           }
         }
       })

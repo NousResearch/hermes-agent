@@ -1132,4 +1132,45 @@ describe('sync worker', () => {
     expect(configured.has('gw-a')).toBe(true)
     expect(configured.has('gw-b')).toBe(true)
   })
+
+  it('a remembered disband re-tombstones a mirror that still projects the room (#105275)', async () => {
+    const room = await loadRoom()
+    room.chat.hydrateGroupChatTombstones({ 'id:room-1': 5 })
+
+    // Mirror whose tombstone push was lost: full room, no `deleted` entry.
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      rooms: {
+        'id:room-1': {
+          log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'b1', text: 'go' }],
+          members: [],
+          name: 'Build',
+          revision: 9,
+          roomId: 'room-1'
+        }
+      },
+      updatedAt: 2,
+      version: 3
+    }
+    room.gateway.uiMetaRevisions['hermes-bots-groups'] = 9
+
+    // An unrelated room write is enough: the publish carries the memory.
+    room.chat.$groupChats.set({
+      Other: {
+        log: [{ at: 3, from: { kind: 'user', name: 'You' }, id: 'o1', text: 'hi' }],
+        roomId: 'room-2',
+        sessions: {},
+        syncRevision: 0,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+    room.chat.scheduleGroupChatServerSync(room.chat.$groupChats.get(), { changedRooms: ['Other'] })
+    await drain(() => room.gateway.rpcFor('profiles.configure').length < 1, 50)
+
+    const mirror = published(room) as { deleted?: Record<string, number>; rooms: Record<string, unknown> }
+
+    expect('id:room-1' in mirror.rooms).toBe(false)
+    expect(mirror.deleted?.['id:room-1']).toBe(5)
+    // The read-back merge did not resurrect the room locally either.
+    expect('Build' in room.chat.$groupChats.get()).toBe(false)
+  })
 })

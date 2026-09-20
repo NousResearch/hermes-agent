@@ -17,6 +17,11 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
   const paneVisible = usePaneVisible()
   const [tail, setTail] = useState<Tail | null>(null)
   useEffect(() => {
+    if (!paneVisible) {
+      // Keep-alive tiles stay mounted; only poll while this pane is the visible tab (reveal re-runs the effect).
+      return
+    }
+
     let cancelled = false
     let pending = false
     const owner = JSON.stringify(knownOwnerForSession(sessionId))
@@ -51,15 +56,11 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
     }
 
     void refresh()
-    // Keep-alive tiles stay mounted; only arm the 2s tail poll while the pane
-    // is the visible tab. Reveal re-arms via `paneVisible` in the dep array.
-    const timer = paneVisible ? window.setInterval(() => void refresh(), 2000) : undefined
+    const timer = window.setInterval(() => void refresh(), 2000)
 
     return () => {
       cancelled = true
-      if (timer !== undefined) {
-        window.clearInterval(timer)
-      }
+      window.clearInterval(timer)
     }
   }, [sessionId, subagentId, paneVisible])
 

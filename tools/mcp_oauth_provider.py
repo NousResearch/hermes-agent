@@ -132,20 +132,25 @@ class HermesProviderMixin:
         ``access_type=offline`` is what makes Google issue one at all, and ``prompt=consent`` is what
         makes it re-issue one on repeat logins (the first consent already spent the grant); MCP
         discovery advertises neither. The SDK builds the URL itself, so the two parameters are
-        appended here — never overwriting values already present in the query."""
-        params = google_offline_access_params(self.context)
+        appended here — never overwriting values already present in the query. Wraps once: every
+        authorization runs through here, and the wrapper reads the issuer at call time."""
         inner = self.context.redirect_handler
-        if not params or inner is None:
+        if inner is None or getattr(inner, "_hermes_offline_access", False):
             return
         from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
         async def _with_offline_access(authorization_url: str) -> None:
+            params = google_offline_access_params(self.context)
+            if not params:
+                await inner(authorization_url)
+                return
             parts = urlsplit(authorization_url)
             query = dict(parse_qsl(parts.query, keep_blank_values=True))
             query.update(params)
             query.setdefault("prompt", "consent")
             await inner(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)))
 
+        _with_offline_access._hermes_offline_access = True  # type: ignore[attr-defined]
         self.context.redirect_handler = _with_offline_access
 
     async def _hermes_accept_origin_issued_metadata(self, response):

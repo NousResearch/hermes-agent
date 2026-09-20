@@ -1507,7 +1507,6 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "assignee": "assignee ASC, created_at ASC",
     "title": "title ASC, id ASC",
     "updated": "started_at DESC NULLS LAST, created_at DESC",
-    "completed-desc": "completed_at DESC NULLS LAST, id DESC",
 }
 
 
@@ -3126,7 +3125,13 @@ def block_task(
     re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
     promote it into a context-free respawn. ``transient`` still counts
     toward the loop breaker so a forever-flaky task escalates. True on any
-    transition."""
+    transition.
+
+    When the card is already ``blocked`` (e.g. the circuit breaker parked it
+    untyped) and *kind* is supplied, the call classifies the existing block
+    instead of refusing it: ``block_kind`` is set and a ``block_classified``
+    event is appended without touching status or recurrence accounting.
+    """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
@@ -3135,6 +3140,27 @@ def block_task(
         ).fetchone()
         if cur_row is None:
             return False
+        # --- classify an already-blocked card --------------------------------
+        # The circuit breaker (enforce_max_runtime) parks cards as blocked with
+        # block_kind IS NULL.  A supervisor that reacts to that needs to attach
+        # a classification (e.g. "needs_input") but the WHERE clause below only
+        # matches running/ready, so the call silently fails.  Detect this case
+        # and update block_kind in-place without touching status or recurrences.
+        if cur_row["status"] == "blocked" and kind is not None:
+            prev = _row_get(cur_row, "block_kind")
+            if prev == kind:
+                # Already classified with the requested kind — idempotent.
+                return True
+            conn.execute(
+                "UPDATE tasks SET block_kind = ? WHERE id = ? AND status = 'blocked'",
+                (kind, task_id),
+            )
+            _append_event(conn, task_id, "block_classified", {
+                "kind": kind,
+                "previous_kind": prev,
+                "reason": reason,
+            })
+            return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
         requested_kind = kind
         rekind_reason = None
@@ -3179,7 +3205,6 @@ def block_task(
             return True
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
-
 
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,

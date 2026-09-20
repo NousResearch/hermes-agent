@@ -1,7 +1,11 @@
 """Tests for hermes_cli.stderr_timestamp."""
 
+import os
 import re
+import signal
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -221,11 +225,6 @@ def test_wrapper_forwards_sigusr1_restart_request_to_child(tmp_path):
     drain-aware SIGUSR1 to the wrapper. It must reach the gateway child and the wrapper must
     report the child's planned exit code — not die of the signal itself (which makes launchd
     treat the restart as a crash and apply its back-off to every sibling profile)."""
-    import os
-    import signal
-    import subprocess
-    import time
-
     log_path = tmp_path / "gateway.error.log"
     ready = tmp_path / "ready"
     child = (

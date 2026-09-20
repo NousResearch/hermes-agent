@@ -49,8 +49,8 @@ degraded result that names the package (or an error under
 - The host root, read-only, at the same paths as on the host. `/usr/bin`,
   `/etc`, your project checkouts and your installed toolchains are all there.
 - A fresh `/dev`, a private `/proc` (the command's own pid namespace, so it
-  cannot see or signal host processes) and a fresh `/tmp` per command.
-  Nothing written to `/tmp` survives the command; use the working directory.
+  cannot see or signal host processes) and a fresh `/tmp` per command. <!-- no-tmp: ok — describes the sandbox boundary -->
+  Nothing written to `/tmp` survives the command; use the working directory. <!-- no-tmp: ok — explains why /tmp is wrong here -->
 - An empty `/run/user/<uid>`: the gpg-agent, ssh-agent, keyring and D-Bus
   sockets that live there are not reachable, so a command cannot sign or
   decrypt with keys loaded on the host. The docker socket, if present, is
@@ -222,12 +222,12 @@ detached process could not outlive it.
   hidden set (`/etc`, other dotfiles, secrets kept inside project
   directories) is readable by a command. Add to `bubblewrap_binds` only
   what you want the agent to see, and keep secrets in the hidden paths.
-- Unix sockets outside `/run/user/<uid>`, `/tmp` and the docker socket
+- Unix sockets outside `/run/user/<uid>`, `/tmp` and the docker socket <!-- no-tmp: ok — names the paths the sandbox replaces -->
   stay connectable (a read-only mount does not block `connect()`). The
   agent environment variables that name them (`SSH_AUTH_SOCK`,
   `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`) are removed from the
   sandbox environment, so a command has to know a socket path to reach it.
-- One sandbox per command: processes, mounts and `/tmp` do not carry over
+- One sandbox per command: processes, mounts and `/tmp` do not carry over <!-- no-tmp: ok — explains why /tmp does not persist -->
   between commands. Only the working directory and the shell state
   (`cd`, exported variables) persist.
 

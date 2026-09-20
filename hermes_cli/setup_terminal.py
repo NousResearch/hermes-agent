@@ -189,6 +189,7 @@ def _prompt_bubblewrap_profile(config: dict):
 def _setup_backend_bubblewrap(config: dict) -> None:
     _setup.print_success("Terminal backend: Bubblewrap")
     _setup._info(None, "Every command runs inside a bwrap sandbox on this machine:",
+                 # no-tmp: ok — describes the sandbox boundary to the operator
                  "  read-only root, fresh /tmp, ~/.ssh and other secrets hidden,",
                  "  memory, CPU and process limits per command.")
     _report_binary(shutil.which("bwrap"),

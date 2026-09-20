@@ -548,7 +548,7 @@ def build_bwrap_args(
         "--ro-bind", "/", "/",
         "--dev", "/dev",
         "--proc", "/proc",
-        "--tmpfs", "/tmp",
+        "--tmpfs", "/tmp",  # no-tmp: ok — bwrap mount argument, names the mountpoint it replaces
     ]
     argv += runtime_overlay_args(state_dir, os.getuid())
 

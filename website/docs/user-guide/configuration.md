@@ -600,7 +600,7 @@ terminal:
 
 ### Bubblewrap Backend
 
-Runs every command inside its own [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) sandbox on the host: read-only host filesystem at host paths, writable working directory, `~/.ssh`, `~/.aws`, `~/.hermes` and the other credential paths hidden, a private `/proc` and a fresh `/tmp` per command, plus per-process memory, CPU and process limits. Linux only, bubblewrap 0.9.0 or later.
+Runs every command inside its own [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) sandbox on the host: read-only host filesystem at host paths, writable working directory, `~/.ssh`, `~/.aws`, `~/.hermes` and the other credential paths hidden, a private `/proc` and a fresh `/tmp` per command, plus per-process memory, CPU and process limits. Linux only, bubblewrap 0.9.0 or later. <!-- no-tmp: ok — describes the sandbox boundary -->
 
 ```yaml
 terminal:

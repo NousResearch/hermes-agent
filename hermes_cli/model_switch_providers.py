@@ -1301,8 +1301,8 @@ def list_picker_providers(
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
     snapshot filtered against the live catalog) and rows left with no models are dropped — except
     custom endpoints, where the user may supply their own model set through config.
-    ``non_blocking_catalogs`` makes every catalog read cache-only (OpenRouter's included, stale disk
-    copy over a live GET) with a background warm; the ``probe_*`` flags are forwarded unchanged."""
+    ``non_blocking_catalogs`` makes every catalog read cache-only: provider catalogs warm in the
+    background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
     from hermes_cli.model_switch import list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(

@@ -560,12 +560,13 @@ def fetch_openrouter_models(
     # Cold process: serve from the persisted disk cache when fresh so the
     # picker doesn't re-download the full ~686KB catalog on every open.
     if not force_refresh:
-        disk = _read_openrouter_catalog_disk()
+        disk = _read_openrouter_catalog_disk(allow_stale=cache_only)
         if disk:
-            profile_slot_set(_me, "_openrouter_catalog_cache", disk)
+            if not cache_only:  # a stale copy is served, never memoized as fresh
+                profile_slot_set(_me, "_openrouter_catalog_cache", disk)
             return list(disk)
     if cache_only:
-        return list(_read_openrouter_catalog_disk(allow_stale=True) or OPENROUTER_MODELS)
+        return list(OPENROUTER_MODELS)
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.

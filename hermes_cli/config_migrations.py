@@ -717,7 +717,20 @@ def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> No
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
+
+    The on-disk ``_config_version`` however is stamped after every version GROUP (all entries
+    sharing a target version) succeeds, not once at the end by the caller. A mid-ladder abort
+    then parks the file at the highest fully-applied group instead of the pre-run value, so
+    "did the version advance?" distinguishes untouched from half-applied and a retry resumes
+    from the breakpoint instead of re-running the ladder (#111286 review). Stamping per group —
+    never per entry — keeps a partially-applied group (two entries share e.g. 44) unstamped, so
+    the retry re-runs its idempotent steps.
     """
-    for target_ver, migration_fn in MIGRATIONS:
+    for idx, (target_ver, migration_fn) in enumerate(MIGRATIONS):
         if current_ver < target_ver:
             migration_fn(results, quiet)
+            next_ver = MIGRATIONS[idx + 1][0] if idx + 1 < len(MIGRATIONS) else None
+            if next_ver != target_ver:  # last entry of its version group
+                config = read_raw_config()
+                config["_config_version"] = target_ver
+                _persist_migration(config)

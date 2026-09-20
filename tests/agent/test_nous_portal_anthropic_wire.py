@@ -194,6 +194,7 @@ class TestClientShape:
         same way its /chat/completions route does. Sending it as x-api-key
         (the adapter's third-party default) 401s."""
         from agent.anthropic_adapter import build_anthropic_client
+        pytest.importorskip("anthropic")
 
         client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)
 
@@ -208,6 +209,7 @@ class TestClientShape:
         without an explicit clear every Portal request would dual-auth as
         X-Api-Key: sk-ant-… + Authorization: Bearer portal.jwt."""
         from agent.anthropic_adapter import build_anthropic_client
+        pytest.importorskip("anthropic")
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-leak")
         client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)

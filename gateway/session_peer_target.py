@@ -7,7 +7,7 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 
 
 def root_target(adapter, profile='default', *, connection=None):
-    """Resolve the configured shared listener to its registered owning root DB."""
+    """Resolve a shared-listener target to its exact registered profile owner."""
     from gateway.config import Platform
     from gateway.session_authorities import authority_for_home, served_profile_name
     from gateway.hosted_room_grant_state import grant_state_db_paths
@@ -15,25 +15,28 @@ def root_target(adapter, profile='default', *, connection=None):
     home = Path(get_hermes_home()).resolve()
     runner = adapter.gateway_runner
     authority = authority_for_home(runner, home)
-    if (profile != 'default' or served_profile_name(home) != 'default'
-            or authority is None or authority.runner is not runner
-            or getattr(runner, 'session_authority', None) is not authority
-            or getattr(runner, 'session_authorities', None) is None
+    registry = getattr(runner, 'session_authorities', None)
+    named = profile != 'default'
+    if (served_profile_name(home) != profile
+            or authority is None or authority.runner is not runner or registry is None
+            or (named and (not getattr(runner.config, 'multiplex_profiles', False)
+                           or registry.profile_name(authority) != profile
+                           or getattr(runner, 'session_authority', None) is authority))
+            or (not named and getattr(runner, 'session_authority', None) is not authority)
             or Path(authority.profile_id).resolve() != home
             or getattr(runner, 'adapters', {}).get(Platform.API_SERVER) is not adapter
             or adapter._ensure_session_db() is not authority.db
             or Path(authority.db.db_path).resolve() != home / 'state.db'):
         raise RuntimeStoreError('canonical_room_peer_unsupported')
     paths = tuple(path.resolve() for path in grant_state_db_paths(home))
-    if paths != (home / 'shared-state.db', home / 'state.db'):
+    shared_home = home.parent.parent if named else home
+    if paths != (shared_home / 'shared-state.db', home / 'state.db'):
         raise RuntimeStoreError('canonical_room_peer_unsupported')
-    store = getattr(adapter, '_run_idempotency_store', None)
-    if (store is None or not store.durable
-            or Path(store._db_path).resolve() != home / 'runs_idempotency.db'
-            or not adapter._expected_api_key()):
+    if not adapter._expected_api_key():
         raise RuntimeStoreError('canonical_room_peer_unsupported')
-    actual = store._conn.execute('PRAGMA database_list').fetchone()[2]
-    if Path(actual).resolve() != Path(store._db_path).resolve():
+    from gateway.platforms.api_server_store import selected_run_idempotency_store
+    store = selected_run_idempotency_store(adapter, home)
+    if store is None:
         raise RuntimeStoreError('canonical_room_peer_unsupported')
     authority._require_admission_open()
     if connection is None:

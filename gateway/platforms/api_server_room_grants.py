@@ -221,8 +221,12 @@ def _http_invitation_owner(self, profile):
         return None
     from gateway.session_peer_target import root_target
     owner, paths = root_target(self, profile)
+    from gateway.platforms.api_server_store import selected_run_idempotency_store
+    store = selected_run_idempotency_store(self, owner.profile_id)
+    if store is None:
+        return None
     return (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
-            self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+            self.gateway_runner.session_authorities, store, paths)
 
 
 def _issue_http_invitation(self, body, profile, frozen_owner, *, cancelled, authorize):
@@ -274,8 +278,10 @@ def _issue_http_invitation(self, body, profile, frozen_owner, *, cancelled, auth
                     def require_target():
                         authorize()
                         owner, paths, current_policy = target_policy(self, profile, connection=conn)
+                        from gateway.platforms.api_server_store import selected_run_idempotency_store
+                        store = selected_run_idempotency_store(self, owner.profile_id)
                         current_binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
-                                           self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+                                           self.gateway_runner.session_authorities, store, paths)
                         if owner is not authority or current_binding != binding:
                             raise ValueError('room target binding changed')
                         if current_policy != execution_policy:

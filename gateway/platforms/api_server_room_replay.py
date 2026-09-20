@@ -64,11 +64,12 @@ def room_replay(adapter, request, dispatch, *, _openai_error):
     """
     from gateway.session_api import hosted_session_id
     from gateway.hosted_room_execution_policy import RoomExecutionPolicy
-    from gateway.platforms.api_server_runs import _run_fingerprint, _replay_or_conflict
+    from gateway.platforms.api_server_runs import _run_fingerprint, _replay_or_conflict, _run_receipt_store
     session_id = hosted_session_id(dispatch)
     scope = adapter._run_idempotency_scope(request)
     key = request.headers.get('Idempotency-Key', '').strip()
-    record = adapter._run_idempotency_store.replay_record(scope, key)
+    store = _run_receipt_store(adapter, request=request)
+    record = store.replay_record(scope, key)
     if record is None:
         _require_unaccepted(adapter, dispatch, session_id, scope)
         return None
@@ -86,7 +87,7 @@ def room_replay(adapter, request, dispatch, *, _openai_error):
     outcome = 'reused' if hmac.compare_digest(record['fingerprint'], fingerprint) else 'conflict'
     if outcome == 'reused':
         from gateway.platforms.api_server_runs import _room_retention_until
-        record = adapter._run_idempotency_store.confirm_replay(
+        record = store.confirm_replay(
             scope, key, fingerprint, record['run_id'], retention_until=_room_retention_until(request))
         if record is None:
             raise RuntimeStoreError('storage_unavailable')

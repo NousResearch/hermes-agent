@@ -162,13 +162,7 @@ def resolve_launchd_capped_drain(
     keeps it.
     """
 
-    def _secs(value: object) -> float:
-        try:
-            return max(float(value), 0.0)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return 0.0
-
-    drain = _secs(drain_timeout)
+    drain = _seconds(drain_timeout)
     if launchd_exit_timeout_s is None:
         return drain
     try:
@@ -177,7 +171,7 @@ def resolve_launchd_capped_drain(
         return drain
     if budget <= 0.0:
         return drain
-    cap = max(budget - _secs(cleanup_reserve_s), 0.0)
+    cap = max(budget - _seconds(cleanup_reserve_s), 0.0)
     return min(drain, cap)
 
 
@@ -208,22 +202,12 @@ def effective_stop_watchdog_delay(runner: object, watchdog_delay: float) -> floa
     LAUNCHD_WATCHDOG_DUMP_MARGIN_S`` so the dump lands before SIGKILL. Same
     duck-typing / fail-open rules as :func:`effective_stop_drain_timeout`.
     """
-    try:
-        leash = max(float(watchdog_delay), 0.0)
-    except (TypeError, ValueError):
-        leash = 0.0
+    leash = _seconds(watchdog_delay)
     if not getattr(runner, "_stop_requested_by_signal", False):
         return leash
-    budget = getattr(runner, "_launchd_exit_timeout_s", None)
-    if budget is None:
-        return leash
-    try:
-        budget = float(budget)
-    except (TypeError, ValueError):
-        return leash
-    if budget <= 0.0:
-        return leash
-    return min(leash, max(budget - LAUNCHD_WATCHDOG_DUMP_MARGIN_S, 0.0))
+    return resolve_launchd_capped_drain(
+        leash, getattr(runner, "_launchd_exit_timeout_s", None), cleanup_reserve_s=LAUNCHD_WATCHDOG_DUMP_MARGIN_S,
+    )
 
 
 _TRUTHY = {"1", "true", "yes", "on"}

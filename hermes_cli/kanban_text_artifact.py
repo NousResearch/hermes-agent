@@ -59,10 +59,15 @@ def require_artifact(conn, task_id: str, metadata: dict | None, summary: str | N
             )
 
     require(row["assignee"] == contract["assignee"], "task assignee differs from declared contract")
-    if row["current_run_id"] is not None:
-        run = conn.execute("SELECT task_id,profile FROM task_runs WHERE id=?", (row["current_run_id"],)).fetchone()
-        require(run is not None and run["task_id"] == task_id and run["profile"] == contract["assignee"],
-                "current run profile differs from declared contract")
+    require(row["current_run_id"] is not None,
+            "an active run is required; claim the task before completing it")
+    run = conn.execute(
+        "SELECT task_id,profile,status,ended_at FROM task_runs WHERE id=?", (row["current_run_id"],)
+    ).fetchone()
+    require(run is not None and run["task_id"] == task_id and run["profile"] == contract["assignee"],
+            "current run profile differs from declared contract")
+    require(run["status"] == "running" and run["ended_at"] is None,
+            "current run must still be open")
     artifact = metadata.get(key) if isinstance(metadata, dict) else None
     require(isinstance(artifact, dict), "missing structured artifact (attachment paths alone do not count)")
     expected = {**contract["identity"], "task_id": task_id}

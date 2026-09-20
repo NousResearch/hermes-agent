@@ -77,10 +77,12 @@ def test_contract_cannot_be_substituted_or_bypassed_by_direct_completion(tmp_pat
                     "text-artifact-v1:{", contract(metadata_key=""), contract(identity={})]:
             with pytest.raises(ValueError):
                 kb.create_task(conn, title="Malformed", completion_contract=bad)
-        with pytest.raises(ValueError, match="missing structured artifact"):
+        with pytest.raises(ValueError, match="active run is required"):
             kb.complete_task(conn, tid, summary="Implicit final", force=True)
         artifact = {**json.loads(contract().split(":", 1)[1])["identity"], "task_id": tid,
             "complete": True, "truncated": False, "text": "Full advice including a finding."}
+        with pytest.raises(ValueError, match="active run is required"):
+            kb.complete_task(conn, tid, summary="Summary", metadata={"advice_artifact": artifact}, force=True)
         assert kb.assign_task(conn, tid, "another-profile")
         with pytest.raises(ValueError, match="assignee differs"):
             kb.complete_task(conn, tid, summary="Summary", metadata={"advice_artifact": artifact})

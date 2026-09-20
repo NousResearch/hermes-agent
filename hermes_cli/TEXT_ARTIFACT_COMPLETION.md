@@ -14,7 +14,8 @@ identity entries, that task ID, `complete: true`, `truncated: false`, and nonemp
 `text` within the declared Unicode character bound. Its text must differ from the
 short completion summary. An explicit `evidence_source` must match the declared
 source; omission uses the declared source. Task assignee and active run profile
-must match the contract as well.
+must match the contract as well. Completion requires a current, open run; an
+unclaimed task cannot use a synthetic manual completion, even with `--force`.
 
 The shared database completion function validates these requirements inside its
 terminal write transaction. A rejected tool call returns an actionable error,

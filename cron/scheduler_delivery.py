@@ -989,9 +989,11 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         # knew to look). Fail-safe middle: queue a SHORT degraded-delivery marker through
         # the deferred lane — it references the saved output instead of repeating it, so a
         # late-completing original turn cannot duplicate content. One marker per execution
-        # (stable key); a marker that itself times out is never re-marked (recursion guard).
+        # (stable key); a marker that itself times out is never re-marked: the guard reads the
+        # deferred record's ``degraded`` flag, never the payload text (a job whose output
+        # happens to contain the marker phrase must still get its notice).
         marker_queued = False
-        if "DELIVERY DEGRADED" not in content:
+        if not (deferred or {}).get("degraded"):
             marker = (
                 f"[Cronjob \"{job.get('name', job_id)}\" — DELIVERY DEGRADED, scheduled job, "
                 f"not the user. This alert's bot-chat turn timed out after "
@@ -1001,8 +1003,12 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             )
             try:
                 from cron.bot_chat_delivery import defer as _defer_marker
-                _defer_marker(f"{key}-degraded", dict(job), marker, profile, home,
-                              for_failure=for_failure)
+                # Deferred ids double as live-owner delivery ids, which must be 32-64 hex
+                # chars (tools.bot_live_delivery._delivery_id) — so the marker's id is a
+                # fresh digest derived from the execution key, not a suffixed one.
+                marker_key = hashlib.sha256(f"{key}:degraded".encode("utf-8")).hexdigest()
+                _defer_marker(marker_key, dict(job), marker, profile, home,
+                              for_failure=for_failure, degraded=True)
                 marker_queued = True
             except Exception as defer_exc:
                 logger.warning(

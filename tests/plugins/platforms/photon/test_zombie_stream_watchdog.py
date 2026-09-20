@@ -251,7 +251,12 @@ async def test_inconclusive_probes_never_accumulate_toward_respawn(
 def test_probe_upstream_reads_a_guid_shaped_id() -> None:
     """The wire probe in ``probeUpstream`` must use the GUID helper: a non-GUID synthetic id is
     rejected locally by the SDK ("Expected message resource GUID") before any round-trip, so
-    the classifier can never observe the not-found rejection that proves liveness (#117390)."""
+    the classifier can never observe the not-found rejection that proves liveness (#117390).
+
+    This is a source-reading gate on purpose: ``index.mjs`` is the sidecar entry point — it
+    binds an HTTP server at import time and needs the Spectrum SDK on the module path — so it
+    cannot be imported from a test. The GUID helper itself is executed by the Node harness
+    above; this test only pins that ``probeUpstream`` is wired to it."""
     source = (_MODULE.parent / "index.mjs").read_text(encoding="utf-8")
     probe_fn = source.split("async function probeUpstream()", 1)[1].split("\nasync function", 1)[0]
     assert "createProbeMessageId()" in probe_fn

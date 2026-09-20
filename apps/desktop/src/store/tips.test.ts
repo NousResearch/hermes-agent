@@ -25,6 +25,7 @@ describe('agent tip retirement', () => {
     showAgentTip('[data-tour="model-pill"]', 'Choose a model here.')
 
     expect(tipId).toBe(agentTipId('[data-tour="model-pill"]', 'Choose a model here.'))
+    expect(tipId).not.toContain('Choose a model here.')
     expect($retiredTips.get()).toContain(tipId)
     expect($activeTip.get()).toBeNull()
   })

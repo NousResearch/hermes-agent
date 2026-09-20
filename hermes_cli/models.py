@@ -1266,7 +1266,8 @@ def _model_dedup_key(model_id: str) -> str:
 
 
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
-    """Merge registry additions, with native DeepSeek's live names authoritative."""
+    """models.dev entries first (their order), then curated-only extras, case-insensitively deduped
+    while preserving curated casing. Curated unchanged when models.dev is unreachable/empty."""
     try:
         from agent.models_dev import list_agentic_models
         mdev = list_agentic_models(provider)
@@ -1274,10 +1275,6 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
         mdev = []
     if not mdev:
         return list(curated)
-    if normalize_provider(provider) == "deepseek":
-        retired = {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
-        mdev = [model for model in mdev if model.lower() not in retired]
-        return _merge_unique([], mdev + list(curated), key=_model_dedup_key)
     return _merge_unique(_merge_unique([], mdev), curated)
 
 

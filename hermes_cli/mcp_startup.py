@@ -211,8 +211,9 @@ def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float | N
 
 def start_deferred_mcp_discovery_now() -> None:
     """Run an armed deferred start immediately (idempotent, thread-safe)."""
-    with _mcp_discovery_lock:
-        timer = _mcp_discovery_deferred
+    global _mcp_discovery_deferred
+    with _mcp_discovery_lock:  # take the slot atomically: two racing first clients fire once
+        timer, _mcp_discovery_deferred = _mcp_discovery_deferred, None
     if timer is None:
         return
     timer.cancel()

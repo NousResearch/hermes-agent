@@ -169,6 +169,215 @@ def _mask_quoted_prose(command: str) -> str:
     )
 
 
+# ---- Heredoc bodies: stdin DATA, not code ---------------------------------------------------
+# A heredoc body is stdin DATA for the command that reads it: `cat <<EOF > doc.md` plus a documentation
+# body never executes that text, so a command-word rule firing on it is the same documentation-shaped
+# false positive the quoted-prose guard removes for string arguments.
+#
+# The guard is an ALLOWLIST of pure data consumers, never a list of executors. The set of programs that
+# can turn stdin into execution has no bound — schedulers that run the body later (`crontab -`, `at`,
+# `batch`), service managers (`systemd-run --pipe`), database clients with a shell escape (`sqlite3`
+# `.shell`, `psql` `\!`), shells, interpreters, indirection programs — so an executor deny-list fails
+# OPEN the moment it misses one class. The set of programs that can only consume stdin as bytes is
+# small and enumerable, so the guard asks the positive question instead: mask the body only when EVERY
+# program it can reach is on this list. Every other reader, and every reader the scan cannot identify
+# at all, keeps the body RAW, i.e. gated — gating a body that turns out to be data is a false positive
+# and recoverable, masking one that turns out to be code is a false negative.
+_HEREDOC_DATA_CONSUMERS = frozenset({
+    # Copiers and filters: bytes in, bytes out, to stdout or to a named file. None of them has an
+    # option, an operator or a sub-command that runs a program over the data. Programs that look like
+    # filters but do have one stay out: `sed` (`e`), `awk` (`system()`), `sort`
+    # (`--compress-program` pipes the data into a program), `less`/`more` (interactive shell escape),
+    # `xargs`/`find`/`tar` (run the data or a program named on the command line).
+    "cat", "tee", "dd", "head", "tail", "nl", "od", "xxd", "hexdump", "strings", "base64", "cksum",
+    "md5sum", "sha1sum", "sha256sum", "sha512sum", "wc", "uniq", "tr", "cut", "paste", "join",
+    "comm", "fold", "expand", "unexpand", "rev", "tac", "shuf", "column", "fmt", "pr", "split",
+    "csplit", "tsort", "numfmt", "diff", "cmp",
+    # Shell builtins that only write their arguments out.
+    "printf", "echo",
+})
+# Command-list separators. Everything between two of them shares the heredoc's stdin path, so a
+# `| bash` in the same list keeps the body raw. `|` is deliberately NOT one: a pipe CARRIES the body.
+_HEREDOC_LIST_SEPARATORS = ";\n&(){}"
+
+
+def _iter_heredoc_operators(command: str):
+    """Yield ``(operator_start, delimiter, quoted_delimiter)`` for every ``<<`` heredoc operator.
+
+    ``<<<`` here-strings and the second ``<`` of a longer run are not operators. The scan tracks
+    quotes, so a ``<<`` inside a substitution is not seen here; that body is then left raw, which is
+    the fail-safe direction.
+    """
+    for kind, i, _, quote in _scan_shell(command, subst="uq", comments=True):
+        if kind != "char" or quote is not None or command[i] != "<":
+            continue
+        if i and command[i - 1] == "<":
+            continue
+        if not command.startswith("<<", i) or command.startswith("<<<", i):
+            continue
+        start = i + 2
+        if command.startswith("-", start):  # `<<-EOF` strips leading tabs from the terminator line
+            start += 1
+        _, _, word = _read_shell_word(command, start)
+        delimiter = _strip_shell_word_syntax(word)
+        if delimiter:
+            yield (i, delimiter, delimiter != word)
+
+
+def _heredoc_body_span(command: str, body_start: int, delimiter: str) -> tuple[int, int]:
+    """Return ``(body_end, after_terminator)`` for the body starting at *body_start*.
+
+    The terminator is the first line that is exactly *delimiter* (leading tabs ignored, as ``<<-``
+    allows). When no such line exists the first standalone *delimiter* token ends the body instead:
+    ``_mask_quoted_newlines`` folds an unmatched quote in the body into a space and can pull the
+    terminator up into the previous line, and stopping at that token under-masks rather than
+    swallowing a real command written after the heredoc. With no token at all the heredoc is
+    unterminated, and the shell consumes the rest of the input as its body, so the remainder is body.
+    """
+    position = body_start
+    while position <= len(command):
+        newline = command.find("\n", position)
+        line = command[position:newline if newline >= 0 else len(command)]
+        if line.rstrip("\r").lstrip("\t") == delimiter:
+            return (position, len(command) if newline < 0 else newline + 1)
+        if newline < 0:
+            break
+        position = newline + 1
+    offset = body_start
+    while True:
+        hit = command.find(delimiter, offset)
+        if hit < 0:
+            return (len(command), len(command))
+        after = hit + len(delimiter)
+        if (hit == body_start or command[hit - 1].isspace()) and (after >= len(command) or command[after].isspace()):
+            return (hit, after)
+        offset = hit + 1
+
+
+def _iter_heredoc_bodies(command: str):
+    """Yield ``(body_start, body_end, quoted_delimiter, operator_start)`` for every heredoc body, in
+    the order the shell reads them.
+
+    A body starts on the line after the one that opened it; consecutive operators on one line consume
+    their bodies in operator order, each starting after the previous terminator. A ``<<`` inside a body
+    is data, not an operator — bash reads exactly one body per operator — so it is skipped.
+    """
+    last_body: tuple[int, int] | None = None
+    next_body_start = None
+    for operator_start, delimiter, quoted in _iter_heredoc_operators(command):
+        if last_body is not None and last_body[0] <= operator_start < last_body[1]:
+            continue
+        if next_body_start is None or operator_start >= next_body_start:
+            newline = command.find("\n", operator_start)
+            if newline < 0:
+                return
+            body_start = newline + 1
+        else:
+            body_start = next_body_start
+        body_end, next_body_start = _heredoc_body_span(command, body_start, delimiter)
+        if body_start == body_end:  # empty body: nothing to mask, and the next body starts after it
+            last_body = None
+            continue
+        last_body = (body_start, body_end)
+        yield (body_start, body_end, quoted, operator_start)
+
+
+def _heredoc_reader_names(command: str, operator_start: int, words) -> list[str]:
+    """Names of every program a heredoc body can reach from *operator_start*, wrappers removed.
+
+    *words* is the command-word span list for the whole command (computed once per call, not per
+    heredoc). The body travels down the pipeline, so the readers are the command word of the stage
+    holding the operator plus the command word of every stage after it (`cat <<EOF | bash` hands the
+    body to `bash`), and everything between two command-list separators shares that stdin path.
+    Pass-through wrappers (`sudo`, `env`, `nohup`, ...) are dropped: they inherit stdin for the program
+    they launch, so `sudo tee /etc/nginx/nginx.conf <<EOF` reads the body through `tee`.
+    """
+    list_start, list_end = 0, len(command)
+    pipes: list[int] = []
+    for kind, i, _, quote in _scan_shell(command, subst="uq", comments=True):
+        if kind != "char" or quote is not None:
+            continue
+        if command[i] in _HEREDOC_LIST_SEPARATORS:
+            if i < operator_start:
+                list_start, pipes = i + 1, []
+            else:
+                list_end = i
+                break
+        elif command[i] == "|" and list_start <= i < operator_start:
+            pipes.append(i)
+    stage_start = max(pipes, default=list_start - 1) + 1
+    return [
+        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        for word_start, _, word in words if stage_start <= word_start < list_end
+    ]
+
+
+def _heredoc_body_is_data(command: str, operator_start: int, words) -> bool:
+    """Whether every program a heredoc body can reach is a known pure data consumer.
+
+    Only a positive identification masks the body. An empty reader set -- a bare redirection, a command
+    position the word scan could not parse -- keeps the body raw, as does any name off the allowlist.
+    """
+    readers = [
+        name for name in _heredoc_reader_names(command, operator_start, words)
+        if name not in _COMMAND_WRAPPER_WORDS
+    ]
+    return bool(readers) and all(name in _HEREDOC_DATA_CONSUMERS for name in readers)
+
+
+def _heredoc_body_replacement(body: str, quoted_delimiter: bool) -> str:
+    """Return what the detection variant keeps of one heredoc body: nothing, except the command
+    substitutions the shell still expands inside an UNQUOTED-delimiter body — those really run.
+
+    The body is REMOVED rather than blanked in place. Blanking turns a whole body into one long
+    whitespace run, and the command-word patterns backtrack catastrophically over runs like that
+    (measured on this branch: 15.6 s for the 59 rules over a 3.4 KB body, minutes over 14 KB).
+    Only a body whose readers are ALL known pure data consumers (``_HEREDOC_DATA_CONSUMERS``) reaches
+    this function, so removing it cannot hide a runnable command. A QUOTED delimiter (`<<'EOF'`,
+    `<<"EOF"`, `<<\\EOF`) suppresses expansion, so nothing in that body survives at all.
+    """
+    if quoted_delimiter:
+        return ""
+    kept: list[str] = []
+    i, n = 0, len(body)
+    while i < n:
+        char = body[i]
+        if char == "\\" and i + 1 < n:  # an escaped char is literal text, not an expansion
+            i += 2
+            continue
+        close = None
+        if body.startswith("$(", i):
+            close = _scan_dollar_paren_end(body, i)
+        elif char == "`":
+            close = _scan_backtick_end(body, i)
+        if close is not None:
+            kept.append(body[i:close])
+            i = close
+            continue
+        i += 1
+    return "\n".join(kept)
+
+
+def _mask_heredoc_bodies(command: str) -> str:
+    """Drop heredoc BODY text for the command-word rules (detection-only).
+
+    Documentation written through a heredoc (`cat <<EOF > doc.md`, `tee runbook.md <<EOF`) is data
+    for the command that reads it, exactly like a quoted argument, so the command-word rules must not
+    fire on it. Only a body whose readers are ALL known pure data consumers is dropped (see
+    ``_HEREDOC_DATA_CONSUMERS``); every other reader keeps the body raw. The terminator line and
+    everything outside the body are untouched.
+    """
+    if "<<" not in command:
+        return command
+    words = list(_iter_shell_command_word_spans(command))
+    edits = [
+        (start, end, _heredoc_body_replacement(command[start:end], quoted))
+        for start, end, quoted, operator_start in _iter_heredoc_bodies(command)
+        if _heredoc_body_is_data(command, operator_start, words)
+    ]
+    return _splice(command, edits) if edits else command
+
+
 # ---- Sudo stdin guard: without SUDO_PASSWORD configured, an explicit "sudo -S" is the LLM piping
 # a guessed password via stdin (brute-force vector). Unconditional block.
 _SUDO_STDIN_RE = re.compile(r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b', re.IGNORECASE)
@@ -1948,17 +2157,27 @@ def detect_dangerous_command(command: str) -> tuple:
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()
         masked_lower: str | None = None
+        heredoc_masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
                     # Quoted text is DATA, except under a shell carrier (sh -c, eval, source, .)
                     # whose quoted argument is code the shell really runs — those scan raw, the
                     # same rule the hardline matcher applies above.
-                    masked_lower = (
-                        command_lower if _contains_shell_carrier(command_lower)
-                        else _mask_quoted_prose(command_lower)
+                    carrier = _contains_shell_carrier(command_lower)
+                    masked_lower = command_lower if carrier else _mask_quoted_prose(command_lower)
+                    # The command-word rules also treat heredoc BODIES as data (documentation written
+                    # to a file through `cat <<EOF > doc.md`); the two dynamic-word rules predate that
+                    # guard and keep their exact behaviour. Bodies are located before the quote mask
+                    # runs: `_mask_quoted_prose` blanks a QUOTED delimiter (`<<'EOF'`).
+                    heredoc_masked_lower = (
+                        masked_lower if carrier
+                        else _mask_quoted_prose(_mask_heredoc_bodies(command_lower))
                     )
-                if pattern_re.search(masked_lower):
+                haystack = (
+                    heredoc_masked_lower if description in _QUOTE_MASKED_COMMAND_DESCRIPTIONS else masked_lower
+                )
+                if haystack is not None and pattern_re.search(haystack):
                     return (True, description, description)
             elif pattern_re.search(command_lower):
                 return (True, description, description)

@@ -18,6 +18,7 @@ import atexit
 import errno
 import time
 import textwrap
+from wcwidth import wcswidth
 from collections import deque
 from dataclasses import dataclass
 from urllib.parse import unquote, urlparse
@@ -2481,10 +2482,15 @@ def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
         return False
 
 
+def _display_width(text: str) -> int:
+    """Return terminal columns occupied by ``text`` (not Python code points)."""
+    return max(wcswidth(text), 0)
+
+
 def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
     """Stable TUI panel width wide enough for the title and content (incl. borders)."""
     term_cols = shutil.get_terminal_size((100, 20)).columns
-    longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+    longest = max([_display_width(title)] + [_display_width(line) for line in content_lines] + [min_width - 4])
     inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
     return inner + 2  # leading/trailing space inside the borders
 

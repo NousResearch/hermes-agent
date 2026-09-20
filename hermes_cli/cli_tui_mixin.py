@@ -66,14 +66,14 @@ class _Panel:
     """Fragment accumulator for one bordered overlay panel (``(style, text)`` tuples)."""
 
     def __init__(self, border: str, box_width: int, title: str = "", title_style: str = ""):
-        from cli import _append_blank_panel_line, _append_panel_line
+        from cli import _append_blank_panel_line, _append_panel_line, _display_width
         self.lines, self.border, self.width = [], border, box_width
         self._row, self._blank = _append_panel_line, _append_blank_panel_line
         if title:
             # Title inlined into the top rule: ``╭─ Title ───╮``.
             self.lines.append((border, "╭─ "))
             self.lines.append((title_style, title))
-            self.lines.append((border, " " + ("─" * max(0, box_width - len(title) - 3)) + "╮\n"))
+            self.lines.append((border, " " + ("─" * max(0, box_width - _display_width(title) - 3)) + "╮\n"))
         else:
             self.lines.append((border, "╭" + ("─" * box_width) + "╮\n"))
 

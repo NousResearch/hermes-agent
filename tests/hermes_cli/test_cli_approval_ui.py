@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cli as cli_module
-from cli import HermesCLI
+from cli import HermesCLI, _display_width, _panel_box_width
+from hermes_cli.cli_tui_mixin import _Panel
 
 
 class _FakeBuffer:
@@ -64,6 +65,21 @@ def _make_background_cli_stub():
     cli.bell_on_complete = False
     cli.final_response_markdown = "strip"
     return cli
+
+
+def test_panel_width_uses_terminal_columns_for_cjk_and_emoji_variation_sequences():
+    title = "⚠️  危険な操作"
+    content = "許可 👍🏽"
+    assert _display_width(title) == 14
+    assert _display_width(content) == 7
+    assert _panel_box_width(title, [content], min_width=1, max_width=80) == 20
+
+
+def test_titled_panel_border_uses_display_width_without_style_leakage():
+    lines = _Panel("border", 19, "⚠️  危険な操作", "title").lines
+    assert lines[2][0] == "border"
+    assert lines[2][1].endswith("╮\n")
+    assert len(lines) == 3
 
 
 class TestCliApprovalUi:

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 
-import { fetchVoiceLiveStatus, type VoiceLiveHandlers, VoiceLiveSession } from './voice-live'
+import { type VoiceLiveHandlers, VoiceLiveSession } from './voice-live'
 
 // A GPT-Live session is created on the chat OWNER's (connection, profile) —
 // the Bot that owns the chat — never on the window's active scope, mirroring
@@ -71,37 +71,14 @@ describe('GPT-Live owner routing', () => {
     expect(request.profile).toBe('bot-adam')
     expect(request.connectionId).toBe('gw-bots')
     expect(request.priority).toBe('foreground')
-  })
 
-  it('keeps the active scope verbatim for an ownerless chat', async () => {
-    installWebRTC()
-    const api = installApi()
-    setApiRequestConnection('gw-active')
-    setApiRequestProfile('research')
-
-    const session = new VoiceLiveSession(handlers, null)
-    await session.start([])
-
-    const request = api.mock.calls[0][0] as { connectionId?: string; path: string; priority?: string; profile?: string }
-
-    expect(request.path).toBe('/api/audio/voice-live/session')
-    expect(request.profile).toBe('research')
-    expect(request.connectionId).toBe('gw-active')
-    expect(request.priority).toBeUndefined()
-  })
-
-  it('probes the mode status on the owner scope too', async () => {
-    const api = installApi()
-    setApiRequestConnection('gw-active')
-    setApiRequestProfile('research')
-
-    await fetchVoiceLiveStatus({ connectionId: 'gw-bots', profile: 'bot-adam' })
-
-    const request = api.mock.calls[0][0] as { connectionId?: string; path: string; priority?: string; profile?: string }
-
-    expect(request.path).toBe('/api/audio/voice-live/status')
-    expect(request.profile).toBe('bot-adam')
-    expect(request.connectionId).toBe('gw-bots')
-    expect(request.priority).toBe('foreground')
+    // Ownerless chats keep the active scope verbatim (the old bare profileScoped()).
+    const ownerless = new VoiceLiveSession(handlers, null)
+    await ownerless.start([])
+    const plain = api.mock.calls[1][0] as { connectionId?: string; path: string; priority?: string; profile?: string }
+    expect(plain.path).toBe('/api/audio/voice-live/session')
+    expect(plain.profile).toBe('research')
+    expect(plain.connectionId).toBe('gw-active')
+    expect(plain.priority).toBeUndefined()
   })
 })

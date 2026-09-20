@@ -72,16 +72,4 @@ describe('useVoiceLiveConversation — owner-routed session', () => {
 
     expect(constructed.owners).toEqual([{ connectionId: 'gw-bots', profile: 'bot-adam' }])
   })
-
-  it('passes an empty owner for the main composer scope (ambient routing keeps the session)', async () => {
-    const hook = mountLive()
-
-    await act(async () => {
-      await hook.result.current.start()
-    })
-
-    // An ownerless scope still passes the ref object; ownerScoped treats the
-    // empty (connection, profile) exactly like the old bare profileScoped().
-    expect(constructed.owners).toEqual([{ connectionId: undefined, profile: undefined }])
-  })
 })

@@ -741,3 +741,44 @@ def test_pid_liveness_self_pid_skips_exists_probe(monkeypatch):
     # Identity is still (pid, start time): our pid with a start we never had is a recycled pid.
     assert active_sessions._pid_liveness(os.getpid(), 1.0) is False
     assert exists_calls == []
+
+
+def test_snapshot_prunes_after_lock_release_and_keeps_concurrent_lease(tmp_path, monkeypatch):
+    """#115578: ``active_session_registry_snapshot`` must not run the per-entry liveness
+    probes while holding the exclusive registry lock (one psutil round-trip per lease held
+    under an unfair ``LK_LOCK`` starves every 2 Hz poller past ~7 leases), and the pruned
+    write-back must not drop a lease acquired between the snapshot and the write."""
+    home = tmp_path / ".hermes"
+    state_path = home / "runtime" / "active_sessions.json"
+    lock_path = home / "runtime" / "active_sessions.lock"
+    state_path.parent.mkdir(parents=True)
+    dead_pid = 2**30  # never a live pid: _pid_exists() is False, nothing is signalled
+    active_sessions._write_entries(state_path, [
+        {"lease_id": "live-1", "session_id": "s-live", "pid": os.getpid()},
+        {"lease_id": "dead-1", "session_id": "s-dead", "pid": dead_pid},
+    ])
+    newcomer = {"lease_id": "new-1", "session_id": "s-new", "pid": os.getpid()}
+    real_prune = active_sessions._prune_dead
+    acquired_during_prune = []
+
+    def concurrent_acquire():
+        with active_sessions._FileLock(lock_path):
+            current = active_sessions._read_entries(state_path, strict=True)
+            active_sessions._write_entries(state_path, current + [dict(newcomer)])
+
+    def spy_prune(entries, **kwargs):
+        # A concurrent acquirer must be able to take the lock while the probes run.
+        acquirer = threading.Thread(target=concurrent_acquire, daemon=True)
+        acquirer.start()
+        acquirer.join(timeout=5)
+        acquired_during_prune.append(not acquirer.is_alive())
+        return real_prune(entries, **kwargs)
+
+    monkeypatch.setattr(active_sessions, "_prune_dead", spy_prune)
+
+    live = active_sessions.active_session_registry_snapshot(registry_home=home)
+
+    assert acquired_during_prune == [True]
+    assert [e["lease_id"] for e in live] == ["live-1"]
+    persisted = active_sessions._read_entries(state_path, strict=True)
+    assert sorted(e["lease_id"] for e in persisted) == ["live-1", "new-1"]

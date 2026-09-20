@@ -195,13 +195,13 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
 @pytest.mark.parametrize("kind", ["serve", "dashboard"])
 @pytest.mark.parametrize("alive", [True, None, False])
 def test_unreadable_create_time_discharges_only_a_proven_dead_pid(monkeypatch, kind, alive):
+    """#116507: a row without a readable create_time is discharged once its pid is provably dead,
+    stays pending while it is live or unknowable, and never counts as a live handoff."""
     runtime = asdict(RuntimeRecord(kind=kind, profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: alive)
     pending = retain_receipt_manual_serves({"plan": {"runtimes": [runtime]}})
-    if alive is False:
-        assert pending == []
-    else:
-        assert pending == [runtime]
+    assert pending == ([] if alive is False else [runtime])
+    assert defer_manual_serve(runtime, require_alive=True) is False
 
 
 def test_unreadable_create_time_warning_names_identity_not_storage(monkeypatch, capsys):
@@ -212,10 +212,3 @@ def test_unreadable_create_time_warning_names_identity_not_storage(monkeypatch, 
     assert "could not read the process creation time" in out
     assert "storage permissions" not in out
     assert "relaunch" in out
-
-
-def test_unreadable_create_time_still_refuses_require_alive(monkeypatch):
-    runtime = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
-    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
-    assert defer_manual_serve(runtime, require_alive=True) is False
-    assert defer_manual_serve(runtime) is True

@@ -31,8 +31,8 @@ try:
     # ---------------------------------------------------------------------------
     from tools.lazy_deps import ensure
     ensure("provider.bedrock", prompt=False)
-except Exception:
-    pass  # let downstream imports surface the real error
+except Exception as exc:  # downstream imports surface the real error
+    logger.warning("boto3 lazy install did not complete: %s", exc)
 
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}

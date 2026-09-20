@@ -93,50 +93,86 @@ def _validate(service, task, binding, conn):
     return stored, scope
 
 
+def _require_retry_owner(service, authority, runtime):
+    from gateway.session_authorities import authority_for_home
+    if (service.authority is not authority or getattr(authority, 'hosted_room_service', None) is not service
+            or authority_for_home(authority.runner, authority.profile_id) is not authority
+            or service.runtime is not runtime):
+        raise RuntimeStoreError('peer_setup_conflict')
+    authority._require_admission_open()
+    status = runtime.status()
+    if not status['running'] or status['stopping']:
+        raise RuntimeStoreError('runtime_coordination_required')
+
+
 def retry_available(service, task, binding):
     try:
-        with service.authority.db._read_ctx() as conn:
-            _validate(service, task, binding, conn)
-            lease = service.runtime._leases.get(binding.room_id)
-            if lease is None:
-                return False
-            tasks._require_active_lease(conn, lease, now=service.runtime.clock())
+        with service._policy_lock:
+            authority, runtime = service.authority, service.runtime
+            _require_retry_owner(service, authority, runtime)
+            with authority.db._read_ctx() as conn:
+                _validate(service, task, binding, conn)
+                lease = runtime._leases.get(binding.room_id)
+                if lease is None:
+                    return False
+                tasks._require_active_lease(conn, lease, now=runtime.clock())
         return True
     except (RuntimeStoreError, ValueError):
         return False
 
 
 def retry_peer(service, task, binding):
-    with service.authority.db._read_ctx() as conn:
-        stored, scope = _validate(service, task, binding, conn)
-    lease = service.runtime._ensure_lease(binding)
-    tasks.require_active_lease(service.db_path, lease, clock=service.runtime.clock)
-    hydrated = service._hydrate_persisted_peer_route(binding.room_id, stored.member_id)
-    if hydrated is None:
-        raise RuntimeStoreError('peer_setup_conflict')
-    route, client = hydrated
-    # Do not use local rpc.ref, recover unknown work, stage files, refresh a
-    # grant or submit during Retry. The current target only authenticates it.
-    if capture_retry_binding(service, binding, task, route, client) != task['result']['nonadmission']['retry_binding']:
-        raise RuntimeStoreError('peer_setup_conflict')
+    # Capture only current, exact authority under the policy lock. No tracked
+    # renewal client, staging, recovery or submit is permitted in this operation.
+    with service._policy_lock:
+        authority, runtime = service.authority, service.runtime
+        epoch = authority.epoch
+        _require_retry_owner(service, authority, runtime)
+        with authority.db._read_ctx() as conn:
+            stored, scope = _validate(service, task, binding, conn)
+        lease = runtime._ensure_lease(binding)
+        tasks.require_active_lease(service.db_path, lease, clock=runtime.clock)
+        hydrated = service._hydrate_persisted_peer_route(binding.room_id, stored.member_id)
+        if hydrated is None:
+            raise RuntimeStoreError('peer_setup_conflict')
+        route, client = hydrated
+        if capture_retry_binding(service, binding, task, route, client) != task['result']['nonadmission']['retry_binding']:
+            raise RuntimeStoreError('peer_setup_conflict')
+
+    # Network I/O must not stall healthy rooms' planning or publication.
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-    grant_hash = hashlib.sha256(stored.grant.encode()).hexdigest()
+    probe_error = None
     try:
         verify_invited_catalog(client, stored.grant, stored.catalog, scope)
     except PeerRunsHTTPError as exc:
-        if exc.needs_reauthorization:
-            service._set_route_status(binding.room_id, stored.member_id, 'needs_reauthorization',
-                                      expected_grant_sha256=grant_hash)
-        raise RuntimeStoreError('member_unavailable') from exc
-    def authorize(conn):
-        _validate(service, task, binding, conn)
-        # Publish the scoped ready observation atomically with the requeue.
-        # A separate health write could overwrite concurrent reauthorization;
-        # here a lost lease/cancel fence rolls BOTH writes back.
-        conn.execute("UPDATE hosted_room_links SET status='ready', updated_at=? "
-                     "WHERE room_id=? AND member_id=?",
-                     (service.runtime.clock(), binding.room_id, stored.member_id))
-    operation = partial(tasks.requeue_deferred_task, authorize=authorize)
-    result = service.runtime._requeue(operation, task, lease, binding.room_id)
-    service._peer_route_status[(binding.room_id, stored.member_id)] = 'ready'
-    return result
+        probe_error = exc
+
+    with service._policy_lock:
+        def authorize(conn):
+            # Recheck the installed owner AND drain gate inside the actual SQL
+            # writer, not just before its potentially blocking transaction begin.
+            _require_retry_owner(service, authority, runtime)
+            _epoch(conn, epoch)
+            _validate(service, task, binding, conn)
+            tasks._require_active_lease(conn, lease, now=runtime.clock())
+
+        def observe(conn, status):
+            authorize(conn)
+            conn.execute("UPDATE hosted_room_links SET status=?, updated_at=? "
+                         "WHERE room_id=? AND member_id=?",
+                         (status, runtime.clock(), binding.room_id, stored.member_id))
+
+        if probe_error is not None:
+            if probe_error.needs_reauthorization:
+                # Even a negative observation belongs to this exact live owner;
+                # never let a late failure mutate a withdrawn/replaced route.
+                authority.db._execute_write(lambda conn: observe(conn, 'needs_reauthorization'))
+                service._peer_route_status[(binding.room_id, stored.member_id)] = 'needs_reauthorization'
+            raise RuntimeStoreError('member_unavailable') from probe_error
+
+        # Ready and proof consumption remain one SQL transaction. Any lost
+        # task/lease/work-open fence rolls both back before memory or wakeup.
+        operation = partial(tasks.requeue_deferred_task, authorize=lambda conn: observe(conn, 'ready'))
+        result = runtime._requeue(operation, task, lease, binding.room_id)
+        service._peer_route_status[(binding.room_id, stored.member_id)] = 'ready'
+        return result

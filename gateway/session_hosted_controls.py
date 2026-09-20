@@ -50,24 +50,25 @@ class HostedControls:
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation,
                                                proven_peer_retry=True)
-            if self._member_is_peer(room_id, member_id):
-                from gateway.session_hosted_peer_retry import retry_peer
-                return retry_peer(self, task, binding)
-            # Unknown is not non-admission. Never advance its hosted generation
-            # while leaving the canonical unknown head behind it.
-            if task['status'] == 'indeterminate':
-                raise RuntimeStoreError('unknown_execution')
-            if task['status'] != 'deferred':
-                raise RuntimeStoreError('stale_generation')
-            rpc = self._resolve_member_transport(binding, task)
-            info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                            session_id=rpc.ref.session_id)
-            if info.get('status') == 'unknown':
-                raise RuntimeStoreError('unknown_execution')
-            if info.get('active'):
-                raise RuntimeStoreError('session_busy')
-            lease = self.runtime._ensure_lease(binding)
-            return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+            if not self._member_is_peer(room_id, member_id):
+                # Unknown is not non-admission. Never advance its hosted generation
+                # while leaving the canonical unknown head behind it.
+                if task['status'] == 'indeterminate':
+                    raise RuntimeStoreError('unknown_execution')
+                if task['status'] != 'deferred':
+                    raise RuntimeStoreError('stale_generation')
+                rpc = self._resolve_member_transport(binding, task)
+                info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
+                                session_id=rpc.ref.session_id)
+                if info.get('status') == 'unknown':
+                    raise RuntimeStoreError('unknown_execution')
+                if info.get('active'):
+                    raise RuntimeStoreError('session_busy')
+                lease = self.runtime._ensure_lease(binding)
+                return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+        # The peer path owns its short capture/final locks, not the network wait.
+        from gateway.session_hosted_peer_retry import retry_peer
+        return retry_peer(self, task, binding)
 
     def status(self, room_id=None):
         result = super().status(room_id)

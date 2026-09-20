@@ -13,6 +13,8 @@ import pytest
 from gateway import hosted_room_driver as tasks, hosted_rooms as rooms
 from gateway.hosted_room_peer import (GatewayRoomCatalog, catalog_mapping,
     issue_room_grant, decode_room_grant)
+from gateway.session_authority import SessionAuthority
+from gateway.session_authorities import SessionAuthorities
 from gateway.session_controls import AuthorityConnection
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state import SessionDB
@@ -62,8 +64,10 @@ def case(tmp_path, monkeypatch):
     monkeypatch.setattr(HostedRoomRuntime, "start", forbidden)
     monkeypatch.setattr("tui_gateway.hosted_room_peer_http._open_roomlink_url", forbidden)
     with SessionDB(home / "state.db") as db:
-        authority = SimpleNamespace(db=db, profile_id=str(home), instance_id="fixture", events={},
+        runner = SimpleNamespace(_draining=False, session_authorities=SessionAuthorities(home))
+        authority = SessionAuthority(runner, db=db, profile_id=str(home), instance_id="fixture",
             epoch=begin_runtime_epoch(db, instance_id="fixture"))
+        runner.session_authorities.add(home, authority)
         service = CanonicalHostedRoomService(authority, None)
         authority.hosted_room_service = service
         connection = AuthorityConnection(authority, SimpleNamespace(), {"user_id": "alice",

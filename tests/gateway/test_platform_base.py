@@ -1184,6 +1184,45 @@ class TestGetHumanDelay:
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.8 <= delay <= 2.5
 
+    def test_custom_mode_rejects_negative_bounds(self):
+        env = {
+            "HERMES_HUMAN_DELAY_MODE": "custom",
+            "HERMES_HUMAN_DELAY_MIN_MS": "-1",
+            "HERMES_HUMAN_DELAY_MAX_MS": "1000",
+        }
+        with patch.dict(os.environ, env), patch(
+            "gateway.platforms.base.random.uniform", return_value=1.0
+        ) as uniform:
+            delay = BasePlatformAdapter._get_human_delay()
+            assert delay == 1.0
+            uniform.assert_called_once_with(0.8, 2.5)
+
+    def test_custom_mode_rejects_inverted_bounds(self):
+        env = {
+            "HERMES_HUMAN_DELAY_MODE": "custom",
+            "HERMES_HUMAN_DELAY_MIN_MS": "3000",
+            "HERMES_HUMAN_DELAY_MAX_MS": "1000",
+        }
+        with patch.dict(os.environ, env), patch(
+            "gateway.platforms.base.random.uniform", return_value=1.0
+        ) as uniform:
+            delay = BasePlatformAdapter._get_human_delay()
+            assert delay == 1.0
+            uniform.assert_called_once_with(0.8, 2.5)
+
+    def test_custom_mode_preserves_valid_bounds(self):
+        env = {
+            "HERMES_HUMAN_DELAY_MODE": "custom",
+            "HERMES_HUMAN_DELAY_MIN_MS": "1000",
+            "HERMES_HUMAN_DELAY_MAX_MS": "2000",
+        }
+        with patch.dict(os.environ, env), patch(
+            "gateway.platforms.base.random.uniform", return_value=1.5
+        ) as uniform:
+            delay = BasePlatformAdapter._get_human_delay()
+            assert delay == 1.5
+            uniform.assert_called_once_with(1.0, 2.0)
+
 
 # ---------------------------------------------------------------------------
 # utf16_len / _prefix_within_utf16_limit / truncate_message with len_fn

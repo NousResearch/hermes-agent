@@ -110,6 +110,22 @@ def pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: An
     return pop(handle, **kwargs)
 
 
+def pop_relay_scope_if_top(relay: Any, handle: Any, *, output: Any = None, metadata: Any = None) -> bool:
+    """Pop ``handle`` only while it is the top of the scope stack; return whether it was popped.
+
+    Two concurrent Hermes turns in one session share a physical stack, so the first turn to
+    finish may find the sibling's live scope above its own. Popping through it would close the
+    sibling's scope and letting the binding raise ("scope handle is not at the top of the
+    stack") logs a traceback per overlap (#115471). The skipped scope is reclaimed by the
+    session-close drain in ``_close_scope_handle``.
+    """
+    top = _current_top(relay)
+    if top is not None and not _same_handle(top, handle):
+        return False
+    pop_relay_scope(relay, handle, output=output, metadata=metadata)
+    return True
+
+
 def _current_top(relay: Any) -> Any:
     """Return the current top-of-stack scope handle, or None."""
     # Prefer scope.get_handle(): get_scope_stack() may return a native ScopeStack that scope.pop rejects.

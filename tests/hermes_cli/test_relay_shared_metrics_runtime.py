@@ -2638,8 +2638,9 @@ def test_real_binding_concurrent_task_close_skips_pop_under_sibling_scope(
         )
 
     assert not [r for r in caplog.records if "task close failed" in r.getMessage()], caplog.text
-    # Task B's live scope is still the top: the sibling was not popped through.
-    assert relay_runtime._same_handle(relay_runtime._current_top(runtime.relay), task_b_handle)
+    # Task B's live scope is still the top of its context's stack: the sibling was not popped through.
+    top = runtime._run_in_task(session.tasks["task-B"], relay_runtime._current_top, runtime.relay)
+    assert relay_runtime._same_handle(top, task_b_handle)
 
     relay_shared_metrics.finish_task_run(
         session_id="shared-session", task_id="task-B", platform="cli", result={"ok": True},

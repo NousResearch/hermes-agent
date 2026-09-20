@@ -726,25 +726,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._split_multiline_messages = _coerce_bool(_extra_or_secret(extra, "split_multiline_messages", ""), default=False)
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
         # trigger a separate agent run. Telegram cadence and ceilings (#44883); ``0`` dispatches immediately.
-        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 0.3, max_value=2.0)
-        self._text_batch_split_delay_seconds = self._coerce_float_extra(
-            "text_batch_split_delay_seconds", 1.0, min_value=self._text_batch_delay_seconds, max_value=4.0)
+        self._configure_text_batch_delays()
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
             self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
-
-    def _coerce_float_extra(self, key: str, default: float, *, min_value: float = 0.0, max_value: Optional[float] = None) -> float:
-        """Float from ``config.extra``; fed to ``asyncio.sleep()``, so NaN/Inf/negative/unparseable → default; clamped."""
-        import math
-        value = (self.config.extra or {}).get(key)
-        try:
-            parsed = float(value) if value is not None else float(default)
-        except (TypeError, ValueError):
-            parsed = float(default)
-        if not math.isfinite(parsed) or parsed < 0:
-            parsed = float(default)
-        return min(max(parsed, min_value), max_value) if max_value is not None else max(parsed, min_value)
 
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:

@@ -289,20 +289,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
-        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 0.3, max_value=2.0)
-        self._text_batch_split_delay_seconds = self._coerce_float_extra(
-            "text_batch_split_delay_seconds", 1.0, min_value=self._text_batch_delay_seconds, max_value=4.0)
-
-    def _coerce_float_extra(self, key: str, default: float, *, min_value: float = 0.0, max_value: Optional[float] = None) -> float:
-        """Read a float from ``config.extra``; NaN/Inf/negative/unparseable → ``default``; clamped (fed to asyncio.sleep)."""
-        import math
-        try:  # float(None) → TypeError → default
-            parsed = float(self.config.extra.get(key) if getattr(self.config, "extra", None) else None)
-        except (TypeError, ValueError):
-            parsed = float(default)
-        if not math.isfinite(parsed) or parsed < 0:
-            parsed = float(default)
-        return min(max(parsed, min_value), max_value) if max_value is not None else max(parsed, min_value)
+        self._configure_text_batch_delays()
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"

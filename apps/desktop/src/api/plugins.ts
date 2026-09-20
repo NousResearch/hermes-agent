@@ -47,6 +47,18 @@ export interface PluginRestOptions {
   /** Single-file multipart upload (see HermesApiRequest.upload). */
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
+  /** Omit for the default (current) behavior: profile/connection-scoped like
+   *  every other desktop REST call, following whatever profile or registry
+   *  connection the renderer is ambiently on.
+   *
+   *  `'local-primary'` pins the call to the LOCAL machine's primary/default
+   *  backend (`connectionId: 'local'`, no profile pin) regardless of ambient
+   *  scope — for a plugin whose data is local-machine/account state that must
+   *  read the same regardless of which profile or remote the window is
+   *  looking at (e.g. a model-usage/quota status plugin). Still confined to
+   *  this plugin's own `/api/plugins/<id>` namespace — not a general
+   *  profile/connection/core-route override. */
+  target?: 'local-primary'
 }
 
 // Normalize `path` to a leading-slash suffix relative to `/api/plugins/<id>`.
@@ -82,7 +94,7 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
     body: opts.body,
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
-    ...profileScoped()
+    ...(opts.target === 'local-primary' ? { connectionId: 'local' } : profileScoped())
   })
 }
 

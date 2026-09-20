@@ -843,7 +843,23 @@ register(ctx) {
 
 `ctx.rest` is profile-aware and rejects path traversal (`..`) so you can never
 address another plugin's API or a core route through it. `PluginRestOptions` is
-`{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs? }`.
+`{ method?, body?, upload?: { filename, contentType?, bytes }, timeoutMs?, target? }`.
+
+By default a call follows the renderer's ambient scope — whichever profile or
+registry connection the window is currently on. Pass `target: 'local-primary'`
+when your plugin's data is local-machine/account state that must read the same
+regardless of profile or remote connection (for example a model-usage/quota
+status plugin): it pins the call to the fixed `connectionId: 'local'` with no
+profile override, i.e. this machine's primary/default backend. That target is
+hardcoded, not a connection/profile you choose, and the call still only
+reaches your plugin's own `/api/plugins/<id>` namespace — it grants no
+arbitrary profile, connection, or core-route access.
+
+```javascript
+// Always reads this machine's own usage, even while the window is on a
+// named profile or a remote/cloud connection.
+const usage = () => ctx.rest('/usage', { target: 'local-primary' })
+```
 
 `ctx.socket` auto-reconnects with backoff until disposed. **It resolves to a no-op
 on OAuth remotes** (single-use WS tickets are core-managed) — treat the socket as

@@ -92,7 +92,10 @@ export interface PluginContext {
   onEvent: (type: string, listener: GatewayEventListener) => () => void
   /** REST to this plugin's own backend namespace (`/api/plugins/<id>`); `path`
    *  is relative ('/board'). The sanctioned door for a plugin that ships a
-   *  `plugin_api.py` — profile-aware, namespace-scoped by construction. Use
+   *  `plugin_api.py` — profile-aware, namespace-scoped by construction. Pass
+   *  `{ target: 'local-primary' }` to pin the call to this machine's
+   *  primary/default backend regardless of the ambient profile/connection
+   *  scope (still confined to this plugin's own namespace). Use
    *  `host.request` for gateway JSON-RPC. */
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live twin of `rest`: a WebSocket to this plugin's own namespace

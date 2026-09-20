@@ -246,6 +246,31 @@ def test_isolate_incomplete_mcp_shutdown_keeps_candidate(tmp_path, monkeypatch):
     assert Path(report.candidate_location).is_dir()
 
 
+def test_isolate_failed_agent_cleanup_keeps_candidate(tmp_path):
+    source = _source_profile(tmp_path)
+
+    report = run_isolation_diagnostic(
+        source=source,
+        probe=lambda *_args: {
+            "status": "fail",
+            "failed_phase": "agent_resource_cleanup",
+            "error_class": "RuntimeError",
+            "phases": [{
+                "name": "agent_resource_cleanup",
+                "status": "fail",
+                "elapsed_ms": 1.0,
+                "error_class": "RuntimeError",
+            }],
+            "timings": {},
+        },
+        runtime_override={"provider": "custom", "api_key": "secret"},
+    )
+
+    assert report.classification == "needs_quiescence"
+    assert report.cleanup_status == "failed"
+    assert Path(report.candidate_location).is_dir()
+
+
 def test_isolate_stops_after_failed_sterile_control_and_parser_modes_are_exclusive(tmp_path):
     source = _source_profile(tmp_path)
     calls = 0

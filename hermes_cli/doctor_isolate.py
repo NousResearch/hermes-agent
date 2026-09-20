@@ -297,7 +297,7 @@ def _probe_candidate(
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
 
             try:
-                cleanup_safe = join_mcp_discovery(timeout=30.0)
+                cleanup_safe = join_mcp_discovery(timeout=30.0) and cleanup_safe
             except Exception:
                 cleanup_safe = False
             try:

@@ -239,8 +239,13 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_busy_input_mode(cls) -> str:
-        """Gateway drain-time busy-input behavior from env/config (default ``interrupt``)."""
-        mode = cls._env_or_cfg_str("HERMES_GATEWAY_BUSY_INPUT_MODE", "display", "busy_input_mode").lower()
+        """Gateway drain-time busy-input behavior from config (default ``interrupt``).
+
+        Env-var bridge is handled at config-load time in the YAML→env layer; this loader reads
+        the resolved config value so a routed profile sees its own setting, not the launch process's
+        ``HERMES_GATEWAY_BUSY_INPUT_MODE`` (profile scoping, #72348).
+        """
+        mode = cls._cfg_str("display", "busy_input_mode").lower()
         return mode if mode in {"queue", "steer"} else "interrupt"
 
     @classmethod
@@ -251,7 +256,7 @@ class GatewayConfigLoadersMixin:
         is honored only when explicitly set so existing queue setups keep working.
         """
         from gateway.run import GatewayRunner
-        legacy = cls._env_or_cfg_str("HERMES_GATEWAY_BUSY_TEXT_MODE", "display", "busy_text_mode").lower()
+        legacy = cls._cfg_str("display", "busy_text_mode").lower()
         if legacy in {"interrupt", "queue"}:
             return legacy
         return "queue" if GatewayRunner._load_busy_input_mode() == "queue" else "interrupt"

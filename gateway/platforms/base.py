@@ -1888,10 +1888,9 @@ class BasePlatformAdapter(ABC):
         self._session_tasks: Dict[str, asyncio.Task] = {}
         # Legacy env knob; the runner syncs the busy_input_mode value after construction.
         # Default "interrupt" so a pre-sync read never silently queues.
-        self._busy_text_mode: str = (
-            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower() or "interrupt")
-        self._busy_text_debounce_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35)
-        self._busy_text_hard_cap_seconds: float = _float_env("HERMES_GATEWAY_BUSY_TEXT_HARD_CAP_SECONDS", 1.0)
+        self._busy_text_mode: str = "interrupt"
+        self._busy_text_debounce_seconds: float = 0.35
+        self._busy_text_hard_cap_seconds: float = 1.0
         self._text_debounce: dict[str, TextDebounceState] = {}
         # handle_message() tasks; shutdown cancels them so a replaced gateway stops working.
         self._background_tasks: set[asyncio.Task] = set()

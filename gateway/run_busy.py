@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 import asyncio
 import contextlib
 import json
-import os
 import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
@@ -560,16 +559,12 @@ class GatewayBusySessionMixin:
         # Some mobile chat setups want silent steering — keep the behavior, drop the bubble.
         from gateway.run import _load_gateway_config, _platform_config_key
         from gateway.display_config import resolve_display_setting
-        steer_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED")
-        if steer_ack_env is not None:
-            steer_ack_enabled = steer_ack_env.strip().lower() in {"1", "true", "yes", "on"}
-        else:
-            steer_ack_enabled = bool(
-                resolve_display_setting(
-                    _load_gateway_config(), _platform_config_key(event.source.platform),
-                    "busy_steer_ack_enabled", True,
-                )
+        steer_ack_enabled = bool(
+            resolve_display_setting(
+                _load_gateway_config(), _platform_config_key(event.source.platform),
+                "busy_steer_ack_enabled", True,
             )
+        )
         if not steer_ack_enabled:
             logger.debug("Busy steer ack suppressed for session %s", session_key)
         return steer_ack_enabled
@@ -729,7 +724,13 @@ class GatewayBusySessionMixin:
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.
-        if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_display_setting
+        busy_ack_enabled = resolve_display_setting(
+            _load_gateway_config(), _platform_config_key(event.source.platform),
+            "busy_ack_enabled", True,
+        )
+        if not busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 

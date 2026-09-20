@@ -52,10 +52,10 @@ class CanonicalHostedOutputPublisher(CanonicalOutputRetry):
         return self._publish_terminal_tasks(room, defer_errors=True)
 
     def _publish_terminal_tasks(self, room: Mapping, *, defer_errors=False) -> bool:
-        # Serialization is per publisher, never the policy/owner lock across I/O.
+        # Serialize exact attempts within a room, never across independent rooms.
         # Direct callers retain exception reporting; scheduler callers consume the
         # durable disposition after every independent sibling has had a chance.
-        with self._output_publish_lock:
+        with self._output_room_lock(str(room['room_id'])):
             self._prune_output_retry_metadata(str(room['room_id']))
             self._unblock_authenticated_output_routes(str(room['room_id']))
             changed, errors = False, []
@@ -63,7 +63,7 @@ class CanonicalHostedOutputPublisher(CanonicalOutputRetry):
                 metadata, progress = None, ['publish']
                 has_output = isinstance(task.get('result'), Mapping) and bool(task['result'].get('artifacts'))
                 try:
-                    if has_output:
+                    if has_output or self._has_output_obligation(task):
                         metadata = self._begin_output_retry(task)
                         if metadata is None:
                             continue
@@ -117,12 +117,13 @@ class CanonicalHostedOutputPublisher(CanonicalOutputRetry):
                 scope, manifest, outbox = output
                 # Positive publication is required for source ACK. A
                 # cancelled/silent old reply has no visible file to ACK.
-                event_id = "dmessage:" + scope.task_id.removeprefix("dtask:")
-                if any(e["event_id"] == event_id for e in self._events(room_id)):
-                    progress[0] = 'ack'
+                with self.authority.db._read_ctx() as conn:
+                    operation = self._publication_operation(conn, self._output_key(task))
+                self._record_output_disposition(task, operation)
+                progress[0] = operation
+                if operation == 'ack':
                     self._acknowledge_output(scope, manifest, outbox)
                 else:
-                    progress[0] = 'discard'
                     outbox.discard_durably(scope)
             return False
         task_events = self.policy_checkpoint.events_for_task(
@@ -152,6 +153,7 @@ class CanonicalHostedOutputPublisher(CanonicalOutputRetry):
                 expected_output["peer_custody"] = outbox
             if peer_discard:
                 self.output_attachments.abort_unpublished_event(room_id=room_id, event_id=message_id)
+                self._record_output_disposition(task, 'discard')
                 progress[0] = 'discard'
                 outbox.discard_durably(scope)
                 attachments = []
@@ -179,10 +181,12 @@ class CanonicalHostedOutputPublisher(CanonicalOutputRetry):
             raise
         if output is not None:
             if any(e.kind == "message.member" for e in publication.events):
+                self._record_output_disposition(task, 'ack')
                 progress[0] = 'ack'
                 self._acknowledge_output(scope, manifest, outbox)
             elif not peer_discard:
                 self.output_attachments.abort_unpublished_event(room_id=room_id, event_id=message_id)
+                self._record_output_disposition(task, 'discard')
                 progress[0] = 'discard'
                 outbox.discard_durably(scope)
         return True

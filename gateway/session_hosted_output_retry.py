@@ -37,10 +37,41 @@ class CanonicalOutputRetry:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._artifact_clock = time.time
-        self._output_publish_lock = threading.RLock()
+        self._output_publish_locks = {}
+        self._output_publish_locks_guard = threading.Lock()
         self._output_epoch = self.authority.epoch
         self._output_instance = self.authority.instance_id
         self._prepare_artifact_retry_store()
+
+    def _policy_snapshot(self, room):
+        room_id = str(room['room_id'])
+        def held_threads(conn):
+            self._output_owner(conn)
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_tasks'").fetchone() is None:
+                return frozenset()
+            rows = conn.execute("""SELECT task.thread_id, retry.* FROM hosted_room_artifact_retries retry
+                JOIN hosted_room_driver_tasks task ON task.room_id=retry.room_id AND task.task_id=retry.task_id
+                  AND task.execution_generation=retry.execution_generation
+                WHERE retry.room_id=? AND task.status='settled'""", (room_id,)).fetchall()
+            held = set()
+            for row in rows:
+                key = (room_id, row['task_id'], row['execution_generation'])
+                try:
+                    current = self._output_metadata(conn, key)
+                except (RoomArtifactError, RuntimeStoreError):
+                    continue
+                # The retry is not settlement authority: the exact settled task,
+                # frozen context/recipients, owner, receipt and result must match.
+                old = json.loads(row['metadata_json'])
+                if old['work'] == current['work'] and old['member_id'] == current['member_id']:
+                    held.add(row['thread_id'])
+            return frozenset(held)
+        return self.policy_checkpoint.snapshot(room_id=room_id, latest_seq=int(room['latest_seq']),
+                                               held_output_threads=held_threads)
+
+    def _output_room_lock(self, room_id):
+        with self._output_publish_locks_guard:
+            return self._output_publish_locks.setdefault(room_id, threading.RLock())
 
     def _prepare_artifact_retry_store(self):
         def prepare(conn):
@@ -128,7 +159,8 @@ class CanonicalOutputRetry:
             if link is None:
                 raise RoomArtifactError('Group Chat output route unavailable')
             link = dict(link)
-            route_hash = digest(link)
+            from gateway.hosted_room_links import route_security_digest
+            route_hash = route_security_digest(link)
             # Metadata is not authorization. Decode only the signed token's
             # lifetime/scope commitment; the actual target verifies its signature
             # and operation rights. Do not require NEW/input permissions here.
@@ -157,10 +189,68 @@ class CanonicalOutputRetry:
                             (key[0], 'dmessage:' + stem, 'dterminal:' + stem)).fetchall()
         return digest([dict(r) for r in rows]) if rows else ''
 
+    def _has_output_obligation(self, task):
+        with self.authority.db._read_ctx() as conn:
+            self._output_owner(conn)
+            return any(conn.execute(f'SELECT 1 FROM {table} WHERE room_id=? AND task_id=?',
+                       self._output_key(task)[:2]).fetchone() is not None for table in
+                       ('hosted_room_artifact_retries', 'hosted_room_artifact_completions'))
+
+    def _publication_operation(self, conn, key):
+        stem = key[1].removeprefix('dtask:')
+        terminal = conn.execute('SELECT kind,payload_json FROM hosted_room_events WHERE room_id=? AND event_id=?',
+                                (key[0], 'dterminal:' + stem)).fetchone()
+        message = conn.execute('SELECT kind FROM hosted_room_events WHERE room_id=? AND event_id=?',
+                               (key[0], 'dmessage:' + stem)).fetchone()
+        if terminal is None:
+            raise RoomArtifactError('Group Chat output terminal evidence missing')
+        promised = json.loads(terminal['payload_json']).get('message_event_id')
+        if promised:
+            if (promised != 'dmessage:' + stem or message is None or message['kind'] != 'message.member'
+                    or terminal['kind'] != 'turn.settled'):
+                raise RoomArtifactError('Group Chat output promised message missing or changed')
+            return 'ack'
+        if message is not None or terminal['kind'] not in {'turn.settled', 'turn.failed', 'turn.cancelled'}:
+            raise RoomArtifactError('Group Chat output silent terminal changed')
+        return 'discard'
+
+    def _record_output_disposition(self, task, operation):
+        """Commit disposition before target I/O, including interrupted/lost replies."""
+        key = self._output_key(task)
+        def record(conn):
+            current = self._output_metadata(conn, key)
+            row = conn.execute('SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? '
+                               'AND execution_generation=?', key).fetchone()
+            if row is None or row['blocked']:
+                raise RoomArtifactError('Group Chat output reservation missing')
+            old = json.loads(row['metadata_json'])
+            if (any(old[k] != current[k] for k in ('work', 'route', 'lineage', 'member_id'))
+                    or row['operation'] not in {'publish', operation}):
+                raise RoomArtifactError('Group Chat output disposition changed')
+            if operation == 'ack' and self._publication_operation(conn, key) != 'ack':
+                raise RoomArtifactError('Group Chat output ACK publication missing')
+            events = self._output_events_digest(conn, key)
+            if old.get('publication') and old['publication'] != events:
+                raise RoomArtifactError('Group Chat output publication changed')
+            conn.execute('UPDATE hosted_room_artifact_retries SET operation=?,metadata_json=? '
+                         'WHERE room_id=? AND task_id=? AND execution_generation=?',
+                         (operation, json.dumps(dict(old, publication=events), sort_keys=True), *key))
+        self.authority.db._execute_write(record)
+
     def _begin_output_retry(self, task):
         key, now = self._output_key(task), float(self._artifact_clock())
         def begin(conn):
-            metadata = self._output_metadata(conn, key)
+            self._output_owner(conn)
+            row = conn.execute('SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? '
+                               'AND execution_generation=?', key).fetchone()
+            try:
+                metadata = self._output_metadata(conn, key)
+            except (RoomArtifactError, RuntimeStoreError):
+                if row is None:
+                    raise
+                conn.execute('UPDATE hosted_room_artifact_retries SET blocked=1,reason_code=? '
+                             'WHERE room_id=? AND task_id=? AND execution_generation=?', ('stale_binding', *key))
+                return None
             current = conn.execute('SELECT payload_json,result_json,cancel_generation FROM hosted_room_driver_tasks '
                                    'WHERE room_id=? AND task_id=?', key[:2]).fetchone()
             if (json.loads(current['payload_json']) != task['payload'] or json.loads(current['result_json']) != task['result']
@@ -172,11 +262,20 @@ class CanonicalOutputRetry:
             if (done and same(json.loads(done['metadata_json'])) and now < done['valid_until']
                     and done['event_digest'] == self._output_events_digest(conn, key)):
                 return dict(metadata, completed_operation=done['operation'])
-            row = conn.execute('SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? '
-                               'AND execution_generation=?', key).fetchone()
+            prior = json.loads(row['metadata_json']) if row else {}
+            stale = bool(row and (not same(prior) or
+                         (prior.get('publication') and prior['publication'] != self._output_events_digest(conn, key))))
+            if row and row['operation'] == 'ack':
+                try:
+                    stale = stale or self._publication_operation(conn, key) != 'ack'
+                except RoomArtifactError:
+                    stale = True
+            if row and stale:
+                conn.execute('UPDATE hosted_room_artifact_retries SET blocked=1,reason_code=? '
+                             'WHERE room_id=? AND task_id=? AND execution_generation=?', ('stale_binding', *key))
+                return None
             if row and (row['blocked'] or now < row['next_attempt_at']):
                 return None
-            stale = bool(row and not same(json.loads(row['metadata_json'])))
             # Completion never grants a new route/result the old success.
             stale = stale or bool(done and not row and not same(json.loads(done['metadata_json'])))
             stale = stale or bool(done and done['event_digest'] != self._output_events_digest(conn, key))
@@ -191,26 +290,35 @@ class CanonicalOutputRetry:
                 (*key, metadata['member_id'], attempts, now + delay, int(stale or expired),
                  row['created_at'] if row else now, now, encoded, 'publish',
                  'stale_binding' if stale else 'expired_grant' if expired else 'pending'))
-            return None if stale or expired else metadata
+            return None if stale or expired else dict(metadata, attempt=attempts)
         return self.authority.db._execute_write(begin)
 
     def _finish_output_retry(self, task, metadata, *, operation, error=None):
         key, now = self._output_key(task), float(self._artifact_clock())
         def finish(conn):
             self._output_owner(conn)
+            row = conn.execute('SELECT * FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? '
+                               'AND execution_generation=?', key).fetchone()
+            if row is None or row['attempts'] != metadata['attempt']:
+                raise RoomArtifactError('Group Chat output attempt changed')
+            retained = json.loads(row['metadata_json'])
             try:
                 current = self._output_metadata(conn, key)
                 exact = all(current[k] == metadata[k] for k in ('work', 'route', 'lineage', 'member_id'))
             except (RoomArtifactError, RuntimeStoreError):
                 exact = False
             if error is not None or not exact:
-                conn.execute('UPDATE hosted_room_artifact_retries SET blocked=?,operation=?,reason_code=?,updated_at=? '
+                delay = min(60.0, 2.0 ** min(row['attempts'] - 1, 16))
+                conn.execute('UPDATE hosted_room_artifact_retries SET blocked=?,reason_code=?,updated_at=?,next_attempt_at=? '
                              'WHERE room_id=? AND task_id=? AND execution_generation=?',
-                             (int(not exact or not retryable(error)), operation,
+                             (int(not exact or not retryable(error)),
                               'stale_binding' if not exact else 'transient' if retryable(error) else 'authorization_or_verification',
-                              now, *key))
+                              now, now + delay, *key))
                 return
             event_digest = self._output_events_digest(conn, key)
+            if (row['operation'] != operation or self._publication_operation(conn, key) != operation
+                    or (retained.get('publication') and retained['publication'] != event_digest)):
+                raise RoomArtifactError('Group Chat output completion disposition changed')
             if not event_digest or now >= metadata['valid_until']:
                 raise RoomArtifactError('Group Chat output completion authority expired')
             conn.execute('''INSERT INTO hosted_room_artifact_completions VALUES (?,?,?,?,?,?,?,?)
@@ -235,10 +343,20 @@ class CanonicalOutputRetry:
                                     (room_id, member_id)).fetchone()
                 marker = 'gateway.hosted.route.recovered.v1:' + json.dumps([room_id, member_id], separators=(',', ':'))
                 notification = conn.execute('SELECT value FROM state_meta WHERE key=?', (marker,)).fetchone()
-                if link is None or notification is None or notification[0] != digest(dict(link)):
+                if link is None or notification is None or link['status'] != 'ready':
+                    continue
+                from gateway.hosted_room_links import route_security_digest
+                try:
+                    transition = json.loads(notification[0])
+                except (ValueError, TypeError):
+                    continue  # old whole-record hashes have no transition authority
+                if not isinstance(transition, dict) or set(transition) != {'old', 'new'}:
                     continue
                 key = (room_id, row['task_id'], row['execution_generation'])
                 old = json.loads(row['metadata_json'])
+                if (transition.get('old') != old['route'] or transition.get('new') != route_security_digest(dict(link))
+                        or (old.get('publication') and old['publication'] != self._output_events_digest(conn, key))):
+                    continue
                 done = conn.execute('SELECT event_digest FROM hosted_room_artifact_completions WHERE room_id=? AND task_id=? AND execution_generation=?', key).fetchone()
                 if done and done['event_digest'] != self._output_events_digest(conn, key):
                     continue
@@ -251,7 +369,7 @@ class CanonicalOutputRetry:
                     continue
                 conn.execute('UPDATE hosted_room_artifact_retries SET metadata_json=?,blocked=0,next_attempt_at=0,'
                              'reason_code=? WHERE room_id=? AND task_id=? AND execution_generation=?',
-                             (json.dumps(current, sort_keys=True), 'route_recovered', *key))
+                             (json.dumps({**old, **current}, sort_keys=True), 'route_recovered', *key))
         self.authority.db._execute_write(unblock)
 
     def status(self, room_id=None):

@@ -847,11 +847,16 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     # fail-closed scrub as the chat message and the session mirror. Rebind ``content`` itself so
     # the durable deferred record below also carries the scrubbed copy, not the raw output.
     content = _redact_cron_payload(content, "bot-chat payload")
-    message = (
-        f'[Cronjob "{_redact_cron_payload(job.get("name", job_id), "job name")}" output — '
-        f"scheduled job, not the user. Review it, act on anything that needs action, and "
-        f"summarize for the chat.]\n\n{content}"
-    )
+    if (deferred or {}).get("degraded"):
+        # A drained degraded-delivery marker already carries its own bracketed framing
+        # (built in the timeout path below); wrapping it again would post two headers.
+        message = content
+    else:
+        message = (
+            f'[Cronjob "{_redact_cron_payload(job.get("name", job_id), "job name")}" output — '
+            f"scheduled job, not the user. Review it, act on anything that needs action, and "
+            f"summarize for the chat.]\n\n{content}"
+        )
     try:
         source_home = get_hermes_home().resolve()
         from pathlib import Path

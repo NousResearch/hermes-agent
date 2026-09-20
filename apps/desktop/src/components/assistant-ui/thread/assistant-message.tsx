@@ -114,6 +114,19 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   // the teammate's answer and the next assistant message is the report to
   // the human (#114629); folding it hid the substance of the turn behind a
   // "Replied to" row nothing was ever sent through.
+  //
+  // Owner-directed exemption: when the thread already contains a REAL user
+  // message before this reply (one that is not itself an agent delivery or an
+  // injected system notice), the reply is likely an owner-directed report
+  // that happened to follow a bot delivery in the same thread — collapse only
+  // when there is no evidence a human is participating. Human presence is read
+  // from the authoritative `isHuman` flag stamped by the chat-runtime
+  // converter, never re-derived from raw text here.
+  //
+  // The scan only looks BACKWARD from the reply (prior evidence, immutable):
+  // a later human message must not retroactively expand an already-collapsed
+  // row, and skipping future rows bounds the scan so per-message cost stays
+  // linear in thread length.
   const interAgentSender = useAuiState(s => {
     const messages = s.thread.messages
 
@@ -122,6 +135,10 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
         continue
       }
 
+      // Look only at rows before the reply — never at the reply itself or
+      // anything after it. Prior evidence is immutable; a human message that
+      // arrives later must not lift an already-collapsed row (that would
+      // shift the transcript layout under the reader).
       for (let j = i - 1; j >= 0; j--) {
         const prev = messages[j] as { content?: unknown; role?: string }
 
@@ -138,7 +155,31 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
 
           const sender = (match[1] || match[3] || 'agent').trim()
 
-          return dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]]) ? null : sender
+          if (dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]])) {
+            return null
+          }
+
+          // Exemption: if any row BEFORE the delivery is a genuine human
+          // message, this reply is an owner-directed report that merely
+          // follows a bot delivery. Uses the runtime-stamped isHuman flag
+          // (synthetic user-role rows — agent deliveries and background
+          // notices — are classified by the converter, not by an exclusion
+          // regex here). Keep scanning prior rows; no future rows involved.
+          for (let k = j - 1; k >= 0; k--) {
+            const earlier = messages[k] as { role?: string; metadata?: unknown }
+
+            if (earlier.role !== 'user') {
+              continue
+            }
+
+            const custom = (earlier.metadata as { custom?: { isHuman?: boolean } } | undefined)?.custom
+
+            if (custom?.isHuman === true) {
+              return null
+            }
+          }
+
+          return sender
         }
       }
 

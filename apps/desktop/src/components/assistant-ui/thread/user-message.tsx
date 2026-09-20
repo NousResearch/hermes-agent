@@ -2,7 +2,7 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
-import { messageAttachmentRefs, messageContentText, PROCESS_NOTIFICATION_RE } from '@/components/assistant-ui/thread/content'
+import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -74,14 +74,18 @@ export const USER_ACTION_ICON_BUTTON_CLASS =
 export const USER_ACTION_ICON_SIZE = '0.6875rem'
 export const StopGlyph = <StopFilled aria-hidden className="size-3.5 -translate-y-px" />
 
-// Agent-to-agent deliveries ("Message from 🤖 <sender>: …", the Bot Mode /
-// multi-profile convention; optional "(@<handle>)" carries the sender's
-// profile name for avatar resolution; legacy "[Message from agent
-// '<sender>'] …" too). They arrive on the user role because the recipient's
-// turn runs on it, but they are NOT the human speaking — render them as a
-// compact attributed timeline notice instead of a user bubble.
-export const AGENT_MESSAGE_RE =
-  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
+// Background-process notifications are injected into the conversation as user
+// messages (the agent must react to them, and message-role alternation forbids
+// a synthetic system row mid-loop). They are NOT something the human typed, so
+// render them as a compact system-style notice instead of a user bubble.
+// Shape: see tools/process_registry.py format_process_notification().
+// Synthetic user rows use the shared matchers from lib/chat-messages/message-kind
+// (chat-runtime.ts stamps the authoritative isHuman flag from the same source);
+// the agent-delivery regex (with its optional "(@<handle>)" group) moved there
+// verbatim, and the content module keeps its own copy for the timeline and
+// response-group consumers.
+export { AGENT_MESSAGE_RE, PROCESS_NOTIFICATION_RE } from '@/lib/chat-messages/message-kind'
+import { AGENT_MESSAGE_RE, PROCESS_NOTIFICATION_RE } from '@/lib/chat-messages/message-kind'
 
 // sender handle -> avatar data URL. Module-level so a chat full of notices
 // from one bot resolves once. Hits are cached for the window's lifetime;

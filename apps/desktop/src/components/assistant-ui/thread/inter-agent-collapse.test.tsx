@@ -44,14 +44,14 @@ afterEach(() => {
 
 const assistantMetadata = { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
 
-function user(id: string, text: string): ThreadMessage {
+function user(id: string, text: string, isHuman = true): ThreadMessage {
   return {
     id,
     role: 'user',
     content: [{ type: 'text', text }],
     attachments: [],
     createdAt,
-    metadata: { custom: {} }
+    metadata: { custom: { isHuman } }
   } as ThreadMessage
 }
 
@@ -137,25 +137,49 @@ describe('inter-agent collapse gate', () => {
   it('collapses the reply to a LATER unsolicited delivery from a teammate dispatched to earlier', async () => {
     // One dispatch exempts only the answer that follows it. Turns later, the
     // same teammate messages in on its own — that exchange had no dispatch,
-    // so the deliberate fold (#85884) must still apply.
+    // so the deliberate fold (#85884) must still apply. No human row is in
+    // this thread, so the owner-directed exemption cannot lift it either.
     render(
       <Harness
         messages={[
-          user('u1', 'ask hermes for the list'),
           dispatch('a0', '@Hermes'),
-          user('u2', DELIVERY),
+          user('u2', DELIVERY, false),
           assistant('a1', 'here is the list hermes sent', false),
-          user('u3', 'ok thanks'),
-          assistant('a2', 'anytime', false),
-          user('u4', 'Message from 🤖 Hermes (@hermes): unsolicited: build broke'),
+          user('u4', 'Message from 🤖 Hermes (@hermes): unsolicited: build broke', false),
           assistant('a3', 'on it, checking the build', false)
         ]}
       />
     )
 
+    // a1 (the relayed answer to our own dispatch) stays expanded; a3 folds.
     expect(await screen.findByText(/Replied to/)).toBeTruthy()
     expect(screen.getAllByText(/Replied to/)).toHaveLength(1)
     expect(screen.getByText('show reply')).toBeTruthy()
+  })
+
+  it('keeps a later unsolicited delivery expanded once a human is in the thread (owner-directed rule)', async () => {
+    // Same shape with real human turns: once the owner has spoken, a reply
+    // to a later — even unsolicited — delivery still reads as a report to the
+    // human, so the authoritative isHuman exemption (wider than the dispatch
+    // rule, #114629) keeps every row expanded.
+    render(
+      <Harness
+        messages={[
+          user('u1', 'ask hermes for the list'),
+          dispatch('a0', '@Hermes'),
+          user('u2', DELIVERY, false),
+          assistant('a1', 'here is the list hermes sent', false),
+          user('u3', 'ok thanks'),
+          assistant('a2', 'anytime', false),
+          user('u4', 'Message from 🤖 Hermes (@hermes): unsolicited: build broke', false),
+          assistant('a3', 'on it, checking the build', false)
+        ]}
+      />
+    )
+
+    expect(await screen.findByText('on it, checking the build')).toBeTruthy()
+    expect(screen.queryByText(/Replied to/)).toBeNull()
+    expect(screen.queryByText('show reply')).toBeNull()
   })
 
   it('collapses a settled reply to an inter-agent delivery', async () => {
@@ -190,5 +214,93 @@ describe('inter-agent collapse gate', () => {
     expect(
       container.querySelector('[data-slot="aui_assistant-message-root"] [data-slot="aui_message-streaming-marker"]')
     ).toBeTruthy()
+  })
+
+  it('exempts a reply to an agent delivery when an earlier user message is human', async () => {
+    render(
+      <Harness
+        messages={[
+          user('u1', 'human: please do it', true),
+          user('u2', DELIVERY, false),
+          assistant('a1', 'Done — here is the report for you.', false)
+        ]}
+      />
+    )
+
+    // The reply follows an agent delivery, but an earlier row is a REAL
+    // human prompt, so this is an owner-directed report — expanded, not
+    // collapsed. The human flag is the runtime-stamped authoritative signal,
+    // not a text regex at render time.
+    expect(await screen.findByText(/Done — here is the report for you/)).toBeTruthy()
+    expect(screen.queryByText(/Replied to/)).toBeNull()
+    expect(screen.queryByText('show reply')).toBeNull()
+  })
+
+  it('does not treat an agent delivery as a human message (no false exemption)', async () => {
+    render(
+      <Harness
+        messages={[
+          user('u1', DELIVERY, false),
+          user('u2', 'Message from 🤖 Hermes (@hermes): one more', false),
+          assistant('a1', 'ack', false)
+        ]}
+      />
+    )
+
+    // All earlier user rows are bot deliveries (isHuman=false) even though
+    // they do not match the collapse regex at render time — the authoritative
+    // flag keeps the Grok-bots collapse for a pure bot exchange.
+    expect(await screen.findByText(/Replied to/)).toBeTruthy()
+    expect(screen.getByText('show reply')).toBeTruthy()
+  })
+
+  it('does not treat a background-process notice as a human message', async () => {
+    render(
+      <Harness
+        messages={[
+          user('u1', '[IMPORTANT: Background process 123 finished]', false),
+          user('u2', DELIVERY, false),
+          assistant('a1', 'ack', false)
+        ]}
+      />
+    )
+
+    // The injected notice is a synthetic user-role row — the converter stamps
+    // isHuman=false, so the bot exchange stays collapsed.
+    expect(await screen.findByText(/Replied to/)).toBeTruthy()
+    expect(screen.getByText('show reply')).toBeTruthy()
+  })
+
+  it('collapses when the only prior user row is the delivery (pure bot exchange)', async () => {
+    render(
+      <Harness
+        messages={[
+          user('u1', DELIVERY, false),
+          assistant('a1', 'build is green', false)
+        ]}
+      />
+    )
+
+    expect(await screen.findByText(/Replied to/)).toBeTruthy()
+    expect(screen.getByText('show reply')).toBeTruthy()
+  })
+
+  it('does NOT lift an already-collapsed reply when a human message arrives later', async () => {
+    render(
+      <Harness
+        messages={[
+          user('u1', DELIVERY, false),
+          assistant('a1', 'build is green', false),
+          user('u2', 'human: thanks', true)
+        ]}
+      />
+    )
+
+    // The exemption is decided from PRIOR evidence only: the reply follows
+    // the bot delivery with no earlier human row, so it renders collapsed.
+    // A later human message must not retroactively expand it (that would
+    // shift the transcript layout under the reader).
+    expect(await screen.findByText(/Replied to/)).toBeTruthy()
+    expect(screen.getByText('show reply')).toBeTruthy()
   })
 })

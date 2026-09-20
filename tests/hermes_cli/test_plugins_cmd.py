@@ -153,18 +153,20 @@ class TestResolveGitExecutable:
             return_value="/resolved/git",
         ):
             with patch.object(pc.subprocess, "run") as run:
-                # `git status --porcelain` (clean tree), `remote get-url origin`, then the pull.
+                # `git config core.autocrlf` (no EOL pin), `git status --porcelain` (clean tree),
+                # `remote get-url origin`, then the pull.
                 run.side_effect = [
+                    MagicMock(returncode=0, stdout="", stderr=""),
                     MagicMock(returncode=0, stdout="", stderr=""),
                     MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),
                     MagicMock(returncode=0, stdout="Already up to date\n", stderr=""),
                 ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
         assert ok is True
-        assert run.call_count == 3
+        assert run.call_count == 4
         for call in run.call_args_list:
             assert call.args[0][0] == "/resolved/git"
-        assert run.call_args_list[2].args[0][1:] == ["pull", "--ff-only"]
+        assert run.call_args_list[3].args[0][1:] == ["pull", "--ff-only"]
 
     def test_git_pull_clean_tree_never_stashes(self, tmp_path):
         import hermes_cli.plugins_cmd as pc
@@ -173,6 +175,7 @@ class TestResolveGitExecutable:
         with patch.object(pc, "_resolve_git_executable", return_value="/g"):
             with patch.object(pc.subprocess, "run") as run:
                 run.side_effect = [
+                    MagicMock(returncode=0, stdout="", stderr=""),      # core.autocrlf probe
                     MagicMock(returncode=0, stdout="", stderr=""),      # status
                     MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),  # remote get-url
                     MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
@@ -222,6 +225,14 @@ class TestGitPullPluginDirAutostash:
         lines = [new_line if ln.startswith(prefix) else ln for ln in lines]
         f.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    @staticmethod
+    def _set_line_crlf(repo, prefix, new_line):
+        """Same edit as ``_set_line``, written with the CRLF bytes a Windows editor emits."""
+        f = repo / "plugin.py"
+        lines = f.read_text(encoding="utf-8").splitlines()
+        lines = [new_line if ln.startswith(prefix) else ln for ln in lines]
+        f.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+
     def test_dirty_checkout_pulls_and_reapplies_local_edit(self, tmp_path):
         import hermes_cli.plugins_cmd as pc
 
@@ -236,6 +247,42 @@ class TestGitPullPluginDirAutostash:
 
         ok, msg = pc._git_pull_plugin_dir(checkout)
         assert ok is True
+        content = (checkout / "plugin.py").read_text(encoding="utf-8")
+        assert "VALUE = 2" in content        # update landed
+        assert "OTHER = 'local'" in content  # local edit survived
+        assert "re-applied" in msg
+        # Clean re-apply drops the autostash entry.
+        assert git(checkout, "stash", "list").strip() == ""
+
+    def test_crlf_checkout_reapplies_local_edit(self, tmp_path, monkeypatch):
+        """A checkout whose git normalizes CRLF keeps its edit through the autostash.
+
+        Internal plugin git calls blank global/system config, which is where Git for Windows
+        sets ``core.autocrlf=true``. Without that default every file in a CRLF checkout read as
+        modified, so the autostash carried whole-file line-ending churn, the re-apply conflicted,
+        and the reset dropped the user's edit from the worktree (kept only in the stash). The
+        test forces the CRLF checkout with its own temp global config, so the regression is
+        covered on every platform.
+        """
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        global_cfg = tmp_path / "global.gitconfig"
+        global_cfg.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_cfg))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+        origin, checkout, git = self._make_repos(tmp_path)
+        assert b"\r\n" in (checkout / "plugin.py").read_bytes()  # sanity: CRLF checkout
+
+        # Upstream changes one line; local edit touches a DIFFERENT line.
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        self._set_line_crlf(checkout, "OTHER", "OTHER = 'local'")
+
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+        assert ok is True, msg
         content = (checkout / "plugin.py").read_text(encoding="utf-8")
         assert "VALUE = 2" in content        # update landed
         assert "OTHER = 'local'" in content  # local edit survived
@@ -414,6 +461,7 @@ class TestCmdUpdate:
         mock_sanitize.return_value = mock_target
 
         mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),        # core.autocrlf probe
             MagicMock(returncode=0, stdout="", stderr=""),        # status: clean
             MagicMock(returncode=0, stdout="git@example.com:x.git", stderr=""),  # remote get-url
             MagicMock(returncode=0, stdout="Updated", stderr=""),  # pull
@@ -421,7 +469,7 @@ class TestCmdUpdate:
 
         cmd_update("test-plugin")
 
-        assert mock_run.call_count == 3
+        assert mock_run.call_count == 4
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

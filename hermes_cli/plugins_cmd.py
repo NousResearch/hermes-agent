@@ -1991,37 +1991,63 @@ def _clear_plugin_bytecode(target: Path) -> int:
 
 def _run_plugin_git(
     git_exe: str, target: Path, *args: str, timeout: int = 60, auth_url: str = "",
+    eol_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess:
     """Run one git command inside a plugin checkout (non-interactive). *auth_url* names the remote
     a network verb talks to; it runs anonymously first and a stored user credential for that host
-    is attached only when the remote refuses anonymous access (private repos)."""
+    is attached only when the remote refuses anonymous access (private repos). *eol_args* pins the
+    checkout's own line-ending policy for verbs that write the worktree; see
+    :func:`_checkout_eol_args`."""
     from hermes_cli.git_credentials import run_git_with_credential_fallback
     return run_git_with_credential_fallback(
-        [git_exe, *args], auth_url, env=noninteractive_git_env(), capture_output=True, text=True,
+        [git_exe, *eol_args, *args], auth_url, env=noninteractive_git_env(), capture_output=True,
+        text=True,
         encoding='utf-8', errors='replace', timeout=timeout, cwd=str(target))
 
 
-def _stash_ref(git_exe: str, target: Path) -> str:
+def _checkout_eol_args(git_exe: str, target: Path) -> tuple[str, ...]:
+    """``-c core.autocrlf=true`` when the checkout's own git normalizes CRLF.
+
+    Internal plugin git calls blank global and system config (``noninteractive_git_env``), and Git
+    for Windows sets ``core.autocrlf=true`` in exactly that system config. Every tracked file in a
+    CRLF checkout then reads as modified: the autostash captures whole-file line-ending churn, the
+    re-apply conflicts against the freshly pulled LF files, and ``_git_pull_plugin_dir`` resets the
+    worktree — the user's edit is left behind only inside the stash. Ask git for the value the
+    user's own commands see (the read ``update_cmd_git._normalize_managed_eol`` already does for
+    the managed checkout) and pin it for this round trip.
+    """
+    try:
+        probe = subprocess.run(
+            [git_exe, "config", "--get", "core.autocrlf"], cwd=str(target),
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    return ("-c", "core.autocrlf=true") if probe.stdout.strip().lower() == "true" else ()
+
+
+def _stash_ref(git_exe: str, target: Path, eol_args: tuple[str, ...] = ()) -> str:
     """Current ``refs/stash`` commit, or empty string when no stash exists."""
-    probe = _run_plugin_git(git_exe, target, "rev-parse", "--verify", "refs/stash")
+    probe = _run_plugin_git(git_exe, target, "rev-parse", "--verify", "refs/stash", eol_args=eol_args)
     return probe.stdout.strip() if probe.returncode == 0 else ""
 
 
-def _reapply_stash(git_exe: str, target: Path) -> bool:
+def _reapply_stash(git_exe: str, target: Path, eol_args: tuple[str, ...] = ()) -> bool:
     """``stash apply`` the autostash; drop it on a clean apply. False when it applied with
     errors or left unmerged paths (the stash entry is kept in that case)."""
-    restore = _run_plugin_git(git_exe, target, "stash", "apply", "stash@{0}")
-    unmerged = _run_plugin_git(git_exe, target, "diff", "--name-only", "--diff-filter=U")
+    restore = _run_plugin_git(git_exe, target, "stash", "apply", "stash@{0}", eol_args=eol_args)
+    unmerged = _run_plugin_git(
+        git_exe, target, "diff", "--name-only", "--diff-filter=U", eol_args=eol_args)
     if restore.returncode != 0 or unmerged.stdout.strip():
         return False
-    _run_plugin_git(git_exe, target, "stash", "drop", "stash@{0}")
+    _run_plugin_git(git_exe, target, "stash", "drop", "stash@{0}", eol_args=eol_args)
     return True
 
 
-def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
+def _autostash_dirty_tree(git_exe: str, target: Path, eol_args: tuple[str, ...] = ()) -> tuple[bool, str]:
     """Stash local edits before a pull. Returns ``(stash_created, error)``; a non-empty error means
     the tree is dirty but nothing was saved, so the pull must not run."""
-    status = _run_plugin_git(git_exe, target, "status", "--porcelain", "-z")
+    status = _run_plugin_git(git_exe, target, "status", "--porcelain", "-z", eol_args=eol_args)
     if status.returncode != 0 or not status.stdout.strip():
         return False, ""
     # `git add -N` entries make `git stash push` fail outright (see update_cmd_stash), so promote them
@@ -2030,11 +2056,12 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
 
     intent_to_add = _intent_to_add_paths(status.stdout)
     if intent_to_add:
-        _run_plugin_git(git_exe, target, "add", "--", *intent_to_add)
-    pre_stash = _stash_ref(git_exe, target)
+        _run_plugin_git(git_exe, target, "add", "--", *intent_to_add, eol_args=eol_args)
+    pre_stash = _stash_ref(git_exe, target, eol_args)
     push = _run_plugin_git(
-        git_exe, target, "stash", "push", "--include-untracked", "-m", "hermes-plugin-update-autostash")
-    post_stash = _stash_ref(git_exe, target)
+        git_exe, target, "stash", "push", "--include-untracked", "-m", "hermes-plugin-update-autostash",
+        eol_args=eol_args)
+    post_stash = _stash_ref(git_exe, target, eol_args)
     if not post_stash or post_stash == pre_stash:
         err = _safe_git_error(push)
         return False, (
@@ -2061,18 +2088,23 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     git_exe = _resolve_git_executable()
     if not git_exe:
         return False, "git is not installed or not in PATH."
+    # One read for the whole round trip: stash, pull and re-apply must all see the same
+    # line-ending policy, or the autostash re-applies as whole-file churn.
+    eol_args = _checkout_eol_args(git_exe, target)
     try:
-        stash_created, err = _autostash_dirty_tree(git_exe, target)
+        stash_created, err = _autostash_dirty_tree(git_exe, target, eol_args)
         if err:
             return False, err
-        origin = _run_plugin_git(git_exe, target, "remote", "get-url", "origin", timeout=15)
-        result = _run_plugin_git(git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip())
+        origin = _run_plugin_git(
+            git_exe, target, "remote", "get-url", "origin", timeout=15, eol_args=eol_args)
+        result = _run_plugin_git(
+            git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip(), eol_args=eol_args)
         if result.returncode != 0:
             err = _safe_git_error(result) or "git pull failed."
             if not stash_created:
                 return False, err
             # Put the user's edits back before reporting the failure.
-            if _reapply_stash(git_exe, target):
+            if _reapply_stash(git_exe, target, eol_args):
                 note = "Local changes were restored."
             else:
                 note = "Local changes are preserved in git stash (restore with: git stash pop)."
@@ -2081,12 +2113,12 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         pulled = result.stdout.strip()
         if not stash_created:
             return True, pulled
-        if _reapply_stash(git_exe, target):
+        if _reapply_stash(git_exe, target, eol_args):
             return True, pulled + "\nLocal changes were re-applied on top of the update."
 
         # Conflicted re-apply: leave the plugin importable on the updated
         # revision; the user's edits stay safe in the stash entry.
-        _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
+        _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD", eol_args=eol_args)
         return True, pulled + (
             "\n⚠ Local changes in this plugin conflicted with the update and "
             "were NOT re-applied. They are preserved in git stash — inspect "

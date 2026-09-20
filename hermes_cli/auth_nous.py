@@ -408,6 +408,9 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
         value = shared.get(key)
         if value not in {None, ""}:
             state[key] = value
+    # The state now carries live shared tokens; a stale quarantine marker
+    # (``relogin_required``) must not coexist with them on disk.
+    state.pop("last_auth_error", None)
     return True
 
 
@@ -665,6 +668,9 @@ def _apply_nous_refreshed_tokens(
     access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
     state["access_token"] = refreshed["access_token"]
     state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
+    # Refresh succeeded: drop any stale quarantine marker so it cannot
+    # coexist with live tokens in auth.json.
+    state.pop("last_auth_error", None)
     state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
     state["scope"] = refreshed.get("scope") or state.get("scope")
     if inference_base_url is not None:

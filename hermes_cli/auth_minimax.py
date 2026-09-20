@@ -261,6 +261,10 @@ def _refresh_minimax_oauth_state(state: Dict[str, Any], *, timeout_seconds: floa
         "refresh_token": payload.get("refresh_token", state["refresh_token"]),
         **_minimax_expiry_fields(payload["expired_in"]),
     }
+    # Refresh succeeded: drop any stale quarantine marker. The pop lives
+    # here, NOT in _minimax_save_auth_state — the quarantine path calls
+    # that helper with the marker it has just written.
+    new_state.pop("last_auth_error", None)
     _minimax_save_auth_state(new_state)
     return new_state
 

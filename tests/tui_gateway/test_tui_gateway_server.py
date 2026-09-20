@@ -13260,7 +13260,7 @@ def test_prompt_submit_places_accepted_steer_before_final_result(monkeypatch):
             }
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
+        def __init__(self, target=None, daemon=None, **_kwargs):
             self._target = target
 
         def start(self):
@@ -13307,6 +13307,26 @@ def test_history_commit_keeps_an_already_ordered_typed_steer_once():
     committed = server._place_accepted_corrections_before_final_result(session, messages)
 
     assert [row["role"] for row in committed] == ["user", "user", "assistant"]
+    assert sum(row.get("display_kind") == "steer" for row in committed) == 1
+
+
+def test_history_commit_drops_stranded_duplicate_of_typed_steer():
+    """A runtime tail-copy must not duplicate its canonical typed steer."""
+    from agent.prompt_builder import steer_user_row
+
+    session = _session()
+    session["inflight_turn"] = {"corrections": ["use the safer approach"]}
+    messages = [
+        {"role": "user", "content": "original task"},
+        steer_user_row("use the safer approach"),
+        {"role": "assistant", "content": "final result"},
+        {"role": "user", "content": "use the safer approach"},
+    ]
+
+    committed = server._place_accepted_corrections_before_final_result(session, messages)
+
+    assert [row["role"] for row in committed] == ["user", "user", "assistant"]
+    assert committed[-1]["content"] == "final result"
     assert sum(row.get("display_kind") == "steer" for row in committed) == 1
 
 

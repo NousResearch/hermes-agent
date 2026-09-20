@@ -299,10 +299,19 @@ def _place_accepted_corrections_before_final_result(session: dict, messages: lis
             index for index in matches
             if isinstance(messages[index], dict) and messages[index].get("display_kind") == "steer"
         ]
-        # A lone untyped match before the result could be the original prompt
-        # with identical wording, not a persisted correction. Canonical steer
-        # rows are typed; duplicate raw matches still let the later one win.
-        existing = stranded or typed or (matches[-1:] if len(matches) > 1 else [])
+        typed_before_final = [index for index in typed if index < final_assistant]
+        # A canonical steer before the result is authoritative.  A same-text
+        # tail row is then a runtime copy of that steer, not another correction.
+        # Drop the copy while moving the canonical row into its final position.
+        if typed_before_final and stranded:
+            used.update(stranded)
+            existing = typed_before_final
+        else:
+            # A lone untyped match before the result could be the original
+            # prompt with identical wording, not a persisted correction.
+            # Canonical steer rows are typed; duplicate raw matches still let
+            # the later one win.
+            existing = stranded or typed or (matches[-1:] if len(matches) > 1 else [])
         if existing:
             index = existing[0]
             used.add(index)

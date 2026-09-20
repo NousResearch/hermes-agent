@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { type EnumeratedWindow, enumerationFailureNote, pickWindowBelow } from './window-below'
+import { type EnumeratedWindow, enumerationFailureNote, pickWindowBelow, resolveOutsideAsar } from './window-below'
 
 const win = (pid: number, x = 0, y = 0, width = 800, height = 600, app = `app-${pid}`): EnumeratedWindow => ({
   app,
@@ -123,6 +123,55 @@ describe('enumerationFailureNote', () => {
 
       expect(note).not.toMatch(/xprop|Wayland/)
       expect(note.length).toBeGreaterThan(0)
+    }
+  })
+
+  // The macOS/Windows note used to be one fixed sentence, so a real report came
+  // back saying only "could not enumerate windows on this system" — the module
+  // failing to load, the helper failing to spawn, and the OS answering with
+  // nothing are three different fixes and all three said that.
+  it('carries the enumerator\u2019s own reason where there is no environmental fork', () => {
+    for (const platform of ['darwin', 'win32']) {
+      expect(enumerationFailureNote(platform, {}, 'the helper failed: spawn EACCES')).toMatch(/spawn EACCES/)
+    }
+  })
+
+  // Linux's notes name the fix (change session type, install xprop); the raw
+  // exception underneath would only bury it.
+  it('keeps the actionable Linux advice instead of the raw reason', () => {
+    const note = enumerationFailureNote('linux', { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }, 'ENOENT')
+
+    expect(note).toMatch(/xprop/)
+    expect(note).not.toMatch(/ENOENT/)
+  })
+})
+
+describe('resolveOutsideAsar', () => {
+  // The helper binary get-windows execs cannot run from inside the archive
+  // (execFile on a path through app.asar fails ENOTDIR), so the import must
+  // land on the unpacked copy electron-builder ships beside it.
+  it('redirects a packaged specifier into app.asar.unpacked', () => {
+    expect(
+      resolveOutsideAsar('file:///Applications/Hermes.app/Contents/Resources/app.asar/dist/node_modules/get-windows/index.js')
+    ).toBe('file:///Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/node_modules/get-windows/index.js')
+  })
+
+  // The staged specifier is built with path.join, so on Windows the archive
+  // segment is delimited by backslashes, not the slashes a file: URL has.
+  it('redirects a Windows packaged path built with backslashes', () => {
+    expect(resolveOutsideAsar('C:\\Users\\me\\AppData\\Local\\Hermes\\resources\\app.asar\\dist\\node_modules\\get-windows\\index.js')).toBe(
+      'C:\\Users\\me\\AppData\\Local\\Hermes\\resources\\app.asar.unpacked\\dist\\node_modules\\get-windows\\index.js'
+    )
+  })
+
+  // Only the exact archive segment counts — a directory that merely starts
+  // with the name must not be rewritten, and a dev tree has nothing to rewrite.
+  it('requires app.asar to be a complete path segment', () => {
+    for (const untouched of [
+      'file:///opt/app.asar-tools/node_modules/get-windows/index.js',
+      'file:///Users/dev/hermes-agent/node_modules/get-windows/index.js'
+    ]) {
+      expect(resolveOutsideAsar(untouched)).toBe(untouched)
     }
   })
 })

@@ -15,13 +15,13 @@ Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity/google-workspace` |
+| Path | `skills/productivity\google-workspace` |
 | Version | `1.2.0` |
 | Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Google`, `Gmail`, `Calendar`, `Drive`, `Sheets`, `Docs`, `Contacts`, `Email`, `OAuth` |
-| Related skills | [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) |
+| Related skills | [`himalaya`](../email/email-himalaya.md) |
 
 ## Reference: full SKILL.md
 

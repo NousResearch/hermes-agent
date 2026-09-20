@@ -2,39 +2,21 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { EnvVarInfo } from '@/types/hermes'
+import { stubResizeObserver } from '@/test/jsdom'
+
+import { envVar } from './test-utils'
 
 const getEnvVars = vi.fn()
 
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
+stubResizeObserver()
 
 vi.mock('@/hermes', () => ({
   deleteEnvVar: vi.fn(),
-  getEnvVars: () => getEnvVars(),
+  getEnvVars: (profile?: null | string) => getEnvVars(profile),
   revealEnvVar: vi.fn(),
   setApiRequestProfile: () => undefined,
   setEnvVar: vi.fn()
 }))
-
-function envVar(category: string, patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
-  return {
-    advanced: false,
-    category,
-    description: '',
-    is_password: true,
-    is_set: false,
-    redacted_value: null,
-    tools: [],
-    url: '',
-    ...patch
-  }
-}
 
 beforeEach(() => {
   getEnvVars.mockResolvedValue({})
@@ -72,6 +54,15 @@ function DeepLinkButton({ target }: { target: string }) {
 }
 
 describe('KeysSettings', () => {
+  it('fetches env vars for the active profile (undefined, never null) when unscoped', async () => {
+    // #90549 class: getEnvVars(null) targets the primary profile's env store,
+    // so a non-default profile's Keys page would read (and edit) the wrong
+    // profile. Unscoped must send undefined so the active profile applies.
+    await renderKeysSettings('tools')
+
+    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith(undefined))
+  })
+
   it('lists tools and excludes settings / channel-managed credentials', async () => {
     getEnvVars.mockResolvedValue({
       BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search the web with Brave.' }),
@@ -134,5 +125,56 @@ describe('KeysSettings', () => {
       expect(target?.classList).toContain('setting-field-highlight')
     })
     expect(screen.getByText('Crawl and extract websites.')).toBeTruthy()
+  })
+
+  it('drops an unsaved credential edit when the settings target switches profile', async () => {
+    // Regression: `vars` is re-fetched when the shared "Applies to" target
+    // changes, but the in-flight edit map was not reset with it. A value typed
+    // while targeting profile-b survived the switch to profile-c, where the
+    // still-live Save would persist it into the WRONG profile.
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+
+    $settingsScopeOverride.set('profile-b')
+    getEnvVars.mockResolvedValue({
+      WIDGET_API_KEY: envVar('tool', { description: 'Widget key.', is_set: true, redacted_value: '••••••' })
+    })
+
+    try {
+      const { KeysSettings } = await import('./keys-settings')
+
+      const { container } = render(
+        <MemoryRouter initialEntries={['/settings']}>
+          <KeysSettings view="tools" />
+        </MemoryRouter>
+      )
+
+      expect(await screen.findByText('WIDGET')).toBeTruthy()
+      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('profile-b'))
+
+      // Open the field and type a value without saving it.
+      fireEvent.focus(container.querySelector('input[readonly]') as HTMLInputElement)
+      fireEvent.change(container.querySelector('input[type="password"]') as HTMLInputElement, {
+        target: { value: 'typed-secret' }
+      })
+
+      expect(screen.getByDisplayValue('typed-secret')).toBeTruthy()
+
+      // Re-target Settings at another profile. This is where the leak
+      // manifested: the draft stayed live, so the (still-rendered) Save would
+      // dispatch it through setEnvVar against the NEW target.
+      await act(async () => {
+        $settingsScopeOverride.set('profile-c')
+      })
+      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('profile-c'))
+
+      // The draft belonged to the previous target: it is gone, and so is the
+      // Save control that would have dispatched it — no path is left that can
+      // write the stale value into the profile now being targeted.
+      expect(screen.queryByDisplayValue('typed-secret')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+    } finally {
+      cleanup()
+      $settingsScopeOverride.set(null)
+    }
   })
 })

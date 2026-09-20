@@ -15,13 +15,13 @@ Build auditable financial workbooks headless via openpyxl.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/excel-author` |
-| Path | `optional-skills/finance/excel-author` |
+| Path | `optional-skills/finance\excel-author` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `excel`, `openpyxl`, `finance`, `spreadsheet`, `modeling` |
-| Related skills | [`xlsx`](/docs/user-guide/skills/bundled/productivity/productivity-xlsx), [`pptx-author`](/docs/user-guide/skills/optional/finance/finance-pptx-author), [`dcf-model`](/docs/user-guide/skills/optional/finance/finance-dcf-model), [`comps-analysis`](/docs/user-guide/skills/optional/finance/finance-comps-analysis), [`lbo-model`](/docs/user-guide/skills/optional/finance/finance-lbo-model), [`3-statement-model`](/docs/user-guide/skills/optional/finance/finance-3-statement-model) |
+| Related skills | [`xlsx`](../../bundled/productivity/productivity-xlsx.md), [`pptx-author`](./finance-pptx-author.md), [`dcf-model`](./finance-dcf-model.md), [`comps-analysis`](./finance-comps-analysis.md), [`lbo-model`](./finance-lbo-model.md), [`3-statement-model`](./finance-3-statement-model.md) |
 
 ## Reference: full SKILL.md
 

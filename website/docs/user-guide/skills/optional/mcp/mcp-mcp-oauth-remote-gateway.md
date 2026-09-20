@@ -15,13 +15,13 @@ Manual OAuth for remote MCP servers on headless gateways.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mcp/mcp-oauth-remote-gateway` |
-| Path | `optional-skills/mcp/mcp-oauth-remote-gateway` |
+| Path | `optional-skills/mcp\mcp-oauth-remote-gateway` |
 | Version | `1.0.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `MCP`, `OAuth`, `PKCE`, `Remote-Deployment` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter), [`fastmcp`](/docs/user-guide/skills/optional/mcp/mcp-fastmcp) |
+| Related skills | [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md), [`mcporter`](./mcp-mcporter.md), [`fastmcp`](./mcp-fastmcp.md) |
 
 ## Reference: full SKILL.md
 
@@ -229,7 +229,7 @@ non-empty array AND/OR the resource metadata declares specific scopes. If
 default set on its own. Fabricating scope strings against an empty
 `scopes_supported` can cause `invalid_scope` errors on some ASes.
 
-**Stash `code_verifier` and `state` to disk** (e.g. `/tmp/.mcp-oauth-work/<server>.json`,
+**Stash `code_verifier` and `state` to disk** (e.g. `~/.hermes/cache/scratch/.mcp-oauth-work/<server>.json`,
 0600 perms). You need them for step 7, possibly across multiple chat turns.
 
 ### 6. Give the user the authorize URL
@@ -362,7 +362,7 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 12. **Never hand-type the redirect URL for the user to open.** Generate the authorize URL programmatically with `urllib.parse.urlencode()`. Spaces in scopes and special chars in `state` break string-concatenated URLs.
 
-13. **Security: the stash file contains the `code_verifier`.** Delete `/tmp/.mcp-oauth-work/<server>.json` immediately after successful token exchange. There's no reason to keep a proof-of-identity secret around once it's consumed.
+13. **Security: the stash file contains the `code_verifier`.** Delete `~/.hermes/cache/scratch/.mcp-oauth-work/<server>.json` immediately after successful token exchange. There's no reason to keep a proof-of-identity secret around once it's consumed.
 
 14. **Write what the token endpoint actually returned.** The AS may grant a narrower (or wider) scope than requested. Write the `scope` from the token-exchange response to `<server>.json`, not what you asked for in step 5. When `scopes_supported: []`, the explicit scope list you send IS authoritative both ways: some servers grant exactly what you list (pass narrow scopes for least-privilege, or enumerate the full set if the user needs everything), and some won't echo the granted scope back at registration time — only the token-exchange response is authoritative.
 

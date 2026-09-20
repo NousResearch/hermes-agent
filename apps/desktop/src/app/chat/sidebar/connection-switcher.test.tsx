@@ -40,6 +40,11 @@ vi.mock('@/store/boot', () => ({
   })
 }))
 
+vi.mock('@/store/windows', () => ({
+  isAuxiliaryWindow: vi.fn(() => false),
+  isPeerInstanceWindow: vi.fn(() => false)
+}))
+
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
@@ -65,6 +70,7 @@ vi.mock('@/i18n', () => ({
 
 const connectionStore = await import('@/store/connections')
 const bootStore = await import('@/store/boot')
+const windowStore = await import('@/store/windows')
 const $activeConnectionId = connectionStore.$activeConnectionId as ReturnType<typeof atom<null | string>>
 const $connectionsRegistry = connectionStore.$connectionsRegistry
 const $desktopBoot = bootStore.$desktopBoot
@@ -72,6 +78,8 @@ const $pendingConnectionId = connectionStore.$pendingConnectionId
 const initializeConnectionsRegistry = vi.mocked(connectionStore.initializeConnectionsRegistry)
 const refreshConnectionsRegistry = vi.mocked(connectionStore.refreshConnectionsRegistry)
 const selectConnection = vi.mocked(connectionStore.selectConnection)
+const isAuxiliaryWindow = vi.mocked(windowStore.isAuxiliaryWindow)
+const isPeerInstanceWindow = vi.mocked(windowStore.isPeerInstanceWindow)
 const onConnect = vi.fn()
 
 const connection = (id: string, label: string, kind: 'local' | 'remote' = 'remote') => ({
@@ -106,6 +114,8 @@ afterEach(() => {
   })
   $pendingConnectionId.set(null)
   $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+  isAuxiliaryWindow.mockReturnValue(false)
+  isPeerInstanceWindow.mockReturnValue(false)
 })
 
 describe('ConnectionSwitcher', () => {
@@ -125,6 +135,38 @@ describe('ConnectionSwitcher', () => {
     })
 
     await waitFor(() => expect(initializeConnectionsRegistry).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps a full peer on the shared backend instead of replaying app-launch source restoration', async () => {
+    isPeerInstanceWindow.mockReturnValue(true)
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      phase: 'renderer.ready',
+      progress: 100,
+      running: false,
+      visible: false
+    })
+
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    await waitFor(() => expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(1))
+    expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
+  })
+
+  it('keeps a secondary session window from replaying app-launch source restoration', async () => {
+    isAuxiliaryWindow.mockReturnValue(true)
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      phase: 'renderer.ready',
+      progress: 100,
+      running: false,
+      visible: false
+    })
+
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    await waitFor(() => expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(1))
+    expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
   })
 
   it('adds no source chrome for a local-only setup', () => {
@@ -319,5 +361,81 @@ describe('ConnectionSwitcher', () => {
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
     expect(screen.getByRole('group', { name: 'Registered gateways' }).getAttribute('aria-busy')).toBe('true')
+  })
+
+  // #95393: connections.save succeeded but the switcher kept painting the
+  // stale registry until reload. Mirrors the live repro (w2_95393.py): open
+  // the menu, save a new connection via the bridge, re-open the menu WITHOUT
+  // reload — the new row must be there. Electron now pushes a 'saved'
+  // onChanged for every successful save; the switcher's listener re-pulls the
+  // snapshot.
+  it('repaints the menu after a connections.save without reload (#95393)', async () => {
+    const before = registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')])
+
+    const after = registry([
+      connection('local', 'This device', 'local'),
+      connection('homelab', 'Homelab'),
+      connection('w2-probe', 'W2Probe')
+    ])
+
+    $connectionsRegistry.set(before)
+
+    let onChangedCallback: ((payload: { connectionId: string; reason: string }) => void) | null = null
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      connections: {
+        list: vi.fn(async () => after),
+        onChanged: vi.fn((callback: (payload: { connectionId: string; reason: string }) => void) => {
+          onChangedCallback = callback
+
+          return () => {
+            onChangedCallback = null
+          }
+        })
+      }
+    }
+
+    // The real refreshConnectionsRegistry re-pulls list() and republishes the
+    // atom; the mock mirrors exactly that seam against Electron's current
+    // registry state (before the save, then after it).
+    let electronRegistry = before
+
+    refreshConnectionsRegistry.mockImplementation(async () => {
+      $connectionsRegistry.set(electronRegistry)
+
+      return electronRegistry
+    })
+
+    try {
+      render(<ConnectionSwitcher onConnect={onConnect} />)
+
+      const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
+
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      expect(screen.queryByRole('menuitemradio', { name: 'W2Probe' })).toBeNull()
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      // The save lands in Electron's registry…
+      electronRegistry = after
+      // …and Electron's post-save push (reason 'saved' — no dial change) is
+      // the ONLY signal this window gets. Pre-fix, save never emitted it.
+      expect(onChangedCallback).not.toBeNull()
+      ;(onChangedCallback as unknown as (payload: { connectionId: string; reason: string }) => void)({
+        connectionId: 'w2-probe',
+        reason: 'saved'
+      })
+
+      await waitFor(() => expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(2))
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: This device' }), {
+        button: 0,
+        pointerType: 'mouse'
+      })
+      expect(screen.getByRole('menuitemradio', { name: 'W2Probe' })).toBeTruthy()
+    } finally {
+      refreshConnectionsRegistry.mockReset()
+      refreshConnectionsRegistry.mockResolvedValue(null)
+      delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    }
   })
 })

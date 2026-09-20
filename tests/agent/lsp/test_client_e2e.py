@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent.lsp.client import LSPClient
+from agent.lsp.protocol import LSPProtocolError
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -35,7 +36,7 @@ def _client(workspace: Path, script: str = "clean") -> LSPClient:
 async def test_client_lifecycle_clean(tmp_path: Path):
     """Full lifecycle: spawn, initialize, open, get clean diagnostics, shutdown."""
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "clean")
     await client.start()
@@ -54,7 +55,7 @@ async def test_client_lifecycle_clean(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_client_receives_published_errors(tmp_path: Path):
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "errors")
     await client.start()
@@ -72,9 +73,111 @@ async def test_client_receives_published_errors(tmp_path: Path):
         await client.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_reader_exit_at_end_of_initialization_retires_client(tmp_path: Path):
+    client = _client(tmp_path, "crash")
+
+    try:
+        await client.start()
+    except LSPProtocolError:
+        pass
+    else:
+        reader_task = client._reader_task
+        if reader_task is not None:
+            await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
+
+    assert client.state == "error"
+    assert not client.is_running
+    assert client._proc is None
+    await client.shutdown()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script", ["clean_eof", "malformed_frame"])
+async def test_reader_failure_retires_client_and_rejects_later_work(
+    tmp_path: Path, script: str
+):
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+
+    client = _client(tmp_path, script)
+    await client.start()
+    proc = client._proc
+    reader_task = client._reader_task
+    assert proc is not None
+    assert reader_task is not None
+    try:
+        version = await client.open_file(str(f), language_id="python")
+        await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
+
+        assert not client.is_running
+        await asyncio.wait_for(proc.wait(), timeout=3.0)
+        with pytest.raises(LSPProtocolError):
+            await asyncio.wait_for(
+                client.wait_for_diagnostics(str(f), version, timeout=3.0),
+                timeout=0.5,
+            )
+        with pytest.raises(LSPProtocolError):
+            await asyncio.wait_for(
+                client.open_file(str(f), language_id="python"),
+                timeout=0.5,
+            )
+    finally:
+        await client.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_shutdown_never_signals_a_server_that_honours_exit(tmp_path: Path):
+    """A server that exits on the protocol ``exit`` must not be SIGTERMed on top of it (#72944:
+    on Darwin the reaped PID can already belong to another process)."""
+    client = _client(tmp_path, "clean")
+    await client.start()
+    proc = client._proc
+    assert proc is not None
+    signals: list[str] = []
+    real_terminate, real_kill = proc.terminate, proc.kill
+    proc.terminate = lambda: (signals.append("terminate"), real_terminate())  # type: ignore[method-assign]
+    proc.kill = lambda: (signals.append("kill"), real_kill())  # type: ignore[method-assign]
+
+    await client.shutdown()
+
+    assert signals == []
+    assert proc.returncode == 0
 
 
+@pytest.mark.asyncio
+async def test_docs_cache_is_lru_bounded_and_reopens_evicted(tmp_path: Path, monkeypatch):
+    """`_docs` never exceeds MAX_TRACKED_FILES; an evicted file is didClose'd and re-didOpen'ed
+    (version 0) with diagnostics flowing again, so the cap is invisible to callers."""
+    import agent.lsp.client as client_mod
+
+    monkeypatch.setattr(client_mod, "MAX_TRACKED_FILES", 3)
+    files = [tmp_path / f"f{i}.py" for i in range(5)]
+    for f in files:
+        f.write_text("print('hi')\n", encoding="utf-8")
+
+    client = _client(tmp_path, "errors")
+    real_send = client._send_notification
+    sent: list = []
+
+    async def _spy(method, params):
+        sent.append((method, params))
+        await real_send(method, params)
+
+    monkeypatch.setattr(client, "_send_notification", _spy)
+    await client.start()
+    try:
+        for f in files:
+            await client.open_file(str(f), language_id="python")
+        assert len(client._docs) == 3
+        assert str(files[0]) not in client._docs  # least recently touched went first
+        # The server releases its mirror too: every evicted doc got a didClose on the wire.
+        closed = [p["textDocument"]["uri"] for m, p in sent if m == "textDocument/didClose"]
+        assert closed == [client_mod.file_uri(str(files[0])), client_mod.file_uri(str(files[1]))]
+        version = await client.open_file(str(files[0]), language_id="python")
+        assert version == 0  # fresh didOpen, not a didChange against dropped state
+        assert len(client._docs) == 3
+        await client.wait_for_diagnostics(str(files[0]), version, mode="document")
+        assert client.diagnostics_for(str(files[0]))
+    finally:
+        await client.shutdown()

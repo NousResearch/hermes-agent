@@ -15,13 +15,13 @@ Debug Python: pdb REPL + debugpy remote (DAP).
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/python-debugpy` |
+| Path | `skills/software-development\python-debugpy` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `debugging`, `python`, `pdb`, `debugpy`, `breakpoints`, `dap`, `post-mortem` |
-| Related skills | [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging), [`node-inspect-debugger`](/docs/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger) |
+| Related skills | [`systematic-debugging`](./software-development-systematic-debugging.md), [`node-inspect-debugger`](./software-development-node-inspect-debugger.md) |
 
 ## Reference: full SKILL.md
 
@@ -218,7 +218,7 @@ The easiest terminal-side DAP client is VS Code CLI or a small script. From insi
 **Option 1: `debugpy`'s own CLI REPL** — not an official feature, but a tiny DAP client script:
 
 ```python
-# /tmp/dap_client.py
+# ~/.hermes/cache/scratch/dap_client.py
 import socket, json, itertools, time, sys
 
 HOST, PORT = "127.0.0.1", 5678

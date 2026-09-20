@@ -29,6 +29,7 @@ from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
+from agent.llm_concurrency import provider_request_slot
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -720,6 +721,8 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     kind=...)`` builds the per-request client (``"openai"`` / ``"anthropic_messages"``)
     so callers can register it with their abort/close machinery; bedrock / MoA
     manage their own clients. Interrupt/abort/close semantics stay in callers.
+    Callers hold the provider concurrency permit (#109889) — see
+    ``interruptible_api_call`` / ``direct_api_call``.
     """
     if agent.api_mode == "codex_responses":
         return agent._run_codex_stream(api_kwargs, client=make_client("codex_stream_request"),
@@ -953,6 +956,15 @@ class _InlineRequest:
 
 
 def direct_api_call(agent, api_kwargs: dict):
+    """Queue for the provider concurrency permit (#109889) — BEFORE the request's
+    stale watchdog and ``call_start`` are armed, because waiting locally for a slot is
+    not provider staleness. Then run the call itself (see ``_direct_api_call_inline``)."""
+    _check_stale_giveup(agent)
+    with provider_request_slot(agent.provider):
+        return _direct_api_call_inline(agent, api_kwargs)
+
+
+def _direct_api_call_inline(agent, api_kwargs: dict):
     """Run a non-streaming LLM call inline on the conversation thread (cron turns,
     delegated children — see ``should_use_direct_api_call``): no interrupt worker,
     so the nested-pool deadlock cannot occur. An activity heartbeat keeps
@@ -961,7 +973,6 @@ def direct_api_call(agent, api_kwargs: dict):
     aborts in-flight sockets via the registered hook, and a per-call ``timeout``
     equal to the stale budget is the backstop when the abort finds nothing (#85252).
     Both surface a retryable ``TimeoutError`` for the outer retry loop."""
-    _check_stale_giveup(agent)
     agent._touch_activity("waiting for non-streaming API response")
     # Resolve the budget BEFORE the heartbeat starts: the resolver may raise
     # (fail-closed), and a leaked heartbeat thread would mask real stalls forever.
@@ -1231,7 +1242,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
     without waiting for the full HTTP round-trip. Each worker gets its own
     per-request client (interrupts close only that one); a stale-call detector
     kills the connection and raises so the main retry loop can back off / rotate
-    credentials / fall back."""
+    credentials / fall back.
+    Provider concurrency gate (#109889): the permit is taken before the worker and its
+    stale watchdog start, so a local wait for a provider slot is not provider staleness."""
     # Nested-pool contexts (cron, delegated children) wedge on a worker thread
     # (#62151): run inline. See should_use_direct_api_call.
     if should_use_direct_api_call(agent):
@@ -1239,7 +1252,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
     _check_stale_giveup(agent)  # cross-turn stale breaker (#58962), non-streaming sibling
     from agent.chat_completion_nonstream import _NonStreamRequest
 
-    return _NonStreamRequest(agent, api_kwargs).run()
+    with provider_request_slot(agent.provider):
+        return _NonStreamRequest(agent, api_kwargs).run()
 
 
 def _consume_ephemeral_reasoning_off(agent) -> bool:
@@ -2185,13 +2199,14 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
 
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
     from agent import relay_llm
-    return relay_llm.execute_current(
-        request, callback,
-        name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
-        metadata={"api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
-            "api_request_id": api_request_id, "call_role": "iteration_summary", "retry_count": retry_count},
-        defer_logical_completion=True,
-    )
+    with provider_request_slot(getattr(agent, "provider", "")):
+        return relay_llm.execute_current(
+            request, callback,
+            name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
+            metadata={"api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
+                "api_request_id": api_request_id, "call_role": "iteration_summary", "retry_count": retry_count},
+            defer_logical_completion=True,
+        )
 
 
 def _summary_text(agent, response, **normalize_kwargs) -> str:
@@ -3723,16 +3738,22 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     """Streaming variant of _interruptible_api_call: fires the delta callbacks per
     text token (tool-call turns suppress them) and returns a SimpleNamespace in
     the non-streaming response shape. codex_responses delegates to the already-
-    streaming codex runner; cron turns and delegated children run inline."""
+    streaming codex runner; cron turns and delegated children run inline.
+    Provider concurrency gate (#109889): the permit is held for the WHOLE call —
+    every runner below returns only once its provider stream is consumed or dead,
+    so a queued request cannot open while this one is still streaming."""
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
-    if agent.api_mode == "codex_responses":
-        return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
-    if agent.api_mode == "bedrock_converse":
-        return _BedrockStream(agent, api_kwargs, on_first_delta).run()
-    # Cross-turn stale-stream circuit breaker (see ``_stale_streak()``).
-    _check_stale_giveup(agent)
-    return _StreamingCall(agent, api_kwargs, on_first_delta).run()
+    with provider_request_slot(agent.provider):
+        if agent._interrupt_requested:  # interrupt while queued for a permit
+            raise InterruptedError("Agent interrupted while queued for streaming API call")
+        if agent.api_mode == "codex_responses":
+            return _stream_codex_passthrough(agent, api_kwargs, on_first_delta)
+        if agent.api_mode == "bedrock_converse":
+            return _BedrockStream(agent, api_kwargs, on_first_delta).run()
+        # Cross-turn stale-stream circuit breaker (see ``_stale_streak()``).
+        _check_stale_giveup(agent)
+        return _StreamingCall(agent, api_kwargs, on_first_delta).run()
 
 
 __all__ = ["interruptible_api_call", "build_api_kwargs", "build_assistant_message", "try_activate_fallback",

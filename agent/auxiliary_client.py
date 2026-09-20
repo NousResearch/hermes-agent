@@ -40,6 +40,12 @@ from agent.codex_headers import (
     is_official_codex_base_url as _is_official_codex_base_url,
 )
 from agent.codex_runtime import _codex_event_has_content
+from agent.llm_concurrency import (
+    acquire_provider_permit,
+    async_provider_request_slot,
+    provider_request_slot,
+    release_permit_when_stream_ends,
+)
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -2593,17 +2599,21 @@ def _relay_sync_completion(
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
     callback = create or (lambda request: _create_with_progress(client, request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    # Isolate only the provider callback so the owning thread can unwind its lease/DB
-    # transaction on hard cancel without touching the shared client.
-    if route is None:
-        return _run_protected_sync_provider_call(callback, kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-    return relay_llm.execute_current(
-        kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-        name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata, defer_logical_completion=True,
-    )
+    # Provider concurrency gate (#109889): every auxiliary attempt — primary, same-provider
+    # retry, and each fallback rung — funnels through here, so a configured
+    # providers.<id>.max_in_flight applies to short aux calls too, not just main turns.
+    with provider_request_slot(provider):
+        # Isolate only the provider callback so the owning thread can unwind its lease/DB
+        # transaction on hard cancel without touching the shared client.
+        if route is None:
+            return _run_protected_sync_provider_call(callback, kwargs)
+        provider_name, fallback_model, metadata = route
+        from agent import relay_llm
+        return relay_llm.execute_current(
+            kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+            name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
+            metadata=metadata, defer_logical_completion=True,
+        )
 
 
 async def _relay_async_completion(
@@ -2616,14 +2626,17 @@ async def _relay_async_completion(
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    if route is None:
-        return await callback(kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-    return await relay_llm.execute_current_async(
-        kwargs, callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata, defer_logical_completion=True,
-    )
+    # Provider concurrency gate (#109889), async twin: waiting here suspends the task,
+    # it never blocks the loop, and cancellation while queued strands no permit.
+    async with async_provider_request_slot(provider):
+        if route is None:
+            return await callback(kwargs)
+        provider_name, fallback_model, metadata = route
+        from agent import relay_llm
+        return await relay_llm.execute_current_async(
+            kwargs, callback, name=provider_name, model_name=str(kwargs.get("model") or fallback_model),
+            metadata=metadata, defer_logical_completion=True,
+        )
 
 
 def _relay_sync_stream(
@@ -7897,11 +7910,29 @@ def _call_llm_impl(
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
-        if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
-            # Responses-shim clients consume the stream internally and return a completed
-            # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
-            return client.chat.completions.create(**kwargs)
-        return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
+        # Provider concurrency gate (#109889): the permit must outlive this call — the caller
+        # consumes the returned stream — so it is released by the wrapper as soon as the stream
+        # is exhausted or abandoned. A failure to even open the stream releases it inline.
+        permit = acquire_provider_permit(request_provider)
+        try:
+            if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
+                # Responses-shim clients consume the stream internally and return a completed
+                # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
+                opened = client.chat.completions.create(**kwargs)
+            else:
+                opened = _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
+        except BaseException:
+            if permit is not None:
+                permit.release()
+            raise
+        if permit is None or hasattr(opened, "choices"):
+            # No gate, or a shim handed back a COMPLETED response despite stream=True
+            # (MoA quiet mode, defensive adapters) — nothing to consume: release now and
+            # return it unchanged rather than wrapping it in a generator.
+            if permit is not None:
+                permit.release()
+            return opened
+        return release_permit_when_stream_ends(opened, permit)
 
     def _primary(**validate_kw: Any) -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /

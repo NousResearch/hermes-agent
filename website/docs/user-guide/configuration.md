@@ -162,6 +162,10 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+### Provider Concurrency
+
+`providers.<id>.max_in_flight` caps how many requests to that provider may be in flight at once, process-wide. It covers the main agent loop (streaming and non-streaming), subagents, and auxiliary/compression/relay calls, on both the sync and async paths; a streaming request holds its slot until the stream ends. Set it to `1` when the provider/account only accepts one concurrent request: the extra agents wait in-process instead of colliding into HTTP 429s and retry storms. All models pointing at that provider share the same budget, and leaving it unset (the default) disables the gate entirely.
+
 ## Update Behavior
 
 ### Background checks

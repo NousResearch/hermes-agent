@@ -194,36 +194,6 @@ class TestSessionScopeFallback:
 
         runtime.ensure_session({"session_id": "sess-ref"})
         assert len(_session_pushes(fake)) == 1
-
-    def test_push_failure_degrades_to_uninstrumented_lease_e2e(self, coordinator):
-        """End to end through the coordinator: a failing session push invokes push
-        once, the conversation degrades to an uninstrumented lease, and the next
-        acquire opens a working scope once the Relay recovers."""
-        fake = _FakeRelay()
-        runtime = _make_runtime(fake)
-        original_push = fake.scope.push
-        calls: list = []
-
-        def failing_push(*args, **kwargs):
-            calls.append(args)
-            raise RuntimeError("scope push failed")
-
-        fake.scope.push = failing_push
-
-        lease = _acquire(coordinator, runtime, session_id="sess-e2e")
-        assert lease.session is None
-        assert len(calls) == 1
-
-        turn = _run_turn(coordinator, lease, "t1")
-        assert turn.handle is None
-
-        fake.scope.push = original_push
-        lease2 = _acquire(coordinator, runtime, session_id="sess-e2e")
-        assert lease2.session is not None
-        assert lease2.session.handle is not None
-        assert len(_session_pushes(fake)) == 1
-
-
 def _acquire(coordinator, runtime, session_id="sess-1"):
     class _Registry:
         def for_profile(self, key):

@@ -2614,3 +2614,35 @@ def test_skill_lifecycle_does_not_fallback_across_an_explicit_session(
         for event in direct_runtime.events
         if event[0] == "scope.event" and event[1] == "hermes.skill.lifecycle"
     ] == []
+
+
+def test_real_binding_concurrent_task_close_skips_pop_under_sibling_scope(
+    real_binding_runtime, caplog,
+):
+    """Two concurrent turns in one session open two task scopes on the same physical
+    stack; finishing the LOWER one first must not raise "scope handle is not at the top
+    of the stack" (#115471) nor pop the sibling's live scope. The orphan is reclaimed by
+    the session-close drain, so both scopes are gone after the session ends."""
+    event = {"session_id": "shared-session", "task_id": "task-A", "turn_id": "turn-A", "platform": "cli"}
+    lifecycle.invoke_hook("on_session_start", **event)
+    relay_shared_metrics.start_task_run(session_id="shared-session", task_id="task-A", platform="cli")
+    relay_shared_metrics.start_task_run(session_id="shared-session", task_id="task-B", platform="cli")
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    session = runtime._session(event)
+    task_b_handle = session.tasks["task-B"].handle
+
+    with caplog.at_level("WARNING"):
+        relay_shared_metrics.finish_task_run(
+            session_id="shared-session", task_id="task-A", platform="cli", result={"ok": True},
+        )
+
+    assert not [r for r in caplog.records if "task close failed" in r.getMessage()], caplog.text
+    # Task B's live scope is still the top: the sibling was not popped through.
+    assert relay_runtime._same_handle(relay_runtime._current_top(runtime.relay), task_b_handle)
+
+    relay_shared_metrics.finish_task_run(
+        session_id="shared-session", task_id="task-B", platform="cli", result={"ok": True},
+    )
+    lifecycle.invoke_hook("on_session_end", **event)
+    assert "task close failed" not in caplog.text

@@ -28,6 +28,7 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
+read_raw_config = late("read_raw_config", "hermes_cli.config")
 
 
 _EMPTY_MODEL_INFO: dict = {
@@ -242,7 +243,6 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
         # desktop's debounced PUT /api/config autosave races it, so the whole
         # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
         with config_write_scope(body.profile or profile):
-            cfg = load_config()
             if body.presets:
                 raw = {
                     "default_preset": body.default_preset,
@@ -261,14 +261,18 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             if problems:
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
             normalized = normalize_moa_config(raw)
-            # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
-            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
-            # every other section too, so a Desktop MoA autosave could wipe a chain another
-            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
-            moa_section = dict(cfg.get("moa") or {})
+
+            # Read the raw profile file because the effective config contains defaults and
+            # ``merge_existing=True`` deep-merges dicts, which resurrects omitted preset names.
+            # Keep unknown MoA keys and sibling sections by rebuilding only the MoA section on
+            # the raw document, while treating the submitted named map as authoritative.
+            raw_cfg = read_raw_config()
+            moa_section = dict(raw_cfg.get("moa") or {})
             moa_section.update(normalized)
-            save_config({"moa": moa_section}, merge_existing=True)
+            if body.presets:
+                moa_section["presets"] = normalized["presets"]
+            raw_cfg["moa"] = moa_section
+            save_config(raw_cfg)
             return {"ok": True, **normalized}
 
 

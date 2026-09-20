@@ -1152,37 +1152,64 @@ export function KanbanBoardPage() {
   // selected board, whose cards would take the drags, drops and edits meant
   // for the requested one — and issues no board fetch. Known slug: selected
   // (the switcher's '' = server-current convention), request consumed. Unknown
-  // slug: the operator's own selection stands, with a toast. Board list
-  // REJECTED with nothing cached: the request stays pending — still nothing
-  // actionable — and the failure is shown with Retry / Cancel; only a
-  // successful retry resolves it, only Cancel hands the page back to the
-  // operator's own board. Consumed once, so a later manual switch is never
+  // slug: the operator's own selection stands, with a toast. The check is a
+  // FRESH fetch of the list for this very request — cached data proves
+  // nothing — and if it rejects the request stays pending (still nothing
+  // actionable) behind the failure with Retry / Cancel; only a successful
+  // retry resolves it, only Cancel hands the page back to the operator's own
+  // board. Consumed once, so a later manual switch is never
   // undone; a fresh request per command, so re-running it after that switch
   // enters again.
   const request = useValue($boardRequest)
   const boardsQuery = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
   const boards = boardsQuery.data
   const resolving = request !== null
-  const validationFailed = resolving && !boards && boardsQuery.isError && !boardsQuery.isFetching
-  const validationError = validationFailed ? errText(boardsQuery.error) : null
+  // The validation outcome for ONE request (by seq), and the operator's retries.
+  const [validation, setValidation] = useState<null | { error: string; seq: number }>(null)
+  const [attempt, setAttempt] = useState(0)
+  const validationError = request && validation?.seq === request.seq ? validation.error : null
 
   useEffect(() => {
-    if (!request || !boards) {
+    if (!request) {
       return
     }
 
-    if (boards.boards.some(meta => meta.slug === request.slug)) {
-      const next = request.slug === boards.current ? '' : request.slug
+    let superseded = false
 
-      if ($boardSlug.get() !== next) {
-        $boardSlug.set(next)
+    // A fresh list for this request, never merely cached data: the cache may
+    // name a board that is gone, and a refetch already in flight may be about
+    // to fail. staleTime 0 forces the fetch (deduped onto one in flight), and
+    // the promise rejects on failure instead of leaving an error beside stale
+    // data. A cancelled or replaced request ignores its answer.
+    qc.fetchQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 0 }).then(
+      list => {
+        if (superseded) {
+          return
+        }
+
+        if (list.boards.some(meta => meta.slug === request.slug)) {
+          const next = request.slug === list.current ? '' : request.slug
+
+          if ($boardSlug.get() !== next) {
+            $boardSlug.set(next)
+          }
+        } else {
+          host.notify({ kind: 'warning', message: k.boardMissing(request.slug) })
+        }
+
+        $boardRequest.set(null)
+      },
+      (err: unknown) => {
+        if (!superseded) {
+          setValidation({ error: errText(err), seq: request.seq })
+        }
       }
-    } else {
-      host.notify({ kind: 'warning', message: k.boardMissing(request.slug) })
-    }
+    )
 
-    $boardRequest.set(null)
-  }, [request, boards, k])
+    return () => {
+      superseded = true
+    }
+  }, [request, attempt, qc, k])
 
   // Verified fleet context: the selected slug, or — with nothing selected —
   // the server's current board as the board list reports it. Until that list
@@ -1483,10 +1510,24 @@ export function KanbanBoardPage() {
         <div className="grid flex-1 place-items-center px-4">
           <ErrorState description={validationError} title={k.boardsCheckFailed(request.slug)}>
             <div className="flex justify-center gap-2">
-              <Button onClick={() => void boardsQuery.refetch()} size="sm" variant="outline">
+              <Button
+                onClick={() => {
+                  setValidation(null)
+                  setAttempt(n => n + 1)
+                }}
+                size="sm"
+                variant="outline"
+              >
                 {k.retry}
               </Button>
-              <Button onClick={() => $boardRequest.set(null)} size="sm" variant="text">
+              <Button
+                onClick={() => {
+                  setValidation(null)
+                  $boardRequest.set(null)
+                }}
+                size="sm"
+                variant="text"
+              >
                 {k.cancel}
               </Button>
             </div>

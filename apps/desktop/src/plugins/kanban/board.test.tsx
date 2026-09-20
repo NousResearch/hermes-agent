@@ -174,7 +174,7 @@ afterEach(() => {
   $boardRequest.set(null)
   boardsResponse = boards
   window.location.hash = ''
-  vi.clearAllMocks()
+  vi.resetAllMocks()
 })
 
 const mount = () =>
@@ -373,5 +373,57 @@ describe('fleet-scoped entry — rejected validation', () => {
     expect(await screen.findByText('[Sync pending] Rotate the turnerbook canary')).toBeTruthy()
     expect($boardSlug.get()).toBe('shipping')
     expect(screen.getByRole('button', { name: 'New task' })).toHaveProperty('disabled', false)
+  })
+})
+
+describe('fleet-scoped entry — stale cache, rejected fresh validation', () => {
+  it('never consumes the request on cached data: the rejected refetch gates the entry', async () => {
+    // Prime the board list, then let it go stale.
+    $boardSlug.set('shipping')
+    mount()
+    await screen.findByText('[Sync pending] Rotate the turnerbook canary')
+    await act(() => client.invalidateQueries({ queryKey: BOARDS_KEY, refetchType: 'none' }))
+    vi.mocked(fetchBoards).mockRejectedValueOnce(new Error('503: {"detail":"boards unavailable"}'))
+
+    openFleet()
+    await settle()
+
+    // Cached data is not a validation: Shipping stays selected but gated, and no board is bound.
+    expect($boardSlug.get()).toBe('shipping')
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveProperty('disabled', true)
+    expect(screen.queryByText('[Sync pending] Rotate the turnerbook canary')).toBeNull()
+    expect(fetchedBoards).toEqual(['shipping'])
+    expect(await screen.findByText(en.boardsCheckFailed('fleet'))).toBeTruthy()
+
+    // Only a fresh, successful validation resolves it.
+    fireEvent.click(screen.getByRole('button', { name: en.retry }))
+
+    await waitFor(() => expect($boardSlug.get()).toBe('fleet'))
+    expect(await screen.findByText('Rotate the turnerbook canary')).toBeTruthy()
+    expect(fetchedBoards).toEqual(['shipping', 'fleet'])
+  })
+
+  it('gates a re-entered page the same way while its background refetch rejects', async () => {
+    $boardSlug.set('shipping')
+    const view = mount()
+
+    await screen.findByText('[Sync pending] Rotate the turnerbook canary')
+    view.unmount()
+    await act(() => client.invalidateQueries({ queryKey: BOARDS_KEY, refetchType: 'none' }))
+    vi.mocked(fetchBoards).mockRejectedValueOnce(new Error('boards unavailable'))
+
+    openFleet()
+    mount()
+    await settle()
+
+    expect($boardSlug.get()).toBe('shipping')
+    expect(screen.getByRole('button', { name: 'New task' })).toHaveProperty('disabled', true)
+    expect(screen.queryByText('[Sync pending] Rotate the turnerbook canary')).toBeNull()
+    expect(await screen.findByText(en.boardsCheckFailed('fleet'))).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: en.cancel }))
+
+    expect(await screen.findByText('[Sync pending] Rotate the turnerbook canary')).toBeTruthy()
+    expect($boardSlug.get()).toBe('shipping')
   })
 })

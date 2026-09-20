@@ -91,4 +91,3 @@ def test_fresh_guidance_carries_no_note(monkeypatch, tmp_path):
     assert len(ref_runs) == 2
     assert _STALE_GUIDANCE_NOTE not in first["guidance"]
     assert _STALE_GUIDANCE_NOTE not in second["guidance"]
-

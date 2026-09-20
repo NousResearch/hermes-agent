@@ -46,20 +46,24 @@ class TestConfigParsing:
         assert cfg.enabled == "auto"
         assert cfg.threshold_pct == 5.0
 
-    def test_default_defer_set_is_shared_with_config_registry(self):
+    def test_defer_default_is_the_registered_list_and_a_user_list_replaces_it(self, caplog):
+        """#116404: the curated deferral set lives in DEFAULT_CONFIG (so ``hermes config set``
+        recognizes the key); a user list replaces it wholesale, [] keeps every tool eager, and a
+        scalar is warned about (naming the expected shape) before falling back to the default."""
         from hermes_cli.config_defaults import DEFAULT_CONFIG
         from tools.tool_search import ToolSearchConfig, _DEFAULT_DEFERRED_TOOLS
 
         configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
-        assert configured
+        assert isinstance(DEFAULT_CONFIG["tools"]["tool_search"]["defer"], list) and configured
         assert _DEFAULT_DEFERRED_TOOLS == configured
         assert ToolSearchConfig.from_raw(None).effective_defer_tools == configured
-
-    def test_explicit_defer_list_and_empty_list_override_default(self):
-        from tools.tool_search import ToolSearchConfig
-
         assert ToolSearchConfig.from_raw({"defer": ["terminal"]}).effective_defer_tools == {"terminal"}
         assert ToolSearchConfig.from_raw({"defer": []}).effective_defer_tools == set()
+
+        with caplog.at_level("WARNING", logger="tools.tool_search"):
+            assert ToolSearchConfig.from_raw({"defer": "todo_list"}).effective_defer_tools == configured
+        assert any("tools.tool_search.defer" in r.getMessage() and "expected a YAML list" in r.getMessage()
+                   for r in caplog.records)
 
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig

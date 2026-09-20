@@ -62,6 +62,14 @@ class ToolSearchConfig:
             raw = {"enabled": "off" if raw is False else "auto"}
         max_search_limit = _clamped_int(raw.get("max_search_limit"), 25, 1, 50)
         defer_raw = raw.get("defer")
+        if defer_raw is not None and not isinstance(defer_raw, (list, tuple, set)):
+            # Loud, then the curated default: a scalar here means the user tried to shrink the
+            # tool surface and got nothing — never silently ignore it (#116404).
+            logger.warning(
+                "tools.tool_search.defer is %r, expected a YAML list of tool names "
+                "(e.g. [todo_list, computer_use]; [] keeps every tool eager) - "
+                "using the curated default set.", defer_raw)
+            defer_raw = None
         return cls(
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),

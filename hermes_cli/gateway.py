@@ -32,7 +32,7 @@ if os.name == "posix":
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
-from gateway.status import terminate_pid
+from gateway.status import _pid_exists, get_process_start_time, read_runtime_status, terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
@@ -281,13 +281,67 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress
     return _wait_for_pid_exit(pid, max(drain_timeout, 1.0), on_progress=on_progress)
 
 
+def _gateway_state_records_terminal_exit(pid: int) -> bool:
+    """True when ``gateway_state.json`` records ``gateway_state: "stopped"`` (or ``"startup_failed"``)
+    for the same ``pid`` we are waiting on — i.e. ``_stop_persist_exit_state`` has run and the gateway
+    has finished its shutdown bookkeeping, but is wedged somewhere between that and the final
+    ``os._exit`` it set ``_exit_code = 75`` for. The watchdog would eventually catch it in ~30 min
+    (``gateway/shutdown_watchdog.py``); instead the caller can SIGTERM with a short grace + SIGKILL
+    on the same evidence.
+
+    False on any ambiguity — missing/unreadable state file, PID mismatch, non-terminal state — so
+    a wedged but *not-yet-bookkeeping-complete* gateway keeps the full drain budget.
+    """
+    try:
+        record = read_runtime_status() or {}
+    except Exception:
+        return False
+    if not isinstance(record, dict):
+        return False
+    if record.get("pid") != pid:
+        return False
+    return record.get("gateway_state") in {"stopped", "startup_failed"}
+
+
+def _force_exit_wedged_via_state_evidence(pid: int, *, term_grace: float = 3.0,
+                                          kill_wait: float = 3.0) -> bool:
+    """Bounded stop (SIGTERM → ``term_grace`` → SIGKILL → ``kill_wait``) for a gateway that has
+    already written terminal state but has not actually exited. Same shape as
+    :func:`_escalate_wedged_gateway` but gated on a different witness: ``gateway_state.json``
+    already says ``"stopped"`` (the gateway's *own* bookkeeping ran), so the loop is provably
+    past its drain and only the final ``os._exit`` is missing. Callers MUST have classified
+    ``_gateway_state_records_terminal_exit(pid)`` first; never escalate on partial evidence.
+    """
+    if not _pid_exists(pid):
+        return True
+    expected_start_time = get_process_start_time(pid)
+    try:
+        terminate_pid(pid, force=False)
+    except (ProcessLookupError, PermissionError, OSError):
+        return not _pid_exists(pid)
+    if _wait_for_pid_exit(pid, max(float(term_grace), 0.0)):
+        return True
+    try:
+        terminate_pid(pid, force=True, expected_start_time=expected_start_time)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    return _wait_for_pid_exit(pid, max(float(kill_wait), 0.0))
+
+
 def _wait_for_pid_exit(pid: int, timeout: float, *, on_progress=None) -> bool:
     """Wait up to ``timeout``s for ``pid`` to exit; True once gone. (``launchctl bootstrap`` fails EIO
-    while the previous instance still drains, so teardown callers must wait for the real exit.)"""
+    while the previous instance still drains, so teardown callers must wait for the real exit.)
+
+    Short-circuit: if the gateway's own ``gateway_state.json`` already records ``gateway_state:
+    "stopped"`` for this PID — i.e. its shutdown bookkeeping ran (``_stop_persist_exit_state``) and
+    only the final ``os._exit`` is missing — bypass the remaining budget and bounded-force it
+    (~6s of SIGTERM→SIGKILL instead of burning the full ``timeout``). Without this, a gateway
+    wedged between ``_stop_persist_exit_state`` and the terminal ``os._exit`` makes
+    ``hermes update`` wait the entire ``restart_after_turn_timeout`` budget (30+ min by default)
+    before the watchdog catches it.
+    """
     if pid <= 0:
         return True
-    # ``os.kill(pid, 0)`` hard-kills on Windows (TerminateProcess); use _pid_exists instead.
-    from gateway.status import _pid_exists
     deadline = time.monotonic() + max(timeout, 0.0)
     while True:
         if not _pid_exists(pid):
@@ -296,6 +350,9 @@ def _wait_for_pid_exit(pid: int, timeout: float, *, on_progress=None) -> bool:
             return False
         if on_progress is not None:
             on_progress()
+        # Short-circuit: the gateway's own bookkeeping says it is done; only ``os._exit`` is missing.
+        if _gateway_state_records_terminal_exit(pid):
+            return _force_exit_wedged_via_state_evidence(pid)
         time.sleep(0.5)
 
 

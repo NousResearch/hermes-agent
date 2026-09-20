@@ -470,17 +470,21 @@ class TestGatewayStopCleanup:
 class TestLaunchdServiceRecovery:
     def test_wait_for_pid_exit_returns_when_process_gone(self, monkeypatch):
         alive = [True, True, False]
-        monkeypatch.setattr(
-            "gateway.status._pid_exists", lambda pid: alive.pop(0) if alive else False
-        )
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: alive.pop(0) if alive else False)
         monkeypatch.setattr(gateway_cli.time, "sleep", lambda s: None)
+        # Isolate from the real ``gateway_state.json`` on this machine (the wedge we just hit
+        # wrote ``gateway_state: "stopped"`` with our PID); these tests exercise the polling
+        # path, not the new short-circuit.
+        monkeypatch.setattr(gateway_cli, "_gateway_state_records_terminal_exit", lambda pid: False)
 
         assert gateway_cli._wait_for_pid_exit(4242, timeout=30) is True
         assert not alive  # polled until the PID disappeared
 
     def test_wait_for_pid_exit_times_out_on_wedged_process(self, monkeypatch):
         """A wedged gateway must not block the reload forever."""
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        monkeypatch.setattr(gateway_cli, "_pid_exists", lambda pid: True)
+        # Same isolation as above; these tests exercise the polling path.
+        monkeypatch.setattr(gateway_cli, "_gateway_state_records_terminal_exit", lambda pid: False)
 
         assert gateway_cli._wait_for_pid_exit(4242, timeout=0) is False
 

@@ -969,9 +969,12 @@ class TurnRunner:
                     stts.on_delta(None)
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
-            elif not already_streamed and ctx._status_adapter and str(text or "").strip():
-                self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
 
+        # No stream consumer (non-editable platform, no native stream) => no interim lane: a
+        # plain-send fallback here would deliver completed messages — the turn's final answer
+        # included — outside the delivery ledger, so the turn-final dedup would send them twice
+        # (#117272).
+        want_interim_messages = want_interim_messages and stream_consumer is not None
         return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
 
     # ── agent resolution (cache reuse vs fresh build) ───────────────────────────────────────

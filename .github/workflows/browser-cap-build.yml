@@ -1,0 +1,62 @@
+name: Browser-cap image build (arm64)
+
+# Local-only build workflow for the beltfedllc fork. This does NOT publish to
+# Docker Hub `nousresearch/hermes-agent` (that is Nous Research's multi-arch
+# pipeline, gated on github.repository == 'NousResearch/hermes-agent'). It
+# builds a single arm64 image from the `browser-lifecycle-hardening` branch and
+# pushes it to GHCR under this fork, tagged so the deployment can reference it.
+#
+# Triggered manually (workflow_dispatch) so a human controls the cutover. The
+# cluster (ODROID arm64 nodes) already carries ghcr-pull-secret infrastructure,
+# so GHCR is the natural non-upstream home for the fork image.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish (e.g. v0.21.2-browser-cap-1)'
+        required: true
+        default: 'v0.21.2-browser-cap-1'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # ghcr.io/<owner>/<repo>; lowercase, no schema.
+  IMAGE_NAME: ghcr.io/breymander/hermes-agent
+
+jobs:
+  build-and-push-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: browser-lifecycle-hardening
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push arm64 image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.event.inputs.tag }}
+            ${{ env.IMAGE_NAME }}:browser-cap-latest
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=docker-arm64-browser-cap
+          cache-to: type=gha,mode=max,scope=docker-arm64-browser-cap

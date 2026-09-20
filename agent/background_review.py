@@ -935,8 +935,10 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
-    elif (routed_cfg := _routed_reasoning_config(task_cfg)) is not None:
-        kwargs["reasoning_config"] = routed_cfg
+    else:
+        # Omission invokes the agent-level configured-effort fallback. Routed
+        # forks pass None explicitly when they need provider-default semantics.
+        kwargs["reasoning_config"] = _routed_reasoning_config(task_cfg)
     return kwargs
 
 

@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
+import threading
 import time
 from typing import Any, Mapping, Optional
 
@@ -14,6 +15,60 @@ _FIELDS = (
     "incomplete_status", "reason", "execution_location", "action",
     "expected_success", "automatic_continuation",
 )
+
+_LAUNCH_ENVIRONMENTS: dict[str, dict[str, str]] = {}
+_LAUNCH_ENVIRONMENTS_LOCK = threading.Lock()
+
+
+def _profile_key(profile: str) -> str:
+    """Canonical exact identifier used by task assignment and process launch."""
+    from hermes_cli.profiles import normalize_profile_name
+    return normalize_profile_name(profile)
+
+
+def register_launch_environment(profile: str, environ: Mapping[str, str]) -> None:
+    """Capture one profile's launch environment; the first snapshot wins until restart."""
+    key = _profile_key(profile)
+    snapshot = {str(name): str(value) for name, value in environ.items()}
+    with _LAUNCH_ENVIRONMENTS_LOCK:
+        _LAUNCH_ENVIRONMENTS.setdefault(key, snapshot)
+
+
+def launch_environment(profile: str) -> Optional[dict[str, str]]:
+    """Return a copy of *profile*'s snapshot, never another profile or live ``os.environ``."""
+    key = _profile_key(profile)
+    with _LAUNCH_ENVIRONMENTS_LOCK:
+        snapshot = _LAUNCH_ENVIRONMENTS.get(key)
+        return dict(snapshot) if snapshot is not None else None
+
+
+def register_available_launch_environments() -> None:
+    """Capture the environments available to this dispatcher's target profiles.
+
+    The process environment belongs only to the active launch profile. Other
+    profiles are reconstructed from their own secret sources, never by copying
+    the launch profile's environment. Missing/unreadable profiles remain
+    unregistered so their ``env_present`` probes fail closed.
+    """
+    from agent.secret_scope import build_profile_secret_scope
+    from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
+
+    active = _profile_key(get_active_profile_name())
+    register_launch_environment(active, os.environ)
+    try:
+        profiles = profiles_to_serve(multiplex=True)
+    except Exception:
+        profiles = []
+    for profile, home in profiles:
+        key = _profile_key(profile)
+        with _LAUNCH_ENVIRONMENTS_LOCK:
+            if key in _LAUNCH_ENVIRONMENTS:
+                continue
+        try:
+            environment = build_profile_secret_scope(Path(home))
+        except Exception:
+            continue
+        register_launch_environment(key, environment)
 
 
 @dataclass(frozen=True)
@@ -163,11 +218,16 @@ def record_delivery_result(
         )
 
 
-def readiness_satisfied(conn: sqlite3.Connection, state: UserActionState) -> bool:
+def readiness_satisfied(
+    conn: sqlite3.Connection, state: UserActionState, *, target_profile: Optional[str] = None,
+) -> bool:
     probe = state.readiness_probe
     kind = probe["kind"]
     if kind == "env_present":
-        return bool(os.environ.get(str(probe["name"])))
+        if not target_profile:
+            return False
+        environment = launch_environment(target_profile)
+        return bool(environment and environment.get(str(probe["name"])))
     if kind == "path_exists":
         return Path(str(probe["path"])).exists()
     if kind == "task_status":
@@ -185,11 +245,13 @@ def supervise_user_actions(conn: sqlite3.Connection) -> list[str]:
     from hermes_cli import kanban_db as kb
     resolved: list[str] = []
     rows = conn.execute(
-        "SELECT task_id FROM kanban_user_actions WHERE resolved_at IS NULL ORDER BY created_at, task_id"
+        "SELECT a.task_id, t.assignee FROM kanban_user_actions AS a "
+        "JOIN tasks AS t ON t.id = a.task_id "
+        "WHERE a.resolved_at IS NULL ORDER BY a.created_at, a.task_id"
     ).fetchall()
     for row in rows:
         state = get_user_action(conn, row["task_id"])
-        if state is None or not readiness_satisfied(conn, state):
+        if state is None or not readiness_satisfied(conn, state, target_profile=row["assignee"]):
             continue
         now = int(time.time())
         with kb.write_txn(conn):

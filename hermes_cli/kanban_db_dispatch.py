@@ -2155,8 +2155,12 @@ def _run_reclaim_phase(
     board: Optional[str] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
-    from hermes_cli.kanban_user_action import supervise_user_actions
+    from hermes_cli.kanban_user_action import (
+        register_available_launch_environments,
+        supervise_user_actions,
+    )
 
+    register_available_launch_environments()
     supervise_user_actions(conn)
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)

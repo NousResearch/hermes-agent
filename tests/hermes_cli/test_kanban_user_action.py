@@ -15,6 +15,7 @@ from hermes_cli import kanban_user_action as kua
 
 @pytest.fixture
 def board(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(kua, "_LAUNCH_ENVIRONMENTS", {})
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -158,6 +159,7 @@ def test_probe_supervisor_survives_reopen_and_auto_resumes(board, monkeypatch):
     conn.close()
     reopened = kbc.connect(home / "kanban.db")
     monkeypatch.setenv("CANARY_KEY", "present")
+    kua.register_launch_environment("worker", os.environ)
     try:
         assert kua.supervise_user_actions(reopened) == [tid]
         assert kb.get_task(reopened, tid).status == "ready"
@@ -166,6 +168,113 @@ def test_probe_supervisor_survives_reopen_and_auto_resumes(board, monkeypatch):
         assert kua.supervise_user_actions(reopened) == []
     finally:
         reopened.close()
+
+
+def test_env_present_launch_environments_are_isolated_by_exact_target_profile(board, monkeypatch):
+    conn, _ = board
+    key = "KANBAN_PROFILE_SCOPE_CANARY"
+    monkeypatch.setenv(key, "ambient-must-not-be-used")
+
+    task_a = kb.create_task(conn, title="profile A gate", assignee="profile-a")
+    task_b = kb.create_task(conn, title="profile B gate", assignee="profile-b")
+    task_missing = kb.create_task(conn, title="missing profile gate", assignee="profile-missing")
+    for task_id in (task_a, task_b, task_missing):
+        assert kb.claim_task(conn, task_id)
+        assert kb.block_task(
+            conn, task_id, kind="needs_input", reason="credential missing",
+            user_action=_action(), readiness_probe={"kind": "env_present", "name": key},
+        )
+
+    kua.register_launch_environment("profile-a", {key: "value-a"})
+    assert kua.supervise_user_actions(conn) == [task_a]
+    assert kb.get_task(conn, task_b).status == "needs_user_action"
+    assert kb.get_task(conn, task_missing).status == "needs_user_action"
+
+    kua.register_launch_environment("profile-b", {key: "value-b"})
+    assert kua.launch_environment("profile-a") == {key: "value-a"}
+    assert kua.launch_environment("profile-b") == {key: "value-b"}
+    assert kua.supervise_user_actions(conn) == [task_b]
+
+    # A -> B -> A returns A's original snapshot. Re-registration cannot let a
+    # later ambient/profile-B state overwrite the launch environment A captured.
+    kua.register_launch_environment("profile-a", {key: "corrupted-by-b"})
+    assert kua.launch_environment("profile-a") == {key: "value-a"}
+    assert kb.get_task(conn, task_missing).status == "needs_user_action"
+
+
+def test_env_present_same_profile_restart_recaptures_and_resumes(board, monkeypatch):
+    conn, home = board
+    tid = kb.create_task(conn, title="restart gate", assignee="restart-profile")
+    assert kb.claim_task(conn, tid)
+    assert kb.block_task(
+        conn, tid, kind="needs_input", reason="credential missing",
+        user_action=_action(), readiness_probe={"kind": "env_present", "name": "RESTART_CANARY"},
+    )
+    conn.close()
+
+    # A new process starts with an empty in-memory registry and captures the
+    # same profile's new launch environment before supervising the reopened DB.
+    monkeypatch.setattr(kua, "_LAUNCH_ENVIRONMENTS", {})
+    kua.register_launch_environment("restart-profile", {"RESTART_CANARY": "present"})
+    reopened = kbc.connect(home / "kanban.db")
+    try:
+        assert kua.supervise_user_actions(reopened) == [tid]
+        assert kb.get_task(reopened, tid).status == "ready"
+    finally:
+        reopened.close()
+
+
+def test_dispatch_capture_uses_each_target_profiles_own_environment(board, monkeypatch, tmp_path):
+    _conn, _ = board
+    key = "KANBAN_PROFILE_SCOPE_CANARY"
+    profile_a = tmp_path / "profiles" / "profile-a"
+    profile_b = tmp_path / "profiles" / "profile-b"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+    (profile_a / ".env").write_text(f"{key}=value-a\n", encoding="utf-8")
+    (profile_b / ".env").write_text(f"{key}=value-b\n", encoding="utf-8")
+    monkeypatch.setenv(key, "ambient-launch-value")
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: [
+            ("default", tmp_path / ".hermes"),
+            ("profile-a", profile_a),
+            ("profile-b", profile_b),
+        ],
+    )
+
+    kua.register_available_launch_environments()
+
+    default_env = kua.launch_environment("default")
+    a_env = kua.launch_environment("profile-a")
+    b_env = kua.launch_environment("profile-b")
+    assert default_env is not None and default_env[key] == "ambient-launch-value"
+    assert a_env is not None and a_env[key] == "value-a"
+    assert b_env is not None and b_env[key] == "value-b"
+    assert kua.launch_environment("profile-missing") is None
+
+
+def test_profile_discovery_failure_does_not_break_unrelated_readiness_probe(board, monkeypatch, tmp_path):
+    conn, _ = board
+    marker = tmp_path / "ready"
+    marker.touch()
+    tid = _running(conn)
+    assert kb.block_task(
+        conn, tid, kind="needs_input", reason="wait for marker", user_action=_action(),
+        readiness_probe={"kind": "path_exists", "path": str(marker)},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: (_ for _ in ()).throw(OSError("profile inventory unavailable")),
+    )
+
+    result = kbd.dispatch_once(conn, dry_run=True, max_spawn=0)
+
+    task = kb.get_task(conn, tid)
+    assert result.promoted == 0
+    assert task is not None and task.status == "ready"
 
 
 def test_delivery_ledger_dedup_retry_and_material_change(board):

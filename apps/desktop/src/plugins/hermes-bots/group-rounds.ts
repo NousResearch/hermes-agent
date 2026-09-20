@@ -432,9 +432,10 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *
  *  1. Bumps the room epoch — the driving loop bails at its next boundary and
  *     never selects another member (`isCurrent()` in runGroupChatRounds).
- *  2. Sets a #93129 hold for EVERY member — future turns stay skipped until
- *     the user explicitly releases (resume / @all resume / direct mention),
- *     the exact contract user-typed "@all stop" already has.
+ *  2. When hold detection is enabled, sets a #93129 hold for EVERY member —
+ *     future turns stay skipped until the user explicitly releases (resume /
+ *     @all resume / direct mention). Rooms that disable automatic holds still
+ *     stop the active run through the epoch and interrupt legs.
  *  3. Sends session.interrupt to the member currently ON TURN (room.turn,
  *     runtime-only) via its own route, so the in-flight model call actually
  *     dies instead of grinding to completion in the background. Best-effort:
@@ -460,9 +461,8 @@ export async function stopGroupThread(group: string, thread: null | string, memb
     r.running = false
     r.turn = null
 
-    // Same hold shape applyGroupHoldDirective mints for "@all stop" — the
-    // held-skip path (watermark consume + 'held' activity note) and every
-    // release gesture apply unchanged. An existing hold keeps its stamp.
+    // Same hold shape applyGroupHoldDirective mints for "@all stop" — unless
+    // this room disabled hold detection. An existing hold keeps its stamp.
     const holds: Record<string, GroupHoldStamp> = r.holdDetection === false ? {} : { ...(r.holds || {}) }
 
     for (const member of r.holdDetection === false ? [] : roster) {

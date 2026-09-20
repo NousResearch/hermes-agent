@@ -4105,6 +4105,12 @@ class GatewayTurnMixin:
         if not _notify_adapter:
             return
         _heartbeat_msg_id: Optional[str] = None
+        if getattr(source, "platform", None) == "weixin":
+            # iLink cannot edit a sent message, so every heartbeat would append a NEW bubble:
+            # a long turn spams the chat with 3/6/9-min pings and each one spends a slot of the
+            # 24h outbound quota. Skip heartbeats on weixin entirely — the typing indicator still
+            # tells the user the agent is working.
+            return
         while True:
             await asyncio.sleep(_NOTIFY_INTERVAL)
             if not self._should_emit_long_running_notification(
@@ -4148,9 +4154,14 @@ class GatewayTurnMixin:
                         session_key, agent_holder[0], _executor_task_holder[0]
                     ):
                         break
+                    _heartbeat_meta = _interim_metadata(
+                        _non_conversational_metadata(_status_thread_metadata, platform=source.platform))
+                    # Lowest outbound-quota priority: adapters may drop a heartbeat to keep a slot
+                    # free for the turn's final reply.
+                    _heartbeat_meta["_heartbeat"] = True
                     _notify_res = await _notify_adapter.send(
                         source.chat_id, _heartbeat_text,
-                        metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
+                        metadata=_heartbeat_meta,
                     )
                     if getattr(_notify_res, "success", False) and getattr(_notify_res, "message_id", None):
                         _heartbeat_msg_id = str(_notify_res.message_id)

@@ -9,10 +9,12 @@ import time
 from typing import Any, Callable, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_projection import project_task
 
 _STATUS_ICONS = {
     "todo": "◻", "ready": "▶", "running": "●", "scheduled": "⏱",
     "blocked": "⊘", "done": "✓", "archived": "—",
+    "recovering": "↻", "dependency-wait": "◻", "queued": "▶", "failure": "⊘",
 }
 
 _TASK_DICT_FIELDS = (
@@ -72,10 +74,11 @@ def _bulk_apply(ids: Iterable[str], op: Callable[[str], Any],
 
 
 def _fmt_task_line(t: kb.Task) -> str:
-    icon = _STATUS_ICONS.get(t.status, "?")
+    visible_status = project_task(t)["operational_status"]
+    icon = _STATUS_ICONS.get(visible_status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    return f"{icon} {t.id}  {visible_status:15s}  {assignee:20s}{tenant}  {t.title}"
 
 
 def _obj_dict(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -83,6 +86,10 @@ def _obj_dict(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
-    d = _obj_dict(t, _TASK_DICT_FIELDS)
-    d["skills"] = list(t.skills) if t.skills else []
-    return d
+    projected = project_task(t)
+    return {
+        **{field: projected[field] for field in _TASK_DICT_FIELDS},
+        "operational_status": projected["operational_status"],
+        "creator_task_id": projected["creator_task_id"],
+        "root_task_id": projected["root_task_id"],
+    }

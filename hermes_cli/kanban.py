@@ -506,6 +506,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     print(f"Task {task.id}: {task.title}")
     field("status", task.status)
+    field("operational", _task_to_dict(task)["operational_status"])
     field("assignee", task.assignee or "-")
     if task.tenant:
         field("tenant", task.tenant)

@@ -172,28 +172,9 @@ _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None) -> dict[str, Any]:
-    d = asdict(task)
-    operational = task.status
-    if task.status == "running":
-        heartbeat_fresh = bool(
-            task.last_heartbeat_at
-            and time.time() - int(task.last_heartbeat_at)
-            <= kanban_db.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
-        )
-        worker_live = bool(
-            task.worker_pid and task.worker_started_at
-            and kbd._worker_alive(task.worker_pid, task.worker_started_at)
-        )
-        if not (heartbeat_fresh and worker_live):
-            d["status"] = "ready"
-            operational = "recovering"
-    elif task.status == "todo":
-        operational = "dependency-wait"
-    elif task.status in {"ready", "scheduled"}:
-        operational = "queued"
-    elif task.status in {"blocked", "triage"}:
-        operational = "failure"
-    d["operational_status"] = operational
+    from hermes_cli.kanban_projection import project_task
+
+    d = project_task(task)
     d["continuation_of"] = task.creator_task_id
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:

@@ -61,6 +61,12 @@ def _cli(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _cli_json(home: Path, *args: str):
+    result = _cli(home, *args, "--json")
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
 def _dashboard_task_dict(task: kb.Task) -> dict:
     plugin_file = _REPO / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     spec = importlib.util.spec_from_file_location("kanban_contract_projection", plugin_file)
@@ -168,6 +174,37 @@ def test_connected_dag_rejects_cycles_and_orchestrator_descendant_wait_atomicall
     assert descendant_blocked is False, "an orchestrator must complete, never block on its own descendant"
 
 
+@pytest.mark.parametrize(
+    ("failure_kind", "worker_pid", "heartbeat_age", "worker_started_at"),
+    [
+        ("dead-pid", 999_999_991, 0, None),
+        ("stale-heartbeat", os.getpid(), 7200, None),
+        ("fingerprint-mismatch", os.getpid(), 0, "foreign-boot:1|1"),
+    ],
+)
+def test_cli_list_and_show_share_honest_running_projection(
+    board, failure_kind, worker_pid, heartbeat_age, worker_started_at
+):
+    conn, home = board
+    task_id = kb.create_task(conn, title=failure_kind, assignee="worker", creator_task_id="t_origin")
+    kb.claim_task(conn, task_id)
+    kbd._set_worker_pid(conn, task_id, worker_pid)
+    if heartbeat_age:
+        _expire(conn, task_id, heartbeat_age=heartbeat_age)
+    if worker_started_at:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET worker_started_at=? WHERE id=?", (worker_started_at, task_id))
+
+    listed = next(item for item in _cli_json(home, "list") if item["id"] == task_id)
+    shown = _cli_json(home, "show", task_id)["task"]
+
+    for projected in (listed, shown):
+        assert projected["status"] == "running"
+        assert projected["operational_status"] == "recovering"
+        assert projected["creator_task_id"] == "t_origin"
+        assert projected["root_task_id"] == "t_origin"
+
+
 def test_dead_worker_is_reclaimed_with_bounded_retry_and_never_projected_running(board, monkeypatch):
     conn, _ = board
     monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
@@ -190,7 +227,7 @@ def test_dead_worker_is_reclaimed_with_bounded_retry_and_never_projected_running
     final = _task(conn, task_id)
     assert final.status == "blocked" and final.consecutive_failures == 2
     assert kb.claim_task(conn, task_id) is None, "terminal breaker must remain sticky"
-    assert projected_before["status"] != "running"
+    assert projected_before["status"] == "running"
     assert projected_before["operational_status"] == "recovering"
 
 
@@ -207,7 +244,7 @@ def test_stale_heartbeat_is_reclaimed_and_never_projected_running(board, monkeyp
 
     assert stale == [task_id]
     assert _task(conn, task_id).status == "ready"
-    assert projected_before["status"] != "running"
+    assert projected_before["status"] == "running"
     assert projected_before["operational_status"] == "recovering"
 
 
@@ -231,7 +268,7 @@ def test_recycled_pid_is_reclaimed_without_signal_and_never_projected_running(bo
 
     assert reclaimed == 1 and signals == []
     assert _task(conn, task_id).status == "ready"
-    assert projected_before["status"] != "running"
+    assert projected_before["status"] == "running"
     assert projected_before["operational_status"] == "recovering"
 
 

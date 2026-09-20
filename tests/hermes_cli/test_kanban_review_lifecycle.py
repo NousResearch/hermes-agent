@@ -726,6 +726,70 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     assert captured == [["domain-specific-review", "sdlc-review"]]
 
 
+def test_review_dispatch_validates_forced_skill_before_claim_without_residue(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    validated: list[list[str]] = []
+
+    def unavailable(_assignee, skills):
+        validated.append(list(skills))
+        return ["sdlc-review"]
+
+    monkeypatch.setattr(
+        "hermes_cli.kanban_skill_validation.unavailable_profile_skills",
+        unavailable,
+    )
+    spawned: list[str] = []
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="review skill unavailable",
+            assignee="reviewer",
+            skills=["domain-specific-review", "domain-specific-review"],
+        )
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+
+        result = kbd.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _workspace: spawned.append(task.id) or os.getpid(),
+        )
+        task = kb.get_task(conn, task_id)
+        runs = kb.list_runs(conn, task_id)
+        events = kb.list_events(conn, task_id)
+
+    assert validated == [["domain-specific-review", "sdlc-review"]]
+    assert spawned == [] and result.spawned == []
+    assert task is not None and task.status == "blocked"
+    assert task.current_run_id is None and task.claim_lock is None and task.worker_pid is None
+    failure_run = runs[-1]
+    assert failure_run.status == "spawn_failed" and failure_run.ended_at is not None
+    assert failure_run.metadata == {
+        "reason": "unavailable_effective_skill",
+        "skills": ["sdlc-review"],
+        "effective_skills": ["domain-specific-review", "sdlc-review"],
+        "lane": "review",
+    }
+    assert events[-1].kind == "spawn_failed"
+    assert events[-1].payload["effective_skills"] == ["domain-specific-review", "sdlc-review"]
+
+
 def test_review_dispatch_honors_global_and_per_profile_caps(
     kanban_home: Path,
     monkeypatch: pytest.MonkeyPatch,

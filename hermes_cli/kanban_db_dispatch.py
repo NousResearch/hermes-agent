@@ -1886,12 +1886,21 @@ def _dispatch_lane_task(
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
+    from hermes_cli.kanban_skill_validation import effective_worker_skills
+
+    task_skills = _kb._json_or(row["skills"], []) if "skills" in row.keys() else []
+    effective_skills = effective_worker_skills(task_skills, lane=lane)
     if not dry_run:
         from hermes_cli.kanban_skill_validation import unavailable_profile_skills
-        task_skills = _kb._json_or(row["skills"], []) if "skills" in row.keys() else []
-        missing_skills = unavailable_profile_skills(assignee, task_skills)
+        missing_skills = unavailable_profile_skills(assignee, effective_skills)
         if missing_skills:
-            error = f"profile {assignee!r} cannot load explicit skill(s): {', '.join(missing_skills)}"
+            error = f"profile {assignee!r} cannot load effective skill(s): {', '.join(missing_skills)}"
+            metadata = {
+                "reason": "unavailable_effective_skill",
+                "skills": missing_skills,
+                "effective_skills": effective_skills,
+                "lane": lane,
+            }
             with _kb.write_txn(conn):
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', consecutive_failures = consecutive_failures + 1, "
@@ -1900,10 +1909,10 @@ def _dispatch_lane_task(
                 )
                 run_id = _kb._synthesize_ended_run(
                     conn, task_id, outcome="spawn_failed", error=error,
-                    metadata={"reason": "unavailable_explicit_skill", "skills": missing_skills},
+                    metadata=metadata,
                 )
                 _kb._append_event(conn, task_id, "spawn_failed",
-                                  {"error": error, "skills": missing_skills, "terminal": True}, run_id=run_id)
+                                  {"error": error, **metadata, "terminal": True}, run_id=run_id)
             result.auto_blocked.append(task_id)
             return False
     # Per-profile cap: one profile's local model / API quota / browser pool
@@ -1945,10 +1954,8 @@ def _dispatch_lane_task(
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-    if lane == "review":
-        # Force-load sdlc-review; the kanban lifecycle is already in every
-        # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+    # Spawn exactly the ordered, deduplicated set validated before claim.
+    claimed.skills = effective_skills
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:

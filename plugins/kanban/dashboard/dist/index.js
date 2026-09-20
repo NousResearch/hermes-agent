@@ -86,12 +86,16 @@
     return body || raw;
   }
 
-  // Board column display order; any backend status not listed here renders after these.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "review", "done"];
+  // Runtime truth is primary; persisted workflow state remains on each task.
+  const COLUMN_ORDER = ["recovering", "dependency-wait", "queued", "running", "failure", "review", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
+    recovering: "Recovering",
+    "dependency-wait": "Dependency wait",
+    queued: "Queued",
+    failure: "Failure",
     triage: "Triage",
     todo: "Todo",
     ready: "Ready",
@@ -102,6 +106,10 @@
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
+    recovering: "Claimed state without a live, fresh, matching worker",
+    "dependency-wait": "Waiting for parent tasks to complete",
+    queued: "Eligible or scheduled for dispatch",
+    failure: "Blocked or awaiting specification after a failure",
     triage: "Raw ideas — a specifier will flesh out the spec",
     todo: "Waiting on dependencies or unassigned",
     ready: "Dependencies satisfied; assign a profile to dispatch",
@@ -169,7 +177,68 @@
     return tx(t, key, FALLBACK_DIAGNOSTIC_EVENT_LABELS[kind]);
   }
 
+  function operationalBucket(task) {
+    return task.operational_status || task.status;
+  }
+
+  function operationalTargetStatus(status) {
+    return {
+      "dependency-wait": "todo",
+      queued: "ready",
+      failure: "blocked",
+    }[status] || (status === "recovering" ? null : status);
+  }
+
+  function bucketTasks(tasks) {
+    const buckets = {};
+    for (const task of tasks || []) {
+      const name = operationalBucket(task);
+      (buckets[name] = buckets[name] || []).push(task);
+    }
+    return buckets;
+  }
+
+  function renderOperationalStatus(task) {
+    const status = operationalBucket(task);
+    const labels = {
+      recovering: "Recovering",
+      "dependency-wait": "Waiting on dependency",
+      queued: "Queued",
+      failure: "Failure",
+    };
+    return h("span", {
+      className: "hermes-kanban-operational-status hermes-kanban-operational-status--" + status,
+      "data-operational-status": status,
+    }, labels[status] || getColumnLabel(null, status));
+  }
+
+  function projectOperationalBoard(board) {
+    if (!board || !board.columns) return board;
+    const tasks = board.columns.reduce(function (all, column) {
+      return all.concat(column.tasks || []);
+    }, []);
+    const buckets = bucketTasks(tasks);
+    const names = COLUMN_ORDER.concat(
+      Object.keys(buckets).filter(function (name) { return COLUMN_ORDER.indexOf(name) === -1; }),
+    );
+    return Object.assign({}, board, {
+      columns: names.map(function (name) {
+        return {name: name, tasks: buckets[name] || [], targetStatus: operationalTargetStatus(name)};
+      }),
+    });
+  }
+
+  // Executable bundle contract used by the dashboard regression harness.
+  window.__HERMES_KANBAN_RENDER_CONTRACT__ = {
+    bucketTasks: bucketTasks,
+    renderStatus: renderOperationalStatus,
+  };
+
   const COLUMN_DOT = {
+    recovering: "hermes-kanban-dot-recovering",
+    "dependency-wait": "hermes-kanban-dot-dependency-wait",
+    queued: "hermes-kanban-dot-queued",
+    failure: "hermes-kanban-dot-failure",
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
     ready: "hermes-kanban-dot-ready",
@@ -805,11 +874,12 @@
         }
         return true;
       };
-      return Object.assign({}, boardData, {
+      const visible = Object.assign({}, boardData, {
         columns: boardData.columns.map(function (col) {
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
+      return projectOperationalBoard(visible);
     }, [boardData, tenantFilter, assigneeFilter, search]);
 
     // --- actions ------------------------------------------------------------
@@ -2827,40 +2897,43 @@
     const [dragOver, setDragOver] = useState(false);
     const [showCreate, setShowCreate] = useState(false);
     const colRef = useRef(null);
+    const targetStatus = props.column.targetStatus;
 
     // Listen for our synthetic touch-drop events from attachTouchDrag().
     useEffect(function () {
       if (!colRef.current) return undefined;
       const el = colRef.current;
       function onTouchDrop(e) {
-        if (e.detail && e.detail.status === props.column.name) {
+        if (targetStatus && e.detail && e.detail.status === targetStatus) {
           const taskId = e.detail.taskId;
           if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1 && props.onMoveSelected) {
-            props.onMoveSelected(props.column.name);
+            props.onMoveSelected(targetStatus);
           } else {
-            props.onMove(taskId, props.column.name);
+            props.onMove(taskId, targetStatus);
           }
         }
       }
       el.addEventListener("hermes-kanban:drop", onTouchDrop);
       return function () { el.removeEventListener("hermes-kanban:drop", onTouchDrop); };
-    }, [props.column.name, props.onMove, props.selectedIds, props.onMoveSelected]);
+    }, [targetStatus, props.onMove, props.selectedIds, props.onMoveSelected]);
 
     const handleDragOver = function (e) {
+      if (!targetStatus) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       if (!dragOver) setDragOver(true);
     };
     const handleDragLeave = function () { setDragOver(false); };
     const handleDrop = function (e) {
+      if (!targetStatus) return;
       e.preventDefault();
       setDragOver(false);
       const taskId = e.dataTransfer.getData(MIME_TASK);
       if (!taskId) return;
       if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
-        if (props.onMoveSelected) props.onMoveSelected(props.column.name);
+        if (props.onMoveSelected) props.onMoveSelected(targetStatus);
       } else {
-        props.onMove(taskId, props.column.name);
+        props.onMove(taskId, targetStatus);
       }
     };
 
@@ -2881,7 +2954,7 @@
 
     return h("div", {
       ref: colRef,
-      "data-kanban-column": props.column.name,
+      "data-kanban-column": targetStatus || undefined,
       className: cn(
         "hermes-kanban-column",
         dragOver ? "hermes-kanban-column--drop" : "",
@@ -2908,17 +2981,17 @@
         h("span", { className: "hermes-kanban-column-count",
                     title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
           props.column.tasks.length),
-        h("button", {
+        targetStatus ? h("button", {
           type: "button",
           className: "hermes-kanban-column-add",
           title: tx(t, "createTask", "Create task in this column"),
           onClick: function () { setShowCreate(function (v) { return !v; }); },
-        }, showCreate ? "×" : "+"),
+        }, showCreate ? "×" : "+") : null,
       ),
       h("div", { className: "hermes-kanban-column-sub" },
         colHelp || ""),
-      showCreate ? h(InlineCreate, {
-        columnName: props.column.name,
+      showCreate && targetStatus ? h(InlineCreate, {
+        columnName: targetStatus,
         allTasks: props.allTasks,
         defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
         defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || "",
@@ -3126,6 +3199,7 @@
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
+            renderOperationalStatus(t),
             t.assignee
               ? h("span", { className: "hermes-kanban-assignee",
                             title: `Assigned to Hermes profile @${t.assignee}` }, "@", t.assignee)

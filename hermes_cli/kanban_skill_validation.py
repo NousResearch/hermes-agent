@@ -5,6 +5,14 @@ from contextlib import suppress
 from typing import Iterable
 
 
+def effective_worker_skills(skills: Iterable[str] | None, *, lane: str) -> list[str]:
+    """Return the exact ordered skill list validated and passed to a worker."""
+    requested = [str(skill).strip() for skill in (skills or ()) if str(skill).strip()]
+    if lane == "review":
+        requested.append("sdlc-review")
+    return list(dict.fromkeys(requested))
+
+
 def unavailable_profile_skills(assignee: str | None, skills: Iterable[str] | None) -> list[str]:
     """Return requested skills that are not effective for ``assignee``."""
     requested = list(dict.fromkeys(str(s).strip() for s in (skills or ()) if str(s).strip()))

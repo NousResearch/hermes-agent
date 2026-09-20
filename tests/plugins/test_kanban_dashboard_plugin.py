@@ -117,6 +117,87 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_board_api_preserves_persisted_status_and_projects_operational_state(client):
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "dead worker", "assignee": "worker"},
+    ).json()["task"]
+    with kbc.connect_closing() as conn:
+        assert kb.claim_task(conn, created["id"]) is not None
+        kbd._set_worker_pid(conn, created["id"], 999_999_991)
+
+    board = client.get("/api/plugins/kanban/board").json()
+    task = next(
+        task
+        for column in board["columns"]
+        for task in column["tasks"]
+        if task["id"] == created["id"]
+    )
+    assert task["status"] == "running"
+    assert task["operational_status"] == "recovering"
+    assert "creator_task_id" in task and "root_task_id" in task
+
+
+def test_dashboard_bundle_renders_and_buckets_operational_statuses():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = r"""
+const fs = require("fs");
+const vm = require("vm");
+function h(type, props, ...children) { return {type, props: props || {}, children}; }
+const identity = (props) => h("component", props);
+class Component {}
+global.window = {
+  __HERMES_PLUGIN_SDK__: {
+    React: {createElement: h, Component},
+    components: {Card: identity, CardContent: identity, Badge: identity, Button: identity,
+      Input: identity, Label: identity, Select: identity, SelectOption: identity},
+    hooks: {useState: (v) => [v, () => {}], useEffect: () => {}, useCallback: (f) => f,
+      useMemo: (f) => f(), useRef: (v) => ({current: v})},
+    utils: {cn: (...xs) => xs.filter(Boolean).join(" "), timeAgo: () => "now"},
+  },
+  __HERMES_PLUGINS__: {register: () => {}},
+};
+global.document = {};
+vm.runInThisContext(fs.readFileSync(process.argv[1], "utf8"), {filename: process.argv[1]});
+const contract = window.__HERMES_KANBAN_RENDER_CONTRACT__;
+if (!contract) throw new Error("missing dashboard render contract");
+const tasks = [
+  {id: "r", status: "running", operational_status: "recovering"},
+  {id: "d", status: "todo", operational_status: "dependency-wait"},
+  {id: "q", status: "ready", operational_status: "queued"},
+  {id: "f", status: "blocked", operational_status: "failure"},
+];
+const buckets = contract.bucketTasks(tasks);
+const rendered = tasks.map((task) => contract.renderStatus(task));
+process.stdout.write(JSON.stringify({buckets, rendered}));
+"""
+    result = subprocess.run(
+        ["node", "-e", probe, str(bundle)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert {name: [task["id"] for task in tasks] for name, tasks in payload["buckets"].items()} == {
+        "recovering": ["r"],
+        "dependency-wait": ["d"],
+        "queued": ["q"],
+        "failure": ["f"],
+    }
+    assert [node["children"][0] for node in payload["rendered"]] == [
+        "Recovering", "Waiting on dependency", "Queued", "Failure",
+    ]
+    assert [node["props"]["data-operational-status"] for node in payload["rendered"]] == [
+        "recovering", "dependency-wait", "queued", "failure",
+    ]
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

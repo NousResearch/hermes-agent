@@ -14,6 +14,7 @@ Acceptance from #90471:
 """
 import subprocess
 import sys
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -257,6 +258,31 @@ class TestHermesHomeForPid:
         # ``-p``/``--profile`` is applied to os.environ after exec, invisible in /proc environ.
         assert dashboard_procs._hermes_home_for_pid(2) == f"{home}/.hermes/profiles/work"
         assert dashboard_procs._pids_owned_by_hermes_home([1, 2], f"{home}/.hermes") == [1]
+
+    # REGRESSION (#116906): a systemd/launchd unit with a scrubbed environment exports no HOME.
+    # The target resolves its own default home from the password database, so attributing it to
+    # the INSPECTING process's home named another user's directory — and `hermes update` /
+    # `--stop` then acted on the wrong profile root.
+    def _posix_scrubbed_unit(self, monkeypatch, tmp_path, passwd_home):
+        """A unit whose environment carries neither HOME nor HERMES_HOME, on the POSIX branch."""
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "linux")
+        monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: {})
+        monkeypatch.setattr(dashboard_procs, "_pid_passwd_home", lambda pid: passwd_home)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "inspecting-user"))
+        from hermes_cli import main_dashboard
+        monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid", lambda pid: ["hermes", "serve"])
+
+    def test_scrubbed_unit_env_resolves_to_the_owners_passwd_home(self, monkeypatch, tmp_path):
+        service_home = tmp_path / "hermes-service"
+        self._posix_scrubbed_unit(monkeypatch, tmp_path, str(service_home))
+
+        assert Path(dashboard_procs._hermes_home_for_pid(1)) == service_home / ".hermes"
+
+    def test_unreadable_passwd_entry_keeps_the_existing_fallback(self, monkeypatch, tmp_path):
+        """No owner, no entry: the previous behaviour stands rather than resolving to nothing."""
+        self._posix_scrubbed_unit(monkeypatch, tmp_path, None)
+
+        assert Path(dashboard_procs._hermes_home_for_pid(1)) == tmp_path / "inspecting-user" / ".hermes"
 
     def test_root_shaped_hermes_home_follows_the_flag_and_the_sticky_active_profile(self, monkeypatch, tmp_path):
         """Mirror ``_apply_profile_override``: an exported root ``HERMES_HOME`` is the root, not the

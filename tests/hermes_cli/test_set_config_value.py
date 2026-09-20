@@ -124,7 +124,9 @@ class TestConfigYamlRouting:
         registered config key (not flagged as unrecognized) and coerce to a real list."""
         set_config_value("tools.tool_search.defer", '["todo_list", "skill_manage"]')
 
-        assert "not a recognized config key" not in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        assert "not a recognized config key" not in captured.err
         config = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert config["tools"]["tool_search"]["defer"] == ["todo_list", "skill_manage"]
 

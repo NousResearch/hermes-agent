@@ -24,7 +24,6 @@ def test_shell_exec_scrubs_child_env_and_force_redacts_rpc_output(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", secret)
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     monkeypatch.setattr(server.subprocess, "run", fake_run)
-    monkeypatch.setattr(server, "detect_hardline_command", lambda _command: (False, ""), raising=False)
 
     response = server.handle_request(
         {"id": "security", "method": "shell.exec", "params": {"command": "echo safe"}}

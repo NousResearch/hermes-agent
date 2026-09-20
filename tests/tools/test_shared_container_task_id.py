@@ -421,6 +421,29 @@ def test_cleanup_vm_unbound_contextvar_does_not_clean_wrong_entry(clean_registry
     assert shared.cleanup_calls == 0 and scoped.cleanup_calls == 0
 
 
+def test_cleanup_vm_tears_down_every_env_it_pops(clean_registry, monkeypatch):
+    """Two owned keys, two live envs: BOTH must be torn down.
+
+    Popping a key without running ``env.cleanup()`` leaks the container for
+    good — the entry is gone from ``_active_environments``, so the
+    ``cleanup_all_environments`` sweep can no longer reach it either. The
+    sibling ``_evict_environment_for_task`` already collects every popped env
+    for this reason.
+    """
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda task_id: "default"
+    )
+    raw, scoped = _DummyEnv(), _DummyEnv()
+    terminal_tool._active_environments["k1"] = raw
+    terminal_tool._active_environments["session:k1"] = scoped
+
+    clean_registry.cleanup_vm("k1")
+
+    assert terminal_tool._active_environments == {}
+    assert raw.cleanup_calls == 1, "raw-key env was popped but never torn down"
+    assert scoped.cleanup_calls == 1, "session-scoped env was popped but never torn down"
+
+
 @pytest.mark.parametrize("shared_key", ["default", "profile:work", "shared:team"])
 def test_cleanup_vm_releases_shared_key_named_explicitly(
     clean_registry, monkeypatch, shared_key

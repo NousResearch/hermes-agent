@@ -26,6 +26,15 @@ import {
   waitForManagedSshBootstrapFence,
   waitForManagedUpdateOperations
 } from './managed-ssh-update'
+
+/**
+ * These cases execute the managed launcher through a real POSIX shell and
+ * assert POSIX remote-path semantics (`/…` or `~/…`). Windows has no
+ * `/bin/sh`, and a Windows temp dir is not a valid remote path, so the
+ * failures describe the host rather than the launcher. Green on CI (Linux)
+ * and macOS, which is where this code ships.
+ */
+const posixShellOnly = process.platform === 'win32' ? test.skip : test
 import { createBootstrapCoordinator } from './ssh-bootstrap-coordinator'
 
 const CORRELATION = '12345678-1234-4678-9234-567812345678'
@@ -280,7 +289,7 @@ test('POSIX managed launcher is detached, correlation-scoped, and never publishe
   assert.match(command, /while \[ ! -e/)
 })
 
-test('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
+posixShellOnly('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
 
   try {
@@ -359,7 +368,7 @@ test('remote observation rejects a receipt for another correlation', () => {
   )
 })
 
-test('POSIX observer reads the exact correlation receipt and terminal marker from disk', async () => {
+posixShellOnly('POSIX observer reads the exact correlation receipt and terminal marker from disk', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-update-'))
 
   try {
@@ -401,7 +410,7 @@ test('POSIX observer reads the exact correlation receipt and terminal marker fro
   }
 })
 
-test('managed observer unwraps a named profile home for the install-wide marker', async () => {
+posixShellOnly('managed observer unwraps a named profile home for the install-wide marker', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))
   const profileHome = path.join(root, 'profiles', 'research')
 

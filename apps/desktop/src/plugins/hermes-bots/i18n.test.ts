@@ -67,4 +67,36 @@ describe('BOTS_LOCALES', () => {
       expect(reasonFn(sentinel)).toContain(sentinel)
     }
   })
+
+  it('translates the activity-row verbs and keeps the speaker argument', () => {
+    const sentinel = 'SPEAKER_SENTINEL'
+
+    const speakerTakingPaths = [
+      'group.activityQueued', 'group.activityWorking', 'group.activityReplied', 'group.activityPassed',
+      'group.activityTimedOut', 'group.activityFailed', 'group.activityDelivered', 'group.activityHeld',
+      'group.activityStopped'
+    ] as const
+
+    const standalonePaths = ['group.activityCancelled', 'group.activitySettled', 'group.activityCapped'] as const
+    const enByPath = Object.fromEntries(leafEntries(en))
+
+    for (const locale of [en, ja, zh, zhHant]) {
+      const byPath = Object.fromEntries(leafEntries(locale))
+
+      for (const path of speakerTakingPaths) {
+        const fn = byPath[path] as (who: string) => string
+
+        expect(fn(sentinel)).toContain(sentinel)
+      }
+
+      if (locale !== en) {
+        for (const path of [...speakerTakingPaths, ...standalonePaths]) {
+          const translated = typeof byPath[path] === 'function' ? (byPath[path] as (w: string) => string)(sentinel) : byPath[path]
+          const english = typeof enByPath[path] === 'function' ? (enByPath[path] as (w: string) => string)(sentinel) : enByPath[path]
+
+          expect(translated).not.toBe(english)
+        }
+      }
+    }
+  })
 })

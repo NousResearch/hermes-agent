@@ -10,6 +10,7 @@
 import { atom } from '@hermes/plugin-sdk'
 
 import { $groupChats, groupSpeakerLabel } from './group-chat'
+import { botsText } from './i18n'
 import type { GroupActivityEvent, GroupActivityKind } from './types'
 
 // ── group activity feed ─────────────────────────────────────────────────────
@@ -74,30 +75,53 @@ export function currentGroupActivity(group: string) {
  *  room's seats. */
 export function groupActivityLabel(event: GroupActivityEntry, group?: null | string) {
   const kind = event?.kind
-  const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
+  const g = botsText().group
 
-  if (kind === 'cancelled' || kind === 'settled' || kind === 'capped') {
-    return base
+  if (kind === 'cancelled') {
+    return g.activityCancelled
   }
 
-  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot', group)
+  if (kind === 'settled') {
+    return g.activitySettled
+  }
 
-  return `${who} ${base}`
-}
+  if (kind === 'capped') {
+    return g.activityCapped
+  }
 
-const GROUP_ACTIVITY_LABELS: Record<GroupActivityKind, string> = {
-  queued: 'sent a message',
-  working: 'is working…',
-  replied: 'replied',
-  passed: 'passed',
-  'timed-out': 'took too long',
-  failed: 'hit an error',
-  cancelled: 'turn interrupted by a newer message',
-  settled: 'turn settled',
-  capped: 'turn stopped at the round/message cap',
-  delivered: 'delivered a late reply',
-  held: 'is held (stopped by you) — @mention it or say resume to release',
-  stopped: 'stopped the room — remaining turns are held until resumed'
+  const who = event?.member === 'You' ? g.you : groupSpeakerLabel(event?.member || 'A bot', group)
+
+  switch (kind) {
+    case 'queued':
+      return g.activityQueued(who)
+
+    case 'working':
+      return g.activityWorking(who)
+
+    case 'replied':
+      return g.activityReplied(who)
+
+    case 'passed':
+      return g.activityPassed(who)
+
+    case 'timed-out':
+      return g.activityTimedOut(who)
+
+    case 'failed':
+      return g.activityFailed(who)
+
+    case 'delivered':
+      return g.activityDelivered(who)
+
+    case 'held':
+      return g.activityHeld(who)
+
+    case 'stopped':
+      return g.activityStopped(who)
+
+    default:
+      return `${who} ${kind || 'did something'}`
+  }
 }
 
 export const GROUP_ACTIVITY_GLYPHS: Record<GroupActivityKind, string> = {

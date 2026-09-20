@@ -10,7 +10,10 @@ from run_agent import AIAgent
 def test_flushed_steer_keeps_one_display_identity_across_compactions(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     session_id = "steer-compaction"
-    with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
+    with (
+        patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}),
+        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+    ):
         agent = AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",

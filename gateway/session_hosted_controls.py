@@ -41,10 +41,11 @@ class HostedControls:
                         execution_generation=execution_generation)
             lease = self.runtime._ensure_lease(binding)
             result = self.runtime._fenced(tasks.resolve_indeterminate_cancellation,
-                binding, task, lease, cancel_id=cancel_id)
+                binding, task, lease, cancel_id=cancel_id, publish=False)
             self.runtime._set_blocked(room_id, False)
-            self.runtime.wakeup()
-            return result
+        # The fenced control commits under the lock; Output I/O must not inherit it.
+        self.publish_terminal(binding, result)
+        return result
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:

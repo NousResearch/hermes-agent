@@ -7,6 +7,7 @@ Route metadata and its scoped grant share the gateway's private root ``state.db`
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -19,6 +20,12 @@ from gateway import hosted_room_link_records
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedRoomPeerError, TransportSecurity, validate_room_link_url)
 from gateway.hosted_rooms_common import DbPath, compact_json, exact_fields, identifier
+
+
+def route_security_digest(record: Mapping[str, Any]) -> str:
+    """Authenticated route identity; health observations do not rotate authority."""
+    security = {k: v for k, v in record.items() if k not in {'status', 'updated_at'}}
+    return hashlib.sha256(json.dumps(security, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
 MAX_LINKS = 512

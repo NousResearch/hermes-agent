@@ -101,6 +101,8 @@ def refresh_agent_mcp_tools(
     slot (schemas still refresh), a still-registered tool whose ``check_fn`` merely flapped is
     carried forward (``check_fn`` gates exposure, never invocation), a deregistered tool is
     dropped, new tools append at the tail. The caller owns the prompt-cache contract."""
+    if getattr(agent, "tools_disabled", False) is True:
+        return set()
     from model_tools import get_tool_definitions
     from tools.registry import registry
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
@@ -156,7 +158,7 @@ def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
     After agent-cache eviction the gateway rebuilds a NEW AIAgent with no predecessor to
     preserve, so the saved name list stands in (``_merge_preserving_prefix`` rule; a saved
     tool still registered but failing its probe is carried forward from the registry schema)."""
-    if not saved_names:
+    if getattr(agent, "tools_disabled", False) is True or not saved_names:
         return False
     from tools.registry import registry
     fresh_defs = _agent_tool_defs(agent)

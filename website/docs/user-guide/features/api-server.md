@@ -55,6 +55,23 @@ Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI i
 
 ## Endpoints
 
+### Per-request tools policy
+
+On `/v1/chat/completions` and `/v1/responses`, send `"tool_choice": "none"` to
+remove tools for that request. Hermes constructs an agent with no tool schemas,
+prevents saved or refreshed tool lists from restoring them, and denies tool execution
+even if a model returns a tool call. This applies to streaming and non-streaming
+requests in every profile. It does not change the profile configuration or other calls.
+
+Omitting `tool_choice`, or sending `"auto"`, keeps the profile's configured tools.
+A client `tools: []` alone does not disable Hermes tools. Malformed choices, including
+`null`, return HTTP 400 before agent construction. The existing server-managed behavior
+for `"required"` and named function choices is unchanged; these do not force a particular
+Hermes tool. Use `"none"` for the enforced no-tools boundary.
+
+The setting does not grant access: normal API authentication still applies. Conversation
+storage and configured memory processing remain active; no-tools is not a read-only session.
+
 ### POST /v1/chat/completions
 
 Standard OpenAI Chat Completions format. Stateless — the full conversation is included in each request via the `messages` array.

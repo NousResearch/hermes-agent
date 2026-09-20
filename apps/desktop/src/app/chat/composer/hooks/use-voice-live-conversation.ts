@@ -6,6 +6,8 @@ import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession 
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
+import { useComposerScope } from '../scope'
+
 import { micError } from './use-mic-recorder'
 import type { ConversationStatus } from './use-voice-conversation'
 
@@ -121,6 +123,12 @@ export function useVoiceLiveConversation({
   // restart the feed loop, and a ref write alone does not re-render.
   const [activeDelegation, setActiveDelegation] = useState<null | string>(null)
   const sessionRef = useRef<null | VoiceLiveSession>(null)
+  // The scope's session owner (a Bot's own connection + profile) picks the
+  // GPT-Live backend and voice; a ref keeps the long-lived start closures
+  // reading the current value.
+  const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
+  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
+  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   // Bumped by every start/end so an in-flight start() that lost the race
   // (StrictMode double-effect, quick toggle) closes its session instead of
   // leaving a second billed one running.
@@ -326,7 +334,7 @@ export function useVoiceLiveConversation({
         setLevel(speaking ? 0.6 : 0)
         refreshStatus()
       }
-    })
+    }, ownerRef.current)
 
     sessionRef.current = session
     startingRef.current = false

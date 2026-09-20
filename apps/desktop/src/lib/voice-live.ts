@@ -1,4 +1,4 @@
-import { profileScoped } from '@/api/client'
+import { type OwnerScope, ownerScoped } from '@/api/client'
 import { hermesApi } from '@/hermes'
 
 /**
@@ -78,10 +78,10 @@ const APPEND_CHAR_LIMIT = 1_400
 const CONTEXT_WINDOW_MS = 5 * 60_000
 const CONTEXT_MAX_FRAGMENTS = 80
 
-export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
+export async function fetchVoiceLiveStatus(owner?: null | OwnerScope): Promise<null | VoiceLiveStatus> {
   try {
     const response = await hermesApi<{ ok: boolean } & VoiceLiveStatus>({
-      ...profileScoped(),
+      ...ownerScoped(owner ?? undefined),
       path: '/api/audio/voice-live/status'
     })
 
@@ -213,6 +213,11 @@ async function waitForIceGathering(connection: RTCPeerConnection): Promise<void>
 
 export class VoiceLiveSession {
   readonly audio: HTMLAudioElement
+  /** Whose (connection, profile) this session dials; null → the active scope.
+   *  A Bot chat runs its GPT-Live session on the Bot's own profile, so the
+   *  voice configured there is the voice that answers. */
+  private readonly owner: null | OwnerScope
+  private readonly handlers: VoiceLiveHandlers
   private peer: null | RTCPeerConnection = null
   private events: null | RTCDataChannel = null
   private microphone: null | MediaStream = null
@@ -230,7 +235,9 @@ export class VoiceLiveSession {
    *  older id are dropped by the conversation hook. */
   activeDelegationId: null | string = null
 
-  constructor(private readonly handlers: VoiceLiveHandlers) {
+  constructor(handlers: VoiceLiveHandlers, owner: null | OwnerScope = null) {
+    this.handlers = handlers
+    this.owner = owner
     this.audio = new Audio()
     this.audio.autoplay = true
   }
@@ -321,7 +328,7 @@ export class VoiceLiveSession {
       session?: { id: string }
       transport?: { sdp: string; type: string }
     }>({
-      ...profileScoped(),
+      ...ownerScoped(this.owner ?? undefined),
       body: { history, sdp },
       method: 'POST',
       path: '/api/audio/voice-live/session',

@@ -105,10 +105,12 @@ def _normalize_error(error: str) -> str:
 
 
 def _max_error_chars() -> int:
-    """``cron.incident_max_error_chars``; default ``MAX_ERROR_CHARS`` (byte-identical unless set)."""
+    """``cron.incident_max_error_chars``; default ``MAX_ERROR_CHARS`` (byte-identical unless set).
+    Non-positive values fall back to the default instead of blanking or reversing the text."""
     from cron.jobs import _cron_config_number
 
-    return _cron_config_number("incident_max_error_chars", MAX_ERROR_CHARS, int)
+    bound = _cron_config_number("incident_max_error_chars", MAX_ERROR_CHARS, int)
+    return bound if bound > 0 else MAX_ERROR_CHARS
 
 
 def _redact_error(error: str) -> str:

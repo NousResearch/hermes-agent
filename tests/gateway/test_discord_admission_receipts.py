@@ -115,6 +115,38 @@ def test_authorized_sender_emits_no_receipt(caplog):
     assert _receipts(caplog) == []
 
 
+def test_receipt_survives_exploding_parent_lookup(caplog):
+    # Logging must never break admission: an exotic channel whose parent
+    # accessors raise still yields the refusal verdict and a receipt.
+    class ExplodingParentChannel:
+        id = 7
+
+        @property
+        def parent(self):
+            raise RuntimeError("boom")
+
+        @property
+        def parent_id(self):
+            raise RuntimeError("boom")
+
+    adapter = _adapter(allowed_users={"555"})
+    msg = SimpleNamespace(
+        id=126,
+        author=SimpleNamespace(id=42, bot=False),
+        channel=ExplodingParentChannel(),
+        guild=None,
+        content=SECRET_TEXT,
+        mentions=[],
+        type=discord.MessageType.default,
+    )
+    with caplog.at_level(logging.DEBUG):
+        admitted, _ = adapter._discord_message_admission(msg, claim=True)
+    assert admitted is False
+    receipts = _receipts(caplog)
+    assert len(receipts) == 1
+    assert "parent_id=None" in receipts[0].getMessage()
+
+
 def test_bot_gate_refusal_receipt_is_debug(caplog):
     adapter = _adapter(allow_bots="mentions")
     bot_msg = SimpleNamespace(

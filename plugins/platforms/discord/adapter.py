@@ -1440,6 +1440,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """
         author = getattr(message, "author", None)
         channel = getattr(message, "channel", None)
+        try:
+            parent_id = self._get_parent_channel_id(channel) if channel is not None else None
+        except Exception:
+            # Logging must never break admission; an exotic channel shape logs parent_id=None.
+            parent_id = None
         logger.log(
             level,
             "[%s] admission refused: reason=%s actor=%s user_id=%s guild_id=%s "
@@ -1450,7 +1455,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             getattr(author, "id", None),
             getattr(getattr(message, "guild", None), "id", None),
             getattr(channel, "id", None),
-            self._get_parent_channel_id(channel) if channel is not None else None,
+            parent_id,
             getattr(message, "id", None),
         )
 

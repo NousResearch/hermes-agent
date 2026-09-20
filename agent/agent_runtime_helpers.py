@@ -1607,10 +1607,12 @@ def anthropic_prompt_cache_policy(
     litellm_openai_wire = (
         eff_api_mode == "chat_completions" and is_claude and _is_litellm_route(provider_lower, eff_base_url)
     )
+    is_custom_route = _route_may_be_custom(agent, eff_provider, provider_lower, eff_base_url)
+    capability_checked_undeclared = False
     if supports_cache_markers and (
         is_anthropic_wire
         or litellm_openai_wire
-        or _route_may_be_custom(agent, eff_provider, provider_lower, eff_base_url)
+        or is_custom_route
     ):
         try:
             from hermes_cli.config import get_custom_provider_model_capability
@@ -1621,6 +1623,7 @@ def anthropic_prompt_cache_policy(
             if custom_prompt_caching is not None:
                 # Layout follows the transport: native Messages → inner blocks; OpenAI wire → envelope.
                 return custom_prompt_caching, custom_prompt_caching and is_anthropic_wire
+            capability_checked_undeclared = True
         except Exception as _cap_exc:
             logger.debug("custom-provider prompt_caching capability lookup failed: %s", _cap_exc)
     # MiniMax-M3 uses server-side automatic prefix caching; explicit markers are dead weight.
@@ -1668,6 +1671,27 @@ def anthropic_prompt_cache_policy(
     from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, is_qwen_model
     if provider_lower in ALIBABA_FAMILY_PROVIDERS and is_qwen_model(model_lower):
         return True, False
+    # Combo/gateway aliases (e.g. OmniRoute's `best-reasoning-paid`) name no model family, so every
+    # substring gate above misses and the route silently serves 0% cache hits at full input price —
+    # observed: 5.9k claude→claude calls / 535M input tokens, zero cache reads AND zero creations,
+    # because no cache_control marker was ever emitted. The alias's backing model family is only
+    # known to the gateway, so the client cannot infer it; the only honest fix is an explicit
+    # capability declaration. Warn once per (model, route) so the operator can set it.
+    if capability_checked_undeclared and is_custom_route:
+        warned = getattr(agent, "_cache_policy_alias_warned", None)
+        if warned is None:
+            warned = set()
+            agent._cache_policy_alias_warned = warned
+        warn_key = (eff_model, eff_base_url)
+        if warn_key not in warned:
+            warned.add(warn_key)
+            logger.warning(
+                "Prompt caching is OFF for custom-route model %r (%s): the alias matches no known "
+                "caching family and no prompt_caching capability is declared. If the route fronts a "
+                "caching-capable model (e.g. a gateway combo alias), declare it: "
+                "hermes config set custom_providers.<i>.models.%s.prompt_caching true",
+                eff_model, base_url_hostname(eff_base_url) or eff_base_url, eff_model,
+            )
     return False, False
 
 

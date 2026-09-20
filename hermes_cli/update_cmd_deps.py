@@ -953,6 +953,13 @@ def _rebuild_desktop_after_update(
     See #88251.
     """
     from hermes_cli.update_cmd import _m
+    if (
+        sys.platform == "linux"
+        and os.environ.get("APPIMAGE")
+        and os.environ.get("HERMES_APPIMAGE_UPDATE") == "1"
+    ):
+        print("→ Desktop AppImage update is handled separately")
+        return True
     # The release tree is git-ignored and can vanish mid-update; pre-update presence suffices. So does the
     # build stamp under HERMES_HOME: it outlives a swap that lost the artifacts in an earlier run, and
     # without it the install "forgets" Desktop was installed and never rebuilds (#90495). Never make

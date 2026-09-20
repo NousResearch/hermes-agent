@@ -114,6 +114,16 @@ def test_up_to_date_desktop_returns_true_without_spawning(desktop_env):
     assert calls["builds"] == 0
 
 
+def test_appimage_update_skips_source_desktop_rebuild(desktop_env, monkeypatch, capsys):
+    desktop_dir, calls = desktop_env
+    monkeypatch.setenv("APPIMAGE", "/tmp/Hermes.AppImage")
+    monkeypatch.setenv("HERMES_APPIMAGE_UPDATE", "1")
+    monkeypatch.setattr(update_cmd.sys, "platform", "linux")
+
+    assert _run(desktop_dir) is True
+    assert calls["builds"] == 0
+    assert "handled separately" in capsys.readouterr().out
+
 def test_lost_desktop_with_surviving_build_stamp_is_rebuilt(desktop_env, monkeypatch):
     """#90495: a swap that lost release/ and dist/ in an EARLIER run leaves both presence terms false
     forever; the build stamp under HERMES_HOME survived and is the proof Desktop was installed here."""

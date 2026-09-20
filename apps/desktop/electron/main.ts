@@ -27,7 +27,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
@@ -297,6 +298,7 @@ import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
+import { createTrayLifecycle, readCloseToTraySetting } from './tray-lifecycle'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -865,6 +867,21 @@ function resolveHermesHome() {
 }
 
 const HERMES_HOME = resolveHermesHome()
+
+function closeToTrayEnabled() {
+  if (!IS_WINDOWS) {
+    return false
+  }
+
+  try {
+    return readCloseToTraySetting(fs.readFileSync(path.join(HERMES_HOME, 'config.yaml'), 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+const trayLifecycle = createTrayLifecycle({ enabled: closeToTrayEnabled(), isWindows: IS_WINDOWS })
+let tray: Tray | null = null
 
 function pathWithHermesManagedNode(...entries) {
   const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
@@ -1440,6 +1457,43 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+
+function restoreMainWindowFromTray() {
+  if (!trayLifecycle.restoreWindow(mainWindow)) {
+    createWindow()
+  }
+}
+
+function ensureWindowsTray() {
+  if (!IS_WINDOWS || tray || !closeToTrayEnabled()) {
+    return
+  }
+
+  const icon = getAppIconPath()
+
+  if (!icon) {
+    rememberLog('[tray] Windows close-to-tray is enabled but no application icon was found')
+    return
+  }
+
+  tray = new Tray(icon)
+  tray.setToolTip(APP_NAME)
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Open', click: restoreMainWindowFromTray },
+      { label: 'New session', click: () => createInstanceWindow() },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => {
+          trayLifecycle.requestQuit()
+          app.quit()
+        }
+      }
+    ])
+  )
+  tray.on('click', restoreMainWindowFromTray)
+}
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 
 const localBackendLifecycle = createLocalBackendLifecycle<ReturnType<typeof spawn>>({
@@ -14749,7 +14803,10 @@ function createWindow() {
   bindGeometryPersistence(mainWindow, schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', event => {
+    schedulePersistWindowState.flush()
+    trayLifecycle.handleWindowClose(event, mainWindow)
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
@@ -17204,6 +17261,8 @@ function scheduleTranslucencyWrite() {
 // Flush a pending write before the process can exit, so a quit landing inside
 // the debounce window doesn't lose the setting.
 app.on('before-quit', () => {
+  trayLifecycle.requestQuit()
+
   if (translucencyWriteTimer) {
     clearTimeout(translucencyWriteTimer)
     translucencyWriteTimer = null
@@ -18222,6 +18281,7 @@ app.whenReady().then(() => {
   // captured by the original transaction before removing the journal entry.
   void resumeManagedSshRecoveries()
   createWindow()
+  ensureWindowsTray()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

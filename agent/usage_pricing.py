@@ -186,11 +186,11 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "gpt-4.1-nano": ("0.10", "0.40", "0.025"), "o3": ("10.00", "40.00", "2.50"),
         "o3-mini": ("1.10", "4.40", "0.55"),
     }),
-    # deepseek-chat / deepseek-reasoner are deprecated aliases of
-    # deepseek-v4-flash's non-thinking / thinking modes — same rates.
-    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-07", {
-        ("deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"): ("0.14", "0.28", "0.0028"),
-        "deepseek-v4-pro": ("0.435", "0.87", "0.003625"),
+    # Off-peak USD rates (peak = 2x, Mon-Fri 01-04 + 06-10 UTC). ``deepseek-v4-flash`` and the
+    # retired deepseek-chat / deepseek-reasoner aliases are served by V4.1-Flash at the Flash price.
+    ("deepseek", "https://api-docs.deepseek.com/quick_start/pricing", "deepseek-pricing-2026-09-10", {
+        ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
+        "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),

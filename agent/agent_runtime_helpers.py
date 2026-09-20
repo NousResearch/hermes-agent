@@ -84,9 +84,11 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
     "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview",
     "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour",
     "delegate_task",
-    # KENSEI CUSTOM — config_set + ask_user_questions post-hook gating:
-    "ask_user_questions", "config_set",
 })
+# NOTE: Kensei's ask_user_questions + config_set are registry-dispatched tools
+# (tools/ask_user_questions_tool.py, tools/config_set_tool.py). Their post-tool
+# hooks fire through the registry's own hook chain, so they do NOT belong in
+# the agent-runtime inline ownership set (pre-decomposition leftovers).
 
 _TRAJECTORY_SYSTEM_PROMPT = (
     "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "

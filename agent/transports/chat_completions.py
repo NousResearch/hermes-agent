@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
+from agent.message_sanitization import normalize_finish_reason
 from agent.reasoning_effort import (
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
     kimi_supported_efforts, requested_effort,
@@ -606,7 +607,10 @@ class ChatCompletionsTransport(ProviderTransport):
         choice = response.choices[0]
         msg = getattr(choice, "message", None)
         _fr = getattr(choice, "finish_reason", None)
-        finish_reason = (str(_fr) if isinstance(_fr, int) else _fr) or "stop"  # Poolside returns int finish_reason
+        # Poolside returns int finish_reason; Gemini-fronting gateways emit
+        # uppercase wire reasons (STOP / MAX_TOKENS) — fold to the lowercase
+        # OpenAI contract here (wire-intake choke point).
+        finish_reason = normalize_finish_reason((str(_fr) if isinstance(_fr, int) else _fr) or "stop")
 
         tool_calls = None
         if getattr(msg, "tool_calls", None):

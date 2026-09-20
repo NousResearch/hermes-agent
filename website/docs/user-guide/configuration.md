@@ -1407,6 +1407,13 @@ No background `auto-title` thread starts and no automatic title-model request is
 explicit repair command `hermes sessions retitle-skills` still calls the model. `enabled: false`
 still disables both stages.
 
+On a `custom` main provider (llama.cpp, Ollama, vLLM, LM Studio and other self-hosted
+OpenAI-compatible servers) the title model call is sent **after** the turn's reply has
+arrived, not concurrently with it, unless `auxiliary.title_generation` is pinned to another
+provider or `base_url`. A single-slot local server that receives the `json_schema` title
+request while decoding the reply can otherwise answer the reply with `{"title": ...}`,
+which is then stored and replayed as the assistant's turn.
+
 In Hermes Desktop, a plain-text paste over 3,000 characters becomes a generated `.txt`
 attachment. The first ~1,000 characters of that paste are handed to the title stages as a
 title-only hint (the agent turn still sees only the attachment reference), so a "summarize

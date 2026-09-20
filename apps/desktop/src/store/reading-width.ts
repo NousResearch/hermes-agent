@@ -9,6 +9,7 @@ const readingWidthCodec: Codec<ReadingWidth> = {
   encode: value => value
 }
 
+// 'wide' preserves the previous full-width chat layout.
 export const $readingWidth = persistentAtom<ReadingWidth>(STORAGE_KEY, 'wide', readingWidthCodec)
 
 function applyReadingWidth(width: ReadingWidth): void {

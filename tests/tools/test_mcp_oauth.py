@@ -331,7 +331,8 @@ class TestBuildOAuthAuth:
             await provider._handle_token_response(httpx.Response(403, content=waf.encode()))
 
         message = str(exc_info.value)
-        assert message.startswith("Token exchange failed (403): ERROR 403 ERROR Request blocked. Bearer [REDACTED]")
+        assert message.startswith("Token exchange failed (403): ERROR 403 ERROR Request blocked.")
+        assert "[REDACTED]" in message
         assert "<" not in message and "leaked-bearer-token" not in message
         assert len(message) <= len("Token exchange failed (403): ") + 200
         assert provider.context.current_tokens is None

@@ -1296,11 +1296,14 @@ dispatch and delivery have separate owners:
   `writer` profile's Telegram gets its `completed`/`blocked` message delivered
   by the `writer` gateway, even though the `default` gateway did the
   dispatching.
-- **Route-only multiplex profiles** can use the primary adapter when the
-  subscription's persisted platform, chat, thread, scope and parent-channel
-  anchors resolve to that exact served profile through `gateway.profile_routes`.
-  A connected secondary adapter remains authoritative; a partial secondary
-  adapter registry never falls back to the primary bot. Unmatched, reassigned,
+- **Multiplex profiles pinned by `gateway.profile_routes`** can use the primary
+  adapter when the subscription's persisted platform, chat, thread, scope and
+  parent-channel anchors resolve to that exact served profile through
+  `gateway.profile_routes` and the profile holds no adapter of its own for the
+  subscription's platform. A connected secondary adapter for that platform
+  remains authoritative; adapters the profile runs on *other* platforms do not
+  block delivery (the shared bot is the only credential serving the pinned
+  chat, for inbound turns and notifications alike). Unmatched, reassigned,
   disabled or ambiguous routes remain undelivered and retryable. Old rows
   missing required routing anchors are not guessed into a profile. Wake turns keep
   the destination profile's runtime scope and the authorized transport.

@@ -171,6 +171,7 @@ def _group(authority, actor, home, method, params):
                 name=params.get('name'), members=normalized, authority_gateway_id=gateway_id)}
 
     def disband():
+        from gateway.session_group_retirement import require_room_retired
         from gateway.hosted_room_driver import list_tasks
         from gateway.hosted_room_link_records import begin_room_link_retirement, list_room_link_records
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
@@ -184,6 +185,8 @@ def _group(authority, actor, home, method, params):
             service.stop_room(params.get('room_id'),
                               cancel_id=params.get('cancel_id') or 'room-disbanded',
                               require_acknowledged=True)
+            with authority.db._read_ctx() as conn:
+                require_room_retired(conn, params.get('room_id'))
             service.revoke_room_routes(params.get('room_id'))
         # Metadata control must not bypass accepted work or exact credential retirement.
         if service is None and (any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
@@ -192,7 +195,9 @@ def _group(authority, actor, home, method, params):
             raise RuntimeStoreError('runtime_coordination_required')
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
-                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
+                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'],
+                authorize_retirement=lambda conn: require_room_retired(
+                    conn, params.get('room_id'), unavailable=service is None))}
 
     def state():
         room = rooms.room_state(db_path, **params)

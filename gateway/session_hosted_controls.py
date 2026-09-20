@@ -5,6 +5,23 @@ from tui_gateway.hosted_room_driver import HostedRoomBinding
 
 
 class HostedControls:
+    def _capture_room_cancel(self, task, cancel_id):
+        # Canonical unknown is not legacy inactivity. Preserve the exact
+        # explicit-discard control rather than converting it into a cancelled row.
+        if task['status'] in {'indeterminate', 'running', 'stopping'}:
+            room = self._room(task['identity'].room_id)
+            binding = HostedRoomBinding(room['room_id'], room['authority_gateway_id'], room['authority_epoch'])
+            member = task['payload'].get('target_member_id', task['payload']['target_profile'])
+            if not self._member_is_peer(room['room_id'], member):
+                rpc = self._resolve_member_transport(binding, task)
+                from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+                if (type(rpc) is HostedRoomAuthorityRPC
+                    and self.authority.db.get_session(rpc.ref.session_id) is not None and any(
+                        row['status'] == 'unknown' and identity == task['identity']
+                        and generation == task['execution_generation'] for row, identity, generation in rpc._rows())):
+                    return task
+        return super()._capture_room_cancel(task, cancel_id)
+
     def _control_task(self, room_id, member_id, task_id, execution_generation, *, proven_peer_retry=False):
         if (type(execution_generation) is not int or execution_generation < 1
                 or not isinstance(member_id, str) or not member_id

@@ -1,5 +1,6 @@
 """Native room controls retain the service protocol and authenticated ownership."""
 import asyncio
+import threading
 from types import SimpleNamespace
 
 from gateway.session_controls import AuthorityConnection
@@ -12,6 +13,7 @@ class RoomService:
         self.db_path = path
         self.owner = owner
         self.calls = []
+        self._policy_lock = threading.RLock()
         self.runtime = SimpleNamespace(status=lambda: {'running': True, 'stopping': False})
 
     def authorize_room(self, actor_subject, room_id, *, create=False):
@@ -29,6 +31,10 @@ class RoomService:
 
     def revoke_room_routes(self, room_id):
         self.calls.append(('revoke', room_id))
+
+    def begin_room_disband(self, room_id):
+        from tui_gateway.hosted_room_service import HostedRoomService
+        return HostedRoomService.begin_room_disband(self, room_id)
 
     def send(self, *, room_id, event_id, payload):
         self.calls.append(('send', room_id, event_id, payload))

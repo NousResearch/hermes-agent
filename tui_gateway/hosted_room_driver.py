@@ -203,7 +203,8 @@ class HostedRoomRuntime:
                 "last_error": self._last_error, "cycles": self._cycles}
 
     # ------------------------------------------------------------------ public ops
-    def cancel(self, identity: state.TaskIdentity, *, cancel_id: str, publish: bool = True) -> dict[str, Any]:
+    def cancel(self, identity: state.TaskIdentity, *, cancel_id: str, publish: bool = True,
+               capture_only: bool = False, expected_execution_generation=None) -> dict[str, Any]:
         """Persist a stop intent, then commit cancellation after acknowledgement.
 
         The worker transitions tasks concurrently, so the status read is only a routing
@@ -211,6 +212,9 @@ class HostedRoomRuntime:
         """
         for _ in range(_CANCEL_ROUTE_RETRIES):
             before = state.get_task(self.db_path, identity)
+            if (expected_execution_generation is not None
+                    and before['execution_generation'] != expected_execution_generation):
+                raise state.StaleTaskError('Stop execution generation changed')
             if before["status"] == "cancelled":
                 return before
             if before["status"] in state.TERMINAL_STATUSES:
@@ -223,6 +227,8 @@ class HostedRoomRuntime:
                     expected_cancel_generation=before["cancel_generation"], clock=self.clock)
             except (state.InvalidTaskTransitionError, state.StaleTaskError):
                 continue  # lost the race with the worker (settled or re-queued); re-route
+            if capture_only:
+                return result
             if not direct:
                 binding = self._binding_for_room(identity.room_id)
                 try:
@@ -243,6 +249,15 @@ class HostedRoomRuntime:
         raise state.InvalidTaskTransitionError(
             "cancel kept losing races with task transitions "
             f"(last observed state '{final['status']}')")
+
+    def finish_cancel(self, binding, captured, *, publish=True):
+        """Observe the captured attempt outside caller policy claims."""
+        current = state.get_task(self.db_path, captured['identity'])
+        if (current['execution_generation'], current['cancel_generation'], current['status']) != (
+                captured['execution_generation'], captured['cancel_generation'], 'stopping'):
+            return current
+        return self.cancel(captured['identity'], cancel_id=captured['cancel_id'], publish=publish,
+                           expected_execution_generation=captured['execution_generation'])
 
     def retry_indeterminate(self, identity: state.TaskIdentity) -> dict[str, Any]:
         """Explicitly retry one uncertain attempt under the current room lease."""
@@ -667,6 +682,12 @@ class HostedRoomRuntime:
         """Durably commit one in-process terminal receipt for ``attempt``."""
         status = receipt.get("status")
         if status == "cancelled":
+            # The exact canonical terminal callback may arrive after the signal
+            # already cancelled its driver row. Reconcile retained Output then.
+            current = state.get_task(self.db_path, attempt.identity)
+            if (current['execution_generation'] == attempt.execution_generation
+                    and current['status'] in {'cancelled', 'stopping'}):
+                self._publish(binding, current)
             self.wakeup()
             return
         terminal = _TerminalReceipt(

@@ -716,11 +716,21 @@ class HostedRoomService:
 
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
+        # Same-room controls share an attempt; independent rooms never wait here.
+        with self._policy_lock:
+            if not hasattr(self, '_room_stop_locks'):
+                self._room_stop_locks = {}
+            lock = self._room_stop_locks.setdefault(room_id, threading.RLock())
+        with lock:
+            return self._stop_room_captured(room_id, cancel_id=cancel_id,
+                                            require_acknowledged=require_acknowledged)
+
+    def _stop_room_captured(self, room_id, *, cancel_id, require_acknowledged):
         gateway_id, epoch = self._owned_authority(room_id)
         hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
-        pending = 0
+        pending, captured = 0, []
         with self._policy_lock:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
@@ -728,9 +738,13 @@ class HostedRoomService:
             for task in tasks.values():
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
-                result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id, publish=False)
-                if result["status"] == "stopping":
-                    pending += 1
+                result = self._capture_room_cancel(task, own_cancel_id or cancel_id)
+                captured.append(result)
+        binding = HostedRoomBinding(room_id, gateway_id, epoch)
+        for result in captured:
+            result = self.runtime.finish_cancel(binding, result, publish=False)
+            if result['status'] in {'stopping', 'indeterminate'}:
+                pending += 1
         # Completion callbacks were suppressed only for this lock-owning control.
         # Publish from fresh durable state after its outer policy claim is released.
         self.prepare_room(HostedRoomBinding(room_id, gateway_id, epoch))
@@ -738,6 +752,10 @@ class HostedRoomService:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
         return len(tasks)
+
+    def _capture_room_cancel(self, task, cancel_id):
+        return self.runtime.cancel(task['identity'], cancel_id=cancel_id, publish=False, capture_only=True,
+                                   expected_execution_generation=task['execution_generation'])
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""

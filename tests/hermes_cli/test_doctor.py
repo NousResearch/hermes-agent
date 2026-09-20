@@ -1229,6 +1229,7 @@ def _run_doctor_with_healthy_oauth_fallback(
     failing_host: str,
     minimax_oauth_status: dict,
     xai_oauth_status: dict | None = None,
+    meta_oauth_status: dict | None = None,
 ) -> str:
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
@@ -1266,6 +1267,8 @@ def _run_doctor_with_healthy_oauth_fallback(
     monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: minimax_oauth_status)
     _xai_status = xai_oauth_status if xai_oauth_status is not None else {}
     monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: _xai_status)
+    _meta_status = meta_oauth_status if meta_oauth_status is not None else {}
+    monkeypatch.setattr(_auth_mod, "get_meta_oauth_auth_status", lambda: _meta_status)
 
     def fake_get(url, headers=None, timeout=None):
         status = 401 if failing_host in url else 200
@@ -1437,6 +1440,99 @@ class TestDoctorXaiOAuthStatus:
 
         out = self._run(monkeypatch, tmp_path, xai_auth_fn=_raise)
         assert "Auth Providers" in out
+
+
+def test_run_doctor_ignores_invalid_meta_key_when_oauth_fallback_is_healthy(
+    monkeypatch, tmp_path,
+):
+    """A bad MODEL_API_KEY is non-blocking when the Meta subscription login is healthy."""
+    out = _run_doctor_with_healthy_oauth_fallback(
+        monkeypatch,
+        tmp_path,
+        env_key="MODEL_API_KEY",
+        bad_key="bad-meta-key",
+        failing_host="api.meta.ai",
+        minimax_oauth_status={},
+        meta_oauth_status={"logged_in": True, "auth_mode": "oauth_device_code"},
+    )
+
+    assert "invalid API key" in out
+    assert "Check MODEL_API_KEY in .env" not in out
+
+
+class TestDoctorMetaOAuthStatus:
+    """The ◆ Auth Providers section must show Meta subscription login state."""
+
+    def _run(self, monkeypatch, tmp_path, *, meta_auth_fn) -> str:
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_meta_oauth_auth_status", meta_auth_fn)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_logged_in_does_not_emit_not_logged_in_on_meta_line(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            meta_auth_fn=lambda: {"logged_in": True},
+        )
+        assert "Meta OAuth" in out
+        meta_line = next(l for l in out.splitlines() if "Meta OAuth" in l)
+        assert "(logged in)" in meta_line
+        assert "(not logged in)" not in meta_line
+
+    def test_import_failure_does_not_affect_other_providers(self, monkeypatch, tmp_path):
+        """Nous / Codex / MiniMax / xAI rows must survive a Meta import failure."""
+        from hermes_cli import auth as _auth_mod
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": True})
+        monkeypatch.delattr(_auth_mod, "get_meta_oauth_auth_status", raising=False)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+        assert "Nous Portal auth" in out
+        assert "logged in" in out
 
 
 # ---------------------------------------------------------------------------

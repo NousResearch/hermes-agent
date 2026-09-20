@@ -62,7 +62,7 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_CN_API_KEY", "GMI_API_KEY", "FIREWORKS_API_KEY", "ACTUAL_API_KEY", "ACTUAL_BASE_URL", "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY", "KILOCODE_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "HF_TOKEN",
     "AI_GATEWAY_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY", "COMMANDCODE_API_KEY", "XIAOMI_API_KEY",
-    "TOKENHUB_API_KEY", "TOKENPLAN_API_KEY",
+    "TOKENHUB_API_KEY", "TOKENPLAN_API_KEY", "MODEL_API_KEY", "META_API_KEY", "META_MODEL_API_KEY",
 )
 
 
@@ -81,6 +81,9 @@ def _check_auth_providers(should_fix: bool, f: Finding) -> None:
     with warn_on_error(""):  # xAI OAuth separately, so an import failure cannot disrupt the rows already printed
         from hermes_cli.auth import get_xai_oauth_auth_status
         _login_row("xAI OAuth", get_xai_oauth_auth_status() or {}, show_error=True)
+    with warn_on_error(""):  # Meta OAuth separately, for the same isolation reason
+        from hermes_cli.auth import get_meta_oauth_auth_status
+        _login_row("Meta OAuth", get_meta_oauth_auth_status() or {}, show_error=True)
 
 
 def _login_row(label: str, status: dict, ok_detail: str = "(logged in)", show_error: bool = False) -> bool:

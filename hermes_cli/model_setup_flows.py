@@ -417,6 +417,29 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
                              f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+def _model_flow_meta_oauth(_config, current_model="", *, args=None):
+    """Meta (Muse subscription) provider: ensure logged in, then pick model."""
+    from hermes_cli.auth import (
+        get_meta_oauth_auth_status, _prompt_model_selection, resolve_meta_oauth_runtime_credentials,
+        _login_meta_oauth, DEFAULT_META_OAUTH_BASE_URL, PROVIDER_REGISTRY)
+    from hermes_cli.models import provider_model_ids
+    login_args = argparse.Namespace(no_browser=bool(getattr(args, "no_browser", False)), timeout=getattr(args, "timeout", None))
+    if not _oauth_gate(
+        bool(get_meta_oauth_auth_status().get("logged_in")), "Meta (Muse subscription)", _login_meta_oauth,
+        login_args, PROVIDER_REGISTRY["meta-oauth"], fresh_name="Meta OAuth"):
+        return
+
+    base_url = DEFAULT_META_OAUTH_BASE_URL
+    with contextlib.suppress(Exception):
+        creds = resolve_meta_oauth_runtime_credentials()
+        base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
+
+    models = provider_model_ids("meta-oauth")
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "muse-spark-1.3"))
+    _activate_provider_model(selected, "meta-oauth", base_url,
+                             f"Default model set to: {selected} (via Meta Muse subscription)")
+
+
 def _model_flow_qwen_oauth(_config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
     from hermes_cli.main_provider_setup import _DEFAULT_QWEN_PORTAL_MODELS

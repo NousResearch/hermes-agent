@@ -72,7 +72,7 @@ meta_ai = MetaAIProfile(
     # Muse spends completion budget on hidden reasoning first; low caps can finish with empty content.
     default_max_tokens=16384,
     # Single safety-net entry, shown only when the live /v1/models fetch fails.
-    fallback_models=("muse-spark-1.2",),
+    fallback_models=("muse-spark-1.3", "muse-spark-1.2"),
 )
 
 register_provider(meta_ai)

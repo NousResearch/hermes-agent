@@ -26,7 +26,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "meta-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
 # ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
 # ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
 _OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
@@ -80,7 +80,9 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
 
 _PROVIDER_ALIASES = {
     "or": "openrouter", "open-router": "openrouter", "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth"}
+    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
+    "meta-oauth": "meta-oauth", "meta-subscription": "meta-oauth",
+    "muse-subscription": "meta-oauth", "muse-code-subscription": "meta-oauth"}
 
 
 def _normalize_provider(provider: str) -> str:
@@ -268,6 +270,18 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         fields=lambda creds, provider: {
             "refresh_token": creds["tokens"].get("refresh_token"),
             "base_url": creds.get("base_url") or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL,
+            "last_refresh": creds.get("last_refresh")},
+        activate_first=True),
+    "meta-oauth": _OAuthAddSpec(
+        login=lambda args: auth_mod._meta_oauth_device_code_login(
+            timeout_seconds=getattr(args, "timeout", None) or 20.0,
+            open_browser=not getattr(args, "no_browser", False)),
+        token=lambda creds: creds["tokens"]["access_token"],
+        source=SOURCE_MANUAL_DEVICE_CODE,
+        fields=lambda creds, provider: {
+            "refresh_token": creds["tokens"].get("refresh_token"),
+            "expires_at_ms": creds["tokens"].get("expires_at_ms"),
+            "base_url": creds.get("base_url") or auth_mod.DEFAULT_META_OAUTH_BASE_URL,
             "last_refresh": creds.get("last_refresh")},
         activate_first=True),
     "qwen-oauth": _OAuthAddSpec(

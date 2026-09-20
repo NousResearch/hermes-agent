@@ -32,7 +32,7 @@ class TestMetaAIProfile:
         assert p.supports_vision_tool_messages is False
         assert p.default_aux_model == "muse-spark-1.2-contributor"
         assert p.default_max_tokens == 16384
-        assert p.fallback_models == ("muse-spark-1.2",)
+        assert p.fallback_models == ("muse-spark-1.3", "muse-spark-1.2")
 
     def test_live_catalog_filters_non_chat_models(self, monkeypatch):
         p = _profile()

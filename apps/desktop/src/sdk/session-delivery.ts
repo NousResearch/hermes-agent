@@ -22,6 +22,13 @@ export interface PluginSessionSubmitResult {
   status: PluginSessionSubmitStatus
 }
 
+/** `prompt.submit`'s reply: a typed status once a turn starts, or the
+ *  typed-stop-phrase acknowledgement (`voice_stopped`), which starts none. */
+interface PluginPromptSubmitReply {
+  status?: PluginSessionSubmitStatus
+  voice_stopped?: boolean | null
+}
+
 /** The SDK primitives the sequence composes. */
 export interface PluginSessionDeliveryDeps {
   /** One JSON-RPC call on the exact route — `host.requestProfile`. */
@@ -110,13 +117,19 @@ export async function submitToPluginSession(
     const releaseTurn = await deps.retainTurn(target.connectionId, target.profile, runtimeSessionId)
 
     try {
-      const submitted = await deps.request<{ status?: PluginSessionSubmitStatus }>(route, 'prompt.submit', {
+      const submitted = await deps.request<PluginPromptSubmitReply>(route, 'prompt.submit', {
         session_id: runtimeSessionId,
         text,
         // Fixed, never a caller option: a background delivery queues behind the
         // active turn and must never steer, redirect, or interrupt it.
         queued: true
       })
+
+      // The typed stop phrase ends the voice chat and starts no turn, so no
+      // terminal session event will ever release this hold.
+      if (submitted?.voice_stopped) {
+        releaseTurn()
+      }
 
       return { runtimeSessionId, status: submitted?.status ?? null }
     } catch (error) {

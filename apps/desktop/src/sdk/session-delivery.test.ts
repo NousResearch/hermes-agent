@@ -238,4 +238,24 @@ describe('host.submitToSession', () => {
     expect(mocks.releaseTurn).toHaveBeenCalledOnce()
     expect(mocks.releaseRoute).toHaveBeenCalledTimes(2)
   })
+
+  it('releases the turn hold on the typed-stop reply, which starts no turn to end it', async () => {
+    mocks.requestGatewayForAgent.mockImplementation(async (_connectionId, _profile, method) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-4' }
+      }
+
+      if (method === 'prompt.submit') {
+        return { voice_stopped: true }
+      }
+
+      throw new Error(`unexpected method ${method}`)
+    })
+
+    const result = await host.submitToSession(route, { storedSessionId: STORED_ID, text: 'stop' })
+
+    // No turn started, so no terminal session event will ever release this hold.
+    expect(mocks.releaseTurn).toHaveBeenCalledOnce()
+    expect(result).toEqual({ runtimeSessionId: 'runtime-4', status: null })
+  })
 })

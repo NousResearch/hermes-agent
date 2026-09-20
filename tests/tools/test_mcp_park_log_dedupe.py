@@ -19,10 +19,13 @@ import pytest
 from tools.mcp_tool import MCPServerTask
 
 
-def _fast_time(monkeypatch):
-    """Zero out the retry sleeps and the parked self-probe interval."""
+def _fast_time(monkeypatch, tmp_path):
+    """Zero out the retry sleeps and the parked self-probe interval; keep ``blender``
+    enabled in the temp home's config.yaml so the self-probe gate lets it wake."""
     from tools import mcp_tool
 
+    (tmp_path / "config.yaml").write_text(
+        "mcp_servers:\n  blender:\n    command: x\n", encoding="utf-8")
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0)
     real_sleep = asyncio.sleep
 
@@ -42,7 +45,7 @@ def test_reparked_server_logs_once_not_per_probe(monkeypatch, tmp_path, caplog):
     from tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 1)
-    _fast_time(monkeypatch)
+    _fast_time(monkeypatch, tmp_path)
 
     state = {"calls": 0}
 
@@ -92,7 +95,7 @@ def test_park_after_revival_warns_again(monkeypatch, tmp_path, caplog):
 
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 1)
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 1)
-    _fast_time(monkeypatch)
+    _fast_time(monkeypatch, tmp_path)
 
     state = {"calls": 0}
 

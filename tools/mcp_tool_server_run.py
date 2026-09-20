@@ -202,6 +202,7 @@ class MCPServerRunMixin:
         self._park_reason = revival_reason
         self._deregister_tools()
         self._reconnect_event.clear()
+        paused = False
         while True:
             outcome = await self._wait_for_reconnect_or_shutdown(
                 timeout=_core._PARKED_RETRY_INTERVAL)
@@ -213,12 +214,13 @@ class MCPServerRunMixin:
             # the process (background loops that do not run the gateway reconcile tick
             # never learn the entry changed). An explicit reconnect request — manual
             # refresh or `hermes mcp login` — still revives immediately regardless of the
-            # config gate; only the unattended probe honours it.
+            # config gate; only the unattended probe honours it. Announce the pause once:
+            # a line per skipped wake would be the very flood this gate exists to stop.
             if outcome == "self-probe" and not self._still_configured_enabled():
-                logger.info(
-                    "MCP server '%s': skipping self-probe revival — entry is disabled or "
-                    "gone from mcp_servers config",
-                    self.name)
+                (logger.debug if paused else logger.info)(
+                    "MCP server '%s': parked entry is disabled or gone from mcp_servers; pausing the "
+                    "self-probe until it is re-enabled", self.name)
+                paused = True
                 continue
             # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
             # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a

@@ -127,9 +127,12 @@ def register_gateway_notify(session_key: str, cb) -> None:
 
 
 def unregister_gateway_notify(session_key: str) -> None:
-    """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    """Full session teardown: unregister delivery and wake ALL blocked threads.
+    Normal messaging turns close only their own GatewayApprovalOwner instead."""
+    from tools.approval_ownership import close_gateway_approval_owners_locked
+
     with _lock:
+        close_gateway_approval_owners_locked(session_key, "the turn ended before the prompt was answered")
         _gateway_notify_cbs.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             entry.event.set()
@@ -286,7 +289,10 @@ def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
         return
+    from tools.approval_ownership import close_gateway_approval_owners_locked
+
     with _lock:
+        close_gateway_approval_owners_locked(session_key, "the session ended before the prompt was answered")
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
@@ -539,6 +545,11 @@ def _user_approved(session_key: str, description: str) -> dict:
 
 
 def _gateway_notify_cb(session_key: str):
+    from tools.approval_ownership import current_gateway_approval_owner
+
+    owner = current_gateway_approval_owner(session_key)
+    if owner is not None:
+        return owner  # even a closed owner must fail closed, not adopt another turn
     with _lock:
         return _gateway_notify_cbs.get(session_key)
 

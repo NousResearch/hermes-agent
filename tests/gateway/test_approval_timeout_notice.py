@@ -24,8 +24,8 @@ def _capture_settle(monkeypatch):
     return hooks
 
 
-@pytest.mark.parametrize("current, expected", [(True, 1), (False, 0)])
-def test_timeout_notice_is_gated_on_the_run_still_being_current(monkeypatch, current, expected):
+@pytest.mark.parametrize("current, expected", [(True, 1), (False, 1)])
+def test_timeout_notice_follows_request_lifetime_not_parent_turn(monkeypatch, current, expected):
     hooks = _capture_settle(monkeypatch)
     runner = _Runner(current=current)
     settle_mod.register_timeout_notice(runner, {"request_id": "r1"}, command="rm -rf x", card_message_id="42")

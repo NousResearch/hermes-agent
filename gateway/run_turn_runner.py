@@ -1452,8 +1452,12 @@ class TurnRunner:
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
         # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
         # in approve/deny.
-        adapter.pause_typing_for_chat(ctx._status_chat_id)
-        self._close_native_stream_boundary("Approval")
+        # A retained child route may outlive this parent turn. Do not pause a newer turn
+        # or re-open the old stream merely to deliver that child's independent prompt.
+        still_current = getattr(ctx, "_run_still_current", None)
+        if not callable(still_current) or still_current():
+            adapter.pause_typing_for_chat(ctx._status_chat_id)
+            self._close_native_stream_boundary("Approval")
         # Redact credentials before display: Tirith's findings are already redacted, but the raw
         # command string still leaks secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
@@ -1461,11 +1465,13 @@ class TurnRunner:
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
+            binding = ({"request_id": approval_data.get("request_id")}
+                       if _accepts_keyword(adapter.send_exec_approval, "request_id") else {})
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=ctx._status_thread_metadata, **flags, **binding,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1475,9 +1481,12 @@ class TurnRunner:
                 if outcome == "sent":
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
-                    register_timeout_notice(
-                        self, approval_data, command=cmd,
-                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
+                    sent = fut.result(timeout=0)
+                    metadata = getattr(sent, "raw_response", None)
+                    if not (isinstance(metadata, dict) and metadata.get("exec_approval_settlement") is True):
+                        register_timeout_notice(
+                            self, approval_data, command=cmd,
+                            card_message_id=getattr(sent, "message_id", None))
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -1673,15 +1682,16 @@ class TurnRunner:
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
                                         persist_user_message_override, persist_user_timestamp_override):
-        """Run the turn with the per-session gateway approval callback registered: dangerous-command
-        approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
+        """Own this turn's approval waits while detached workers retain their own delivery.
+        Approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
-        from tools.approval import register_gateway_notify, unregister_gateway_notify
+        from tools.approval_ownership import gateway_approval_owner, register_gateway_approval_owner
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
-        register_gateway_notify(session_key, self._approval_notify_sync)
+        owner = register_gateway_approval_owner(session_key, self._approval_notify_sync)
+        owner_token = gateway_approval_owner.set(owner)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
@@ -1711,7 +1721,8 @@ class TurnRunner:
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
                 return agent.run_conversation(api_message, **kwargs)
         finally:
-            unregister_gateway_notify(session_key)
+            owner.close("the turn ended before the prompt was answered")
+            gateway_approval_owner.reset(owner_token)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):

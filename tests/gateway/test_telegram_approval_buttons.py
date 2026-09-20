@@ -19,6 +19,7 @@ if _repo not in sys.path:
 
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.exec_approval import ApprovalCard
 from gateway.config import Platform, PlatformConfig
 
 
@@ -53,6 +54,11 @@ class _AuthRunner:
 class TestTelegramExecApproval:
     """Test the send_exec_approval method sends InlineKeyboard buttons."""
 
+    @pytest.fixture(autouse=True)
+    def pending_request(self, monkeypatch):
+        # These are formatting tests; real queue/settlement integration has its own coverage.
+        monkeypatch.setattr("tools.approval.register_gateway_settle", lambda *_: True)
+
     @pytest.mark.asyncio
     async def test_sends_inline_keyboard(self):
         adapter = _make_adapter()
@@ -61,6 +67,7 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
         result = await adapter.send_exec_approval(
+            request_id="test-request",
             chat_id="12345",
             command="rm -rf /important",
             session_key="agent:main:telegram:group:12345:99",
@@ -86,6 +93,7 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
 
         await adapter.send_exec_approval(
+            request_id="test-request",
             chat_id="12345",
             command="&" * 3700,  # inside the old raw budget; 5x larger once escaped
             session_key="s",
@@ -104,7 +112,7 @@ class TestTelegramExecApproval:
         adapter = _make_adapter()
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
 
-        await adapter.send_exec_approval(chat_id="12345", command="😀" * 3000, session_key="s")
+        await adapter.send_exec_approval(chat_id="12345", command="😀" * 3000, session_key="s", request_id="test-request")
 
         kwargs = adapter._bot.send_message.call_args.kwargs
         assert utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
@@ -131,14 +139,15 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         buttons = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "telegram.InlineKeyboardButton",
             lambda text, callback_data: buttons.append(text) or text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+            "telegram.InlineKeyboardMarkup", lambda rows: rows
         )
 
         await adapter.send_exec_approval(
+            request_id="test-request",
             chat_id="12345", command="curl example.test", session_key="s",
             allow_permanent=False,
         )
@@ -152,15 +161,16 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         captured_rows = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "telegram.InlineKeyboardButton",
             lambda text, callback_data: text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            "telegram.InlineKeyboardMarkup",
             lambda rows: captured_rows.extend(rows) or rows,
         )
 
         await adapter.send_exec_approval(
+            request_id="test-request",
             chat_id="12345", command="curl example.test", session_key="s",
         )
 
@@ -177,15 +187,16 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         captured_rows = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "telegram.InlineKeyboardButton",
             lambda text, callback_data: text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            "telegram.InlineKeyboardMarkup",
             lambda rows: captured_rows.extend(rows) or rows,
         )
 
         await adapter.send_exec_approval(
+            request_id="test-request",
             chat_id="12345", command="curl example.test", session_key="s",
             allow_permanent=False, smart_denied=True,
         )
@@ -234,13 +245,13 @@ class TestTelegramApprovalCallback:
         rest of a long-running turn after a button click.
         """
         adapter = _make_adapter()
-        adapter._approval_state[5] = "agent:main:telegram:group:12345:99"
+        adapter._approval_state[5] = ApprovalCard("agent:main:telegram:group:12345:99", "test-request", "12345", ("once",), "42")
         adapter.pause_typing_for_chat("12345")
         assert "12345" in adapter._typing_paused
 
         query = AsyncMock()
         query.data = "ea:once:5"
-        query.message = MagicMock()
+        query.message = MagicMock(message_id=42)
         query.message.chat_id = 12345
         query.from_user = MagicMock()
         query.from_user.first_name = "Norbert"
@@ -262,11 +273,11 @@ class TestTelegramApprovalCallback:
     @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):
         adapter = _make_adapter()
-        adapter._approval_state[3] = "agent:main:telegram:group:12345:99"
+        adapter._approval_state[3] = ApprovalCard("agent:main:telegram:group:12345:99", "test-request", "12345", ("once",), "42")
 
         query = AsyncMock()
         query.data = "ea:once:3"
-        query.message = MagicMock()
+        query.message = MagicMock(message_id=42)
         query.message.chat_id = 12345
         query.from_user = MagicMock()
         query.from_user.first_name = "Alice_Bob"

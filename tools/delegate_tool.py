@@ -325,6 +325,18 @@ def _run_single_child(
     # Set when a timed-out Future still owns the child: closing it from this
     # thread before the worker settles races the conversation's finally path.
     _child_close_deferred = False
+    from tools.approval_context import get_current_session_key
+    from tools.approval_ownership import gateway_approval_owner, retain_gateway_approval_owner
+
+    owner = retain_gateway_approval_owner(get_current_session_key())
+    if child is not None:
+        child._gateway_approval_owner = owner
+    # A pending soft steer redirects work; only a hard stop retires its approval route.
+    hard_interrupt = getattr(child, "_hard_interrupt_requested", None)
+    if (owner is not None and getattr(child, "_interrupt_requested", False) is True
+            and (hard_interrupt is None or hard_interrupt.is_set())):
+        owner.close("the child execution was interrupted")
+    owner_token = gateway_approval_owner.set(owner)
     try:
         heartbeat.start()
         _safe_progress(child_progress_cb, "subagent.start", preview=goal)
@@ -356,6 +368,9 @@ def _run_single_child(
             preview=str(exc), summary=str(exc), status="failed",
         )
     finally:
+        if owner is not None:
+            owner.close()
+        gateway_approval_owner.reset(owner_token)
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 

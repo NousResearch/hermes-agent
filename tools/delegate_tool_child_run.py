@@ -97,6 +97,11 @@ def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent dele
         if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason)
                 and hasattr(child, "_interrupt_requested")):
             child._interrupt_requested = True
+    from tools.approval_ownership import GatewayApprovalOwner
+
+    owner = getattr(child, "_gateway_approval_owner", None)
+    if isinstance(owner, GatewayApprovalOwner):
+        owner.close(tool_reason)
 
 # ── 0-API-call timeout diagnostic ────────────────────────────────────────────
 

@@ -573,7 +573,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: Dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: Dict[str, dict] = {}
-        self._approval_state: Dict[int, str] = {}  # message_id → session_key
+        self._approval_state: Dict[int, Any] = {}  # short callback id → request-bound ApprovalCard
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -3969,7 +3969,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=_redact_telegram_error_text(e))
         return SendResult(success=False, error="draft_rejected")
 
-    async def _send_message_with_thread_fallback(self, **kwargs):
+    async def _send_message_with_thread_fallback(self, *, on_sent=None, **kwargs):
         """Send a control-style message (approval prompts, pickers), retrying once without
         message_thread_id on 'Message thread not found' (stale thread_id); ``send`` has its own.
 
@@ -3977,12 +3977,22 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id from a DM reply chain. The streaming send loop has its own equivalent (PR #3390) at the
         body of ``send``; this helper applies the same retry pattern to the non-streaming control paths.
         """
-        if not self._bot:
+        bot = self._bot
+        if not bot:
             raise RuntimeError("Not connected")
+
+        async def send_observed(send_kwargs):
+            msg = await bot.send_message(**send_kwargs)
+            # Observe inside the SDK task: the deadline may abandon a cancellation-resistant
+            # send that still publishes a card later. Its owner must learn the real message id.
+            if on_sent is not None:
+                on_sent(msg)
+            return msg
+
         message_thread_id = kwargs.get("message_thread_id")
         try:
             return await _await_with_thread_deadline(
-                self._bot.send_message(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
+                send_observed(kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         except Exception as send_err:
             if (message_thread_id is not None and self._is_bad_request_error(send_err) and self._is_thread_not_found_error(send_err)):
                 logger.warning(
@@ -3992,12 +4002,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
                 return await _await_with_thread_deadline(
-                    self._bot.send_message(**retry_kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
+                    send_observed(retry_kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
             raise
 
     async def _send_control_message(
         self, chat_id: str, text: str, *, parse_mode: Any, thread_id: Optional[str], metadata: Optional[Dict[str, Any]],
-        reply_markup: Any = None, reply_to_mode: Optional[str] = None):
+        reply_markup: Any = None, reply_to_mode: Optional[str] = None, on_sent=None):
         """Send a control-style message (prompt/picker) with topic routing + thread fallback."""
         reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=reply_to_mode)
         kwargs: Dict[str, Any] = {
@@ -4007,10 +4017,13 @@ class TelegramAdapter(BasePlatformAdapter):
         kwargs["reply_to_message_id"] = reply_to_id
         kwargs.update(self._thread_kwargs_for_send(
             chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=reply_to_mode))
+        if on_sent is not None:
+            kwargs["on_sent"] = on_sent
         return await self._send_message_with_thread_fallback(**kwargs)
 
     async def _send_prompt(self, what: str, chat_id: str, metadata: Optional[Dict[str, Any]], build, *,
-                           parse_mode: Any = None, thread_id: Any = None, reply_to_mode: Any = None) -> SendResult:
+                           parse_mode: Any = None, thread_id: Any = None, reply_to_mode: Any = None,
+                           observe_late_sends: bool = False) -> SendResult:
         """Shared control-prompt shell: not-connected guard, ``build()`` → ``(text, keyboard, on_sent)`` (or a
         SendResult to return as-is), routed send, state hook, redacted failure log."""
         if not self._bot:
@@ -4022,11 +4035,16 @@ class TelegramAdapter(BasePlatformAdapter):
             text, keyboard, on_sent = built
             msg = await self._send_control_message(
                 chat_id, text, parse_mode=parse_mode if parse_mode is not None else ParseMode.MARKDOWN_V2,
-                reply_markup=keyboard, thread_id=thread_id, metadata=metadata, reply_to_mode=reply_to_mode)
-            if on_sent is not None:
+                reply_markup=keyboard, thread_id=thread_id, metadata=metadata, reply_to_mode=reply_to_mode,
+                **({"on_sent": on_sent} if observe_late_sends else {}))
+            if on_sent is not None and not observe_late_sends:
                 on_sent(msg)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if observe_late_sends and isinstance(e, asyncio.TimeoutError):
+                # A cancelled SDK send can still publish; keep request state and avoid a duplicate.
+                return SendResult(success=False, error="Control send acknowledgement timed out",
+                                  raw_response={"ambiguous": True})
             logger.warning("[%s] %s failed: %s", self.name, what, _redact_telegram_error_text(e))
             return SendResult(success=False, error=_redact_telegram_error_text(e))
 
@@ -4070,21 +4088,8 @@ class TelegramAdapter(BasePlatformAdapter):
     _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
-        text ``/approve`` flow."""
-        def build():
-            # Short monotonic ids in callback_data map back to session_key.
-            import itertools
-            if not hasattr(self, "_approval_counter"):
-                self._approval_counter = itertools.count(1)
-            approval_id = next(self._approval_counter)
-            buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
-                       for label, choice, _ in prompt.actions]
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
-        return await self._send_prompt(
-            "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
-            thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
+        from plugins.platforms.telegram.exec_approval import send_prompt
+        return await send_prompt(self, prompt)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -4544,49 +4549,8 @@ class TelegramAdapter(BasePlatformAdapter):
         return session_key
 
     async def _handle_exec_approval_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
-        """``ea:<choice>:<approval_id>`` — resolve a pending exec approval."""
-        parts = data.split(":", 2)
-        if len(parts) != 3:
-            return
-        choice = parts[1]  # once, session, always, deny
-        try:
-            approval_id = int(parts[2])
-        except (ValueError, IndexError):
-            await query.answer(text="Invalid approval data.")
-            return
-        session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, _UNAUTHORIZED,
-            "This approval has already been resolved.")
-        if not session_key:
-            return
-        user_display = getattr(query.from_user, "first_name", "User")
-        # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
-        # (count == 0) must NOT claim "Approved" — the command was already denied.
-        try:
-            # Rendering happens after so the message reflects what actually occurred: a tap that lands after
-            # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
-            # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
-            logger.info(
-                "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
-        except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-            count = 0
-        if count:
-            label_map = {
-                "once": "✅ Approved once", "session": "✅ Approved for session", "always": "✅ Approved permanently", "deny": "❌ Denied",
-            }
-            label = label_map.get(choice, "Resolved")
-            edit_text = f"{label} by {user_display}"
-        else:
-            label = "⌛ Approval expired"
-            edit_text = f"{label} — no command was waiting. It already timed out (and was denied) or was resolved elsewhere."
-        await query.answer(text=label)
-        await self._edit_md_quiet(query, edit_text)
-        # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
-        if count and cb["chat_id"] is not None:
-            self.resume_typing_for_chat(str(cb["chat_id"]))
+        from plugins.platforms.telegram.exec_approval import handle_callback
+        await handle_callback(self, query, data, cb)
 
     async def _handle_slash_confirm_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``sc:<choice>:<confirm_id>`` — resolve a slash-command confirmation."""

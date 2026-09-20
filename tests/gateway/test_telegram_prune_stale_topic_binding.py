@@ -19,9 +19,9 @@ The fix has three pieces — these tests pin all three:
    adapter glue that calls the helper from a send-fallback hot
    path without raising on cleanup failure.
 3. The two "Thread not found" call sites in the streaming send
-   loop and the control-message helper now invoke (2) — we pin
-   this with a source-level guard rather than spinning the full
-   send pipeline.
+   loop and the control-message helper invoke (2): a source guard
+   covers streaming, and a synthetic control transport checks the
+   prune-before-retry behavior against a real temporary database.
 """
 
 from __future__ import annotations
@@ -217,30 +217,44 @@ class TestThreadNotFoundFallbackSitesPruneBinding:
             "future inbound messages to the deleted topic (#31501)."
         )
 
-    def test_control_message_helper_calls_prune(self):
-        from plugins.platforms.telegram import adapter as telegram_mod
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("retry_fails", [False, True])
+    async def test_control_message_helper_prunes_before_retry(self, tmp_path, retry_fails):
+        from telegram.error import BadRequest
+        from unittest.mock import AsyncMock, Mock
 
-        src = inspect.getsource(
-            telegram_mod.TelegramAdapter._send_message_with_thread_fallback
-        )
-        # The helper has a single retry path; the prune call
-        # must sit inside it, not in dead code outside the
-        # ``if message_thread_id is not None and …`` guard.
-        assert "_prune_stale_dm_topic_binding" in src, (
-            "_send_message_with_thread_fallback must call "
-            "_prune_stale_dm_topic_binding when Telegram returns "
-            "BadRequest('Thread not found') for a control message "
-            "(#31501)."
-        )
-        # Belt-and-braces: the call must precede the retry
-        # ``send_message`` so the prune happens whether or not
-        # the retry itself succeeds.
-        prune_idx = src.find("_prune_stale_dm_topic_binding")
-        retry_idx = src.find("send_message(**retry_kwargs)")
-        assert 0 <= prune_idx < retry_idx, (
-            "_prune_stale_dm_topic_binding must run before the "
-            "fallback send_message retry."
-        )
+        db = SessionDB(db_path=tmp_path / "state.db")
+        _seed_binding(db)
+        adapter = _bare_adapter(db)
+        sent = Mock()
+        calls = []
+
+        async def send(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                assert kwargs["message_thread_id"] == 15287
+                raise BadRequest("Message thread not found")
+            # Prune is observable before the retry, even if that retry also fails.
+            assert db.get_telegram_topic_binding(chat_id="5595856929", thread_id="15287") is None
+            assert "message_thread_id" not in kwargs
+            if retry_fails:
+                raise OSError("synthetic retry failure")
+            return SimpleNamespace(message_id=321)
+
+        adapter._bot = SimpleNamespace(send_message=AsyncMock(side_effect=send))
+        try:
+            call = adapter._send_message_with_thread_fallback(
+                chat_id=5595856929, text="synthetic control", message_thread_id=15287, on_sent=sent)
+            if retry_fails:
+                with pytest.raises(OSError, match="synthetic retry failure"):
+                    await call
+                sent.assert_not_called()
+            else:
+                result = await call
+                sent.assert_called_once_with(result)
+            assert len(calls) == 2
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------

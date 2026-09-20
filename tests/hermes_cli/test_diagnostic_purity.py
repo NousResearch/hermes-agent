@@ -28,6 +28,7 @@ def test_diagnostic_purity_oracle_names_exact_mutation(tmp_path):
 def test_status_and_doctor_are_pure_across_profiles_and_live_resources(monkeypatch, tmp_path):
     import agent.credential_pool as credential_pool
     import hermes_cli.auth as auth
+    import hermes_cli.config as config
     import hermes_cli.doctor as doctor
     import hermes_cli.doctor_state as doctor_state
     import hermes_cli.status as status
@@ -68,6 +69,10 @@ def test_status_and_doctor_are_pure_across_profiles_and_live_resources(monkeypat
     def forbidden_refresh(*_args, **_kwargs):
         raise AssertionError("diagnostic attempted a credential refresh")
 
+    monkeypatch.setattr(
+        config, "ensure_hermes_home",
+        lambda: (_ for _ in ()).throw(AssertionError("diagnostic attempted profile bootstrap")),
+    )
     monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", forbidden_refresh)
     monkeypatch.setattr(auth, "resolve_xai_oauth_runtime_credentials", forbidden_refresh)
     monkeypatch.setattr(auth, "_refresh_qwen_cli_tokens", forbidden_refresh)

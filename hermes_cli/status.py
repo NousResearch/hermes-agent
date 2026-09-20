@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config_observational
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
@@ -81,7 +81,7 @@ def _effective_provider_label() -> str:
         # A custom endpoint may live in config.yaml (model.base_url, the canonical location) or
         # the legacy OPENAI_BASE_URL env var; either way labeling it "OpenRouter" is misleading.
         try:
-            model_cfg = load_config().get("model")
+            model_cfg = load_config_observational().get("model")
         except Exception:
             model_cfg = None
         config_base_url = (model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
@@ -150,7 +150,7 @@ def _render_environment(ctx):
     _kv("Python:", sys.version.split()[0])
     _kv_flag(".env file:", get_env_path().exists(), "exists", "not found")
     try:
-        ctx.config = load_config()
+        ctx.config = load_config_observational()
     except Exception:
         ctx.config = {}
     _kv("Model:", _configured_model_label(ctx.config))

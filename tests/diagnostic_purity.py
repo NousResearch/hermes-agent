@@ -38,6 +38,10 @@ def _path_state(path: Path) -> PathState:
         return PathState("symlink", mode, inode, info.st_size, info.st_mtime_ns, None, os.readlink(path))
     if path.is_dir():
         return PathState("directory", mode, inode, info.st_size, info.st_mtime_ns, None, None)
+    if path.name.endswith("-shm"):
+        # SQLite's shared-memory lock bytes and mtime are observationally volatile. Its durable
+        # contract is identity/generation plus size; the database and WAL still get full hashes.
+        return PathState("sqlite-shm", mode, inode, info.st_size, 0, None, None)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return PathState("file", mode, inode, info.st_size, info.st_mtime_ns, digest, None)
 

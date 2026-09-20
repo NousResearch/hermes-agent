@@ -1296,11 +1296,13 @@ def _pool_first_oauth_status(
         try:
             from hermes_cli.auth import get_provider_auth_state
             state = get_provider_auth_state(provider_id) or {}
-            api_key = state.get("access_token") or state.get("api_key") or ""
+            tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else state
+            api_key = tokens.get("access_token") or tokens.get("api_key") or ""
             if api_key and not is_expiring(api_key, 0):
                 return {
                     "logged_in": True, "auth_store": str(_auth_file_path()),
-                    "last_refresh": state.get("last_refresh"), "auth_mode": auth_mode,
+                    "last_refresh": tokens.get("last_refresh") or state.get("last_refresh"),
+                    "auth_mode": state.get("auth_mode") or auth_mode,
                     "source": "auth_store", "api_key": api_key,
                 }
             return {"logged_in": False, "auth_store": str(_auth_file_path())}

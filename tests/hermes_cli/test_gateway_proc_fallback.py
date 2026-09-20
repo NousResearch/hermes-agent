@@ -49,6 +49,21 @@ def _fake_proc_dir(entries: dict):
     return _isdir, _listdir, _open
 
 
+class TestGatewayProcessOwnership:
+    def test_sudo_can_manage_root_owned_gateway(self, monkeypatch):
+        """A sudo fleet operation may manage root and invoking-user gateways only."""
+        monkeypatch.setattr(gateway_mod, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_mod.os, "getuid", lambda: 0)
+        monkeypatch.setattr(gateway_mod.os, "geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_UID", "501")
+        for owner_uid, expected in ((0, True), (501, True), (502, False)):
+            with patch(
+                "hermes_cli.gateway.os.stat",
+                return_value=SimpleNamespace(st_uid=owner_uid),
+            ):
+                assert gateway_mod._pid_is_owned_by_current_user(12345) is expected
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -126,6 +141,7 @@ class TestProcFallback:
             return SimpleNamespace(st_uid=501 if pid == 12345 else 502)
 
         monkeypatch.setattr(gateway_mod.os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_mod.os, "geteuid", lambda: 501)
         with (
             patch("os.path.isdir", side_effect=_isdir),
             patch("os.listdir", side_effect=_listdir),
@@ -217,6 +233,7 @@ class TestPsFallbackBsdCompat:
             raise AssertionError(f"unexpected command: {command}")
 
         monkeypatch.setattr(gateway_mod.os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_mod.os, "geteuid", lambda: 501)
         with (
             patch("hermes_cli.gateway.is_windows", return_value=False),
             patch("os.path.isdir", side_effect=lambda _p: False),

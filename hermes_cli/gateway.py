@@ -558,13 +558,23 @@ def _pid_is_owned_by_current_user(pid: int) -> bool:
     getuid = getattr(os, "getuid", None)
     if not callable(getuid):
         return True
+    allowed_uids = {getuid()}
+    geteuid = getattr(os, "geteuid", None)
+    effective_uid = geteuid() if callable(geteuid) else None
+    if effective_uid is not None:
+        allowed_uids.add(effective_uid)
+    if effective_uid == 0:
+        # sudo may be managing a gateway launched as root as well as the
+        # invoking user's gateway; neither grants access to a third user.
+        with contextlib.suppress(ValueError):
+            allowed_uids.add(int(os.environ.get("SUDO_UID", "")))
     try:
-        return os.stat(f"/proc/{pid}").st_uid == getuid()
+        return os.stat(f"/proc/{pid}").st_uid in allowed_uids
     except OSError:
         pass
     try:
         result = subprocess.run(["ps", "-o", "uid=", "-p", str(pid)], timeout=2, **_CAPTURE_TEXT)
-        return result.returncode == 0 and int(result.stdout.strip()) == getuid()
+        return result.returncode == 0 and int(result.stdout.strip()) in allowed_uids
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return False
 

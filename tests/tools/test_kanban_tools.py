@@ -604,6 +604,7 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
         foreign_parent = kb.create_task(conn, title="foreign review")
         foreign_child = kb.create_task(conn, title="foreign worker")
         assert kb.claim_task(conn, foreign_child, claimer="other") is not None
+        foreign_events_before = kb.list_events(conn, foreign_child)
 
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(own_run_id))
     own = json.loads(kt._handle_link({"parent_id": own_parent, "child_id": worker_env}))
@@ -613,9 +614,13 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
 
     assert own["ok"] is True
     assert "child is already running" in foreign["error"]
+    assert "wait for the current run to finish" in foreign["error"]
+    assert "dependency-block handoff" in foreign["error"]
     with kbc.connect() as conn:
         assert kb.parent_ids(conn, worker_env) == [own_parent]
         assert kb.parent_ids(conn, foreign_child) == []
+        assert kb.get_task(conn, foreign_child).status == "running"
+        assert kb.list_events(conn, foreign_child) == foreign_events_before
 
 
 def test_unblock_happy_path(monkeypatch, worker_env):

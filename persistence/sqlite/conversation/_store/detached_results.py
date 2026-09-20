@@ -15,7 +15,7 @@ _LINEAGE_MATCH_SQL = """WITH RECURSIVE lineage(id) AS (SELECT ? UNION
 ) SELECT m.id FROM messages m JOIN lineage l ON m.session_id = l.id WHERE """
 
 
-_DELEGATION_DELIVERY_MATCH = ("m.display_kind IN ('async_delegation_complete', 'hidden') AND json_extract(m.display_metadata, "
+_DELEGATION_DELIVERY_MATCH = ("m.display_kind IN ('async_delegation_complete', 'internal_event', 'hidden') AND json_extract(m.display_metadata, "
                               "'$.delegation_id') = ? AND coalesce(json_extract(m.display_metadata, '$.delivery_notice'), '') = ?")
 
 
@@ -24,7 +24,10 @@ def append_delegation_delivery(holder: StoreHolder, session_id: str, content: st
     delegation_id = metadata.get("delegation_id")
     if not delegation_id:
         raise ValueError("Delegation delivery requires a stable delegation_id")
-    kind = "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete"
+    from tools.delegation_events import internal_event_persistence
+    kind = internal_event_persistence(metadata)[0] or "async_delegation_complete"
+    if metadata.get("presentation_suppressed"):
+        kind = "hidden"
     return _append_detached_result(holder, session_id, content, kind, metadata, _DELEGATION_DELIVERY_MATCH,
                                         (delegation_id, metadata.get("delivery_notice", "")))
 

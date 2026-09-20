@@ -31,10 +31,12 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
 # machinery kinds may vanish on a bare silence marker.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
+INTERNAL_EVENT_DISPLAY_KIND = "internal_event"
 # Async-result cards the in-process TUI persisted: a producer's internal event naming one (with a
 # display_text) persists as that row kind instead of internal_notification.
 PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
-MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, INTERNAL_EVENT_DISPLAY_KIND,
+                                   *PRODUCER_NOTICE_DISPLAY_KINDS})
 # Loop exit the agent stamps when a machinery turn ends with the model adding nothing
 # (agent/turn_empty_response.py NOTIFICATION_NO_REPLY_EXIT mirrors this; agent/ cannot import gateway/).
 NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
@@ -198,6 +200,8 @@ def display_kind_for_event(event: Any) -> str | None:
     if kind := admission_display(event).get("kind"):
         # A canonical admission committed hidden (Desktop widget intent): never a user bubble.
         return kind
+    if kind := internal_event_projection(event)[0]:
+        return kind
     if getattr(event, "internal", False) and _producer_card(event):
         return event.metadata["display_kind"]
     if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
@@ -219,7 +223,20 @@ def display_metadata_for_event(event: Any) -> dict:
     ``title_preview`` (titler-only) a canonical admission committed for this exact event."""
     from gateway.session_display import admission_display
     preview = admission_display(event).get("title_preview")
-    return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
+    return {**_producer_card(event), **(internal_event_projection(event)[1] or {}),
+            **({"title_preview": preview} if preview else {})}
+
+
+def internal_event_projection(event: Any) -> tuple[str | None, dict | None]:
+    """Project explicit identity only after the producer path marked an event internal."""
+    if not getattr(event, "internal", False):
+        return None, None
+    metadata = getattr(event, "metadata", None) or {}
+    metadata = metadata.get("delegation_event", metadata)
+    if not isinstance(metadata, dict):
+        return None, None
+    from tools.delegation_events import internal_event_persistence
+    return internal_event_persistence(metadata)
 
 
 def persisted_user_metadata_for_event(event: Any) -> dict:

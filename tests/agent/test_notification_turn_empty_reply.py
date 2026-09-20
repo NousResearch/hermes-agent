@@ -131,6 +131,7 @@ class TestNotificationTurnLoop:
         [
             ("process_complete", "[process completed] Background task finished."),
             ("internal_notification", "[kanban] Board updated."),
+            ("internal_event", "[delegation completed] Background task finished."),
         ],
     )
     def test_machinery_empty_reply_exits_without_nudge(self, loop_agent, display_kind, prompt):
@@ -150,7 +151,8 @@ class TestNotificationTurnLoop:
             for message in provider_messages
         )
 
-    def test_announced_tool_call_without_payload_is_recovered_not_silenced(self, loop_agent):
+    @pytest.mark.parametrize("display_kind", ["process_complete", "internal_event"])
+    def test_announced_tool_call_without_payload_is_recovered_not_silenced(self, loop_agent, display_kind):
         """finish_reason="tool_calls" with no tool calls is a dropped action, not "nothing to add":
         the turn keeps the recovery ladder and the model's follow-up is delivered."""
         def respond(**_kwargs):
@@ -164,7 +166,7 @@ class TestNotificationTurnLoop:
         result = loop_agent.run_conversation(
             "[process completed] Background task finished.",
             conversation_history=_completed_tool_round(),
-            persist_user_display_kind="process_complete",
+            persist_user_display_kind=display_kind,
         )
 
         assert loop_agent.client.chat.completions.create.call_count == 2
@@ -269,7 +271,7 @@ class TestNotificationTurnDetection:
 
 class TestNotificationQuietExit:
     @pytest.mark.parametrize(
-        "display_kind", ["internal_notification", "process_complete", "async_delegation_complete"]
+        "display_kind", ["internal_notification", "internal_event", "process_complete", "async_delegation_complete"]
     )
     def test_quiet_exit_closes_the_turn_with_the_silence_row(self, display_kind):
         agent = _agent()
@@ -304,7 +306,8 @@ class TestNotificationQuietExit:
         assert verdict.final_response == ""
         assert verdict.turn_exit_reason == ter.NOTIFICATION_NO_REPLY_EXIT
 
-    def test_notification_turn_with_tool_mid_task_not_quiet_exit(self):
+    @pytest.mark.parametrize("display_kind", ["process_complete", "internal_event"])
+    def test_notification_turn_with_tool_mid_task_not_quiet_exit(self, display_kind):
         """A model that acted on a notification with a tool call is mid-task;
         _notification_turn_without_tool_round is False, so the quiet exit path
         is skipped. The post-tool nudge fires instead (verdict is 'continue'
@@ -313,7 +316,7 @@ class TestNotificationQuietExit:
         agent._last_content_with_tools = "mid-task reply"
         agent._last_content_tools_all_housekeeping = False
         messages = [
-            {"role": "user", "content": "[process completed]", "display_kind": "process_complete"},
+            {"role": "user", "content": "[process completed]", "display_kind": display_kind},
             {
                 "role": "assistant",
                 "content": "mid-task reply",

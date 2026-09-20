@@ -472,6 +472,46 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+@pytest.mark.parametrize(
+    "error_text, expected",
+    [
+        # Worker progress prose talking about *writing*, not an auth failure
+        # (#117009): must NOT trip the guard.
+        ("Workstream C items C-3 and C-4: author t  (90.59s)", None),
+        ("docs authored by the previous cycle", None),
+        ("still authoring the migration plan", None),
+        ("relying on an authoritative source", None),
+        ("two authors reviewed the diff", None),
+        # Genuine auth failures must still trip the guard.
+        ("401 auth failed", "blocker_auth"),
+        ("token authenticated but scope missing", "blocker_auth"),
+        ("authentication error from provider", "blocker_auth"),
+        ("authorize the app first", "blocker_auth"),
+        ("authorized client rejected", "blocker_auth"),
+        ("authorization header missing", "blocker_auth"),
+        ("authz denied", "blocker_auth"),
+        ("unauthorized: bad credentials", "blocker_auth"),
+    ],
+)
+def test_respawn_guard_blocker_auth_curated_not_open_stem(
+    kanban_home, monkeypatch, error_text, expected,
+):
+    """``_RESPAWN_BLOCKER_RE`` used to use an open ``auth\\w*`` stem that matched
+    ordinary English words like "author"/"authored"/"authoring"/"authoritative"
+    in worker progress prose, parking a healthy ``ready`` card forever (#117009).
+    The auth family must be a curated set of real auth-failure tokens."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="prose", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=?",
+            (error_text, tid),
+        )
+        conn.commit()
+        assert kbd.check_respawn_guard(conn, tid) == expected
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

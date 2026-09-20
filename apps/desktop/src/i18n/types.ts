@@ -328,6 +328,27 @@ export interface Translations {
     layoutEditorTitle: (modifier: string) => string
   }
 
+  jarvisShell: {
+    productName: string
+    navigationLabel: string
+    mainLabel: string
+    views: {
+      jarvis: string
+      tasks: string
+      memory: string
+      tools: string
+      settings: string
+      profile: string
+    }
+    surfaceDescriptions: {
+      tasks: string
+      memory: string
+      tools: string
+      settings: string
+      profile: string
+    }
+  }
+
   keybinds: {
     title: string
     subtitle: (open: string) => string

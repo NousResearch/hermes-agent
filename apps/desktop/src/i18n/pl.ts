@@ -306,6 +306,27 @@ export const pl = defineLocale({
     layoutEditorTitle: mod => `Edytor układu — ${mod}+kliknięcie resetuje układ`
   },
 
+  jarvisShell: {
+    productName: 'AI Evolution Jarvis',
+    navigationLabel: 'Główna nawigacja',
+    mainLabel: 'Obszar roboczy Jarvisa',
+    views: {
+      jarvis: 'Jarvis',
+      tasks: 'Zadania',
+      memory: 'Pamięć',
+      tools: 'Narzędzia',
+      settings: 'Ustawienia',
+      profile: 'Profil'
+    },
+    surfaceDescriptions: {
+      tasks: 'Zaplanowana i aktywna praca pozostaje obsługiwana przez istniejące powierzchnie zadań Hermesa.',
+      memory: 'Pamięć korzysta z prawdziwych ustawień i dostawców pamięci Hermesa.',
+      tools: 'Narzędzia korzystają z istniejących powierzchni narzędzi i danych dostępowych Hermesa.',
+      settings: 'Zaawansowane ustawienia pozostają dostępne przez istniejącą powierzchnię ustawień i paletę poleceń.',
+      profile: 'Profile pozostają zarządzane przez istniejącą powierzchnię profili.'
+    }
+  },
+
   keybinds: {
     title: 'Skróty klawiszowe',
     subtitle: open => `Kliknij skrót, aby go zmienić · ${open} ponownie otwiera ten panel.`,

@@ -44,6 +44,7 @@ import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/cha
 import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
+import { cn } from '@/lib/utils'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
 import {
@@ -798,9 +799,16 @@ registerPaneCloser('files', () =>
 
 // ---------------------------------------------------------------------------
 
-export function ContribController() {
+export type ContribControllerLayoutMode = 'viewport' | 'embedded'
+
+export interface ContribControllerProps {
+  layoutMode?: ContribControllerLayoutMode
+}
+
+export function ContribController({ layoutMode = 'viewport' }: ContribControllerProps) {
   const sidebarOpen = useStore($sidebarOpen)
   const statusbarVisible = useStore($statusbarVisible)
+  const embedded = layoutMode === 'embedded'
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around
@@ -825,7 +833,7 @@ export function ContribController() {
 
   return (
     <SidebarProvider
-      className="h-screen min-h-0 flex-col bg-background"
+      className={cn('min-h-0 min-w-0 flex-col bg-background', embedded ? 'h-full' : 'h-screen')}
       onOpenChange={setSidebarOpen}
       open={sidebarOpen}
       style={{ '--sidebar-width': '100%' } as CSSProperties}
@@ -833,7 +841,10 @@ export function ContribController() {
       <ContribWiring>
         <AppContextMenu />
         <div
-          className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
+          className={cn(
+            'flex min-h-0 min-w-0 flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)',
+            embedded ? 'h-full w-full' : 'h-screen w-screen'
+          )}
           // Window-glass hook: this div and the sidebar-wrapper above it are
           // the app shell's two full-window opaque painters; the
           // [data-hermes-glass] rules in styles.css clear them so the tint

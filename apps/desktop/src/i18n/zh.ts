@@ -283,6 +283,27 @@ export const zh: Translations = {
     layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
   },
 
+  jarvisShell: {
+    productName: 'AI Evolution Jarvis',
+    navigationLabel: 'Main navigation',
+    mainLabel: 'Jarvis workspace',
+    views: {
+      jarvis: 'Jarvis',
+      tasks: 'Tasks',
+      memory: 'Memory',
+      tools: 'Tools',
+      settings: 'Settings',
+      profile: 'Profile'
+    },
+    surfaceDescriptions: {
+      tasks: 'Scheduled and active work stays owned by the existing Hermes task surfaces.',
+      memory: 'Memory uses the real Hermes memory settings and providers.',
+      tools: 'Tools use the existing Hermes tool and credential surfaces.',
+      settings: 'Advanced settings remain available through the existing settings surface and command palette.',
+      profile: 'Profiles remain managed by the existing profile surface.'
+    }
+  },
+
   keybinds: {
     title: '键盘快捷键',
     subtitle: open => `点击快捷键即可重新绑定 · ${open} 可重新打开此面板。`,

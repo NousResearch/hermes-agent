@@ -291,6 +291,27 @@ export const en: Translations = {
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
   },
 
+  jarvisShell: {
+    productName: 'AI Evolution Jarvis',
+    navigationLabel: 'Main navigation',
+    mainLabel: 'Jarvis workspace',
+    views: {
+      jarvis: 'Jarvis',
+      tasks: 'Tasks',
+      memory: 'Memory',
+      tools: 'Tools',
+      settings: 'Settings',
+      profile: 'Profile'
+    },
+    surfaceDescriptions: {
+      tasks: 'Scheduled and active work stays owned by the existing Hermes task surfaces.',
+      memory: 'Memory uses the real Hermes memory settings and providers.',
+      tools: 'Tools use the existing Hermes tool and credential surfaces.',
+      settings: 'Advanced settings remain available through the existing settings surface and command palette.',
+      profile: 'Profiles remain managed by the existing profile surface.'
+    }
+  },
+
   keybinds: {
     title: 'Keyboard shortcuts',
     subtitle: open => `Click a shortcut to rebind it · ${open} reopens this panel.`,

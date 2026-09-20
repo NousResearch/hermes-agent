@@ -2633,15 +2633,16 @@ def _relay_sync_stream(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
+    # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
+    # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
+    create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))  # noqa: E731
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return client.chat.completions.create(**bypass_chat_sdk_request_transform(kwargs, client))
-    # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
-    # rewritten) the real conversation; hoisting it here would hand Relay an empty one.
+        return create(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(
-        kwargs, lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client)), name=provider_name,
+        kwargs, create, name=provider_name,
         model_name=str(kwargs.get("model") or fallback_model), finalizer=dict, metadata=metadata,
         completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
@@ -6862,12 +6863,12 @@ def _create_with_progress_once(
     ``force_stream``, where a stream-only provider rejects the plain call by definition, so the original
     error is surfaced to the normal recovery chains instead.
     """
+    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     _notify_aux_dispatch()
     # Dispatch alone is not forward progress: a 401/retry/fallback dispatch must not
     # reset the compression inactivity fence, or a zero-output attempt runs to the
     # total ceiling instead of idling out (#114938). Progress ticks only for
     # substantive stream payloads or a completed usable response.
-    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
         response = client.chat.completions.create(**kwargs)
         if not _client_streams_internally(client):
@@ -7075,7 +7076,7 @@ async def _aggregate_chat_stream_async(
 async def _acreate_with_stream(client: Any, kwargs: Dict[str, Any], task: Optional[str] = None) -> Any:
     """Async create() for stream-only providers: ``stream=True`` + aggregate the async chunks."""
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
-    chunks = await client.chat.completions.create(**bypass_chat_sdk_request_transform(stream_kwargs, client))
+    chunks = await client.chat.completions.create(**stream_kwargs)
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         return chunks
     return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
@@ -7091,9 +7092,9 @@ async def _acreate_with_progress(
 ) -> Any:
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
+    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     _notify_aux_dispatch()
     # Same contract as the sync twin (#114938): dispatch alone is not progress.
-    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
         response = await client.chat.completions.create(**kwargs)
         if not _async_client_streams_internally(client):

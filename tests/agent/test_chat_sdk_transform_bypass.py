@@ -114,8 +114,8 @@ def _capture_sdk_create(monkeypatch) -> list[dict]:
     return seen
 
 
-def test_auxiliary_relay_path_hands_the_sdk_only_the_placeholder(monkeypatch):
-    """Aux tasks (compression, summaries) reach the SDK through ``_relay_sync_completion``;
+def test_auxiliary_completion_path_hands_the_sdk_only_the_placeholder(monkeypatch):
+    """Aux tasks (compression, summaries) reach the SDK via ``_create_with_progress_once``;
     the bulk conversation must ride in ``extra_body`` so the SDK's typed walk sees only ``[]``."""
     from agent import auxiliary_client
 

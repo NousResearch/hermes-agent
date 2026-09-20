@@ -475,14 +475,33 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
     return parsed
 
 
-def _is_recoverable_local_backend_failure(session_info: Dict[str, Any], result: Dict[str, Any]) -> bool:
+# rc==0 recovery is restricted to idempotent commands: a zero exit with empty/non-JSON
+# output can also mean "the daemon ran the command, then died before flushing stdout" —
+# indistinguishable from "never ran". Re-issuing a mutating command (click on a submit
+# control, fill, press) would apply it twice, so only reads/screenshot/close retry;
+# commands left out keep main's single-attempt behaviour.
+_RECOVERABLE_RC0_COMMANDS: frozenset = frozenset({
+    "close",      # idempotent; empty rc=0 already short-circuits via _EMPTY_OK_COMMANDS
+    "console",    # buffer read; even a replayed --clear is idempotent
+    "errors",     # same as console
+    "get",        # url/text/attr/title/cdp-url reads
+    "snapshot", "screenshot",
+})
+
+
+def _is_recoverable_local_backend_failure(session_info: Dict[str, Any], command: str,
+                                          result: Dict[str, Any]) -> bool:
     """True when a finished (non-timeout) command failure is protocol-level — the local
     agent-browser backend dying — rather than a page-level error: a nonzero CLI exit (101 =
     daemon/session failure on a stale session) or empty/non-JSON output from a stale daemon.
     These poison the cached session record (#115184): without a suspect/evict here, every
     later call reuses the record and fails until manual recycling. Parsed-JSON failures carry
     no ``returncode`` (the backend answered; the page said no), and non-local sessions
-    (cloud/CDP/real-profile/Lightpanda — the LP fallback owns its engine) never qualify."""
+    (cloud/CDP/real-profile/Lightpanda — the LP fallback owns its engine) never qualify.
+    A nonzero exit is always safe to retry — the CLI itself reported the failure, so the
+    command did not land; a zero exit is only inferred unhealthy from empty/non-JSON
+    output, which cannot tell "ran, then died before flushing" from "never ran", so those
+    retry only for the idempotent commands in ``_RECOVERABLE_RC0_COMMANDS``."""
     feats = session_info.get("features") or {}
     if not feats.get("local") or feats.get("lightpanda") or feats.get("real_profile"):
         return False
@@ -495,6 +514,8 @@ def _is_recoverable_local_backend_failure(session_info: Dict[str, Any], result: 
         return False
     if rc != 0:
         return True
+    if command not in _RECOVERABLE_RC0_COMMANDS:
+        return False
     err = str(result.get("error") or "")
     return "returned no output" in err or "Non-JSON output" in err
 
@@ -631,7 +652,7 @@ def _run_browser_command(
         # empty/non-JSON output from a dead daemon) poisons the cached session record.
         # Same recovery split as a command timeout — mark suspect; dead daemon evicts now —
         # then retry once on the replacement session before giving the caller the failure.
-        if attempt == 0 and _is_recoverable_local_backend_failure(session_info, result):
+        if attempt == 0 and _is_recoverable_local_backend_failure(session_info, command, result):
             _bt.logger.warning("browser '%s' failed at the backend level (task=%s, rc=%s): %s — recycling the "
                                "session and retrying once", command, task_id, result.get("returncode"),
                                str(result.get("error"))[:300])

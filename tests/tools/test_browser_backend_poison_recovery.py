@@ -115,7 +115,8 @@ class TestDeadDaemonRecyclesAndRetriesOnce:
         assert TASK not in bt._suspect_browser_sessions  # flag must not poison the fresh session
 
     def test_empty_output_rc0_dead_daemon_retries_once(self, monkeypatch, tmp_path):
-        """Empty stdout with rc=0 on a non-EMPTY_OK command = stale daemon signature."""
+        """Empty stdout with rc=0 on a non-EMPTY_OK idempotent command (snapshot) = stale
+        daemon signature: recycle and retry once."""
         bt._active_sessions[TASK] = _local_session("h_stale2")
         popen, argv_log = _scripted_popen([
             {"rc": 0, "stdout": b"", "stderr": b""},
@@ -123,10 +124,44 @@ class TestDeadDaemonRecyclesAndRetriesOnce:
         ])
         _install_command_stubs(monkeypatch, tmp_path, popen)
 
-        result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=5)
+        result = bt_session._run_browser_command(TASK, "snapshot", ["-c"], timeout=5)
 
         assert result["success"] is True
         assert len(argv_log) == 2
+
+    def test_empty_output_rc0_mutating_command_not_retried(self, monkeypatch, tmp_path):
+        """REQUIRED negative probe: rc=0 with no output can also mean the command already
+        ran and the daemon died before flushing stdout — re-issuing a mutating command
+        (click on a submit control, fill, press) would apply it twice. Non-idempotent
+        commands keep main's single-attempt behaviour."""
+        session_info = _local_session("h_maybe")
+        bt._active_sessions[TASK] = session_info
+        popen, argv_log = _scripted_popen([{"rc": 0, "stdout": b"", "stderr": b""}])
+        _install_command_stubs(monkeypatch, tmp_path, popen)
+
+        result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=5)
+
+        assert result["success"] is False
+        assert "returned no output" in result["error"]
+        assert len(argv_log) == 1  # never re-run a possibly-landed mutating command
+        assert bt._active_sessions[TASK] is session_info
+        assert TASK not in bt._suspect_browser_sessions
+
+    def test_non_json_output_rc0_mutating_command_not_retried(self, monkeypatch, tmp_path):
+        """Same double-execution guard for the non-JSON arm: rc=0 means the CLI considers
+        the command finished, so a mutating command is never replayed on that evidence."""
+        session_info = _local_session("h_maybe2")
+        bt._active_sessions[TASK] = session_info
+        popen, argv_log = _scripted_popen([{"rc": 0, "stdout": b"daemon: panic", "stderr": b""}])
+        _install_command_stubs(monkeypatch, tmp_path, popen)
+
+        result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=5)
+
+        assert result["success"] is False
+        assert "Non-JSON output" in result["error"]
+        assert len(argv_log) == 1
+        assert bt._active_sessions[TASK] is session_info
+        assert TASK not in bt._suspect_browser_sessions
 
     def test_second_failure_is_returned_not_looped(self, monkeypatch, tmp_path):
         """Retry budget is one: a second backend failure is returned to the caller."""

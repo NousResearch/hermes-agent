@@ -686,6 +686,47 @@ describe('ModelSettings MoA preset editor', () => {
   })
 })
 
+describe('ModelSettings stale-aux banner dismissal', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+  })
+
+  const staleAux = {
+    main: { provider: 'nous', model: 'hermes-4' },
+    tasks: [{ task: 'vision', provider: 'alibaba', model: 'qwen3.6-flash', base_url: '' }]
+  }
+
+  it('hides the persistent stale-aux banner after acknowledging it, and re-arms when the main provider changes', async () => {
+    getAuxiliaryModels.mockResolvedValue(staleAux)
+
+    // First visit: the deliberate cross-provider pin surfaces the banner.
+    await renderModelSettings()
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: "Don't show again" }))
+
+    await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
+
+    // Second visit (fresh mount): the acknowledgement persists.
+    cleanup()
+    await renderModelSettings()
+    await waitFor(() => expect(getAuxiliaryModels).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
+
+    // A main-provider switch re-arms the banner: the acknowledged
+    // configuration no longer matches what is running.
+    cleanup()
+    getGlobalModelInfo.mockResolvedValue({ provider: 'openrouter', model: 'hermes-4' })
+    await renderModelSettings()
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    // The dismiss affordance is offered again for the new configuration.
+    expect(screen.getByRole('button', { name: "Don't show again" })).toBeTruthy()
+  })
+})
+
 describe('ModelSettings code-skew 503', () => {
   const skewError = new Error(
     'Error invoking remote method \'hermes:api\': Error: 503: {"detail":"Restart required: This process is running code from 08b4875f4a but the checkout on disk is now 48d2528066. The model picker would risk a stale-module crash — restart the Desktop-owned backend to load the new code (use Restart backend in Hermes Desktop, or quit and reopen the app)"}'

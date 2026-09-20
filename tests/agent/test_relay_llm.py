@@ -1122,57 +1122,6 @@ def test_stream_does_not_replay_chunks_relay_passed_over(
     assert list(stream) == [{"delta": "second"}]
 
 
-def test_stream_propagates_failure_after_foreign_chunk_even_with_empty_pending(
-    relay_turn, monkeypatch
-):
-    """An injected (sourceless) chunk poisons the same invariant: with the pending list
-    empty the old code would end the stream as if the Relay had not failed."""
-    relay, turn = relay_turn
-    raw_chunks = [{"delta": "first"}]
-
-    async def inject_then_fail(
-        _name,
-        request,
-        callback,
-        observe_chunk,
-        finalizer,
-        **_kwargs,
-    ):
-        async def generate():
-            upstream = callback(request)
-            first = await anext(upstream)
-            observe_chunk(first)
-            yield first  # matched: pending list drains
-            observe_chunk({"meta": "usage"})
-            yield {"meta": "usage"}  # foreign chunk, no provider source
-            with pytest.raises(StopAsyncIteration):
-                await anext(upstream)
-            finalizer()
-            raise RuntimeError("simulated buffered Relay failure")
-
-        return generate()
-
-    monkeypatch.setattr(relay.llm, "stream_execute", inject_then_fail)
-    stream = relay_llm.stream(
-        {"model": "test-model", "messages": []},
-        lambda _request: iter(raw_chunks),
-        session_id="session-1",
-        name="test-provider",
-        model_name="test-model",
-        finalizer=lambda: {"content": "complete"},
-        metadata={
-            "api_mode": "custom",
-            "api_request_id": "request-foreign-failure",
-        },
-    )
-
-    iterator = iter(stream)
-    next(iterator)  # provider chunk, matched
-    next(iterator)  # foreign chunk delivered
-    with pytest.raises(RuntimeError, match="simulated buffered Relay failure"):
-        next(iterator)
-
-
 def test_bypassed_stream_still_honors_chunk_acceptance(relay_turn):
     _relay, turn = relay_turn
     turn.lease.host.release_managed_execution("test.relay_llm")

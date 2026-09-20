@@ -27,7 +27,7 @@ import {
   endGatewaySwitch,
   recoverActiveSourceAfterFailedGatewaySwitch
 } from '@/store/gateway-switch'
-import { $notifications, clearNotifications, notifyError } from '@/store/notifications'
+import { $notifications, clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $backendRestartRequest } from '@/store/recovery-requests'
 import {
@@ -1376,6 +1376,56 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).not.toBe('open')
     // Still retrying.
     expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
+  })
+
+  it('coalesces repeated prolonged-outage warnings into one recovery notice', async () => {
+    render(<Harness />)
+    await flushAsync()
+
+    FakeWebSocket.mode = 'fail'
+    act(() => FakeWebSocket.instances[0].drop())
+    await flushAsync()
+
+    for (let i = 0; i < 24; i += 1) {
+      await advanceBackoff()
+    }
+
+    expect($notifications.get().filter(notification => notification.id === 'gateway-connection-lost')).toHaveLength(1)
+
+    await act(async () => {
+      const reconnect = reconnectGateway()
+      await vi.advanceTimersByTimeAsync(0)
+      await reconnect
+    })
+
+    for (let i = 0; i < 24; i += 1) {
+      await advanceBackoff()
+    }
+
+    expect($notifications.get().filter(notification => notification.id === 'gateway-connection-lost')).toHaveLength(1)
+  })
+
+  it('clears the prolonged-outage warning when the primary gateway opens again', async () => {
+    render(<Harness />)
+    await flushAsync()
+
+    FakeWebSocket.mode = 'fail'
+    act(() => FakeWebSocket.instances[0].drop())
+    await flushAsync()
+
+    for (let i = 0; i < 24; i += 1) {
+      await advanceBackoff()
+    }
+
+    expect($notifications.get().filter(notification => notification.id === 'gateway-connection-lost')).toHaveLength(1)
+    notify({ id: 'unrelated-warning', kind: 'warning', message: 'Keep this warning' })
+
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($notifications.get().filter(notification => notification.id === 'gateway-connection-lost')).toHaveLength(0)
+    expect($notifications.get().map(notification => notification.id)).toEqual(['unrelated-warning'])
   })
 
   it('FIX: a successful reconnect after a prolonged drop restores the open gateway', async () => {

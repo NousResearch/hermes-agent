@@ -621,11 +621,6 @@ _DEEPSEEK_FLASH_VISION: Dict[str, Any] = {
     "family": "deepseek-flash",
 }
 
-# Every models.dev StepFun catalog stops at the step-3.x family. Values are from live /models:
-# max_input_tokens 1,024,000 (the vendor docs' "1M" is 1000 x 1024), vision and reasoning on.
-# ``limit.output`` is explicit because the endpoint caps nothing and an absent value would clamp
-# generations to the 8192 default.
-# https://platform.stepfun.com/docs/zh/guides/models/step-5-preview
 _STEPFUN_STEP_5_PREVIEW: Dict[str, Any] = {
     "limit": {"context": 1_024_000, "output": 1_024_000},
     "modalities": {"input": ["text", "image", "video"], "output": ["text"]},
@@ -636,7 +631,6 @@ _STEPFUN_STEP_5_PREVIEW: Dict[str, Any] = {
     "family": "step-5",
 }
 
-# Served only by the China endpoints, and text-only per live /models.
 _STEPFUN_ROUTER_V1: Dict[str, Any] = {
     "limit": {"context": 262_144, "output": 262_144},
     "modalities": {"input": ["text"], "output": ["text"]},

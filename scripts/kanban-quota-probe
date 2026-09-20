@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import os
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--task-id", required=True)
+    p.add_argument("--run-id", required=True, type=int)
+    p.add_argument("--profile-home", required=True)
+    p.add_argument("--profile", required=True)
+    p.add_argument("--provider", required=True)
+    p.add_argument("--output", required=True)
+    args = p.parse_args()
+
+    os.environ["HERMES_HOME"] = args.profile_home
+    os.environ["HERMES_PROFILE"] = args.profile
+
+    from agent.account_usage import fetch_account_usage
+
+    snapshot = fetch_account_usage(args.provider)
+
+    result = {
+        "schema_version": 1,
+        "task_id": args.task_id,
+        "run_id": args.run_id,
+        "provider": args.provider,
+        "profile": args.profile,
+        "probed_at": datetime.now(timezone.utc).isoformat(),
+        "available": bool(snapshot and snapshot.available),
+        "hold_until": None,
+        "windows": [],
+    }
+
+    exhausted_resets = []
+
+    if snapshot:
+        for w in snapshot.windows:
+            used = w.used_percent
+            reset = w.reset_at
+
+            result["windows"].append({
+                "label": w.label,
+                "used_percent": used,
+                "reset_at": reset.isoformat() if reset else None,
+            })
+
+            if (
+                used is not None
+                and float(used) >= 100.0
+                and reset is not None
+                and reset.timestamp() > time.time()
+            ):
+                exhausted_resets.append(reset.timestamp())
+
+    if exhausted_resets:
+        # If multiple windows are exhausted, all must recover.
+        result["hold_until"] = max(exhausted_resets)
+
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp = tempfile.mkstemp(
+        prefix=out.name + ".",
+        suffix=".tmp",
+        dir=out.parent,
+    )
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(tmp, out)
+
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+if __name__ == "__main__":
+    main()

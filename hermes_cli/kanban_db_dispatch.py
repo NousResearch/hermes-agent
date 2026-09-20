@@ -74,7 +74,7 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 _RATE_LIMIT_HOLD_DIR = Path.home() / ".hermes/kanban/quota-holds"
-_RATE_LIMIT_PROBE = Path.home() / "agent_output/tools/kanban-quota-probe"
+_RATE_LIMIT_PROBE = Path(__file__).resolve().parents[1] / "scripts" / "kanban-quota-probe"
 
 # Goal-mode can terminally block a card when its judge/provider hits quota instead
 # of letting the worker exit with EX_TEMPFAIL. Those blocks are recoverable, but

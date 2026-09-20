@@ -217,6 +217,23 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     # ----- Session lifecycle -----
 
+    @staticmethod
+    def _session_source_skipped(cfg: "HonchoClientConfig") -> bool:
+        """True when ``skipSessionSources`` (honcho.json) names this session's source, e.g. \"kanban\"
+        for autonomous board-worker transcripts that must not be attributed to a human peer."""
+        skip = getattr(cfg, "skip_session_sources", None)
+        if not skip:
+            return False
+        try:
+            from gateway.session_context import get_session_env
+        except Exception:
+            get_session_env = os.environ.get
+        source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
+        if source and source in skip:
+            logger.debug("Honcho skipped: session source %r is in skipSessionSources", source)
+            return True
+        return False
+
     def initialize(self, session_id: str, **kwargs) -> None:
         """Configure recall settings and start (or defer) Honcho session creation."""
         self._recall_generation = object()
@@ -234,6 +251,10 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             cfg = HonchoClientConfig.from_global_config()
             if not _cfg_usable(cfg):
                 logger.debug("Honcho not configured — plugin inactive")
+                return
+
+            if self._session_source_skipped(cfg):
+                self._cron_skipped = True
                 return
 
             self._config = cfg

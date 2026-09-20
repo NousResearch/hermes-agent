@@ -383,6 +383,40 @@ class TestOSSBackend:
         return backend, memory
 
 
+    def test_cloudflare_rerank_overfetches_and_preserves_memory_dicts(self):
+        backend, memory = self._make()
+        memory.search = lambda query, **kwargs: {
+            "results": [
+                {"id": f"m{i}", "memory": f"fact {i}", "score": 1 - i / 100}
+                for i in range(kwargs["top_k"])
+            ]
+        }
+
+        class FakeReranker:
+            def rerank(self, query, rows, limit):
+                return [dict(rows[-1], score=0.99), dict(rows[0], score=0.98)][:limit]
+
+        backend._reranker = FakeReranker()  # type: ignore[assignment]
+        results = backend.search("needle", filters={"user_id": "u1"}, top_k=2, rerank=True)
+        assert len(results) == 2
+        assert results[0]["id"] == "m49"
+        assert results[0]["memory"] == "fact 49"
+        assert results[0]["score"] == 0.99
+
+    def test_cloudflare_rerank_failure_falls_back_to_semantic_order(self):
+        backend, memory = self._make()
+        memory.search = lambda query, **kwargs: {
+            "results": [{"id": f"m{i}", "memory": f"fact {i}"} for i in range(kwargs["top_k"])]
+        }
+
+        class BrokenReranker:
+            def rerank(self, query, rows, limit):
+                raise RuntimeError("temporary Cloudflare failure")
+
+        backend._reranker = BrokenReranker()  # type: ignore[assignment]
+        results = backend.search("needle", filters={"user_id": "u1"}, top_k=3, rerank=True)
+        assert [row["id"] for row in results] == ["m0", "m1", "m2"]
+
     def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
         state, Memory, factory = _install_fake_mem0(monkeypatch)
         raw = {

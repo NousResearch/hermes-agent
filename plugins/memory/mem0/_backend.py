@@ -97,6 +97,35 @@ class SelfHostedBackend(Mem0Backend):
 
 _DIRECT_OPENAI_PROVIDER = "hermes_openai"
 _DIRECT_OPENAI_CLASS_PATH = "plugins.memory.mem0._openai_llm.DirectOpenAILLM"
+_CLOUDFLARE_EMBED_MODEL = "@cf/baai/bge-m3"
+_CLOUDFLARE_RERANK_MODEL = "@cf/baai/bge-reranker-base"
+
+
+def _cloudflare_credentials(config: dict) -> tuple[str, str]:
+    """Resolve Workers AI credentials from instance config or the active profile secret scope."""
+    from agent.secret_scope import get_secret
+
+    account_id = str(config.get("account_id") or get_secret("CLOUDFLARE_ACCOUNT_ID") or "")
+    api_key = str(config.get("api_key") or get_secret("CLOUDFLARE_WORKERS_AI_TOKEN") or "")
+    if not account_id or not api_key:
+        raise ValueError("Cloudflare Workers AI account ID and token are required")
+    return account_id, api_key
+
+
+def _cloudflare_embedder_block(block: dict) -> dict:
+    """Use Mem0's OpenAI embedder against Cloudflare's compatible endpoint."""
+    provider_config = dict(block.get("config", {}))
+    account_id, api_key = _cloudflare_credentials(provider_config)
+    provider_config.update(
+        {
+            "api_key": api_key,
+            "model": provider_config.get("model") or _CLOUDFLARE_EMBED_MODEL,
+            "embedding_dims": int(provider_config.get("embedding_dims") or 1024),
+            "openai_base_url": f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        }
+    )
+    provider_config.pop("account_id", None)
+    return {"provider": "openai", "config": provider_config}
 
 
 def _register_direct_openai_provider() -> None:
@@ -134,13 +163,28 @@ class OSSBackend(Mem0Backend):
         vs_config = dict(vector_store.get("config", {}))
         if "path" in vs_config:
             vs_config["path"] = os.path.expanduser(vs_config["path"])
-        embedder_config = oss_config.get("embedder", {}).get("config", {})
+        raw_embedder = _provider_block("embedder", EMBEDDER_PROVIDERS)
+        embedder = _cloudflare_embedder_block(raw_embedder) if str(raw_embedder.get("provider") or "").strip().lower() == "cloudflare" else raw_embedder
+        embedder_config = embedder.get("config", {})
         dims = embedder_config.get("embedding_dims") or KNOWN_DIMS.get(embedder_config.get("model", ""))
         if dims:
             vs_config["embedding_model_dims"] = dims
             self._recreate_collection_if_dims_changed(vector_store.get("provider", "qdrant"), vs_config, dims)
         vector_store["config"] = vs_config
-        config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": _provider_block("embedder", EMBEDDER_PROVIDERS), "version": "v1.1"}
+        config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": embedder, "version": "v1.1"}
+        self._reranker = None
+        reranker_config = dict(oss_config.get("reranker") or {})
+        if str(reranker_config.get("provider") or "").strip().lower() == "cloudflare":
+            from ._cloudflare import CloudflareReranker
+
+            cf_config = dict(reranker_config.get("config") or {})
+            account_id, api_key = _cloudflare_credentials(cf_config)
+            self._reranker = CloudflareReranker(
+                account_id=account_id,
+                api_key=api_key,
+                model=cf_config.get("model") or _CLOUDFLARE_RERANK_MODEL,
+                timeout=float(cf_config.get("timeout") or 30.0),
+            )
         if str(config["llm"].get("provider") or "").strip().lower() == "openai":
             # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
             _register_direct_openai_provider()
@@ -191,7 +235,14 @@ class OSSBackend(Mem0Backend):
                             cur.execute(pgsql.SQL("DROP TABLE IF EXISTS {}").format(pgsql.Identifier(collection_name)))
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
-        return _unwrap_results(self._memory.search(query, filters=filters, top_k=top_k))
+        candidate_count = max(top_k * 5, 50) if rerank and self._reranker else top_k
+        results = _unwrap_results(self._memory.search(query, filters=filters, top_k=candidate_count))
+        if not (rerank and self._reranker and results):
+            return results[:top_k]
+        try:
+            return self._reranker.rerank(query, results, top_k)
+        except Exception:
+            return results[:top_k]
 
     def add(self, messages: list, *, user_id: str, agent_id: str, infer: bool = False, metadata: dict | None = None) -> dict:
         return self._memory.add(messages, **_add_kwargs(user_id, agent_id, infer, metadata))
@@ -209,7 +260,6 @@ class OSSBackend(Mem0Backend):
                 with suppress(Exception):
                     telemetry.posthog.shutdown()
             vs = getattr(self._memory, "vector_store", None)
-            # Memory, then its vector store, then the store's raw client; the first failure aborts the chain.
-            for obj in filter(None, (self._memory, vs, getattr(vs, "client", None))):
+            for obj in filter(None, (self._reranker, self._memory, vs, getattr(vs, "client", None))):
                 if hasattr(obj, "close"):
                     obj.close()

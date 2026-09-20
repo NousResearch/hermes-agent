@@ -4,6 +4,7 @@ are rebound onto server.py's globals (method_ctx.bind_module) and reference them
 Keys match exactly except ``details_mode.<section>`` (prefix) and ``_DISPLAY_TOGGLE_KEYS``.
 """
 
+import json
 import os
 
 from hermes_constants import INDICATOR_STYLES
@@ -460,6 +461,48 @@ def _set_display_toggle(rid, params, key, value, session):
     return _kv(rid, key, on)
 
 
+def _set_visible_models(rid, params, key, value, session):
+    """Persist the ``provider::model`` keys a picker may show, for every surface.
+
+    Model visibility was renderer-local (Desktop localStorage), so a phone or a
+    second client could not see the operator's curated roster and showed its own.
+    Writing it to config and broadcasting makes one choice apply everywhere, live.
+
+    ``null`` clears the customisation (clients fall back to their curated default);
+    an empty list means "hide everything", which is a different, preserved state.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        _write_config_key("display.visible_models", None)
+        _broadcast_global_event("visible_models.changed", {"value": None})
+        return _kv(rid, key, None)
+    raw = value
+    if isinstance(raw, str):
+        # CLI/`hermes config set` hands over a string; accept JSON or comma-separated.
+        text = raw.strip()
+        try:
+            raw = json.loads(text)
+        except (TypeError, ValueError):
+            raw = [part for part in (p.strip() for p in text.split(",")) if part]
+    if not isinstance(raw, list):
+        return _err(rid, 4002, f"{key} takes a list of provider::model keys")
+    seen: set[str] = set()
+    keys: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            return _err(rid, 4002, f"{key} entries must be strings")
+        item = entry.strip()
+        # `provider::model`, or `provider::` — the sentinel for "this provider is
+        # fully hidden", which must survive the round-trip or the picker re-seeds it.
+        if not item or "::" not in item:
+            return _err(rid, 4002, f"invalid model key: {entry!r} (expected provider::model)")
+        if item not in seen:
+            seen.add(item)
+            keys.append(item)
+    _write_config_key("display.visible_models", keys)
+    _broadcast_global_event("visible_models.changed", {"value": keys})
+    return _kv(rid, key, keys)
+
+
 # ── dispatch
 
 _CONFIG_SETTERS = {
@@ -469,7 +512,8 @@ _CONFIG_SETTERS = {
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
-    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
+    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin,
+    "visible_models": _set_visible_models}
 
 # Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
 # agent.* for every surface, the process env every later child inherits). A non-empty session_id this

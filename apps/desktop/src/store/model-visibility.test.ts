@@ -1,7 +1,22 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const requests: [string, Record<string, unknown>][] = []
+
+vi.mock('@/store/gateway', () => ({
+  $gateway: { get: () => null, listen: () => () => {} },
+  activeGateway: () => ({
+    request: (method: string, params: Record<string, unknown>) => {
+      requests.push([method, params])
+
+      return Promise.resolve({})
+    }
+  })
+}))
 
 import {
+  $visibleModels,
+  adoptVisibleModels,
   collapseModelFamilies,
   defaultVisibleKeys,
   effectiveVisibleKeys,
@@ -10,6 +25,7 @@ import {
   modelVisibilityKey,
   resolveVisibleKeys,
   setProviderVisibility,
+  setVisibleModels,
   toggleModelVisibility
 } from './model-visibility'
 
@@ -332,5 +348,38 @@ describe('setProviderVisibility', () => {
     expect(next.has(modelVisibilityKey('nous', 'model'))).toBe(true)
     // The -fast sibling is represented by its base family, not its own key.
     expect(next.has(modelVisibilityKey('nous', 'model-fast'))).toBe(false)
+  })
+})
+
+describe('model visibility crosses surfaces', () => {
+  beforeEach(() => {
+    requests.length = 0
+    localStorage.clear()
+    adoptVisibleModels(null)
+  })
+
+  it('publishes an edit so other clients see the same roster', () => {
+    // Without this the phone kept offering models hidden on the Mac: the choice
+    // never left the renderer that made it.
+    setVisibleModels(new Set(['anthropic::claude-opus-5']))
+
+    expect(requests).toEqual([
+      ['config.set', { key: 'visible_models', value: ['anthropic::claude-opus-5'] }]
+    ])
+  })
+
+  it('adopts the backend roster so a second surface does not drift', () => {
+    adoptVisibleModels(['or::auto/best-coding'])
+
+    expect($visibleModels.get()).toEqual(new Set(['or::auto/best-coding']))
+  })
+
+  it('keeps "hid everything" distinct from "never customised"', () => {
+    // Collapsing these is how a cleared picker silently refills with defaults.
+    adoptVisibleModels([])
+    expect($visibleModels.get()).toEqual(new Set())
+
+    adoptVisibleModels(null)
+    expect($visibleModels.get()).toBeNull()
   })
 })

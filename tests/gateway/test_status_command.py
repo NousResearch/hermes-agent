@@ -1,16 +1,22 @@
-from hermes_state import AsyncSessionDB
+from hermes_state import AsyncSessionDB, SessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.platforms.event import MessageEvent
+from gateway.session import (
+    AsyncSessionStore,
+    SessionEntry,
+    SessionSource,
+    SessionStore,
+    build_session_key,
+)
 
 
 def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
@@ -139,6 +145,214 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
     assert "**Lifetime tokens billed:** 1,250" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
+    """Persisted status uses the latest coherent route, not the lifetime-dominant route."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session("sess-1", "telegram", model="z-ai/glm-5.2")
+        db.update_token_counts(
+            "sess-1",
+            model="z-ai/glm-5.2",
+            billing_provider="nvidia",
+            billing_base_url="https://integrate.api.nvidia.com/v1/",
+            input_tokens=480,
+            api_call_count=48,
+        )
+        db.update_token_counts(
+            "sess-1",
+            model="upstage/solar-pro4:free",
+            billing_provider="nous",
+            billing_base_url="https://inference-api.nousresearch.com/v1/",
+            input_tokens=60,
+            api_call_count=6,
+        )
+        # Reproduce the inconsistent legacy summary observed in #87227.
+        db.update_session_model("sess-1", "z-ai/glm-5.2")
+        db.update_session_billing_route(
+            "sess-1",
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1/",
+        )
+
+        result = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `upstage/solar-pro4:free` (nous)" in result
+        assert "**Model:** `z-ai/glm-5.2` (nvidia)" not in result
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_rehydrated_session_model_override(tmp_path):
+    """A committed /model switch is current before the selected model records usage."""
+    source = _make_source()
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    session_entry = store.get_or_create_session(source)
+    runner = _make_runner(session_entry)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session(session_entry.session_id, "telegram", model="model-a")
+        db.update_token_counts(
+            session_entry.session_id,
+            model="model-a",
+            billing_provider="provider-a",
+            input_tokens=480,
+            api_call_count=48,
+        )
+        result = SimpleNamespace(
+            new_model="model-b",
+            target_provider="provider-b",
+            provider_label="Provider B",
+            api_key="secret",
+            base_url="https://b.example/v1",
+            api_mode=None,
+            request_overrides={},
+            runtime_capabilities={},
+        )
+        switch_ctx = SimpleNamespace(
+            session_key=session_entry.session_key,
+            current_model="model-a",
+            persist_global=False,
+            restore_snapshot=None,
+        )
+        await runner._record_model_switch(
+            result, switch_ctx, source=source, one_turn=False, picker=False
+        )
+        # Simulate a restart: /status must lazily recover the durable override.
+        runner._session_state(session_entry.session_key).conversation.model_override = None
+
+        status = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `model-b` (provider-b)" in status
+        assert "**Model:** `model-a` (provider-a)" not in status
+    finally:
+        db.close()
+
+
+def _runner_with_session_override(override: dict, *, last_prompt_tokens: int):
+    """Runner whose session has a committed /model override but no resident agent (no compressor)."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_entry.last_prompt_tokens = last_prompt_tokens
+    runner = _make_runner(session_entry)
+    runner._session_state(session_entry.session_key).conversation.model_override = override
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_status_command_resolves_window_of_session_only_model_switch():
+    """After a session-only /model switch with no turn yet, /status must show used / window for the
+    switched-to route (looked up against THAT route's endpoint, and never the default route's
+    ``model.context_length`` pin) instead of the occupancy-only line (#111436)."""
+    override = {"model": "kimi-k3", "provider": "kimi-coding",
+                "base_url": "https://api.kimi.com/coding", "api_key": "sk-override"}
+    runner = _runner_with_session_override(override, last_prompt_tokens=79_455)
+    config = {"model": {"default": "default-model", "provider": "openrouter", "context_length": 80_000}}
+
+    with patch("gateway.run._load_gateway_config", return_value=config), patch(
+        "gateway.run._resolve_runtime_agent_kwargs"
+    ) as default_runtime, patch(
+        "agent.model_metadata.get_model_context_length", return_value=1_048_576
+    ) as lookup:
+        result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `kimi-k3` (kimi-coding)" in result
+    assert "**Context:** 79,455 / 1,048,576 (8%)" in result
+    assert "80,000" not in result
+    default_runtime.assert_not_called()
+    kwargs = lookup.call_args.kwargs
+    assert (kwargs["base_url"], kwargs["api_key"], kwargs["provider"]) == (
+        override["base_url"], override["api_key"], "kimi-coding")
+    assert kwargs["config_context_length"] is None
+
+
+@pytest.mark.asyncio
+async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
+    """A model the resolver cannot size falls to DEFAULT_FALLBACK_CONTEXT; /status must not present
+    that invented number as the window (a catalog-listed model of the same size still counts)."""
+    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+    runner = _runner_with_session_override(
+        {"model": "proxy-mystery-model", "provider": "custom:proxy", "base_url": "http://127.0.0.1:1/v1"},
+        last_prompt_tokens=4_321,
+    )
+    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+    ):
+        result = await runner._handle_message(_make_event("/status"))
+    assert "**Context:** ~4,321 tokens" in result
+    assert f"{DEFAULT_FALLBACK_CONTEXT:,}" not in result
+
+    runner = _runner_with_session_override(
+        {"model": "grok-4", "provider": "xai", "base_url": ""}, last_prompt_tokens=4_321)
+    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+    ):
+        result = await runner._handle_message(_make_event("/status"))
+    assert f"**Context:** 4,321 / {DEFAULT_FALLBACK_CONTEXT:,} (2%)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_default_route_keeps_runtime_endpoint_and_context_pin():
+    """No /model switch and no resident agent (first /status after a restart): the winner is the
+    persisted route or the SessionDB row, which carry no endpoint of their own. The window must then
+    be resolved against the default runtime route (custom base_url + key, ``model.context_length``
+    pin intact) exactly as /context does, not against an empty endpoint that drops the pin."""
+    config = {"model": {"default": "my-local-model", "provider": "custom",
+                        "base_url": "http://127.0.0.1:1/v1", "context_length": 32_768}}
+    runtime = {"model": "my-local-model", "provider": "custom",
+               "base_url": "http://127.0.0.1:1/v1", "api_key": "local-key"}
+    route = {"model": "my-local-model", "billing_provider": "custom"}
+    for persisted_route, session_row in ((route, None), ({}, dict(route))):
+        session_entry = SessionEntry(
+            session_key=build_session_key(_make_source()),
+            session_id="sess-1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+        session_entry.last_prompt_tokens = 9_000
+        runner = _make_runner(session_entry)
+        runner._session_db._db.get_session.return_value = session_row
+        runner._session_db._db.get_recent_session_model_route.return_value = persisted_route
+
+        with patch("gateway.run._load_gateway_config", return_value=config), patch(
+            "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+        ) as default_runtime, patch(
+            "agent.model_metadata.get_model_context_length",
+            side_effect=lambda _model, **kw: kw["config_context_length"] or 8_192,
+        ) as lookup:
+            result = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `my-local-model` (custom)" in result
+        assert "**Context:** 9,000 / 32,768 (27%)" in result
+        default_runtime.assert_called_once()
+        kwargs = lookup.call_args.kwargs
+        assert (kwargs["base_url"], kwargs["api_key"], kwargs["config_context_length"]) == (
+            runtime["base_url"], runtime["api_key"], 32_768)
 
 
 @pytest.mark.asyncio
@@ -328,7 +542,8 @@ async def test_status_command_bypasses_active_session_guard():
     """When an agent is running, /status must be dispatched immediately via
     base.handle_message — not queued or treated as an interrupt (#5046)."""
     import asyncio
-    from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import build_session_key
     from gateway.config import Platform, PlatformConfig
 
@@ -389,6 +604,7 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     hermes_home = tmp_path / ".hermes"
     profile_home = hermes_home / "profiles" / "milo"
     profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
 
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
@@ -408,10 +624,72 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     result = await runner._handle_profile_command(event)
 
     assert "**Profile:** `milo`" in result
-    assert f"**Home:** `{profile_home}`" in result
+    # The reply renders display_hermes_home() for the routed profile, which abbreviates a home
+    # under $HOME to ``~/…``; compare against the same rendering rather than the raw path.
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import display_hermes_home
+
+    with _profile_runtime_scope(profile_home):
+        expected_home = display_hermes_home()
+    assert f"**Home:** `{expected_home}`" in result
 
 
 # ── /context command tests ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_context_command_keeps_configured_window_without_resident_agent():
+    """The no-agent fallback must not replace a custom-provider context pin."""
+    model = "unsloth/Qwen3.8-27B-GGUF:Q8_0"
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-context-pin",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_entry.last_prompt_tokens = 66_570
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {"model": model}
+
+    config = {
+        "model": {
+            "default": model,
+            "provider": "custom-local-qwen",
+            "context_length": 262_144,
+        },
+        "custom_providers": [
+            {
+                "name": "custom-local-qwen",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "models": {},
+            }
+        ],
+    }
+    runtime = {
+        "provider": "custom-local-qwen",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "api_key": "",
+    }
+
+    with patch("gateway.run._load_gateway_config", return_value=config), patch(
+        "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+    ), patch(
+        "hermes_cli.config.get_compatible_custom_providers",
+        return_value=config["custom_providers"],
+    ), patch(
+        "agent.model_metadata.get_model_context_length",
+        side_effect=lambda *args, **kwargs: kwargs.get("config_context_length") or 131_072,
+    ) as context_lookup:
+        result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "Window: 262,144 tokens" in result
+    assert "In use: 66,570 / 262,144 (25%)" in result
+    assert "131,072" not in result
+    assert context_lookup.call_count == 1
+    assert context_lookup.call_args.kwargs["config_context_length"] == 262_144
+
 
 def _stub_agent(**overrides) -> SimpleNamespace:
     """Build a stub agent with the attributes _handle_context_command reads."""
@@ -486,5 +764,3 @@ async def test_context_all_appends_expanded_listings():
     assert "hermes-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result
-
-

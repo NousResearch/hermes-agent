@@ -28,6 +28,56 @@ class DummyResponse:
 
 
 
+def test_followup_user_turn_is_not_merged_into_function_response_turn():
+    """Human follow-up after tool results must stay its own user content.
+
+    The split pair is kept alternation-valid by interposing a placeholder
+    model turn between the functionResponse content and the human text
+    content (mirrors gemini-cli#28700's INTERRUPTED_RESPONSE_PLACEHOLDER).
+
+    Scope: only the functionResponse↔human-text boundary. Ordinary same-role
+    merges (parallel tool results, back-to-back plain user texts) remain
+    required for Gemini alternation and are covered by sibling tests.
+    """
+    from agent.gemini_native_adapter import (
+        _INTERRUPTED_RESPONSE_PLACEHOLDER,
+        _build_gemini_contents,
+    )
+
+    messages = [
+        {"role": "user", "content": "Load the skill"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "arguments": '{"name":"hermes-agent"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "loaded"},
+        {"role": "user", "content": "Continue"},
+    ]
+
+    contents, _ = _build_gemini_contents(messages)
+
+    assert [content["role"] for content in contents] == [
+        "user",
+        "model",
+        "user",
+        "model",
+        "user",
+    ]
+    assert "functionResponse" in contents[2]["parts"][0]
+    assert contents[3]["parts"] == [{"text": _INTERRUPTED_RESPONSE_PLACEHOLDER}]
+    assert contents[-1]["parts"] == [{"text": "Continue"}]
+
+
 def test_parallel_tool_results_merge_into_one_user_content():
     """Gemini requires strict user/model alternation; two consecutive `user`
     contents are rejected with HTTP 400. Parallel tool calls produce two tool
@@ -79,6 +129,116 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
     contents, _ = _build_gemini_contents(messages)
     roles = [c["role"] for c in contents]
     assert roles == ["user", "model"], roles
+
+
+def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():
+    """A tool result whose content is itself a JSON Schema must not be
+    forwarded as a structured functionResponse.response.
+
+    Gemini 3 resolves ``$ref``/``$defs`` pointers inside a function response
+    payload and rejects unknown references with HTTP 400 INVALID_ARGUMENT
+    ("referenced name '#/$defs/...' does not match a display_name"; see
+    vercel/ai#14369). ``tool_describe`` output for an MCP tool is exactly such
+    a schema, so it must be wrapped as opaque text instead.
+    """
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    schema = {
+        "$defs": {"SetCookieParam": {"type": "object"}},
+        "properties": {"cookies": {"$ref": "#/$defs/SetCookieParam"}},
+    }
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "tool_describe",
+        "content": json.dumps(schema),
+    }
+
+    out = _translate_tool_result_to_gemini(msg, include_ids=True)
+
+    response = out["functionResponse"]["response"]
+    assert "$defs" not in response
+    assert "output" in response
+    # The raw schema text is preserved verbatim in the wrapped output.
+    assert "#/$defs/SetCookieParam" in response["output"]
+
+
+def test_plain_json_tool_result_remains_structured():
+    """Ordinary JSON tool results without a ``$ref`` pointer keep the
+    structured form (no regression to the existing structured-response path)."""
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "name": "some_tool",
+        "content": json.dumps({"status": "ok", "count": 3}),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    assert out["functionResponse"]["response"] == {"status": "ok", "count": 3}
+
+
+def test_deeply_nested_ref_is_detected():
+    """A ``$ref`` pointer buried several levels deep through mixed lists and
+    dicts still demotes the result to opaque text (recursion coverage)."""
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    deep = {"a": [{"b": {"c": [{"$ref": "#/$defs/Deep"}]}}]}
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_3",
+        "name": "some_tool",
+        "content": json.dumps(deep),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    response = out["functionResponse"]["response"]
+    assert "output" in response
+    assert "#/$defs/Deep" in response["output"]
+
+
+def test_top_level_json_array_is_wrapped_as_opaque_text():
+    """A top-level JSON array is never forwarded as a structured response.
+
+    ``response = parsed if isinstance(parsed, dict) else {"output": content}``
+    already wraps lists, so a list of schemas cannot reach the Gemini 400 path.
+    """
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    arr = [{"$ref": "#/$defs/SetCookieParam", "type": "object"}]
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_4",
+        "name": "some_tool",
+        "content": json.dumps(arr),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    response = out["functionResponse"]["response"]
+    assert "output" in response
+    assert "$ref" not in response
+
+
+def test_ref_value_without_pointer_prefix_remains_structured():
+    """Only values shaped like a JSON pointer (``#/...``) demote a result; a
+    ``$ref`` value that is not a pointer leaves the structured path intact."""
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    payload = {"$ref": "not-a-pointer", "status": "ok"}
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_5",
+        "name": "some_tool",
+        "content": json.dumps(payload),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    assert out["functionResponse"]["response"] == payload
 
 
 
@@ -170,6 +330,34 @@ def test_native_client_accepts_injected_http_client():
     assert client._http is injected
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, "https://generativelanguage.googleapis.com/v1beta"),
+        ("https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta"),
+        ("http://localhost:4000/gemini///", "http://localhost:4000/gemini/v1beta"),
+        ("https://proxy.example/gemini/v1alpha/", "https://proxy.example/gemini/v1alpha"),
+        ("https://proxy.example/v1", "https://proxy.example/v1"),
+        ("https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta"),
+    ],
+)
+def test_normalize_gemini_base_url_guarantees_version_segment(configured, expected):
+    """Host roots (how Google's own client is configured) gain ``/v1beta``; versioned URLs and the
+    ``/openai`` strip are unchanged, so ``{base}/models/{model}:generateContent`` never 404s."""
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+
+    assert normalize_gemini_base_url(configured) == expected
+
+
+def test_native_client_appends_v1beta_to_host_root_base_url():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(
+        api_key="AIza-test", base_url="https://generativelanguage.googleapis.com", http_client=SimpleNamespace(close=lambda: None)
+    )
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+
 def test_native_client_rejects_empty_api_key_with_actionable_message():
     """Empty/whitespace api_key must raise at construction, not produce a cryptic
     Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
@@ -240,6 +428,95 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
+def _fc_event(name, args, call_id=None, finish=None):
+    fc = {"name": name, "args": args}
+    if call_id:
+        fc["id"] = call_id
+    cand = {"content": {"parts": [{"functionCall": fc}]}}
+    if finish:
+        cand["finishReason"] = finish
+    return {"candidates": [cand]}
+
+
+def _tool_call_deltas(chunks):
+    return [(tc.index, tc.function.arguments) for c in chunks for tc in (c.choices[0].delta.tool_calls or [])]
+
+
+def test_distinct_same_tool_calls_in_separate_events_get_their_own_slots():
+    """Gemini 2.5 (no call id) streams each parallel call as parts[0] of its own event; two
+    different calls to one tool must not share a slot, and a resend of the second must land on
+    the slot it opened instead of concatenating onto the first."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = []
+    for args in ({"q": "A"}, {"q": "B"}, {"q": "B"}):
+        out += translate_stream_event(_fc_event("search", args), model="gemini-2.5-flash", tool_call_indices=slots)
+
+    assert _tool_call_deltas(out) == [(0, '{"q": "A"}'), (1, '{"q": "B"}'), (1, "")]
+    for (_, arguments) in _tool_call_deltas(out)[:2]:
+        json.loads(arguments)
+
+
+def test_provider_call_id_is_the_slot_identity():
+    """Gemini 3 ids two calls with identical name and args as two calls; the same id across events
+    (with drifting part_index / signature) is one call."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c1"), model="gemini-3-pro", tool_call_indices=slots)
+    out += translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c2"), model="gemini-3-pro", tool_call_indices=slots)
+    resend = {"candidates": [{"content": {"parts": [{"text": "x"}, {"functionCall": {"name": "search", "args": {"q": "A"}, "id": "c1"},
+                                                        "thoughtSignature": "sig"}]}}]}
+    out += translate_stream_event(resend, model="gemini-3-pro", tool_call_indices=slots)
+
+    deltas = _tool_call_deltas(out)
+    assert deltas == [(0, '{"q": "A"}'), (1, '{"q": "A"}'), (0, "")]
+    ids = [tc.id for c in out for tc in (c.choices[0].delta.tool_calls or [])]
+    assert ids == ["c1", "c2", "c1"]
+
+
+def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
+    assert "thinkingConfig" not in request["generationConfig"]
+
+
+def test_build_gemini_request_raises_max_output_when_thinking_is_enabled():
+    from agent.gemini_native_adapter import (
+        GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+        build_gemini_request,
+    )
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+        thinking_config={"includeThoughts": True, "thinkingLevel": "high"},
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    assert request["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "high"
+
+
+def test_build_gemini_request_does_not_raise_when_thinking_is_disabled():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+        thinking_config={"includeThoughts": False},
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
+    assert request["generationConfig"]["thinkingConfig"]["includeThoughts"] is False
+
+
 
 
 
@@ -259,3 +536,297 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
 
 
 
+
+
+class TestGemini3ToolCallIds:
+    """Gemini 3+ requires explicit tool call IDs in replayed history
+    (port of earendil-works/pi#7494)."""
+
+    def _history(self):
+        return [
+            {"role": "user", "content": "Read a.txt and b.txt"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "type": "function",
+                     "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'}},
+                    {"id": "call_2", "type": "function",
+                     "function": {"name": "read_file", "arguments": '{"path": "b.txt"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "AAA"},
+            {"role": "tool", "tool_call_id": "call_2", "content": "BBB"},
+        ]
+
+    def test_requires_ids_gate(self):
+        from agent.gemini_native_adapter import gemini_requires_tool_call_ids
+
+        assert gemini_requires_tool_call_ids("gemini-3.6-flash")
+        assert gemini_requires_tool_call_ids("google/gemini-3.6-pro")
+        assert gemini_requires_tool_call_ids("gemini-3-flash-preview")
+        assert not gemini_requires_tool_call_ids("gemini-2.5-flash")
+        assert not gemini_requires_tool_call_ids("gemini-1.5-pro")
+        assert not gemini_requires_tool_call_ids("claude-opus-4.6")
+        assert not gemini_requires_tool_call_ids("")
+
+    def test_ids_preserved_for_gemini3(self):
+        from agent.gemini_native_adapter import _build_gemini_contents
+
+        contents, _ = _build_gemini_contents(
+            self._history(), include_tool_call_ids=True
+        )
+        call_ids = [
+            p["functionCall"]["id"]
+            for c in contents for p in c["parts"] if "functionCall" in p
+        ]
+        response_ids = [
+            p["functionResponse"]["id"]
+            for c in contents for p in c["parts"] if "functionResponse" in p
+        ]
+        assert call_ids == ["call_1", "call_2"]
+        assert response_ids == ["call_1", "call_2"]
+
+    def test_ids_omitted_for_older_gemini(self):
+        from agent.gemini_native_adapter import _build_gemini_contents
+
+        contents, _ = _build_gemini_contents(self._history())
+        for c in contents:
+            for p in c["parts"]:
+                if "functionCall" in p:
+                    assert "id" not in p["functionCall"]
+                if "functionResponse" in p:
+                    assert "id" not in p["functionResponse"]
+
+    def test_build_request_threads_model_gate(self):
+        from agent.gemini_native_adapter import build_gemini_request
+
+        request = build_gemini_request(
+            messages=self._history(), model="gemini-3.6-flash"
+        )
+        parts = [p for c in request["contents"] for p in c["parts"]]
+        assert any(p.get("functionCall", {}).get("id") == "call_1" for p in parts)
+
+        request_old = build_gemini_request(
+            messages=self._history(), model="gemini-2.5-flash"
+        )
+        parts_old = [p for c in request_old["contents"] for p in c["parts"]]
+        assert all("id" not in p.get("functionCall", {}) for p in parts_old)
+
+    def test_response_preserves_provider_tool_call_id(self):
+        from agent.gemini_native_adapter import translate_gemini_response
+
+        resp = {
+            "candidates": [{
+                "content": {"parts": [{
+                    "functionCall": {"id": "call_native_7", "name": "read_file",
+                                     "args": {"path": "a.txt"}},
+                }]},
+                "finishReason": "STOP",
+            }],
+        }
+        result = translate_gemini_response(resp, model="gemini-3.6-flash")
+        tool_calls = result.choices[0].message.tool_calls
+        assert tool_calls[0].id == "call_native_7"
+
+    def test_response_generates_id_when_absent(self):
+        from agent.gemini_native_adapter import translate_gemini_response
+
+        resp = {
+            "candidates": [{
+                "content": {"parts": [{
+                    "functionCall": {"name": "read_file", "args": {}},
+                }]},
+                "finishReason": "STOP",
+            }],
+        }
+        result = translate_gemini_response(resp, model="gemini-2.5-flash")
+        tool_calls = result.choices[0].message.tool_calls
+        assert tool_calls[0].id.startswith("call_")
+
+
+# ---------------------------------------------------------------------------
+# Multimodal tool results: image embedding in functionResponse.parts
+# ---------------------------------------------------------------------------
+
+_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _vision_tool_messages():
+    """Assistant tool_call + tool result carrying a text part and an image part."""
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "vision_analyze", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "vision_analyze",
+            "content": [
+                {"type": "text", "text": "a red pixel"},
+                {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+)
+def test_gemini_3x_embeds_image_in_function_response_parts(model):
+    """Gemini 3.x multimodal tool results embed inlineData inside functionResponse.parts."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=_vision_tool_messages(),
+        model=model,
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" in fr, "Gemini 3.x must embed image inlineData in functionResponse.parts"
+    assert fr["parts"][0]["inlineData"]["mimeType"] == "image/png"
+    assert fr["parts"][0]["inlineData"]["data"]
+
+
+def test_gemini_2x_does_not_embed_image_parts():
+    """Gemini 2.x rejects functionResponse.parts — tool result stays text-only."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=_vision_tool_messages(),
+        model="gemini-2.5-flash",
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" not in fr
+
+
+def test_text_only_tool_result_has_no_parts():
+    """Text-only Gemini 3.x tool result does not add empty parts."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "read_file",
+            "content": "file contents here",
+        },
+    ]
+    request = build_gemini_request(
+        messages=messages,
+        model="gemini-3.6-flash",
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" not in fr
+
+
+class _FakeStreamResponse:
+    """Minimal httpx.Response stand-in for _iter_sse_events: text chunks only."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def iter_text(self):
+        yield from self._chunks
+
+
+def test_iter_sse_events_flushes_residual_buffer_after_eof():
+    """A final SSE frame without a trailing newline must not be dropped (pi#8997 class)."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\n',
+        'data: {"candidates": [2]}',  # no newline, then EOF
+    ])
+    events = list(_iter_sse_events(resp))
+    assert events == [{"candidates": [1]}, {"candidates": [2]}]
+
+
+def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
+    """[DONE] terminates iteration even when more frames follow; a residual
+    [DONE] in the leftover buffer is not yielded as data."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\ndata: [DONE]\ndata: {"candidates": [3]}\n',
+    ])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+    resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+
+@pytest.mark.parametrize(
+    "api_key, configured, expected_prefix",
+    [
+        # Express key + default Studio host: the only place it can never work → aiplatform express surface.
+        ("AQ.express-key", None, "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # Control: Studio key keeps the Studio host.
+        ("AIza-test", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # An explicit aiplatform base (host root or versioned) is completed to the publishers form.
+        ("AQ.express-key", "https://aiplatform.googleapis.com", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        ("AIza-test", "https://aiplatform.googleapis.com/v1beta1", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # An explicit proxy is never overridden by the key shape.
+        ("AQ.express-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
+    ],
+)
+def test_native_client_routes_vertex_express_keys_to_aiplatform(api_key, configured, expected_prefix):
+    """Vertex express keys (``AQ.``) 403 on generativelanguage; the request must hit
+    ``aiplatform.googleapis.com/v1beta1/publishers/google/models/…`` unless the user pointed elsewhere."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    seen = []
+
+    class _HTTP:
+        def post(self, url, **_):
+            seen.append(url)
+            return SimpleNamespace(status_code=200, json=lambda: {"candidates": [
+                {"content": {"role": "model", "parts": [{"text": "ok"}]}, "finishReason": "STOP"}]})
+
+    client = GeminiNativeClient(api_key=api_key, base_url=configured, http_client=_HTTP())
+    client.chat.completions.create(model="gemini-3.7-flash", messages=[{"role": "user", "content": "hi"}])
+    assert seen == [f"{expected_prefix}gemini-3.7-flash:generateContent"]
+
+
+def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
+    """The express base is native Gemini; the OAuth Vertex provider's OpenAI-compatible
+    ``…/endpoints/openapi`` base must NOT be captured by the native adapter."""
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1beta1/publishers/google")
+    assert not is_native_gemini_base_url(
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    )

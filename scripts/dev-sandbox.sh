@@ -185,6 +185,7 @@ else
 fi
 
 if [ "$PERSISTENT" = false ]; then
+  # shellcheck disable=SC2329  # invoked via trap
   cleanup() {
     chmod -R u+w "$SANDBOX_ROOT"
     rm -rf -- "$SANDBOX_ROOT"

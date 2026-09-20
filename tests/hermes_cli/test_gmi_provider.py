@@ -316,7 +316,7 @@ class TestGmiMainFlow:
             "builtins.input",
             return_value="",
         ):
-            from hermes_cli.main import _model_flow_api_key_provider
+            from hermes_cli.model_setup_flows import _model_flow_api_key_provider
 
             _model_flow_api_key_provider(load_config(), "gmi", "old-model")
 

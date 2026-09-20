@@ -1,6 +1,7 @@
 """Tests for CLI voice mode integration -- markdown stripping, voice state
 management, TTS/STT wiring, barge-in and the full-duplex listener."""
 
+import json
 import queue
 import threading
 from types import SimpleNamespace
@@ -30,6 +31,8 @@ def _make_voice_cli(**overrides):
     cli._voice_tts_done.set()
     cli._voice_tts_stop = None
     cli._voice_barge_capture = threading.Event()
+    cli._voice_last_tts_text = ""
+    cli._voice_barge_phase = None
     cli._pending_input = queue.Queue()
     cli._app = None
     cli._attached_images = []
@@ -43,7 +46,7 @@ def _make_voice_cli(**overrides):
 # Markdown stripping — import real function from tts_tool
 # ============================================================================
 
-from tools.tts_tool import _strip_markdown_for_tts
+from tools.tts_text_normalize import _strip_markdown_for_tts
 
 
 class TestMarkdownStripping:
@@ -285,21 +288,28 @@ class TestVoiceSpeakResponseReal:
     @patch("cli.os.makedirs")
     @patch("tools.voice_mode.play_audio_file")
     @patch("tools.tts_tool.text_to_speech_tool")
-    def test_play_audio_prefers_requested_mp3_over_returned_ogg(
+    def test_play_audio_uses_returned_file_paths(
         self, mock_tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
     ):
         def fake_tts(**kwargs):
             mp3_path = kwargs["output_path"]
             ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+            # The tool result is authoritative — file_paths drives playback
+            return json.dumps({
+                "success": True,
+                "file_path": ogg_path,
+                "file_paths": [ogg_path],
+            })
 
         mock_tts.side_effect = fake_tts
 
         cli = _make_voice_cli(_voice_tts=True)
         cli._voice_speak_response("Hello world")
 
-        requested_path = mock_tts.call_args.kwargs["output_path"]
-        mock_play.assert_called_once_with(requested_path)
+        # Should play the returned OGG path, not the requested MP3 path
+        mock_play.assert_called_once_with(
+            mock_tts.call_args.kwargs["output_path"].rsplit(".", 1)[0] + ".ogg"
+        )
 
 
 class TestVoiceStopAndTranscribeReal:
@@ -412,6 +422,79 @@ class TestVoiceBargeCaptureSubmit:
         assert cli._pending_input.empty()
         assert not cli._voice_barge_capture.is_set()
         assert restarted.wait(2.0)  # continuous mode resumes listening
+
+    def test_playback_phase_echo_of_own_tts_is_dropped(self, tmp_path, monkeypatch):
+        """#75780: a playback-phase capture that closely matches the TTS
+        text Hermes just spoke is speaker bleed, not real user speech --
+        it must be dropped instead of queued as the next turn, and the mic
+        handed back so continuous mode keeps listening."""
+        cli = _make_voice_cli(_voice_mode=True, _voice_continuous=True)
+        cli._voice_barge_capture.set()
+        cli._voice_barge_phase = "playback"
+        cli._voice_last_tts_text = "네, 방금도 제 답변이 그대로 다시 입력됐어요."
+        wav = tmp_path / "barge.wav"
+        wav.write_bytes(b"RIFF")
+        restarted = threading.Event()
+        cli._voice_start_recording = lambda: restarted.set()
+
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {
+                "success": True,
+                "transcript": "네 방금 네 방금도 제 답변이 그대로 다시 입력됐어요.",
+            },
+        )
+
+        cli._voice_submit_barge_utterance(str(wav))
+
+        assert cli._pending_input.empty()  # not queued as a user turn
+        assert not cli._voice_barge_capture.is_set()
+        assert restarted.wait(2.0)  # mic handed back instead of self-triggering another turn
+
+    def test_playback_phase_genuine_interjection_is_still_queued(self, tmp_path, monkeypatch):
+        """A real user interjection during playback -- unrelated to the TTS
+        text -- must still reach the agent."""
+        cli = _make_voice_cli()
+        cli._voice_barge_capture.set()
+        cli._voice_barge_phase = "playback"
+        cli._voice_last_tts_text = "The weather today is sunny with a light breeze."
+        wav = tmp_path / "barge.wav"
+        wav.write_bytes(b"RIFF")
+
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {
+                "success": True,
+                "transcript": "actually can you check my calendar for tomorrow",
+            },
+        )
+
+        cli._voice_submit_barge_utterance(str(wav))
+
+        queued = cli._pending_input.get_nowait()
+        from cli import _VoiceInputMessage
+        assert str(queued) == "actually can you check my calendar for tomorrow"
+
+    def test_generation_phase_transcript_not_echo_checked(self, tmp_path, monkeypatch):
+        """Generation-phase barges (no TTS playing) are never treated as
+        echo, even if the transcript happens to match old TTS text."""
+        cli = _make_voice_cli()
+        cli._voice_barge_capture.set()
+        cli._voice_barge_phase = "generation"
+        cli._voice_last_tts_text = "stop, do it differently"
+        wav = tmp_path / "barge.wav"
+        wav.write_bytes(b"RIFF")
+
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "stop, do it differently"},
+        )
+
+        cli._voice_submit_barge_utterance(str(wav))
+
+        queued = cli._pending_input.get_nowait()
+        from cli import _VoiceInputMessage
+        assert str(queued) == "stop, do it differently"
 
 
 # ============================================================================
@@ -547,7 +630,7 @@ class TestTypedVoiceStop:
         # Hermetic: don't let a dev machine's voice.stop_phrases config
         # change which utterances count as a stop phrase.
         monkeypatch.setattr(
-            "tools.voice_mode._load_voice_stop_phrases", lambda: ("stop",)
+            "tools.voice_mode_transcript._load_voice_stop_phrases", lambda: ("stop",)
         )
 
     def test_typed_stop_ends_voice_chat_when_voice_on(self):

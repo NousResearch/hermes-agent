@@ -12,7 +12,7 @@ Hermes can receive and reply to emails using standard IMAP and SMTP protocols. S
 This page covers the Email gateway adapter, which uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required for this gateway path.
 :::
 
-This is separate from the bundled [Himalaya email skill](/docs/user-guide/skills/bundled/email/email-himalaya), which lets the agent manage email through terminal commands and requires the external `himalaya` CLI plus a Himalaya config file.
+This is separate from the bundled [Himalaya email skill](../skills/bundled/email/email-himalaya.md), which lets the agent manage email through terminal commands and requires the external `himalaya` CLI plus a Himalaya config file.
 
 | Use case | What to configure | External dependency |
 |---|---|---|
@@ -47,6 +47,31 @@ Most email providers support IMAP/SMTP. Check your provider's documentation for:
 - IMAP host and port (usually port 993 with SSL)
 - SMTP host and port (usually port 587 with STARTTLS)
 - Whether app passwords are required
+
+### Proton Mail Bridge / local relays
+
+Proton Mail Bridge (and similar local relays such as a self-hosted MTA) listen on
+loopback with **STARTTLS** and a self-signed certificate, so the defaults
+(implicit TLS on IMAP 993, verified certificates) won't connect. Override the
+transport in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  email:
+    enabled: true
+    extra:
+      imap_host: 127.0.0.1
+      imap_security: starttls     # tls (default) | starttls | plain
+      imap_tls_verify: false      # Bridge uses a self-signed cert
+      smtp_host: 127.0.0.1
+      smtp_security: starttls     # default: tls on port 465, starttls otherwise
+      smtp_tls_verify: false
+```
+
+and set `EMAIL_IMAP_PORT=1143` / `EMAIL_SMTP_PORT=1025` alongside your Bridge
+credentials in `~/.hermes/.env`. Unknown `*_security` values log a warning and
+fall back to the secure default. Only disable `*_tls_verify` for loopback hosts —
+Hermes logs a warning when verification is off for any other host.
 
 ---
 

@@ -10,7 +10,6 @@ We mock the telegram module at import time to avoid collection errors.
 
 import asyncio
 import os
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,38 +17,15 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SendResult,
     SUPPORTED_VIDEO_TYPES,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
-
-def _ensure_telegram_mock():
-    """Install mock telegram modules so TelegramAdapter can be imported."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        # Real library is installed — no mocking needed
-        return
-
-    telegram_mod = MagicMock()
-    # ContextTypes needs DEFAULT_TYPE as an actual attribute for the annotation
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
 # Now we can safely import
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
@@ -250,6 +226,20 @@ class TestDocumentDownloadBlock:
         # Content should NOT be injected
         assert "[Content of" not in (event.text or "")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        doc = _make_document(
+            file_name="notes.txt", mime_type="text/plain",
+            file_size=len(content), file_obj=_make_file_obj(content),
+        )
+        await adapter._handle_media_message(_make_update(_make_message(document=doc)), MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert ("[Content of" in event.text) is inlined
+        assert event.media_text_inlined == [inlined]
+
 
     @pytest.mark.asyncio
     async def test_document_cache_failure_replies_and_signals_agent(self, adapter):
@@ -331,7 +321,10 @@ class TestMediaGroups:
         msg1 = _make_message(caption="two images", photo=[first_photo])
         msg2 = _make_message(photo=[second_photo])
 
-        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
+        with patch(
+            "plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]),
+        ):
             await adapter._handle_media_message(_make_update(msg1), MagicMock())
             await adapter._handle_media_message(_make_update(msg2), MagicMock())
             assert adapter.handle_message.await_count == 0

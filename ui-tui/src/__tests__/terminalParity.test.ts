@@ -38,6 +38,56 @@ describe('terminalParityHints', () => {
           key: 'shift+enter',
           command: 'workbench.action.terminal.sendSequence',
           when: 'terminalFocus',
+          args: { text: '\u001b[13;2u' }
+        },
+        {
+          key: 'ctrl+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[13;5u' }
+        },
+        {
+          key: 'cmd+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[13;9u' }
+        },
+        {
+          key: 'cmd+z',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[122;9u' }
+        },
+        {
+          key: 'shift+cmd+z',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[122;10u' }
+        }
+      ])
+    )
+
+    const hints = await terminalParityHints({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv, {
+      fileOps: { readFile },
+      homeDir: '/tmp/fake-home'
+    })
+
+    expect(hints.some(h => h.key === 'ide-setup')).toBe(false)
+  })
+
+  it('shows IDE setup hint when keybindings use legacy sequences', async () => {
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus && terminalTextSelected',
+          args: { text: '\u001b[99;13u' }
+        },
+        {
+          key: 'shift+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
           args: { text: '\\\r\n' }
         },
         {
@@ -72,6 +122,7 @@ describe('terminalParityHints', () => {
       homeDir: '/tmp/fake-home'
     })
 
-    expect(hints.some(h => h.key === 'ide-setup')).toBe(false)
+    // Legacy bindings don't match current CSI u targets, so setup is still needed
+    expect(hints.some(h => h.key === 'ide-setup')).toBe(true)
   })
 })

@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from agent.secret_scope import reset_secret_scope, set_secret_scope
-from hermes_cli.fallback_config import resolve_entry_api_key
+from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
 
 
 class TestResolveEntryApiKey:
@@ -17,10 +16,8 @@ class TestResolveEntryApiKey:
         entry = {"provider": "custom", "api_key": "inline-key", "key_env": "FB_KEY"}
         assert resolve_entry_api_key(entry) == "inline-key"
 
-
     def test_no_key_fields_returns_none(self):
         assert resolve_entry_api_key({"provider": "openrouter", "model": "glm"}) is None
-
 
     def test_whitespace_inline_key_falls_through_to_env(self, monkeypatch):
         monkeypatch.setenv("FB_KEY", "env-key")
@@ -46,6 +43,34 @@ class TestResolveEntryApiKey:
         assert resolve_entry_api_key({"key_env": "FB_KEY"}) == "env-key"
 
 
+class TestEffectiveRuntimeProvider:
+    """Named custom fallback entries must keep their configured identity (#98739)."""
+
+    def test_named_custom_entry_keeps_configured_id(self):
+        entry = {"provider": "my-custom-provider", "model": "some-model"}
+        runtime = {"provider": "custom", "requested_provider": "my-custom-provider"}
+        assert effective_runtime_provider(entry, runtime) == "my-custom-provider"
+
+    def test_requested_provider_missing_falls_back_to_entry(self):
+        entry = {"provider": "my-custom-provider", "model": "some-model"}
+        runtime = {"provider": "custom"}
+        assert effective_runtime_provider(entry, runtime) == "my-custom-provider"
+
+    def test_builtin_provider_untouched(self):
+        entry = {"provider": "openrouter", "model": "glm"}
+        runtime = {"provider": "openrouter", "requested_provider": "openrouter"}
+        assert effective_runtime_provider(entry, runtime) == "openrouter"
+
+    def test_genuinely_bare_custom_stays_custom(self):
+        # Ad-hoc endpoint: user literally configured provider: custom.
+        entry = {"provider": "custom", "model": "some-model"}
+        runtime = {"provider": "custom", "requested_provider": "custom"}
+        assert effective_runtime_provider(entry, runtime) == "custom"
+
+    def test_none_inputs_are_safe(self):
+        assert effective_runtime_provider(None, None) == ""
+
+
 @pytest.fixture()
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -61,7 +86,7 @@ class TestGetFallbackChainIntegration:
 
     def test_json_string_round_trip(self, isolated_home):
         """hermes config set serializes lists as JSON strings; chain must survive."""
-        from hermes_cli.config import set_config_value, load_config
+        from hermes_cli.config import load_config, set_config_value
         from hermes_cli.fallback_config import get_fallback_chain
 
         entries = [
@@ -71,8 +96,7 @@ class TestGetFallbackChainIntegration:
         ]
         set_config_value("fallback_providers", json.dumps(entries))
 
-        cfg = load_config()
-        chain = get_fallback_chain(cfg)
+        chain = get_fallback_chain(load_config())
 
         assert len(chain) == 3
         assert chain[0]["provider"] == "openrouter"
@@ -84,7 +108,7 @@ class TestGetFallbackChainIntegration:
 
     def test_order_preserved(self, isolated_home):
         """Entry order from the JSON string must be preserved in the chain."""
-        from hermes_cli.config import set_config_value, load_config
+        from hermes_cli.config import load_config, set_config_value
         from hermes_cli.fallback_config import get_fallback_chain
 
         entries = [
@@ -96,7 +120,7 @@ class TestGetFallbackChainIntegration:
 
         chain = get_fallback_chain(load_config())
 
-        assert [e["provider"] for e in chain] == ["first", "second", "third"]
+        assert [entry["provider"] for entry in chain] == ["first", "second", "third"]
 
     def test_native_list_still_works(self, isolated_home):
         """YAML-native list format (written directly) must continue to work."""
@@ -106,11 +130,13 @@ class TestGetFallbackChainIntegration:
 
         config_path = isolated_home / "config.yaml"
         config_path.write_text(
-            yaml.safe_dump({
-                "fallback_providers": [
-                    {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
-                ]
-            }),
+            yaml.safe_dump(
+                {
+                    "fallback_providers": [
+                        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+                    ]
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -123,6 +149,4 @@ class TestGetFallbackChainIntegration:
         from hermes_cli.config import load_config
         from hermes_cli.fallback_config import get_fallback_chain
 
-        chain = get_fallback_chain(load_config())
-
-        assert chain == []
+        assert get_fallback_chain(load_config()) == []

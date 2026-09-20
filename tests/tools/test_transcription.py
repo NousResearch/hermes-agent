@@ -43,7 +43,8 @@ class TestGetProvider:
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools._has_local_command", return_value=False):
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.tool_backend_helpers.read_selection", return_value="local"):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
 
@@ -70,7 +71,8 @@ class TestValidateAudioFile:
     def test_too_large(self, tmp_path):
         f = tmp_path / "big.ogg"
         f.write_bytes(b"x")
-        from tools.transcription_tools import _validate_audio_file, MAX_FILE_SIZE
+        from tools.transcription_tools import _validate_audio_file
+        from tools.transcription_common import MAX_FILE_SIZE
         real_stat = f.stat()
         with patch.object(type(f), "stat", return_value=os.stat_result((
             real_stat.st_mode, real_stat.st_ino, real_stat.st_dev,

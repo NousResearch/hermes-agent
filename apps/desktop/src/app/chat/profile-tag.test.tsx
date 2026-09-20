@@ -28,12 +28,14 @@ describe('ProfileTag', () => {
     expect(tag.textContent).toBe('x')
   })
 
-  it('normalizes an empty profile to default and stays neutral', () => {
+  it('normalizes an empty profile to default, which shows the home glyph', () => {
     render(<ProfileTag profile="" />)
 
     const tag = screen.getByRole('img', { name: 'Profile: default' })
-    expect(tag.textContent).toBe('d')
-    // Default/root profile carries no identity color.
+    // The default profile has no initial and no identity color — it is the
+    // home icon, same as the profiles panel and the rail.
+    expect(tag.textContent).toBe('')
+    expect(tag.querySelector('.codicon-home')).not.toBeNull()
     expect(tag.style.color).toBe('')
   })
 

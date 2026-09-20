@@ -89,16 +89,46 @@ jobs:
           # uv lock --check re-resolves against PyPI (network). Retry so a
           # registry blip doesn't read as "lockfile stale". A genuinely stale
           # lockfile fails all attempts (deterministic), costing only seconds.
+          #
+          # Backoff rather than a flat 10s: three attempts inside ~20s all
+          # land in the same blip. 5/15/45s spans ~65s instead.
+          #
+          # Network failure and a real desync are also reported differently.
+          # uv says "Request failed after N retries" when it can't reach the
+          # registry, versus "lockfile needs to be updated" when the lock is
+          # genuinely stale. Only the second is the contributor's to fix, so
+          # an unreachable registry says so instead of sending them to
+          # `uv lock` with nothing to regenerate.
           ok=false
+          net_fail=false
+          delays=(5 15 45)
           for i in 1 2 3; do
-            if uv lock --check; then
+            if uv lock --check >lock-check.log 2>&1; then
               ok=true
+              net_fail=false
+              cat lock-check.log
+              break
+            fi
+            cat lock-check.log
+            if grep -qiE "Request failed after|Failed to fetch|error sending request|connection (reset|closed)|timed out" lock-check.log; then
+              net_fail=true
+            else
+              # Deterministic failure (a real desync) — retrying just prints
+              # the same error twice more.
+              net_fail=false
               break
             fi
             [ "$i" = 3 ] && break
-            echo "::warning::uv lock --check failed (attempt $i); retrying in 10s"
-            sleep 10
+            echo "::warning::uv lock --check could not reach the registry (attempt $i); retrying in ${delays[$((i-1))]}s"
+            sleep "${delays[$((i-1))]}"
           done
+          if [ "$ok" != true ] && [ "$net_fail" = true ]; then
+            echo "::error title=uv.lock check could not reach PyPI::Registry unreachable after 3 attempts — infrastructure failure, not a stale lockfile. Re-run the job."
+            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock check could not reach PyPI","summary":"`uv lock --check` could not reach the package registry after 3 attempts. This is an infrastructure failure, not a stale lockfile.","how_to_fix":"Re-run the failed job. No change to `uv.lock` is needed."}]}]'
+            echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
+            echo "review_status=${review_status}" > review-status.json
+            exit 1
+          fi
           if [ "$ok" != true ]; then
             cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           ## ❌ uv.lock is out of sync with pyproject.toml
@@ -131,7 +161,20 @@ jobs:
             echo "::error title=uv.lock out of sync::Run \`uv lock\` locally and commit the result. If on a PR, sync with main first."
             review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock out of sync","summary":"uv.lock is out of sync with pyproject.toml.","how_to_fix":"Run `uv lock` locally and commit the result. If on a PR, sync with main first:\n```\ngit fetch origin main\ngit rebase origin/main\nuv lock\ngit add uv.lock\ngit commit -m \"chore: refresh uv.lock\"\n```\n"}]}]'
             echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
+            echo "review_status=${review_status}" > review-status.json
             exit 1
           fi
           review_status='[]'
           echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
+          echo "review_status=${review_status}" > review-status.json
+
+      - name: Upload review status artifact
+        if: always() && steps.verify.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: review-status-uv-lockfile
+          path: review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore

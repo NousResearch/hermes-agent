@@ -68,12 +68,15 @@ class _FakeGateway:
     def _update_runtime_status(self, *_a, **_kw):
         pass
 
+    def _clear_plugin_message_injector(self):
+        pass
+
     async def _run_in_executor_with_context(self, func, *args):
         # stop() offloads agent-resource cleanup off the loop (#53175); run
         # inline in tests so the bounded-cleanup path is exercised.
         return func(*args)
 
-    async def _cleanup_agent_resources_off_loop(self, agent, *, context=""):
+    async def _cleanup_agent_resources_off_loop(self, agent, *, context="", session_key=None):
         # Mirror the real bounded helper, inline (no executor/timeout) so the
         # fake exercises the same call shape stop() now uses.
         self._cleanup_agent_resources(agent)
@@ -84,7 +87,7 @@ class _FakeGateway:
     async def _cancel_secondary_profile_reconnect_tasks(self):
         pass
 
-    async def _drain_active_agents(self, timeout):
+    async def _drain_active_agents(self, timeout, cron_timeout=None):
         return {}, False
 
     async def _finalize_shutdown_agents(self, agents):

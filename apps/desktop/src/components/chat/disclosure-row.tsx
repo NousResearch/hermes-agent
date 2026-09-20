@@ -14,11 +14,10 @@ import { cn } from '@/lib/utils'
 //     title text, NOT the full row — and reaches just past the chevron with
 //     `-mx-1.5 px-1.5` so it reads as a soft hit-target rather than a slab
 //     stretching to the message edge.
-//   - `trailing` overlays the right edge (absolute) and must stay
-//     non-interactive (e.g. a duration timer) — an opacity-0-but-clickable
-//     control there steals clicks from the caret. Interactive controls go in
-//     `action`, which lays out *in flow* at the far right so it never sits on
-//     top of the caret's hit-target, no matter how long the title is.
+//   - `trailing` stays in flow (e.g. a duration timer), so the title always
+//     reserves space for it instead of painting underneath it. Interactive
+//     controls go in `action`, which lays out *in flow* at the far right so it
+//     never sits on top of the caret's hit-target.
 export function DisclosureRow({
   action,
   children,
@@ -67,9 +66,7 @@ export function DisclosureRow({
           {action}
         </span>
       )}
-      {trailing && (
-        <span className="absolute right-1 top-0 flex h-(--conversation-line-height) items-center">{trailing}</span>
-      )}
+      {trailing && <span className="flex h-(--conversation-line-height) shrink-0 items-center pl-1.5">{trailing}</span>}
     </div>
   )
 }

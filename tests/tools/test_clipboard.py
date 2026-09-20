@@ -114,6 +114,39 @@ class TestMacosOsascript:
             assert _macos_osascript(dest) is False
 
 
+class TestMacosClipboardFileUrl:
+    """Finder / file-copy puts «class furl» on the clipboard, not PNGf/TIFF.
+
+    Other apps still paste the image; Hermes must treat a local image file-url
+    as a clipboard image too.
+    """
+
+    def _furl_run(self, src: Path):
+        def fake_run(cmd, **kw):
+            joined = " ".join(str(part) for part in cmd)
+            if "clipboard info" in joined:
+                return MagicMock(stdout="«class furl», 28", returncode=0)
+            if "«class furl»" in joined:
+                return MagicMock(stdout=f"{src}\n", returncode=0)
+            return MagicMock(stdout="", returncode=1)
+        return fake_run
+
+    @pytest.mark.parametrize("name, expected", [("shot.png", True), ("notes.txt", False)])
+    def test_only_copied_image_files_are_clipboard_images(self, tmp_path, name, expected):
+        src = tmp_path / name
+        src.write_bytes(FAKE_PNG)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
+            assert _macos_has_image() is expected
+
+    def test_copied_image_file_saves_as_png(self, tmp_path):
+        src = tmp_path / "shot.png"
+        src.write_bytes(FAKE_PNG)
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
+            assert _macos_osascript(dest) is True
+        assert dest.read_bytes().startswith(b"\x89PNG")
+
+
 # ── WSL detection ────────────────────────────────────────────────────────
 
 class TestIsWsl:
@@ -402,24 +435,28 @@ class TestHasClipboardImage:
         import hermes_cli.clipboard as cb
         cb._wsl_detected = None
 
+    @pytest.mark.macos_only
     def test_macos_dispatch(self):
-        with patch("hermes_cli.clipboard.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            with patch("hermes_cli.clipboard._macos_has_image", return_value=True) as m:
-                assert has_clipboard_image() is True
-                m.assert_called_once()
+        """Faking darwin selected the branch but left `_macos_has_image`'s real
+        facility (osascript) absent — only a real macOS host has it."""
+        with patch("hermes_cli.clipboard._macos_has_image", return_value=True) as m:
+            assert has_clipboard_image() is True
+            m.assert_called_once()
 
+    @pytest.mark.linux_only
     def test_wsl_falls_through_to_wayland_when_windows_path_empty(self):
-        """WSLg often bridges images to wl-paste even when powershell.exe check fails."""
-        with patch("hermes_cli.clipboard.sys") as mock_sys:
-            mock_sys.platform = "linux"
-            with patch("hermes_cli.clipboard._is_wsl", return_value=True):
-                with patch("hermes_cli.clipboard._wsl_has_image", return_value=False) as wsl:
-                    with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
-                        with patch("hermes_cli.clipboard._wayland_has_image", return_value=True) as wl:
-                            assert has_clipboard_image() is True
-                            wsl.assert_called_once()
-                            wl.assert_called_once()
+        """WSLg often bridges images to wl-paste even when powershell.exe check fails.
+
+        WSL is Linux, so the host reaches the fallthrough on its own; only the
+        WSL/Wayland environment probes below are stubbed.
+        """
+        with patch("hermes_cli.clipboard._is_wsl", return_value=True):
+            with patch("hermes_cli.clipboard._wsl_has_image", return_value=False) as wsl:
+                with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+                    with patch("hermes_cli.clipboard._wayland_has_image", return_value=True) as wl:
+                        assert has_clipboard_image() is True
+                        wsl.assert_called_once()
+                        wl.assert_called_once()
 
 
 # ═════════════════════════════════════════════════════════════════════════

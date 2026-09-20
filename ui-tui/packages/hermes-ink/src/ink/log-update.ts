@@ -1,7 +1,8 @@
-import { type AnsiCode, ansiCodesToString, diffAnsiCodes } from '@alcalzone/ansi-tokenize'
+import { type AnsiCode, ansiCodesToString } from '@alcalzone/ansi-tokenize'
 
 import { logForDebugging } from '../utils/debug.js'
 
+import { transitionAnsiCodes } from './ansi-transition.js'
 import type { Diff, FlickerReason, Frame } from './frame.js'
 import type { Point } from './layout/geometry.js'
 import {
@@ -88,7 +89,7 @@ export class LogUpdate {
           }
 
           const cellStyles = this.options.stylePool.get(cell.styleId)
-          const styleDiff = diffAnsiCodes(currentStyles, cellStyles)
+          const styleDiff = transitionAnsiCodes(currentStyles, cellStyles)
 
           if (styleDiff.length > 0) {
             line += ansiCodesToString(styleDiff)
@@ -106,7 +107,7 @@ export class LogUpdate {
       }
 
       // Reset styles at end of line so trimEnd doesn't leave dangling codes
-      const resetCodes = diffAnsiCodes(currentStyles, [])
+      const resetCodes = transitionAnsiCodes(currentStyles, [])
 
       if (resetCodes.length > 0) {
         line += ansiCodesToString(resetCodes)

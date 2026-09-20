@@ -175,6 +175,7 @@
 .hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
 .hermes-kanban-dot-running  { background: #3fb97d; }  /* green */
 .hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
+.hermes-kanban-dot-review   { background: #48b0c4; }  /* cyan — awaiting review */
 .hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
 .hermes-kanban-dot-archived { background: var(--color-border); }
 
@@ -290,6 +291,20 @@
 .hermes-kanban-tag {
   font-size: 0.6rem !important;
   padding: 0.05rem 0.3rem !important;
+}
+
+/* Board-level project binding readout in the board switcher; the × unbinds. */
+.hermes-kanban-board-project-unbind {
+  margin-left: 0.25rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+  border-radius: 0.2rem;
+  color: var(--color-muted-foreground, #888);
+  cursor: pointer;
+}
+.hermes-kanban-board-project-unbind:hover {
+  color: var(--color-destructive, #d44);
+  background: color-mix(in srgb, var(--color-destructive, #d44) 15%, transparent);
 }
 
 .hermes-kanban-needs-assignee {

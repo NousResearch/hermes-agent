@@ -95,19 +95,18 @@ def _make_adapter(
     threshold=1,
     max_ack_age=1.0,
     max_latency=1.0,
+    max_event_silence: float | None = None,
 ) -> DiscordAdapter:
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
-    return DiscordAdapter(
-        PlatformConfig(
-            enabled=True,
-            token="test-token",
-            extra={
-                "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
-                "websocket_max_latency_seconds": max_latency,
-            },
-        )
-    )
+    extra = {
+        "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
+        "websocket_max_latency_seconds": max_latency,
+    }
+    # Only the event-silence tests pin this knob; everyone else keeps the adapter default.
+    if max_event_silence is not None:
+        extra["websocket_event_max_silence_seconds"] = max_event_silence
+    return DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra=extra))
 
 
 class _BrokenWebSocket:
@@ -122,6 +121,10 @@ class _BrokenWebSocket:
         ("websocket_liveness_interval_seconds", "_liveness_interval_seconds", "nan"),
         ("websocket_heartbeat_ack_max_age_seconds", "_heartbeat_ack_max_age_seconds", "inf"),
         ("websocket_max_latency_seconds", "_max_latency_seconds", "-inf"),
+        ("websocket_max_latency_seconds", "_max_latency_seconds", True),
+        ("websocket_max_latency_seconds", "_max_latency_seconds", "15s"),
+        ("websocket_liveness_failure_threshold", "_liveness_failure_threshold", 2.5),
+        ("websocket_liveness_failure_threshold", "_liveness_failure_threshold", float("inf")),
     ],
 )
 def test_nonfinite_liveness_config_disables_that_probe_dimension(monkeypatch, key, attribute, raw):
@@ -130,6 +133,59 @@ def test_nonfinite_liveness_config_disables_that_probe_dimension(monkeypatch, ke
     )
 
     assert getattr(adapter, attribute) == 0.0
+
+
+def test_unusable_liveness_config_warns_instead_of_disabling_silently(caplog):
+    """A knob value that can't be used must not disable the probe without a trace (#109521).
+
+    Pre-fix, ``websocket_liveness_interval_seconds: 15s`` mapped to 0.0 with no log line —
+    the watchdog was off and the only visible symptom was hours of Discord silence.
+    """
+    with caplog.at_level("WARNING", logger="plugins.platforms.discord.adapter"):
+        adapter = DiscordAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "websocket_liveness_interval_seconds": "15s",
+                    "websocket_max_latency_seconds": True,
+                    "websocket_liveness_failure_threshold": -1,
+                    "websocket_heartbeat_ack_max_age_seconds": "nan",
+                },
+            )
+        )
+
+    assert adapter._liveness_interval_seconds == 0.0
+    assert adapter._max_latency_seconds == 0.0
+    assert adapter._liveness_failure_threshold == 0
+    assert adapter._heartbeat_ack_max_age_seconds == 0.0
+    warned = [r.getMessage() for r in caplog.records if "liveness knob" in r.getMessage()]
+    assert len(warned) == 4
+    assert any("websocket_heartbeat_ack_max_age_seconds='nan'" in w for w in warned)
+    assert any("websocket_liveness_interval_seconds='15s'" in w for w in warned)
+    assert any("websocket_max_latency_seconds=True" in w for w in warned)
+    assert any("websocket_liveness_failure_threshold=-1" in w for w in warned)
+
+
+def test_explicit_zero_liveness_knob_disables_without_warning(caplog):
+    """``0`` is the documented opt-out, not a config error: no warning."""
+    with caplog.at_level("WARNING", logger="plugins.platforms.discord.adapter"):
+        adapter = DiscordAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "websocket_liveness_interval_seconds": 0,
+                    "websocket_max_latency_seconds": "0",
+                    "websocket_liveness_failure_threshold": 0,
+                },
+            )
+        )
+
+    assert adapter._liveness_interval_seconds == 0.0
+    assert adapter._max_latency_seconds == 0.0
+    assert adapter._liveness_failure_threshold == 0
+    assert not [r for r in caplog.records if "liveness knob" in r.getMessage()]
 
 
 def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):

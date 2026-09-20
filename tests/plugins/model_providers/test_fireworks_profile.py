@@ -40,9 +40,22 @@ class TestFireworksIdentity:
 
 
 class TestFireworksHeaders:
-    def test_no_partner_attribution_headers(self, fireworks_profile):
-        assert "HTTP-Referer" not in fireworks_profile.default_headers
-        assert "X-Title" not in fireworks_profile.default_headers
+    def test_attribution_matches_canonical_hermes_values(self, fireworks_profile):
+        """Fireworks requests carry the same attribution identity Hermes sends
+        everywhere else.
+
+        Asserted against the shared constant rather than the literals so a
+        rebrand can't leave one provider on a stale referer/title.
+        """
+        from agent.auxiliary_client import _OR_HEADERS_BASE
+
+        headers = fireworks_profile.default_headers
+        assert headers["HTTP-Referer"] == _OR_HEADERS_BASE["HTTP-Referer"]
+        assert headers["X-Title"] == _OR_HEADERS_BASE["X-Title"]
+
+    def test_user_agent_identifies_hermes(self, fireworks_profile):
+        # Prefix, not the full string — the version moves every release.
+        assert fireworks_profile.default_headers["User-Agent"].startswith("HermesAgent/")
 
 
 class TestFireworksAliases:
@@ -79,3 +92,31 @@ class TestFireworksModelDefaults:
             assert model.startswith("accounts/fireworks/models/"), model
             assert "/routers/" not in model
             assert "turbo" not in model.lower(), model
+
+
+class TestFireworksReasoning:
+    @pytest.mark.parametrize(
+        "provider, reasoning_config, expect_top_level, expect_generic",
+        [
+            # Fireworks: thinking-off goes out as the documented top-level control, never as the
+            # nested ``extra_body.reasoning`` the API 400s on (#109774, salvaged from #109807).
+            ("fireworks", {"enabled": False}, {"reasoning_effort": "none"}, False),
+            ("fireworks", {"enabled": True, "effort": "low"}, {"reasoning_effort": "low"}, False),
+            # Control: a route without a reasoning-aware profile keeps the generic fallback.
+            ("unregistered-gateway", {"enabled": False}, {}, True),
+        ],
+    )
+    def test_auxiliary_reasoning_wire_shape(
+        self, fireworks_profile, provider, reasoning_config, expect_top_level, expect_generic
+    ):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider, "accounts/fireworks/models/glm-5p2",
+            [{"role": "user", "content": "Generate a title"}],
+            reasoning_config=reasoning_config, base_url="https://api.fireworks.ai/inference/v1",
+            task="title_generation",
+        )
+
+        assert {k: v for k, v in kwargs.items() if k == "reasoning_effort"} == expect_top_level
+        assert ("reasoning" in kwargs.get("extra_body", {})) is expect_generic

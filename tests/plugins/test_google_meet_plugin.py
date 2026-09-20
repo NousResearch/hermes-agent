@@ -262,12 +262,132 @@ def test_looks_like_human_speaker():
 
 
 def test_detect_admission_returns_false_on_error():
-    from plugins.google_meet.meet_bot import _detect_admission
+    from plugins.google_meet.meet_bot import _ADMISSION_PROBE_JS, _probe
 
     class _FakePage:
         def evaluate(self, _js): raise RuntimeError("boom")
 
-    assert _detect_admission(_FakePage()) is False
+    assert _probe(_FakePage(), _ADMISSION_PROBE_JS) is False
+
+
+# ---------------------------------------------------------------------------
+# Realtime join path: late Join button, muted mic, PCM pump fed after start-up (#80875)
+# ---------------------------------------------------------------------------
+
+class _Toggle:
+    """Playwright-locator stand-in: visible when *present*, records clicks on *page*."""
+
+    def __init__(self, page, present, label):
+        self.page, self.present, self.label = page, present, label
+
+    first = property(lambda self: self)
+    def count(self): return 1 if self.present() else 0
+    def is_visible(self): return self.present()
+    def click(self, timeout=None): self.page.clicked.append(self.label)
+
+
+def test_join_polls_for_late_button_and_admission_unmutes_mic(tmp_path):
+    """Meet renders Join now / the mic toggle asynchronously; a one-shot click missed it (#80875).
+    The mic check is driven through ``_drain_loop``'s admission branch — the production call site."""
+    import time
+
+    from plugins.google_meet.meet_bot import _ADMISSION_PROBE_JS, _BotConfig, _BotState, _drain_loop, _join
+
+    class _Page:
+        def __init__(self, ready_at, mic_muted, stop):
+            self.ready_at, self.mic_muted, self.stop, self.clicked = ready_at, mic_muted, stop, []
+
+        def locator(self, sel):
+            muted = "Turn on microphone" in sel
+            return _Toggle(self, lambda: self.mic_muted == muted, sel)
+
+        def get_by_role(self, role, name=None, exact=False):
+            return _Toggle(self, lambda: name == "Join now" and time.time() >= self.ready_at, name)
+
+        def evaluate(self, js):  # admitted immediately; the caption drain ends the loop after one pass
+            if js is _ADMISSION_PROBE_JS:
+                return True
+            self.stop["stop"] = True
+            return []
+
+        def is_closed(self): return False
+
+    def admitted(mic_muted):
+        stop = {"stop": False}
+        page = _Page(ready_at=0, mic_muted=mic_muted, stop=stop)
+        state = _BotState(tmp_path / str(mic_muted), "abc-defg-hij", "https://meet.google.com/abc-defg-hij")
+        with patch("plugins.google_meet.meet_bot.time.sleep"):
+            _drain_loop(page, _BotConfig(guest_name="Bot", duration_s=0, lobby_timeout=30), state,
+                        {"session": None}, stop)
+        assert state.in_call is True
+        return page, state
+
+    stop = {"stop": False}
+    state = _BotState(tmp_path, "abc-defg-hij", "https://meet.google.com/abc-defg-hij")
+    page = _Page(ready_at=time.time() + 0.6, mic_muted=True, stop=stop)
+    _join(page, _BotConfig(guest_name="Bot"), state, timeout=5.0)
+    assert page.clicked == ["Join now"]
+
+    page, state = admitted(mic_muted=True)
+    assert state.mic_state == "unmuted_clicked"
+    assert any("Turn on microphone" in c for c in page.clicked)
+    assert json.loads(state.status_path.read_text(encoding="utf-8"))["micState"] == "unmuted_clicked"
+    # Control: an already-live mic is reported, never toggled off.
+    live, state = admitted(mic_muted=False)
+    assert state.mic_state == "unmuted" and live.clicked == []
+
+
+def test_pcm_pump_receives_audio_appended_after_start(tmp_path, monkeypatch):
+    """The pump used to read the empty speaker.pcm to EOF and exit before Realtime spoke (#80875)."""
+    import subprocess
+    import time
+
+    from plugins.google_meet import meet_bot
+
+    pcm, sink = tmp_path / "speaker.pcm", tmp_path / "device.bin"
+    pcm.write_bytes(b"")
+    real_popen = subprocess.Popen
+
+    def cat_popen(cmd, **kw):  # `cat` stands in for paplay: same stdin / file-EOF semantics
+        assert cmd[0] == "paplay" and cmd[-1] == "-"
+        kw["stdout"] = open(sink, "wb")
+        return real_popen(["cat"], **kw)
+
+    monkeypatch.setattr(meet_bot.subprocess, "Popen", cat_popen)
+    rt, stop = {}, {"stop": False}
+    state = meet_bot._BotState(tmp_path, "abc-defg-hij", "https://meet.google.com/abc-defg-hij")
+    meet_bot._start_pcm_pump(rt, {"platform": "linux", "write_target": "sink"}, pcm, state, stop)
+    time.sleep(0.2)
+    with open(pcm, "ab") as f:
+        f.write(b"\x01\x02" * 2000)
+    deadline = time.time() + 5
+    while time.time() < deadline and sink.stat().st_size < 4000:
+        time.sleep(0.05)
+    assert rt["pcm_pump"].poll() is None
+    assert sink.stat().st_size == 4000
+    stop["stop"] = True
+    meet_bot._teardown_realtime({**rt, "speaker_thread": None, "session": None, "bridge": None})
+    assert not rt["pcm_tail_thread"].is_alive()
+    assert state.mic_state is None and "micState" in state.status_path.read_text(encoding="utf-8")
+
+
+def test_pcm_tail_loop_swallows_only_pipe_errors(tmp_path):
+    """A closed pump pipe is expected and quiet; any other tail-thread bug must not be silenced."""
+    from types import SimpleNamespace
+
+    from plugins.google_meet.meet_bot import _pcm_tail_loop
+
+    pcm = tmp_path / "speaker.pcm"
+    pcm.write_bytes(b"\x00" * 16)
+
+    def proc(exc):
+        def write(_chunk): raise exc
+        return SimpleNamespace(poll=lambda: None, stdin=SimpleNamespace(write=write, flush=lambda: None,
+                                                                        close=lambda: None))
+
+    _pcm_tail_loop(proc(BrokenPipeError()), pcm, {"stop": False})  # quiet
+    with pytest.raises(RuntimeError):
+        _pcm_tail_loop(proc(RuntimeError("bug")), pcm, {"stop": False})
 
 
 # ---------------------------------------------------------------------------

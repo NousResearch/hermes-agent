@@ -3,7 +3,7 @@
 Companion to test_plugins_cmd_category_discovery.py. That file covers the
 *listing* side of nested category plugins (issue #41066). These tests cover
 the *mutation* side: `hermes plugins enable/disable` must resolve a bare name
-OR a full path-derived key (e.g. `observability/nemo_relay`) to the canonical
+OR a full path-derived key (e.g. `observability/trace_sink`) to the canonical
 registry key and write THAT — the same string PluginManager gates on — so a
 nested bundled plugin can actually be toggled.
 """
@@ -32,8 +32,8 @@ def _make_category_plugin(parent: Path, category: str, name: str, manifest: dict
 def nested_plugin_env(tmp_path):
     """A user-plugins dir containing one nested and one flat plugin, with the
     bundled dir pointed at an empty path. Returns the tmp_path."""
-    _make_category_plugin(tmp_path, "observability", "nemo_relay", {
-        "name": "nemo_relay", "version": "1.0.0", "description": "relay obs"
+    _make_category_plugin(tmp_path, "observability", "trace_sink", {
+        "name": "trace_sink", "version": "1.0.0", "description": "trace sink"
     })
     _make_plugin_dir(tmp_path, "disk-cleanup", {
         "name": "disk-cleanup", "version": "1.0.0"
@@ -53,7 +53,7 @@ class TestResolvePluginKey:
         from hermes_cli.plugins_cmd import _resolve_plugin_key
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
-        assert _resolve_plugin_key("observability/nemo_relay") == "observability/nemo_relay"
+        assert _resolve_plugin_key("observability/trace_sink") == "observability/trace_sink"
 
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
@@ -98,13 +98,13 @@ class TestEnableDisableNested:
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        cmd_enable("nemo_relay", allow_tool_override=False)  # bare name
+        cmd_enable("trace_sink", allow_tool_override=False)  # bare name
 
         saved = mock_save_en.call_args[0][0]
         # The canonical key — NOT the bare name — must be persisted, because
         # that is what PluginManager matches when deciding to load.
-        assert "observability/nemo_relay" in saved
-        assert "nemo_relay" not in saved or "observability/nemo_relay" in saved
+        assert "observability/trace_sink" in saved
+        assert "trace_sink" not in saved or "observability/trace_sink" in saved
 
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
@@ -230,4 +230,3 @@ class TestCompositeMenuWritesCanonicalKey:
         saved_dis = mock_save_dis.call_args[0][0]
         assert "web/firecrawl" in saved_dis      # canonical key persisted
         assert "web-firecrawl" not in saved_dis   # never the bare name
-

@@ -9,7 +9,7 @@ description: "Hands-free 'Hey Hermes' wake word — start a voice session by spe
 The wake word turns Hermes into a hands-free assistant across the CLI, TUI, and
 desktop app: with one setting on, Hermes listens in the background for a spoken
 trigger phrase. Say it, and Hermes starts a fresh session, opens the microphone,
-captures your command via the normal [voice pipeline](/user-guide/features/voice-mode),
+captures your command via the normal [voice pipeline](./voice-mode.md),
 and answers — exactly like "Hey Siri" or "Alexa". Use `surface` to pick which
 one listens.
 
@@ -34,6 +34,43 @@ On the desktop app, a hands-free voice conversation can be ended by simply
 spoken command ends the conversation instead of being sent to the agent. Only a
 whole-utterance stop command matches, so a real request like "stop the docker
 container" still goes through normally.
+
+
+
+## Remote desktop (client capture)
+
+When the desktop app connects to a **remote** Hermes backend (for example a
+headless Docker host or a machine in another room), the backend often has **no
+microphone**. Server-side PortAudio then fails with “Failed to open the
+wake-word microphone.”
+
+Hermes supports **client capture** for that case:
+
+1. The desktop arms wake with `capture: client` (automatic for the GUI when the
+   backend has no local input device, or set explicitly below).
+2. openWakeWord still runs **on the backend** (same engines, same models).
+3. The desktop opens the **local Mac/PC microphone**, resamples to 16 kHz mono
+   int16, and streams short frames via the `wake.feed` RPC.
+4. On detection the backend emits `wake.detected` as usual; the desktop starts
+   the normal voice pipeline on the client mic.
+
+```yaml
+wake_word:
+  enabled: true
+  capture: auto    # auto | local | client
+  # auto   — local PortAudio unless the desktop arms with client_capture
+  # local  — always open the backend mic (CLI/TUI default)
+  # client — always expect wake.feed PCM from the desktop (remote-friendly)
+```
+
+The desktop GUI always passes `client_capture: true` on `wake.start`, so remote
+backends without a mic arm in client mode automatically. CLI and TUI keep local
+capture unless you set `capture: client` explicitly.
+
+Privacy note: with client capture, wake PCM travels over the authenticated
+desktop↔backend WebSocket (same channel as the rest of the session). Detection
+still does not send audio to third-party wake APIs; the engine is local to the
+backend process.
 
 ## Engines
 
@@ -64,7 +101,8 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[wake]"
 /wake off       # stop listening
 ```
 
-In the desktop app, click the ear icon in the composer.
+In the desktop app, hover the microphone in the composer and click the ear
+that fans out of it. The ear is solid when the wake word is listening.
 
 The toggle IS the setting: turning the wake word on or off — via `/wake` or the
 desktop ear button — also writes `wake_word.enabled` to `~/.hermes/config.yaml`,
@@ -82,6 +120,7 @@ wake_word:
   enabled: false
   surface: auto               # eligible surface: "auto" | "cli" | "tui" | "gui"
   input_device: null           # PortAudio input index or device-name substring; null = process default
+  capture: auto               # auto | local | client — where PCM is captured (see Remote desktop)
   provider: openwakeword      # "openwakeword" (free, local) | "sherpa" (free, any phrase) | "porcupine"
   phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.6            # 0.0-1.0 — higher = stricter (fewer false triggers), consistent across all engines
@@ -250,7 +289,7 @@ PORCUPINE_ACCESS_KEY=your-key-here
 - A working microphone and the `sounddevice` + `numpy` audio stack (shared with
   voice mode).
 - An STT provider for transcribing the spoken command — local `faster-whisper`
-  works out of the box; see [Voice Mode](/user-guide/features/voice-mode) for the
+  works out of the box; see [Voice Mode](./voice-mode.md) for the
   full provider list.
 - A TTS provider for speaking the reply (the default `edge-tts` works with no
   key). The wake flow is fully hands-free, so the toggle refuses to arm until
@@ -266,7 +305,8 @@ proves the *renderer* has mic access — the wake listener runs in the Python
 *backend*, which needs its own grant. Without it, CoreAudio hands the backend a
 "working" stream that only ever delivers silence, so the ear shows listening
 but the phrase never fires. Hermes detects this (`/wake status` shows
-"mic delivers only silence"; the desktop ear tooltip carries the same hint).
+"mic delivers only silence"; the desktop's folded voice menu carries the same
+hint on its trigger).
 Fix: System Settings → Privacy & Security → Microphone → enable the Hermes
 backend (it may appear as your terminal, `python`, or Hermes), then toggle the
 wake word off and on.

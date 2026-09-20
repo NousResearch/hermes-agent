@@ -27,12 +27,9 @@ afterEach(() => {
 })
 
 describe('buildToolView image handling', () => {
-  // vision_analyze reports the input image as a local path; an <img> pointed at
-  // a bare path resolves against the renderer origin and 404s, so we render the
-  // tool codicon instead of a broken image.
-  it('drops bare filesystem paths', () => {
-    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('')
-    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('')
+  it('keeps local image paths for the activity renderer to resolve', () => {
+    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('/Users/me/shot.png')
+    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('/tmp/out.jpg')
   })
 
   it('keeps fetchable data URLs', () => {
@@ -59,10 +56,9 @@ describe('buildToolView terminal exit-code status', () => {
     expect(terminal({ exit_code: 1, stdout: 'partial results' }).status).toBe('success')
   })
 
-  // No output + non-zero exit is a genuine failure worth flagging.
-  it('treats non-zero exit with no output as error', () => {
+  it('distinguishes a command failure from an empty no-match exit', () => {
     expect(terminal({ exit_code: 127, output: '' }).status).toBe('error')
-    expect(terminal({ exit_code: 1 }).status).toBe('error')
+    expect(terminal({ exit_code: 1, output: '' }).status).toBe('notice')
   })
 
   it('treats zero exit as success', () => {
@@ -89,6 +85,102 @@ describe('buildToolView terminal exit-code status', () => {
 
     expect(view.terminalCommand).toBe('npm run check --workspace=apps/desktop')
     expect(view.terminalExitCode).toBe(0)
+  })
+})
+
+describe('buildToolView error confidence', () => {
+  it('keeps routine misses and returned diagnostic data out of destructive status', () => {
+    const cases: Array<[Partial<ToolPart>, ReturnType<typeof buildToolView>['status']]> = [
+      [
+        {
+          toolName: 'read_file',
+          result: { error: 'File not found: /repo/session-view.ts', similar_files: ['/repo/session-view.tsx'] }
+        },
+        'notice'
+      ],
+      [{ toolName: 'read_file', isError: true, result: { error: 'File not found: /repo/session-view.ts' } }, 'notice'],
+      [{ toolName: 'terminal', result: { exit_code: 0, output: '{"error":"a logged failure"}' } }, 'success'],
+      [{ result: { error: 'none', message: 'No changes needed' } }, 'success'],
+      [{ result: { status: 'no error', message: 'Ready' } }, 'success'],
+      [{ result: { meta: { error: 'a previous attempt' }, data: { count: 1 } } }, 'success'],
+      [{ toolName: 'read_file', result: { error: 'Permission denied reading /repo/private.ts' } }, 'error'],
+      [{ toolName: 'patch', result: { error: 'File not found: /repo/session-view.ts' } }, 'error'],
+      [{ result: { success: false, result: { output: { error: { message: 'Connection refused' } } } } }, 'error']
+    ]
+
+    for (const [overrides, status] of cases) {
+      expect(buildToolView(part(overrides), '').status, JSON.stringify(overrides)).toBe(status)
+    }
+  })
+})
+
+describe('buildToolView envelope errors', () => {
+  it('shows the event error when the result carries no explanation', () => {
+    const view = buildToolView(
+      part({
+        isError: true,
+        result: 'partial output',
+        toolName: 'terminal',
+        toolResultMetadata: { error: 'killed by signal 9' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('error')
+    expect(view.subtitle).toBe('killed by signal 9')
+  })
+
+  it('keeps an envelope-only read miss on the notice tier', () => {
+    const view = buildToolView(
+      part({
+        isError: true,
+        result: undefined,
+        completedAt: 5,
+        toolName: 'read_file',
+        toolResultMetadata: { error: 'File not found: /repo/missing.ts' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('notice')
+  })
+})
+
+describe('buildToolView browser_exec step label', () => {
+  const bexec = (code: string) =>
+    buildToolView(part({ args: { code }, result: undefined, toolName: 'browser_exec' }), '')
+
+  it('uses the leading # comment as the title', () => {
+    expect(bexec('# Searching Amazon for paper towels\nnew_tab("https://amazon.com")').title).toBe(
+      'Searching Amazon for paper towels'
+    )
+  })
+
+  it('falls back to the generic title when code has no leading comment', () => {
+    const view = bexec('new_tab("https://amazon.com")')
+
+    expect(view.title).not.toBe('')
+    expect(view.title).not.toContain('new_tab')
+  })
+
+  it('truncates long labels and keeps the ellipsis', () => {
+    const long = `# ${'x'.repeat(120)}`
+
+    expect(bexec(long).title.length).toBeLessThanOrEqual(80)
+    expect(bexec(long).title.endsWith('…')).toBe(true)
+  })
+
+  it('keeps the label after the result arrives', () => {
+    const view = buildToolView(
+      part({
+        args: { code: '# Checking workspace persistence\nprint(1)' },
+        result: { output: 'ok', success: true },
+        toolName: 'browser_exec'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Checking workspace persistence')
   })
 })
 

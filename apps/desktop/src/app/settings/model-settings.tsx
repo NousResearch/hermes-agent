@@ -1,3 +1,5 @@
+import type { ModelOptionProvider } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -18,19 +20,21 @@ import {
 } from '@/hermes'
 import type {
   AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
-  ModelOptionProvider,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
+import { setMainModelAssignment } from '@/store/cron-model-impact'
+import { notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 
-import { invalidateHermesConfig, setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { CONTROL_TEXT } from './constants'
@@ -108,12 +112,17 @@ interface AuxTaskMeta {
 
 const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'vision' },
-  { key: 'web_extract' },
   { key: 'compression' },
   { key: 'skills_hub' },
   { key: 'approval' },
   { key: 'mcp' },
   { key: 'title_generation' },
+  { key: 'review' },
+  // Same three canonical slots the backend serves but the list below used to
+  // omit (#97297): triage_specifier, kanban_decomposer, profile_describer.
+  { key: 'triage_specifier' },
+  { key: 'kanban_decomposer' },
+  { key: 'profile_describer' },
   { key: 'curator' }
 ]
 
@@ -142,6 +151,32 @@ export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
       preset.reference_models.every(moaSlotComplete) &&
       moaSlotComplete(preset.aggregator)
   )
+
+// Persistent mismatch: any aux slot pinned to a provider different from the
+// current main, regardless of whether the user just switched. Catches the
+// "I pinned aux months ago and forgot, now it bills a dead provider" case.
+// A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box)
+// never bills a provider, so the backend's `local_endpoint` verdict exempts it.
+export function staleAuxAssignments(
+  tasks: readonly AuxiliaryTaskAssignment[],
+  mainProvider: string
+): StaleAuxAssignment[] {
+  const main = mainProvider.toLowerCase()
+
+  if (!main) {
+    return []
+  }
+
+  return tasks
+    .filter(entry => {
+      const p = (entry.provider ?? '').toLowerCase()
+
+      // 'main' is a backend alias meaning "follow the current main provider"
+      // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
+      return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
+    })
+    .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
+}
 
 interface StaleAuxWarningProps {
   applying: boolean
@@ -180,13 +215,20 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
 interface ModelSettingsProps {
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
+  /** Shared settings "Applies to" scope: a concrete profile to edit instead of
+   *  the app's active one, or undefined to follow the active profile (default).
+   *  Request-shaped on purpose — the API helpers treat `null` as "deliberately
+   *  target the primary/default backend", so this prop never carries null. */
+  scopeProfile?: string
 }
 
-export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
+export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [skewRestart, setSkewRestart] = useState(false)
+  const [restartingBackend, setRestartingBackend] = useState(false)
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [selectedProvider, setSelectedProvider] = useState('')
@@ -196,12 +238,18 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [selectedMoaPreset, setSelectedMoaPreset] = useState('')
   const [newMoaPresetName, setNewMoaPresetName] = useState('')
   // agent.* defaults round-trip through the shared config cache (read → write
-  // back the whole record), so a save here shows in the MCP/config surfaces.
-  const { data: config } = useHermesConfigRecord()
-  const setConfig = setHermesConfigCache
+  // back the whole record), so a save here shows in the MCP/model surfaces.
+  const { data: config } = useHermesConfigRecord(scopeProfile)
+  const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
-  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
+
+  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string; reasoningEffort: string }>({
+    model: '',
+    provider: '',
+    reasoningEffort: '__inherit__'
+  })
+
   // Aux slots reported stale by the backend immediately after a main-model
   // switch (provider differs from the new main). Cleared on next switch/reset.
   const [switchStaleAux, setSwitchStaleAux] = useState<StaleAuxAssignment[]>([])
@@ -223,54 +271,67 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // A's models/providers into profile B (or fire onMainModelChanged for A).
   const profileEpoch = useRef(0)
 
-  const refresh = useCallback(async ({ replaceSelection = false }: { replaceSelection?: boolean } = {}) => {
-    const epoch = profileEpoch.current
-    setLoading(true)
-    setError('')
+  const setCaughtError = useCallback(
+    (err: unknown, fallback: string) => {
+      const skew = isCodeSkewRestartRequired(err)
+      setSkewRestart(skew)
+      setError(skew ? m.restartRequired : readableError(err, fallback).message)
+    },
+    [m.restartRequired]
+  )
 
-    try {
-      const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
-        getGlobalModelInfo(),
-        getGlobalModelOptions(),
-        getAuxiliaryModels(),
-        getMoaModels().catch(() => null)
-      ])
+  const refresh = useCallback(
+    async ({ replaceSelection = false }: { replaceSelection?: boolean } = {}) => {
+      const epoch = profileEpoch.current
+      setLoading(true)
+      setError('')
+      setSkewRestart(false)
 
-      if (profileEpoch.current !== epoch) {
-        return
+      try {
+        const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+          getGlobalModelInfo(scopeProfile),
+          getGlobalModelOptions(undefined, scopeProfile),
+          getAuxiliaryModels(scopeProfile),
+          getMoaModels(scopeProfile).catch(() => null)
+        ])
+
+        if (profileEpoch.current !== epoch) {
+          return
+        }
+
+        setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
+        setProviders(modelOptions.providers || [])
+
+        if (replaceSelection) {
+          setSelectedProvider(modelInfo.provider)
+          setSelectedModel(modelInfo.model)
+        } else {
+          setSelectedProvider(prev => prev || modelInfo.provider)
+          setSelectedModel(prev => prev || modelInfo.model)
+        }
+
+        setAuxiliary(auxiliaryModels)
+        setMoa(moaModels)
+
+        if (moaModels) {
+          setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
+        }
+
+        // The config record loads via its own shared query; a model switch can
+        // change it server-side (aux slots), so nudge that cache to refetch.
+        void invalidateHermesConfig(scopeProfile)
+      } catch (err) {
+        if (profileEpoch.current === epoch) {
+          setCaughtError(err, m.loadFailed)
+        }
+      } finally {
+        if (profileEpoch.current === epoch) {
+          setLoading(false)
+        }
       }
-
-      setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-      setProviders(modelOptions.providers || [])
-
-      if (replaceSelection) {
-        setSelectedProvider(modelInfo.provider)
-        setSelectedModel(modelInfo.model)
-      } else {
-        setSelectedProvider(prev => prev || modelInfo.provider)
-        setSelectedModel(prev => prev || modelInfo.model)
-      }
-
-      setAuxiliary(auxiliaryModels)
-      setMoa(moaModels)
-
-      if (moaModels) {
-        setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
-      }
-
-      // The config record loads via its own shared query; a model switch can
-      // change it server-side (aux slots), so nudge that cache to refetch.
-      void invalidateHermesConfig()
-    } catch (err) {
-      if (profileEpoch.current === epoch) {
-        setError(err instanceof Error ? err.message : String(err))
-      }
-    } finally {
-      if (profileEpoch.current === epoch) {
-        setLoading(false)
-      }
-    }
-  }, [])
+    },
+    [m.loadFailed, scopeProfile, setCaughtError]
+  )
 
   useEffect(() => {
     void refresh()
@@ -376,33 +437,36 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // edit that completes the slot flushes the whole preset. Every edit bumps
   // the generation so an in-flight response from an older save can never
   // repaint over the user's mid-edit state.
-  const scheduleMoaSave = useCallback((next: MoaConfigResponse) => {
-    if (moaSaveTimer.current) {
-      window.clearTimeout(moaSaveTimer.current)
-      moaSaveTimer.current = null
-    }
+  const scheduleMoaSave = useCallback(
+    (next: MoaConfigResponse) => {
+      if (moaSaveTimer.current) {
+        window.clearTimeout(moaSaveTimer.current)
+        moaSaveTimer.current = null
+      }
 
-    const generation = moaSaveGeneration.current + 1
-    moaSaveGeneration.current = generation
+      const generation = moaSaveGeneration.current + 1
+      moaSaveGeneration.current = generation
 
-    if (!moaConfigComplete(next)) {
-      return
-    }
+      if (!moaConfigComplete(next)) {
+        return
+      }
 
-    moaSaveTimer.current = window.setTimeout(() => {
-      void saveMoaModels(next)
-        .then(saved => {
-          if (moaSaveGeneration.current === generation) {
-            setMoa(saved)
-          }
-        })
-        .catch(err => {
-          if (moaSaveGeneration.current === generation) {
-            setError(err instanceof Error ? err.message : String(err))
-          }
-        })
-    }, 600)
-  }, [])
+      moaSaveTimer.current = window.setTimeout(() => {
+        void saveMoaModels(next, scopeProfile)
+          .then(saved => {
+            if (moaSaveGeneration.current === generation) {
+              setMoa(saved)
+            }
+          })
+          .catch(err => {
+            if (moaSaveGeneration.current === generation) {
+              setCaughtError(err, m.loadFailed)
+            }
+          })
+      }, 600)
+    },
+    [m.loadFailed, scopeProfile, setCaughtError]
+  )
 
   const updateMoaPreset = useCallback(
     (updater: (preset: NonNullable<typeof currentMoaPreset>) => NonNullable<typeof currentMoaPreset>) => {
@@ -440,56 +504,45 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     return next
   }, [])
 
-  const saveMoa = useCallback(async (next: MoaConfigResponse) => {
-    const epoch = profileEpoch.current
+  const saveMoa = useCallback(
+    async (next: MoaConfigResponse) => {
+      const epoch = profileEpoch.current
 
-    // Explicit preset ops (set default / add / delete) supersede any pending
-    // debounced slot autosave — cancel it and invalidate in-flight responses
-    // so the two writers can't race each other's state.
-    if (moaSaveTimer.current) {
-      window.clearTimeout(moaSaveTimer.current)
-      moaSaveTimer.current = null
-    }
-
-    moaSaveGeneration.current += 1
-    setApplying(true)
-    setError('')
-
-    try {
-      const saved = await saveMoaModels(next)
-
-      if (profileEpoch.current !== epoch) {
-        return
+      // Explicit preset ops (set default / add / delete) supersede any pending
+      // debounced slot autosave — cancel it and invalidate in-flight responses
+      // so the two writers can't race each other's state.
+      if (moaSaveTimer.current) {
+        window.clearTimeout(moaSaveTimer.current)
+        moaSaveTimer.current = null
       }
 
-      setMoa(saved)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setApplying(false)
-    }
-  }, [])
+      moaSaveGeneration.current += 1
+      setApplying(true)
+      setError('')
+
+      try {
+        const saved = await saveMoaModels(next, scopeProfile)
+
+        if (profileEpoch.current !== epoch) {
+          return
+        }
+
+        setMoa(saved)
+      } catch (err) {
+        setCaughtError(err, m.loadFailed)
+      } finally {
+        setApplying(false)
+      }
+    },
+    [m.loadFailed, scopeProfile, setCaughtError]
+  )
 
   const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
 
-  // Persistent mismatch: any aux slot pinned to a provider different from the
-  // current main, regardless of whether the user just switched. Catches the
-  // "I pinned aux months ago and forgot, now it bills a dead provider" case.
-  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(() => {
-    const mainProvider = (mainModel?.provider ?? '').toLowerCase()
-
-    if (!mainProvider || !auxiliary) {
-      return []
-    }
-
-    return auxiliary.tasks
-      .filter(entry => {
-        const p = (entry.provider ?? '').toLowerCase()
-
-        return p && p !== 'auto' && p !== mainProvider
-      })
-      .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
-  }, [auxiliary, mainModel])
+  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(
+    () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
+    [auxiliary, mainModel]
+  )
 
   // Capabilities of the APPLIED main model — gates the profile-default
   // reasoning/speed controls the same way the composer picker gates per-model
@@ -513,8 +566,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 
-  // Persist a single agent.* default by round-tripping the whole config record
-  // (PUT /api/config replaces it) — optimistic, with rollback on failure.
+  // Persist a single agent.* default as a sparse patch (PUT /api/config
+  // deep-merges onto disk). Never send the whole cached record: it is a
+  // default-expanded snapshot, and echoing it back rewrites every key another
+  // surface changed meanwhile — a CLI-pinned auxiliary slot came back as
+  // provider "auto" / model "" (#95460). Optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
     async (key: string, value: string) => {
       if (!config) {
@@ -526,13 +582,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setConfig(next)
 
       try {
-        await saveHermesConfig(next)
+        await saveHermesConfig(setNested({}, key, value), scopeProfile)
       } catch (err) {
         setConfig(prev)
         notifyError(err, m.defaultsFailed)
       }
     },
-    [config, m.defaultsFailed, setConfig]
+    [config, m.defaultsFailed, scopeProfile, setConfig]
   )
 
   // Paste an API key for the selected `api_key` provider, persist it, then
@@ -551,7 +607,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      await setEnvVar(keyEnv, apiKeyDraft.trim())
+      await setEnvVar(keyEnv, apiKeyDraft.trim(), scopeProfile)
       setApiKeyDraft('')
 
       // Pick a sensible default for the freshly-activated provider (mirrors
@@ -560,13 +616,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       let nextModel = ''
 
       try {
-        const rec = await getRecommendedDefaultModel(slug)
+        const rec = await getRecommendedDefaultModel(slug, scopeProfile)
         nextModel = rec.model || ''
       } catch {
         nextModel = ''
       }
 
-      const options = await getGlobalModelOptions()
+      const options = await getGlobalModelOptions(undefined, scopeProfile)
 
       if (profileEpoch.current !== epoch) {
         return
@@ -577,11 +633,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       const fallbackModel = refreshedRow?.models?.[0] ?? ''
       setSelectedModel(nextModel || fallbackModel)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setCaughtError(err, m.loadFailed)
     } finally {
       setActivating(false)
     }
-  }, [apiKeyDraft, selectedProviderRow])
+  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError])
 
   // OAuth / external providers can't be activated with a pasted key — hand off
   // to the shared onboarding flow scoped to this provider's real sign-in. The
@@ -619,12 +675,14 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      const result = await setModelAssignment({
-        model: selectedModel,
-        provider: selectedProvider,
-        scope: 'main',
-        ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
-      })
+      const result = await setMainModelAssignment(
+        {
+          model: selectedModel,
+          provider: selectedProvider,
+          ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
+        },
+        scopeProfile
+      )
 
       if (profileEpoch.current !== epoch) {
         return
@@ -634,14 +692,29 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       const model = result.model || selectedModel
       setMainModel({ provider, model })
       setSwitchStaleAux(result.stale_aux ?? [])
-      onMainModelChanged?.(provider, model)
+
+      // Live UI stores mirror the ACTIVE profile's model; a scoped apply
+      // changed a different profile and must not repaint them.
+      if (scopeProfile == null) {
+        onMainModelChanged?.(provider, model)
+      }
+
       await refresh()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setCaughtError(err, m.loadFailed)
     } finally {
       setApplying(false)
     }
-  }, [onMainModelChanged, refresh, selectedModel, selectedProvider, selectedProviderRow])
+  }, [
+    m.loadFailed,
+    onMainModelChanged,
+    refresh,
+    scopeProfile,
+    selectedModel,
+    selectedProvider,
+    selectedProviderRow,
+    setCaughtError
+  ])
 
   // Sibling of the applyMainModel endpoint passthrough (#65254): auxiliary
   // assignments targeting a user-defined provider must carry that provider's
@@ -667,21 +740,24 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setError('')
 
       try {
-        await setModelAssignment({
-          model: mainModel.model,
-          provider: mainModel.provider,
-          scope: 'auxiliary',
-          task,
-          ...endpointForProvider(mainModel.provider)
-        })
+        await setModelAssignment(
+          {
+            model: mainModel.model,
+            provider: mainModel.provider,
+            scope: 'auxiliary',
+            task,
+            ...endpointForProvider(mainModel.provider)
+          },
+          scopeProfile
+        )
         await refresh()
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setCaughtError(err, m.loadFailed)
       } finally {
         setApplying(false)
       }
     },
-    [endpointForProvider, mainModel, refresh]
+    [endpointForProvider, m.loadFailed, mainModel, refresh, scopeProfile, setCaughtError]
   )
 
   const applyAuxiliaryDraft = useCallback(
@@ -694,22 +770,26 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setError('')
 
       try {
-        await setModelAssignment({
-          model: auxDraft.model,
-          provider: auxDraft.provider,
-          scope: 'auxiliary',
-          task,
-          ...endpointForProvider(auxDraft.provider)
-        })
+        await setModelAssignment(
+          {
+            model: auxDraft.model,
+            provider: auxDraft.provider,
+            reasoning_effort: auxDraft.reasoningEffort === '__inherit__' ? null : auxDraft.reasoningEffort,
+            scope: 'auxiliary',
+            task,
+            ...endpointForProvider(auxDraft.provider)
+          },
+          scopeProfile
+        )
         setEditingAuxTask(null)
         await refresh()
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setCaughtError(err, m.loadFailed)
       } finally {
         setApplying(false)
       }
     },
-    [auxDraft, endpointForProvider, refresh]
+    [auxDraft, endpointForProvider, m.loadFailed, refresh, scopeProfile, setCaughtError]
   )
 
   const beginAuxiliaryEdit = useCallback(
@@ -720,7 +800,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         current?.provider && current.provider !== 'auto' ? current.provider : (mainModel?.provider ?? '')
 
       const initialModel = current?.model || mainModel?.model || ''
-      setAuxDraft({ provider: initialProvider, model: initialModel })
+      const initialReasoningEffort = current?.reasoning_effort ?? '__inherit__'
+      setAuxDraft({ provider: initialProvider, model: initialModel, reasoningEffort: initialReasoningEffort })
       setEditingAuxTask(task)
     },
     [auxiliary, mainModel]
@@ -735,20 +816,38 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      await setModelAssignment({
-        model: mainModel.model,
-        provider: mainModel.provider,
-        scope: 'auxiliary',
-        task: '__reset__'
-      })
+      await setModelAssignment(
+        {
+          model: mainModel.model,
+          provider: mainModel.provider,
+          scope: 'auxiliary',
+          task: '__reset__'
+        },
+        scopeProfile
+      )
       setSwitchStaleAux([])
       await refresh()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setCaughtError(err, m.loadFailed)
     } finally {
       setApplying(false)
     }
-  }, [mainModel, refresh])
+  }, [m.loadFailed, mainModel, refresh, scopeProfile, setCaughtError])
+
+  const recycleStaleBackend = useCallback(async () => {
+    setRestartingBackend(true)
+    setError('')
+    setSkewRestart(false)
+
+    try {
+      await window.hermesDesktop?.recycleBackend?.(scopeProfile)
+      await refresh({ replaceSelection: true })
+    } catch (err) {
+      setCaughtError(err, m.restartFailed)
+    } finally {
+      setRestartingBackend(false)
+    }
+  }, [m.restartFailed, refresh, scopeProfile, setCaughtError])
 
   if (loading && !mainModel) {
     return <ModelSettingsSkeleton />
@@ -779,7 +878,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   className={cn('min-w-60 flex-1', CONTROL_TEXT)}
                   onChange={event => setApiKeyDraft(event.target.value)}
                   onKeyDown={event => {
-                    if (event.key === 'Enter') {
+                    if (isSubmitEnter(event)) {
                       void activateApiKeyProvider()
                     }
                   }}
@@ -868,7 +967,22 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             )}
           </div>
         )}
-        {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
+        {error && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-destructive">
+            <span>{error}</span>
+            {skewRestart && (
+              <Button
+                disabled={restartingBackend}
+                onClick={() => void recycleStaleBackend()}
+                size="sm"
+                variant="textStrong"
+              >
+                {restartingBackend && <Loader2 className="size-3.5 animate-spin" />}
+                {restartingBackend ? m.restartingBackend : m.restartBackend}
+              </Button>
+            )}
+          </div>
+        )}
         {switchStaleAux.length > 0 && (
           <div className="mt-2">
             <StaleAuxWarning
@@ -938,53 +1052,95 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   }
                   below={
                     isEditing && (
-                      <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                          value={auxDraft.provider}
-                        >
-                          <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.provider} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {providerOptions.map(provider => (
-                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                                {provider.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                          value={auxDraft.model}
-                        >
-                          <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.model} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                              <SelectItem key={model} value={model}>
-                                {model}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          disabled={!auxDraft.provider || !auxDraft.model || applying}
-                          onClick={() => void applyAuxiliaryDraft(meta.key)}
-                          size="sm"
-                        >
-                          {applying ? m.applying : t.common.apply}
-                        </Button>
-                        <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                          {t.common.cancel}
-                        </Button>
+                      <div className="mt-2 grid gap-2 pt-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                            value={auxDraft.provider}
+                          >
+                            <SelectTrigger
+                              aria-label={`${copy.label} provider`}
+                              className={cn('min-w-32', CONTROL_TEXT)}
+                            >
+                              <SelectValue placeholder={m.provider} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {providerOptions.map(provider => (
+                                <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                                  {provider.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                            value={auxDraft.model}
+                          >
+                            <SelectTrigger aria-label={`${copy.label} model`} className={cn('min-w-48', CONTROL_TEXT)}>
+                              <SelectValue placeholder={m.model} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
+                                <SelectItem key={model} value={model}>
+                                  {model}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="text-muted-foreground">{m.reasoning}</span>
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, reasoningEffort: value }))}
+                            value={auxDraft.reasoningEffort}
+                          >
+                            <SelectTrigger
+                              aria-label={`${copy.label} reasoning effort`}
+                              className={cn('min-w-32', CONTROL_TEXT)}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
+                              {REASONING_EFFORT_VALUES.map(value => (
+                                <SelectItem key={value} value={value}>
+                                  {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            disabled={!auxDraft.provider || !auxDraft.model || applying}
+                            onClick={() => void applyAuxiliaryDraft(meta.key)}
+                            size="sm"
+                          >
+                            {applying ? m.applying : t.common.apply}
+                          </Button>
+                          <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
+                            {t.common.cancel}
+                          </Button>
+                        </div>
                       </div>
                     )
                   }
                   description={
                     <span className="font-mono text-[0.68rem]">
                       {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                      {!isAuto && current.base_url && (
+                        <span className="text-muted-foreground"> · {current.base_url}</span>
+                      )}
+                      {current?.reasoning_effort && (
+                        <span className="text-muted-foreground">
+                          {' · '}
+                          {current.reasoning_effort === 'none'
+                            ? `${m.reasoning} ${m.reasoningOff}`
+                            : (isReasoningEffort(current.reasoning_effort)
+                                ? t.shell.modelOptions[current.reasoning_effort]
+                                : current.reasoning_effort)}
+                        </span>
+                      )}
                     </span>
                   }
                   title={
@@ -1001,15 +1157,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
-          <p className="mb-2 text-xs text-muted-foreground">
-            Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
-            acting model.
-          </p>
+          <SectionHeading icon={Cpu} title={m.moaTitle} />
+          <p className="mb-2 text-xs text-muted-foreground">{m.moaDescription}</p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
+                <SelectValue placeholder={m.moaPreset} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
@@ -1194,7 +1347,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   </span>
                 }
                 key={`${selectedMoaPreset}-${index}`}
-                title={`Reference ${index + 1}`}
+                title={
+                  <span className="flex items-baseline gap-2">
+                    {`Reference ${index + 1}`}
+                    <Pill>{m.moaReferenceHint}</Pill>
+                  </span>
+                }
               />
             ))}
             <Button
@@ -1270,7 +1428,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title="Aggregator"
+              title={
+                <span className="flex items-baseline gap-2">
+                  {m.moaAggregator}
+                  <Pill>{m.moaAggregatorBilled}</Pill>
+                </span>
+              }
             />
           </div>
         </section>

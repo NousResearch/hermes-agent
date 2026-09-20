@@ -553,6 +553,12 @@ export const ar = defineLocale({
       "تتيح اللوحات فصل تدفقات العمل غير المرتبطة — واحدة لكل مشروع أو مستودع أو مجال.",
     slug: "المعرِّف",
     slugHint: "— أحرف صغيرة، واصلات، مثال atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "الاسم المعروض",
     displayNameHint: "(اختياري)",
     description: "الوصف",

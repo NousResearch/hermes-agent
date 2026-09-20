@@ -102,6 +102,7 @@ _SERVE_KINDS = ("serve", "dashboard")
 # another machine's Desktop spawned here over SSH (``desktop-ssh``). The updater never restarts
 # either; stopping one out from under its client only makes the client respawn it.
 CLIENT_OWNED_SERVE_SUPERVISORS = frozenset({"desktop", "desktop-ssh"})
+_LEDGER_SUPERVISED = frozenset({"systemd", "launchd", "service", "windows-service"})
 
 
 def _restart_mechanism(supervisor: str, profile: str) -> str:
@@ -186,11 +187,17 @@ def _supervisor_classifier() -> Callable[[int], str]:
     return lambda pid: _detect_supervisor_for_pid(pid, service_pids, windows_service_pids)
 
 
-def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[int]) -> None:
+def _collect_gateway_runtimes(
+    plan: UpdatePlan,
+    profile_homes: list,
+    seen: set[int],
+    supervisor: Callable[[int], str] | None = None,
+) -> None:
     """Per-profile gateways: control-socket identity first (declared by the process itself, including
     supervisor provenance — no argv/PID inference), ``gateway_state.json`` fallback, then PID-file
     mapped gateways no status record covers."""
-    supervisor = _supervisor_classifier()
+    if supervisor is None:
+        supervisor = _supervisor_classifier()
     with _probe("Gateway-state inventory"):
         from gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
@@ -268,13 +275,72 @@ def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
         return False
 
 
-def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
+def _is_hermes_serve_or_dashboard_unit(unit: object) -> bool:
+    """Exact base unit or hyphenated profile family for serve/dashboard.
+
+    ``startswith("hermes-serve")`` would also accept ``hermes-server.service`` (#83595).
+    """
+    name = str(unit).removesuffix(".service").rsplit("/", 1)[-1]
+    return (
+        name == "hermes-serve" or name.startswith("hermes-serve-")
+        or name == "hermes-dashboard" or name.startswith("hermes-dashboard-")
+    )
+
+
+def _systemd_unit_for_pid(pid: int) -> str | None:
+    """Linux cgroup service name for *pid*, or None off Linux / unreadable / not a ``.service``."""
+    try:
+        from hermes_cli.main_dashboard import _get_systemd_service_for_pid
+
+        return _get_systemd_service_for_pid(pid)
+    except Exception:
+        return None
+
+
+def _pid_is_unit_backed_serve_or_dashboard(pid: int) -> bool:
+    """True when *pid*'s cgroup names a ``hermes-serve*`` / ``hermes-dashboard*`` unit."""
+    unit = _systemd_unit_for_pid(pid)
+    return bool(unit and _is_hermes_serve_or_dashboard_unit(unit))
+
+
+def _ledger_serve_supervisor(
+    entry: dict, *, spawner_dead: bool | None, classify_pid: Callable[[int], str] | None = None,
+) -> str:
+    """Live Desktop parent, else the same PID classifier gateways use, else cgroup unit, else manual-serve.
+
+    ``_get_service_pids`` is gateway-unit only, so a handwritten ``hermes-dashboard.service`` is
+    absent from that set; cgroup recovers it. No update path consumes ``respawn-argv`` as a pre-swap
+    stop any more (the Windows venv-holder sweep that did went with a792e96388), but the id still
+    decides what the plan/receipt name (``systemctl`` instead of ``stop before code swap``) and
+    whether ``defer_manual_serve`` files a manual-relaunch reminder that would fight the unit's own
+    restart.
+    """
+    if spawner_dead is False:
+        return "desktop"
+    pid = entry.get("pid")
+    if not isinstance(pid, int):
+        return "manual-serve"
+    if classify_pid is not None:
+        detected = classify_pid(pid)
+        if detected in _LEDGER_SUPERVISED:
+            return detected
+    if _pid_is_unit_backed_serve_or_dashboard(pid):
+        return "systemd"
+    return "manual-serve"
+
+
+def _collect_ledger_runtimes(
+    plan: UpdatePlan, seen: set[int], classify_pid: Callable[[int], str] | None = None,
+) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
-    detached argv respawn) — the spawner probe cannot see that (#116503)."""
+    detached argv respawn) — the spawner probe cannot see that (#116503).
+    Unit-backed backends are planned as ``systemd`` (``systemctl``), not ``manual-serve``."""
+    if classify_pid is None:
+        classify_pid = _supervisor_classifier()
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
@@ -298,7 +364,9 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
                 # nobody here can discharge; its token file and owner nonce belong to the client.
                 supervisor = "desktop-ssh"
             else:
-                supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
+                supervisor = _ledger_serve_supervisor(
+                    entry, spawner_dead=spawner_is_dead(entry), classify_pid=classify_pid,
+                )
             plan.runtimes.append(_runtime(
                 str(purpose), str(entry.get("profile") or "default"), pid, supervisor, detail=detail,
             ))
@@ -324,8 +392,9 @@ def collect_runtime_inventory() -> UpdatePlan:
         profile_homes = _profile_homes()
         plan.profiles = [name for name, _ in profile_homes]
     seen: set[int] = set()
-    _collect_gateway_runtimes(plan, profile_homes, seen)
-    _collect_ledger_runtimes(plan, seen)
+    supervisor = _supervisor_classifier()
+    _collect_gateway_runtimes(plan, profile_homes, seen, supervisor)
+    _collect_ledger_runtimes(plan, seen, supervisor)
     return plan
 
 

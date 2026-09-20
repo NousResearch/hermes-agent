@@ -1555,17 +1555,40 @@ def _cap_long_context_tier(agent: Any) -> int:
 #: Longest pause we will sit out on the current provider rather than failing over.
 #: Above this the 429 is a wall (a daily or weekly cap), and the fallback chain is the
 #: only way to answer at all; below it, switching costs a turn we could simply have
-#: waited for. Overridable for providers whose throttle windows run longer.
-SHORT_NAMED_PAUSE_CEILING_SECONDS = float(
-    os.environ.get("HERMES_SHORT_NAMED_PAUSE_MAX_SECONDS") or 120.0
-)
+#: waited for.
+DEFAULT_SHORT_NAMED_PAUSE_CEILING_SECONDS = 120.0
+
+
+def short_named_pause_ceiling() -> float:
+    """The ceiling, read from the env on every call so a long-lived process picks up a
+    change without a restart (and so tests need no module reload).
+
+    ``inf`` passes ``> 0`` and would make a 600s wall look waitable; ``nan`` fails every
+    comparison and would silently disable the deferral instead of defaulting. Check
+    finiteness, not just sign.
+    """
+    default = DEFAULT_SHORT_NAMED_PAUSE_CEILING_SECONDS
+    try:
+        value = float(os.environ.get("HERMES_SHORT_NAMED_PAUSE_MAX_SECONDS") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
 #: How many times in one turn a named pause may hold off the eager fallback. A provider
 #: that keeps naming a pause and keeps refusing is not throttling us, it is down — the
 #: third 429 in a turn falls over exactly as before.
 SHORT_NAMED_PAUSE_MAX_DEFERRALS = 2
+#: Providers whose own divert sits between this decision and ``compute_error_backoff``,
+#: so cancelling the fallback would not actually buy a wait. ``nous``: a genuine
+#: account-level 429 is recorded to a shared cross-session file and the turn re-enters
+#: the loop (see below), never reaching the backoff. Promising a wait we cannot perform
+#: is worse than failing over, and letting that path run changes state other sessions
+#: read.
+_PROVIDERS_THAT_DIVERT_BEFORE_THE_WAIT = frozenset({"nous"})
 
 
-def short_named_pause(classified: Any, api_error: Exception, *, retry_count: int) -> Optional[float]:
+def short_named_pause(
+    agent: Any, classified: Any, api_error: Exception, *, retry_count: int, max_retries: int,
+) -> Optional[float]:
     """Seconds to sit out instead of failing over now, or ``None`` to fail over.
 
     A ``Retry-After`` is an instruction, not a hint. ``compute_error_backoff`` already
@@ -1585,17 +1608,34 @@ def short_named_pause(classified: Any, api_error: Exception, *, retry_count: int
       ``compute_error_backoff`` will wait for. Deciding on a number the waiting code
       would not use is worse than not deciding: it would cancel the fallback and then
       sleep a 2-4s generic backoff into the same wall;
-    * only a short one, and only twice per turn.
+    * only a short one, and only twice per turn;
+    * only when the wait is actually reachable from here — never on the last attempt
+      (``retry_count >= max_retries`` routes to the exhausted-retries branch, which
+      activates the chain *without* a reason, so the rate-limit cooldown that keeps the
+      next turn off this provider is never armed), and never for a provider whose own
+      divert runs first.
 
     ``max_retries`` is deliberately untouched: this spends the existing retry budget on
     waiting instead of on hammering, it does not enlarge it.
     """
     if classified is None or getattr(classified, "reason", None) != FailoverReason.rate_limit:
         return None
-    if not 1 <= retry_count <= SHORT_NAMED_PAUSE_MAX_DEFERRALS:
+    if not 1 <= retry_count <= min(SHORT_NAMED_PAUSE_MAX_DEFERRALS, max_retries - 1):
+        return None
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider in _PROVIDERS_THAT_DIVERT_BEFORE_THE_WAIT:
+        return None
+    # The other divert between here and the backoff: ``is_client_error`` aborts the turn
+    # for a ValueError/TypeError, and the classifier reads the error *text*, so a
+    # third-party shim raising ``ValueError("Error code: 429 ... retry_after: 7")``
+    # classifies as rate_limit and would be "deferred" into an abort with no wait at
+    # all. Imported lazily: turn_api_error imports this module.
+    from agent.turn_api_error import _is_local_validation_error
+
+    if _is_local_validation_error(api_error):
         return None
     seconds = named_retry_after_seconds(api_error)
-    if seconds is None or seconds > SHORT_NAMED_PAUSE_CEILING_SECONDS:
+    if seconds is None or seconds > short_named_pause_ceiling():
         return None
     return seconds
 
@@ -1803,7 +1843,9 @@ def route_classified_error(
         or (_is_transport_failure and retry_count >= 2)
     )
     if _should_fallback:
-        _short_wait = short_named_pause(classified, api_error, retry_count=retry_count)
+        _short_wait = short_named_pause(
+            agent, classified, api_error, retry_count=retry_count, max_retries=max_retries,
+        )
         if _short_wait is not None:
             agent._buffer_diagnostic_status(
                 f"⏱️ Provider asked for {_short_wait:.0f}s — waiting it out on this "

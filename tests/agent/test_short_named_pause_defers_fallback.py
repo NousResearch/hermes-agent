@@ -12,10 +12,11 @@ import pytest
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import RETRY_AFTER_CAP_SECONDS, named_retry_after_seconds
 from agent.turn_recovery import (
-    SHORT_NAMED_PAUSE_CEILING_SECONDS,
+    DEFAULT_SHORT_NAMED_PAUSE_CEILING_SECONDS,
     SHORT_NAMED_PAUSE_MAX_DEFERRALS,
     compute_error_backoff,
     short_named_pause,
+    short_named_pause_ceiling,
 )
 
 
@@ -42,7 +43,9 @@ class _Classified:
 
 
 def _rate_limited(**kwargs):
-    return short_named_pause(_Classified(), _ApiError(**kwargs), retry_count=1)
+    return short_named_pause(
+        _Agent(), _Classified(), _ApiError(**kwargs), retry_count=1, max_retries=3,
+    )
 
 
 # --- the named pause, and where it may come from --------------------------
@@ -62,7 +65,7 @@ def test_short_pause_in_the_body_defers_the_fallback():
 
 def test_the_header_wins_over_the_body_just_as_the_wait_does():
     error = _ApiError(header=9, body={"retry_after": 31})
-    assert short_named_pause(_Classified(), error, retry_count=1) == 9.0
+    assert short_named_pause(_Agent(), _Classified(), error, retry_count=1, max_retries=3) == 9.0
     assert named_retry_after_seconds(error) == 9.0
 
 
@@ -79,7 +82,7 @@ def test_the_decision_and_the_wait_read_the_same_number(monkeypatch):
         agent, error, retry_count=1, max_retries=3, is_rate_limited=True,
         is_zai_coding_overload=False, base_url="https://relay.example/v1", model="m",
     )
-    assert wait == short_named_pause(_Classified(), error, retry_count=1) == 31.0
+    assert wait == short_named_pause(_Agent(), _Classified(), error, retry_count=1, max_retries=3) == 31.0
 
 
 def test_an_unnamed_pause_changes_nothing():
@@ -101,8 +104,8 @@ def test_the_cap_applies_before_the_ceiling_comparison():
 
 
 def test_a_long_pause_is_a_wall_and_still_fails_over():
-    assert _rate_limited(header=SHORT_NAMED_PAUSE_CEILING_SECONDS + 1) is None
-    assert _rate_limited(header=SHORT_NAMED_PAUSE_CEILING_SECONDS) is not None
+    assert _rate_limited(header=DEFAULT_SHORT_NAMED_PAUSE_CEILING_SECONDS + 1) is None
+    assert _rate_limited(header=DEFAULT_SHORT_NAMED_PAUSE_CEILING_SECONDS) is not None
 
 
 @pytest.mark.parametrize(
@@ -115,30 +118,24 @@ def test_a_long_pause_is_a_wall_and_still_fails_over():
     ],
 )
 def test_only_a_plain_rate_limit_is_deferred(reason):
-    assert short_named_pause(_Classified(reason), _ApiError(header=7), retry_count=1) is None
+    assert short_named_pause(_Agent(), _Classified(reason), _ApiError(header=7), retry_count=1, max_retries=3) is None
 
 
 def test_the_third_refusal_in_a_turn_fails_over():
     error = _ApiError(header=7)
     for attempt in range(1, SHORT_NAMED_PAUSE_MAX_DEFERRALS + 1):
-        assert short_named_pause(_Classified(), error, retry_count=attempt) == 7.0
+        assert short_named_pause(_Agent(), _Classified(), error, retry_count=attempt, max_retries=9) == 7.0
     assert short_named_pause(
-        _Classified(), error, retry_count=SHORT_NAMED_PAUSE_MAX_DEFERRALS + 1
+        _Agent(), _Classified(), error,
+        retry_count=SHORT_NAMED_PAUSE_MAX_DEFERRALS + 1, max_retries=9,
     ) is None
 
 
 def test_the_ceiling_is_configurable(monkeypatch):
-    import importlib
-
     monkeypatch.setenv("HERMES_SHORT_NAMED_PAUSE_MAX_SECONDS", "10")
-    module = importlib.reload(importlib.import_module("agent.turn_recovery"))
-    try:
-        assert module.SHORT_NAMED_PAUSE_CEILING_SECONDS == 10.0
-        assert module.short_named_pause(_Classified(), _ApiError(header=7), retry_count=1) == 7.0
-        assert module.short_named_pause(_Classified(), _ApiError(header=30), retry_count=1) is None
-    finally:
-        monkeypatch.delenv("HERMES_SHORT_NAMED_PAUSE_MAX_SECONDS", raising=False)
-        importlib.reload(module)
+    assert short_named_pause_ceiling() == 10.0
+    assert _rate_limited(header=7) == 7.0
+    assert _rate_limited(header=30) is None
 
 
 # --- the site that has to act on it ---------------------------------------
@@ -222,3 +219,70 @@ def test_the_pause_budget_runs_out_and_the_chain_is_used(monkeypatch):
     )
     _route(agent, _ApiError(header=7), retry_count=SHORT_NAMED_PAUSE_MAX_DEFERRALS + 1)
     assert agent.activated == [FailoverReason.rate_limit]
+
+
+def test_a_provider_with_its_own_divert_is_never_deferred():
+    """``nous`` re-enters the loop from its own guard, below this decision and above
+    the backoff, so cancelling the fallback would promise a wait that never happens —
+    and would let a cross-session breaker file be written where it previously was not."""
+    agent = _Agent()
+    agent.provider = "nous"
+    assert short_named_pause(
+        agent, _Classified(), _ApiError(header=7), retry_count=1, max_retries=3
+    ) is None
+    agent.provider = "relay"
+    assert short_named_pause(
+        agent, _Classified(), _ApiError(header=7), retry_count=1, max_retries=3
+    ) == 7.0
+
+
+def test_the_last_attempt_is_never_deferred():
+    """``retry_count >= max_retries`` routes to the exhausted-retries branch, which
+    activates the chain without a reason — so the rate-limit cooldown is never armed and
+    the next turn returns to the limited provider. With ``api_max_retries: 1`` the very
+    first 429 would hit this."""
+    error = _ApiError(header=7)
+    assert short_named_pause(
+        _Agent(), _Classified(), error, retry_count=1, max_retries=1) is None
+    assert short_named_pause(
+        _Agent(), _Classified(), error, retry_count=2, max_retries=2) is None
+    assert short_named_pause(
+        _Agent(), _Classified(), error, retry_count=1, max_retries=2) == 7.0
+
+
+@pytest.mark.parametrize("junk", ["", "soon", "-1", "0", "nan", "inf", "-inf"])
+def test_a_non_finite_or_useless_ceiling_falls_back_to_the_default(monkeypatch, junk):
+    monkeypatch.setenv("HERMES_SHORT_NAMED_PAUSE_MAX_SECONDS", junk)
+    assert short_named_pause_ceiling() == DEFAULT_SHORT_NAMED_PAUSE_CEILING_SECONDS
+    assert _rate_limited(header=600) is None
+    assert _rate_limited(header=7) == 7.0
+
+
+def test_a_local_validation_shaped_error_is_never_deferred():
+    """``is_client_error`` also sits between this decision and the backoff.
+
+    Its first disjunct is "this is a ValueError/TypeError", and the classifier decides
+    ``rate_limit`` from the error *text*, so a third-party shim raising a 429 as a
+    ValueError would be deferred into an abort that never waits.
+    """
+    payload = {"retry_after": 7}
+    text = 'Error code: 429 - {"retry_after": 7}'
+
+    class _ShimValueError(ValueError):
+        body = payload
+
+    assert short_named_pause(
+        _Agent(), _Classified(), _ShimValueError(text), retry_count=1, max_retries=3
+    ) is None
+
+    class _ShapeMismatch(TypeError):
+        body = payload
+
+    # ...but the documented exceptions stay ordinary provider failures.
+    assert short_named_pause(
+        _Agent(), _Classified(), _ShapeMismatch("NoneType object is not iterable"),
+        retry_count=1, max_retries=3,
+    ) == 7.0
+    assert short_named_pause(
+        _Agent(), _Classified(), _ApiError(header=7), retry_count=1, max_retries=3
+    ) == 7.0

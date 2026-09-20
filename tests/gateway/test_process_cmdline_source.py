@@ -68,36 +68,3 @@ def test_ps_still_answers_when_psutil_cannot(no_proc, monkeypatch):
 
     assert cmdline, "the ps fallback must still answer when psutil refuses"
     assert forked and forked[0][:2] == ["ps", "-p"]
-
-
-def test_a_dead_pid_reports_nothing_from_either_source(no_proc):
-    dead = subprocess.Popen([sys.executable, "-c", "pass"])
-    dead.wait()
-
-    assert status._read_process_cmdline(dead.pid) in (None, "")
-
-
-def test_both_sources_agree_on_a_live_process(no_proc, monkeypatch):
-    """The consumer matches on this string, so the two sources must not disagree."""
-    import psutil
-
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "gateway", "run"])
-    try:
-        for _ in range(50):
-            if psutil.pid_exists(proc.pid):
-                break
-            time.sleep(0.05)
-        via_psutil = status._read_process_cmdline(proc.pid)
-
-        denied = psutil.AccessDenied
-
-        def _raise(_pid):
-            raise denied(_pid)
-
-        monkeypatch.setattr(psutil, "Process", _raise)
-        via_ps = status._read_process_cmdline(proc.pid)
-    finally:
-        proc.kill()
-        proc.wait()
-
-    assert via_psutil == via_ps

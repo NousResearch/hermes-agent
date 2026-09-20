@@ -547,6 +547,15 @@ def get_custom_provider_session_affinity_headers(
     return []
 
 
+def get_custom_provider_session_affinity_header(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> str:
+    """Back-compat shim for the pre-#116779 singular API: first declared header name, or ``""``."""
+    headers = get_custom_provider_session_affinity_headers(base_url, custom_providers, config)
+    return headers[0] if headers else ""
+
+
 def get_custom_provider_context_length(
     model: str,
     base_url: str,

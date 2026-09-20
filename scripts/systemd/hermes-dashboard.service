@@ -1,0 +1,34 @@
+# Optional user service for a headless Hermes dashboard.
+#
+# The dashboard is a separate long-running process from the gateway. Keep this
+# unit disabled unless you want a persistent dashboard endpoint; the gateway
+# does not start it automatically.
+#
+# This is a user-unit template. It assumes the `hermes` launcher is installed
+# at %h/.local/bin/hermes. If your installation uses another path, replace the
+# ExecStart path before enabling the unit. For a system unit, add User= and
+# Group= for the Hermes account and replace %h with that account's home.
+
+[Unit]
+Description=Hermes Agent Dashboard (optional)
+Documentation=https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard
+After=hermes-gateway.service
+Wants=hermes-gateway.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hermes dashboard --host 127.0.0.1 --no-open
+WorkingDirectory=%h/.hermes
+Restart=on-failure
+RestartSec=10
+# Log to the journal so failures remain available after WSL restarts.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+
+# For LAN access, change --host to 0.0.0.0 only after configuring a real
+# dashboard authentication provider (username/password or OAuth). The current
+# --insecure flag is deprecated/no-op and does not make a public bind safe.
+# Prefer a VPN, SSH tunnel, or localhost/mirrored networking where possible.

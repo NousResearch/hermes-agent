@@ -98,6 +98,31 @@ When you run `hermes dashboard` without the dependencies, it will tell you what 
 
 The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket) is always available, with no extra flag required.
 
+## Persistent systemd service
+
+The dashboard is a separate process from the gateway. To keep it available
+across WSL restarts or dashboard crashes, install the optional user-unit
+[`scripts/systemd/hermes-dashboard.service`](https://github.com/NousResearch/hermes-agent/blob/main/scripts/systemd/hermes-dashboard.service)
+into `~/.config/systemd/user/`, then enable it:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp scripts/systemd/hermes-dashboard.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now hermes-dashboard.service
+```
+
+The template binds to `127.0.0.1` and assumes the `hermes` launcher is at
+`~/.local/bin/hermes`; adjust `ExecStart` for another installation layout.
+It orders the dashboard after `hermes-gateway.service`, but does not start a
+gateway service that is not installed. Run `systemctl --user enable
+hermes-gateway.service` separately when needed.
+
+For access from another machine, use a VPN or SSH tunnel where possible. If
+you change the bind address to `0.0.0.0`, configure a dashboard authentication
+provider first; `--insecure` is deprecated/no-op and does not disable the auth
+gate. See [Authentication-gated mode](#authentication-gated-mode).
+
 ## Pages
 
 ### Status

@@ -2752,6 +2752,15 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
+                # A config-declared plugin toolset is a legitimate opt-in, but plugin toolsets
+                # only register in the tool registry at agent init — later than this
+                # construction-time warning. Mirror the MCP-name exclusion for the keys plugins
+                # declare, probed only once a name has actually been rejected.
+                from hermes_cli.toolset_validation import known_plugin_toolset_keys
+
+                plugin_names = known_plugin_toolset_keys()
+                invalid = [t for t in invalid if t not in plugin_names]
+            if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):

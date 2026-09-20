@@ -45,7 +45,8 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_MODELS,
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
-    _xai_finalize_catalog)
+    _xai_finalize_catalog,
+    openai_chat_models)
 from hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
@@ -1378,38 +1379,31 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
 
 
 def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        return None
     base = _openai_discovery_base_url(normalized)
-    # Custom OpenAI-compatible endpoints serve a small curated catalog — use it verbatim. Official
-    # OpenAI hosts (canonical and data-residency regional) return 120+ embeddings/whisper/tts/…
-    # entries, so intersect with the curated agentic catalog so ``/model`` matches ``hermes model``.
-    # Model not in live /v1/models — check the curated catalog before rejecting. Providers may omit models
-    # from their live listing that are still valid (stale cache, partial rollout, gated previews). Use the
-    # pure-catalog helper (no extra live fetch) so we only accept models Hermes actually ships. (#46850)
-    # Their /v1/models listing is access-scoped and authoritative — a model absent from it is one this key
-    # CANNOT serve, so the curated soft-accept would manufacture a selection that 400s at first use. Custom
-    # OpenAI-compatible proxies keep the fallback (incomplete listings are common there).
     from hermes_cli.providers import is_official_openai_host
 
+    official = is_official_openai_host(base)
+    # ``openai`` is the legacy runtime id and has a deliberately older routing catalog. Its picker
+    # still represents the same direct API as the canonical ``openai-api`` row, so both use that
+    # row's current offline source without changing either routing catalog.
+    fallback_provider = "openai-api" if normalized in {"openai", "openai-api"} else normalized
+    picker_fallback = openai_chat_models(_PROVIDER_MODELS.get(fallback_provider, [])) if official else None
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return picker_fallback
+    # Custom OpenAI-compatible endpoints keep their listing verbatim. Official hosts return many
+    # non-chat families, so reduce their access-scoped listing with the picker policy below.
     try:
         live = fetch_api_models(api_key, base)
     except Exception:
         live = None
-    if not live:
-        return None
-    if not is_official_openai_host(base):
+    if live is None:
+        return picker_fallback
+    if not official:
         return live
-    live_lower = {m.lower() for m in live}
-    curated = list(_PROVIDER_MODELS.get(normalized, []))
-    # Curated order, only models the account has access to; an account serving none of them (rare)
-    # falls back to curated so the picker still offers sane defaults.
-    discovered = [m for m in curated if m.lower() in live_lower]
-    # Astra is intentionally absent from offline/static catalogs: the official API's
-    # account-scoped /models response is the only source that may advertise it.
-    discovered.extend(m for m in live if is_astra_model(m))
-    return discovered or curated or live
+    # Official listings are access-scoped and authoritative. Filtering may intentionally produce
+    # an empty picker; falling through to static routing catalogs would invent inaccessible models.
+    return openai_chat_models(live)
 
 
 def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:

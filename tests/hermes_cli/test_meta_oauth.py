@@ -302,6 +302,16 @@ def test_meta_auth_commands_wired():
     assert "meta-oauth" in _OAUTH_ADD_SPECS
 
 
+def test_meta_oauth_resolves_in_model_switch_chain():
+    from hermes_cli.providers import resolve_provider_full
+
+    pdef = resolve_provider_full("meta-oauth", {}, [])
+    assert pdef is not None and pdef.id == "meta-oauth"
+    assert pdef.transport == "codex_responses"
+    alias_pdef = resolve_provider_full("muse-subscription", {}, [])
+    assert alias_pdef is not None and alias_pdef.id == "meta-oauth"
+
+
 def test_meta_catalog_lists_subscription():
     from hermes_cli.models import provider_model_ids
     from hermes_cli.models_catalog_static import CANONICAL_PROVIDERS, _PROVIDER_LABELS

@@ -163,7 +163,7 @@ class TestCreateWithProgress:
         with aux_progress_hook(lambda: ticks.append(1)):
             result = _create_with_progress(client, {"model": "m1", "messages": [], "timeout": 30})
         assert result.choices[0].message.reasoning == "thinking..."
-        assert ticks == [1, 1]  # dispatch tick + the reasoning chunk
+        assert ticks == [1]  # the reasoning chunk only; dispatch is not progress (#114938)
 
     def test_completed_response_ticks_only_terminal_signals(self):
         calls = []

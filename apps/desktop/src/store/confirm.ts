@@ -6,6 +6,7 @@ export interface ConfirmRequest {
   confirmLabel?: string
   cancelLabel?: string
   destructive?: boolean
+  secondaryAction?: { label: string; onClick: () => void }
 }
 
 export interface PendingConfirm extends ConfirmRequest {

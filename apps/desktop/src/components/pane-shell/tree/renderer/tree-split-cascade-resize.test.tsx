@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { $paneDistributionMode } from '@/store/pane-distribution'
 import { $paneStates } from '@/store/panes'
 
 import { group, split, type SplitNode } from '../model'
@@ -29,6 +30,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   window.localStorage.clear()
+  $paneDistributionMode.set('equal-flex')
   $hiddenTreePanes.set(new Set())
   $paneStates.set({})
 
@@ -55,6 +57,7 @@ afterEach(() => {
   cleanup()
   $layoutTree.set(null)
   $paneStates.set({})
+  $paneDistributionMode.set('preserve')
   disposers.splice(0).forEach(dispose => dispose())
 })
 
@@ -94,6 +97,35 @@ function row(): SplitNode {
 }
 
 describe('TreeSplit cascading expansion', () => {
+  it('rebinds sash sizing semantics after switching to equal-all', () => {
+    const tree = split(
+      'row',
+      [group(['cron'], { id: 'cron-zone' }), group(['chat'], { id: 'chat-zone' })],
+      [1, 1],
+      'mode-switch-row'
+    )
+
+    $layoutTree.set(tree)
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="mode-switch-row"]')!
+    const [cron, chat] = [...container.children] as HTMLElement[]
+    setWidth(container, 500)
+    setWidth(cron, 100)
+    setWidth(chat, 400)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="cron-zone"]')!, 100)
+
+    act(() => $paneDistributionMode.set('equal-all'))
+
+    const sash = document.querySelector('[role="separator"]')!
+    fireEvent.pointerDown(sash, { button: 0, clientX: 100, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerMove(window, { clientX: 120, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { clientX: 120, pointerId: 1, pointerType: 'mouse' })
+
+    expect($paneStates.get().cron?.widthOverride).toBeUndefined()
+    expect(row().weights[0]).not.toBe(1)
+  })
+
   it('grows Browser through Cron into Chat after Cron reaches its minimum', () => {
     const tree = split(
       'row',

@@ -156,6 +156,8 @@ export interface TrackContext {
   paneFor: (id: string) => Contribution | undefined
   paneGone: (id: string) => boolean
   overrides: Record<string, { widthOverride?: number; heightOverride?: number }>
+  /** equal-all treats declared width/height as flex for structural distribution. */
+  ignoreFixedSizing?: boolean
 }
 
 /** A group's panes that are actually on screen (not hidden / narrow-collapsed
@@ -228,6 +230,10 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
     // full sidebar width and the collapsed rail floats in a dead column.
     if (node.minimized) {
       return MINIMIZED_TRACK
+    }
+
+    if (ctx.ignoreFixedSizing) {
+      return null
     }
 
     const overrideKey = axis === 'row' ? 'widthOverride' : 'heightOverride'

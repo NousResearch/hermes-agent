@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 
 import { useDebounced } from '@/app/hooks/use-debounced'
 import { LanguageSwitcher } from '@/components/language-switcher'
+import { equalizeCurrentPaneTree } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
@@ -16,9 +17,11 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { confirm } from '@/store/confirm'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
+import { $paneDistributionMode, type PaneDistributionMode, setPaneDistributionMode } from '@/store/pane-distribution'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
@@ -407,6 +410,7 @@ export function AppearanceSettings() {
   const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
+  const paneDistributionMode = useStore($paneDistributionMode)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
@@ -498,6 +502,12 @@ export function AppearanceSettings() {
     { id: 'never', label: a.tabStripNever }
   ] as const satisfies readonly { id: TabStripDefault; label: string }[]
 
+  const paneDistributionOptions = [
+    { id: 'preserve', label: a.paneDistributionPreserve },
+    { id: 'equal-flex', label: a.paneDistributionEqualFlex },
+    { id: 'equal-all', label: a.paneDistributionEqualAll }
+  ] as const satisfies readonly { id: PaneDistributionMode; label: string }[]
+
   const appActionsOptions = [
     { id: 'right', label: a.appActionsRight },
     { id: 'left', label: a.appActionsLeft }
@@ -512,6 +522,35 @@ export function AppearanceSettings() {
   const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
 
   const matchedScalePreset = matchUiScalePreset(zoomPercent)
+
+  const choosePaneDistributionMode = (next: PaneDistributionMode) => {
+    if (next === paneDistributionMode) {
+      return
+    }
+
+    triggerHaptic('selection')
+
+    if (next === 'preserve') {
+      setPaneDistributionMode(next)
+
+      return
+    }
+
+    void confirm({
+      cancelLabel: a.paneDistributionCancel,
+      confirmLabel: a.paneDistributionApplyExisting,
+      description: a.paneDistributionConfirmDesc,
+      secondaryAction: {
+        label: a.paneDistributionFutureOnly,
+        onClick: () => setPaneDistributionMode(next)
+      },
+      title: a.paneDistributionConfirmTitle,
+      onConfirm: async () => {
+        setPaneDistributionMode(next)
+        equalizeCurrentPaneTree()
+      }
+    })
+  }
 
   return (
     <SettingsContent>
@@ -677,6 +716,19 @@ export function AppearanceSettings() {
             }
             description={a.tabStripDesc}
             title={a.tabStripTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => choosePaneDistributionMode(id)}
+                options={paneDistributionOptions}
+                value={paneDistributionMode}
+              />
+            }
+            description={a.paneDistributionDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.paneDistribution)}
+            title={a.paneDistributionTitle}
           />
 
           <ListRow

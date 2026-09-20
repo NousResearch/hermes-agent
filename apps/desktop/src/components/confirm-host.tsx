@@ -34,6 +34,7 @@ export function ConfirmHost() {
       onClose={() => settleConfirm(false)}
       onConfirm={() => settleConfirm(true)}
       open={request !== null}
+      secondaryAction={shown.secondaryAction}
       title={shown.title}
     />
   )

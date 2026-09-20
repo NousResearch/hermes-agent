@@ -636,6 +636,16 @@ export interface Translations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
+      paneDistributionTitle: string
+      paneDistributionDesc: string
+      paneDistributionPreserve: string
+      paneDistributionEqualFlex: string
+      paneDistributionEqualAll: string
+      paneDistributionConfirmTitle: string
+      paneDistributionConfirmDesc: string
+      paneDistributionApplyExisting: string
+      paneDistributionFutureOnly: string
+      paneDistributionCancel: string
       appActionsTitle: string
       appActionsDesc: string
       appActionsLeft: string

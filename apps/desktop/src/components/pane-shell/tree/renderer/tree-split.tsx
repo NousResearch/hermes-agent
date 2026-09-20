@@ -14,6 +14,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
+import { $paneDistributionMode } from '@/store/pane-distribution'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -111,6 +112,7 @@ export function TreeSplit({
   // re-render — not every split in the tree.
   const overrides = useSubtreeOverrides(useMemo(() => allPaneIds(node), [node]))
   const editMode = useStore($layoutEditMode)
+  const distributionMode = useStore($paneDistributionMode)
   const collapsedSides = useStore($collapsedTreeSides)
   const horizontal = node.orientation === 'row'
   const axis = node.orientation
@@ -142,7 +144,12 @@ export function TreeSplit({
   const paneGone = (id: string) =>
     !paneFor(id) || (!editMode && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
-  const trackCtx: TrackContext = { paneFor, paneGone, overrides }
+  const trackCtx: TrackContext = {
+    paneFor,
+    paneGone,
+    overrides,
+    ignoreFixedSizing: distributionMode === 'equal-all'
+  }
 
   // Chrome-toggle collapse: a subtree whose every pane is gone renders
   // display:none (content stays MOUNTED — toggling back is instant), and its
@@ -524,7 +531,19 @@ export function TreeSplit({
     },
     // trackCtx is derived state rebuilt per render; the drag captures it once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
+    [
+      axis,
+      distributionMode,
+      editMode,
+      horizontal,
+      node.children,
+      node.id,
+      node.weights,
+      hiddenPanes,
+      narrow,
+      overrides,
+      panes
+    ]
   )
 
   // Double-click a sash: every neighbor returns to its DEFAULT size.
@@ -601,7 +620,19 @@ export function TreeSplit({
       setTreeSplitWeights(node.id, !preset && !pinned ? weights.map(() => 1) : weights)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
+    [
+      axis,
+      distributionMode,
+      editMode,
+      horizontal,
+      node.children,
+      node.id,
+      node.weights,
+      hiddenPanes,
+      narrow,
+      overrides,
+      panes
+    ]
   )
 
   // A run of ONLY fixed tracks can't fill the container (grow-0 all around

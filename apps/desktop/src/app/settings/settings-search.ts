@@ -18,6 +18,7 @@ export const APPEARANCE_SETTING_IDS = {
   hideThreadTimeline: 'appearance.hide-thread-timeline',
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',
+  paneDistribution: 'appearance.pane-distribution',
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',
   translucency: 'appearance.translucency',

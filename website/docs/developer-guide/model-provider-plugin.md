@@ -175,6 +175,10 @@ exception, leaves `/usage` empty just as it does for providers without usage
 data. Built-in usage fetchers always take precedence, so this hook cannot
 replace the account-usage behavior for a built-in provider.
 
+The bundled `plugins/model-providers/opencode-zen/` profile implements this hook for the
+OpenCode Go plan windows; every `/usage` surface (CLI `hermes usage` and `/usage`, the messaging
+gateway, the TUI/Desktop usage feed) renders the snapshot through the same core formatter.
+
 ```python
 from datetime import datetime, timezone
 

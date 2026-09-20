@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from agent.account_usage import AccountUsageSnapshot
-from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 

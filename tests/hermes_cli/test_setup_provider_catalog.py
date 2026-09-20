@@ -115,3 +115,26 @@ def test_setup_matches_picker_when_catalog_fetch_fails(monkeypatch):
         profile.name, SimpleNamespace(name="Down"), "synthetic-test-key", "", profile.base_url)
 
     assert setup_rows == ["declared-a", "declared-b"] == models.provider_model_ids(profile.name)
+
+
+def test_switch_validation_trusts_profile_owned_catalog(monkeypatch):
+    """A plugin whose ``fetch_models`` is the catalog (#101705): the model the picker offers is
+    accepted even when the generic ``/v1/models`` 200s with a different product catalog; a model in
+    neither is still rejected."""
+    import providers
+    from providers.base import ProviderProfile
+    from hermes_cli import models, models_validate
+
+    class PlanProfile(ProviderProfile):
+        def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0):
+            return ["plan/model-1"]
+
+    profile = PlanProfile(name="scout-plan", auth_type="api_key", env_vars=("SCOUT_PLAN_TEST_KEY",),
+                          base_url="https://plan.example.invalid/v1")
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+    monkeypatch.setattr(models, "_api_key_credentials", lambda *_: ("synthetic-test-key", ""))
+    monkeypatch.setattr(models, "fetch_api_models", lambda *_a, **_k: ["other-vendor/model-a"])
+
+    kw = dict(provider=profile.name, api_key="synthetic-test-key", base_url=profile.base_url)
+    assert models_validate.validate_requested_model("plan/model-1", **kw)["accepted"] is True
+    assert models_validate.validate_requested_model("plan/model-9", **kw)["accepted"] is False

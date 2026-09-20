@@ -18273,7 +18273,27 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
     return false
   }
 
-  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
+  // Update gate is open: no renderer has registered active work yet, but a
+  // Cmd+Q here aborts localBackendLifecycle.signal mid-gate and strands the
+  // update (the splash says "An update is finishing..." for up to 20 min
+  // with no UI to interact with — the user almost certainly hit Cmd+Q out of
+  // frustration, not intent). Show a tailored prompt with the same
+  // Keep-Running / Quit-Anyway UX as the active-work prompt; second Cmd+Q
+  // still wins via quitConfirmedWithActiveWork above. Skipped during handoff
+  // (uninstall / swap / detached updater) — same carve-out as the work
+  // prompt, since a modal there would strand the detached script waiting on
+  // a PID that never exits.
+  const gateDeps = updateGateDeps()
+  const gatePrompt = !isQuittingForHandoff && (gateDeps.hasLiveMarker() || gateDeps.isUpdateInFlight())
+    ? {
+        message: 'An update is finishing',
+        detail:
+          'Hermes is waiting for an update to complete. Quitting now will leave the new code half-applied and may require a manual restart.'
+      }
+    : null
+
+  const workPrompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
+  const prompt = workPrompt ?? gatePrompt
   const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
 
   if (!prompt || !parent || parent.isDestroyed()) {

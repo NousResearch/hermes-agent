@@ -17,6 +17,7 @@ No live gateway, no network. Git and restart are mocked.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -360,6 +361,36 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     monkeypatch.setattr("hermes_cli.gateway_windows.is_installed", lambda: False)
     assert update_cmd._run_pending_fleet_restart() is True
     assert "Pending fleet restart completed" in capsys.readouterr().out
+
+
+def test_run_pending_restart_defers_when_gateway_is_ancestor(monkeypatch, capsys):
+    """The catch-up must not stop/restart a gateway this update runs INSIDE (chat `/update`,
+    cron in the gateway cgroup): waiting on the ancestor's restart is the #100179 circular
+    wait. Contract: signal the ancestor to self-restart, touch nothing, report incomplete
+    (False) so the pending marker survives for an out-of-tree catch-up.
+
+    Regression for the Sep-18-2026 LarkBox wedge: `hermes update` from inside the gateway
+    hung 2+ minutes in `deactivating (stop-sigterm)` with `systemctl restart` blocked.
+    """
+    ancestor = os.getppid()  # any real ancestor pid (pytest's parent); below, os.getpid() walks up to it
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [ancestor])
+
+    signalled = []
+    monkeypatch.setattr(
+        "hermes_cli.gateway._request_gateway_self_restart",
+        lambda pid: signalled.append(pid) or True,
+    )
+    # Nothing else may fire: not the kill sweep, not the unit restarts.
+    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: 1/0)
+    monkeypatch.setattr(
+        update_cmd_fleet, "_systemd_gateway_unit_listings", lambda *a, **k: 1/0
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is False
+    out = capsys.readouterr().out
+    assert signalled == [ancestor]
+    assert "Pending fleet restart deferred" in out
+    assert "Pending fleet restart completed" not in out
 
 
 # ---------------------------------------------------------------------------

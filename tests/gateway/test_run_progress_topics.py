@@ -517,6 +517,45 @@ def test_tool_progress_mode_reads_profile_scope_not_process_environ(monkeypatch,
     assert disp.progress_mode == "all"
 
 
+def test_tool_progress_mode_follows_profile_through_the_real_scoping_seam(monkeypatch, tmp_path):
+    """An A -> B -> A profile cycle driven through ``_profile_scope_for_source`` itself (the seam
+    ``_run_agent``/``_run_agent_inner`` actually enter for every turn), not a manually pre-installed
+    secret scope: binds the fix to profile ownership, so a future scoping regression that hands
+    profile B's turn profile A's scope cannot stay hidden behind an isolated ``get_secret`` test
+    (#116898)."""
+    from agent import secret_scope
+
+    root = tmp_path / "hermes"
+    beta = root / "profiles" / "beta"
+    beta.mkdir(parents=True)
+    # Leaked value from whichever profile's process env loaded last under multiplexing.
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    (root / ".env").write_text("HERMES_TOOL_PROGRESS_MODE=log\n")
+    (beta / ".env").write_text("HERMES_TOOL_PROGRESS_MODE=verbose\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+
+    prev_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+        runner = _make_runner(adapter)
+        runner.config.multiplex_profiles = True
+        source_a = SessionSource(
+            platform=Platform.SLACK, chat_id="D1", chat_type="dm", thread_id=None, profile="default")
+        source_b = SessionSource(
+            platform=Platform.SLACK, chat_id="D2", chat_type="dm", thread_id=None, profile="beta")
+
+        with runner._profile_scope_for_source(source_a):
+            assert runner._run_agent_display_settings(source_a).progress_mode == "log"
+        with runner._profile_scope_for_source(source_b):
+            assert runner._run_agent_display_settings(source_b).progress_mode == "verbose"
+        with runner._profile_scope_for_source(source_a):
+            assert runner._run_agent_display_settings(source_a).progress_mode == "log"
+    finally:
+        secret_scope.set_multiplex_active(prev_multiplex)
+
+
 @pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""

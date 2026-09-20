@@ -9,7 +9,7 @@ maintainer: tylerbrevard
 tier: community
 category: desktop
 docs_url: https://github.com/tylerbrevard/hermes-localsend#readme
-version: "1.19.0"
+version: "1.18.0"
 image: https://raw.githubusercontent.com/tylerbrevard/hermes-localsend/28dfd30ccdca6ca5baf30ca13326ea7f0d4c755d/docs/banner.png
 platforms: []
 requires_hermes: ">=0.21.3"

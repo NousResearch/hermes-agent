@@ -246,7 +246,7 @@ def _claude_code_candidates() -> List[str]:
     seen: Dict[str, None] = {}
     for name in _CLAUDE_CODE_NAMES:
         hit = shutil.which(name)
-        if hit and os.path.isfile(hit):
+        if hit:
             seen.setdefault(hit)
     for prefix in _CLAUDE_CODE_PREFIXES:
         for name in _CLAUDE_CODE_NAMES:

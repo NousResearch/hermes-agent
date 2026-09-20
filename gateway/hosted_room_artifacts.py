@@ -336,7 +336,7 @@ class RoomArtifactOutbox:
                 str(row["blob_name"])
                 for row in conn.execute(
                     """SELECT blob_name FROM hosted_room_output_artifacts
-                       WHERE acknowledged_at IS NULL"""
+                       WHERE acknowledged_at IS NULL OR cleanup_required_at IS NOT NULL"""
                 ).fetchall()
             }
         for path in self.blob_root.iterdir():
@@ -400,6 +400,7 @@ class RoomArtifactOutbox:
                 """SELECT artifact_id, blob_name
                      FROM hosted_room_output_artifacts
                     WHERE acknowledged_at IS NOT NULL
+                      AND cleanup_required_at IS NULL
                       AND blob_reclaimed_at IS NULL
                     ORDER BY acknowledged_at, artifact_id
                     LIMIT ?""",
@@ -419,6 +420,7 @@ class RoomArtifactOutbox:
                 """SELECT artifact_id, blob_name, blob_reclaimed_at
                      FROM hosted_room_output_artifacts
                     WHERE acknowledged_at IS NOT NULL
+                      AND cleanup_required_at IS NULL
                       AND (
                           (receipt_expires_at IS NOT NULL AND receipt_expires_at<=?)
                           OR (receipt_expires_at IS NULL AND acknowledged_at<=?)
@@ -449,7 +451,7 @@ class RoomArtifactOutbox:
             rows = conn.execute(
                 """SELECT artifact_id, blob_name, scope_json
                      FROM hosted_room_output_artifacts
-                    WHERE acknowledged_at IS NULL AND created_at<=?
+                    WHERE acknowledged_at IS NULL AND cleanup_required_at IS NULL AND created_at<=?
                     ORDER BY created_at, artifact_id
                     LIMIT ?""",
                 (cutoff, ACKNOWLEDGED_ARTIFACT_PRUNE_BATCH),

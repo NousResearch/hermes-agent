@@ -17,6 +17,10 @@ from gateway.session_results import _RESULT_PREFIX
 from hermes_state_runtime import _json
 
 
+class SharedGrantUnavailable(RuntimeError):
+    """A foreign grant-store statement failed, not the owning SessionDB."""
+
+
 def _http_routes(adapter):
     return [('GET', '/v1/runs/{run_id}/artifacts/{artifact_id}', MethodType(_handle_room_run_artifact, adapter)),
             ('POST', '/v1/runs/{run_id}/artifacts/ack', MethodType(_handle_room_run_artifact_ack, adapter)),
@@ -31,7 +35,12 @@ def _load_scope_and_status(adapter, request, *, permission, authority, shared, c
     owner, _ = root_target(adapter, claims['target_profile'], connection=conn)
     if owner is not authority:
         raise ValueError('output owner changed')
-    require_current_grant(shared, claims)
+    try:
+        require_current_grant(shared, claims)
+    except sqlite3.Error as exc:
+        # Only the foreign statement crosses this boundary. Owner-origin SQL
+        # must still reach its own sticky corruption classifier unchanged.
+        raise SharedGrantUnavailable('shared Output grant storage unavailable') from exc
     require_current_grant(conn, claims)
     run_id = str(request.match_info['run_id'])
     owned = run_admission(adapter, run_id, connection=conn)
@@ -162,9 +171,9 @@ async def _handle_room_run_artifact_ack(adapter, request):
 
 async def _handle_room_run_artifact_discard(adapter, request):
     """Historical artifact.ack retirement, bound to the canonical Run result."""
-    from gateway.hosted_room_output_discard import retire_exact, cleanup_exact, require_retired
+    from gateway.hosted_room_output_discard import (
+        retire_exact, cleanup_exact, require_retired, require_record, OutputCleanupUnavailable)
     from tui_gateway.hosted_room_peer_http import peer_result_digest
-    from tui_gateway.hosted_room_peer_artifacts import require_discard_receipt
     from gateway.platforms.api_server import _openai_error
     from gateway.session_peer_output import _require_outbox
     try:
@@ -192,19 +201,16 @@ async def _handle_room_run_artifact_discard(adapter, request):
                 actual, outbox = authorize(conn)
                 record = actual['discard']
                 if record is None:
-                    removed = retire_exact(outbox, conn, scope, expected['manifest']['items'], authorize=authorize)
-                    record = dict(commitment=body, receipt=dict(discarded=True, removed=removed))
+                    blobs = retire_exact(outbox, conn, scope, expected['manifest']['items'], authorize=authorize)
+                    record = dict(commitment=body, receipt=dict(discarded=True, removed=len(blobs)),
+                                  state='pending', blobs=blobs)
                     key = _RESULT_PREFIX + expected['row']['admission_id']
                     saved = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0])
                     saved['peer_output_discard'] = record
                     conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(saved), key))
-                if (type(record) is not dict or set(record) != {'commitment', 'receipt'}
-                        or record['commitment'] != body):
-                    raise ValueError('retirement receipt changed')
-                require_discard_receipt(record['receipt'])
-                if record['receipt']['removed'] != len(expected['manifest']['items']):
-                    raise ValueError('retirement count changed')
-                require_retired(conn, scope)
+                require_record(record, body, expected['manifest']['items'])
+                if record['state'] == 'pending':
+                    require_retired(conn, scope)
                 return record
 
             record = authority.db._execute_write(retire)
@@ -215,13 +221,21 @@ async def _handle_room_run_artifact_discard(adapter, request):
                     actual, outbox = authorize(conn)
                     if actual['discard'] != record:
                         raise ValueError('retirement receipt changed during cleanup')
-                    cleanup_exact(outbox, conn, scope, expected['manifest']['items'], authorize=authorize)
+                    if record['state'] == 'completed':
+                        return  # Exact replay needs neither retired rows nor bytes.
+                    cleanup_exact(outbox, conn, scope, expected['manifest']['items'],
+                                  record['blobs'], authorize=authorize)
+                    key = _RESULT_PREFIX + expected['row']['admission_id']
+                    saved = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0])
+                    saved['peer_output_discard'] = dict(record, state='completed', blobs=[])
+                    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(saved), key))
                 authority.db._execute_write(cleanup)
-            except Exception:
-                return web.json_response(_openai_error('Artifact retirement cleanup is unavailable.',
-                    code='artifact_retirement_unavailable'), status=503, headers={'Retry-After': '1'})
+            except Exception as exc:
+                # Let the shared fence roll back too; the first owner commit
+                # remains a durable pending intent for an authenticated retry.
+                raise OutputCleanupUnavailable('Output cleanup is unavailable') from exc
         return web.json_response(record['receipt'])
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError, SharedGrantUnavailable, OutputCleanupUnavailable):
         return web.json_response(_openai_error('Artifact retirement storage is unavailable.',
             code='artifact_retirement_unavailable'), status=503, headers={'Retry-After': '1'})
     except Exception:

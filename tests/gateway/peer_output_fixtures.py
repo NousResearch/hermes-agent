@@ -75,7 +75,7 @@ def inprocess_http(target, monkeypatch):
 
 
 @asynccontextmanager
-async def peer_case(target, monkeypatch, *, defer_publication=True, resolve_queued=False):
+async def peer_case(target, monkeypatch, *, defer_publication=True, resolve_queued=False, output_count=1):
     from tests.gateway.test_peer_output_product import register_routes
     from tests.gateway.test_canonical_peer_target_setup import invite, invitation
     from gateway.session_peer_output import initialize_peer_output
@@ -182,9 +182,13 @@ async def peer_case(target, monkeypatch, *, defer_publication=True, resolve_queu
         assert [Path(x['path']).read_bytes() for x in admitted_media] == raw
         assert admitted_media[0]['path'] in str(prepared['content'])
         assert 'data:image/png;base64,' in str(prepared['content'])
-        result = json.loads(await asyncio.to_thread(hosted_room_artifact.share_group_file, str(output)))
-        outputs.append(result)
-        assert result.get('ok') is True, result
+        for index in range(output_count):
+            produced = output if index == 0 else output.with_name(f'answer-{index}.txt')
+            if index:
+                produced.write_bytes(f'exact peer output {index}'.encode())
+            result = json.loads(await asyncio.to_thread(hosted_room_artifact.share_group_file, str(produced)))
+            outputs.append(result)
+            assert result.get('ok') is True, result
         execution_result.get().update(result=dict(final_response='Shared the file.', messages=[], completed=True), usage={})
         return 'Shared the file.'
     target.runner._handle_message = handle

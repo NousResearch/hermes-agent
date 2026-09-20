@@ -829,7 +829,13 @@ def find_windows_gateway_services(
                 if not owned:
                     try:
                         service_binpath = str(_scm_service_field(service, "binpath") or "")
-                    except psutil_module.AccessDenied:
+                    except OSError:
+                        # AccessDenied, or a config the SCM cannot render at all
+                        # (QueryServiceConfigW -> WinError 15100 ERROR_MUI_FILE_NOT_FOUND when the
+                        # service's DisplayName/Description indirect string points at a MUI this
+                        # machine never installed). Such a service is never Hermes's, and one
+                        # unreadable stranger must not abort the whole enumeration — that turns
+                        # into `hermes update` refusing to run on this machine at all.
                         continue
                     owned = hermes_owns_windows_service(service_name, service_binpath, hermes_roots)
                 if not owned:

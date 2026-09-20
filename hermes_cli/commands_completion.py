@@ -17,6 +17,7 @@ from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
 from hermes_cli.commands import COMMANDS, SUBCOMMANDS
+from hermes_cli.commands_intent import match_prompt_intent, match_slash_keywords
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -411,6 +412,18 @@ class SlashCommandCompleter(Completer):
             yield _completion(
                 f"@{'folder' if is_dir else 'file'}:{fp}", word, os.path.basename(fp), meta)
 
+    def _intent_completions(self, text: str):
+        """Yield completions when user types natural language matching a command intent."""
+        for match in match_prompt_intent(text):
+            cmd_key = f"/{match.command}"
+            if self._command_allowed(cmd_key):
+                yield Completion(
+                    f"/{match.command} ",
+                    start_position=-len(text),
+                    display=f"/{match.command}",
+                    display_meta=f"{match.description} [intent: '{match.matched_phrase}']",
+                )
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
@@ -420,6 +433,8 @@ class SlashCommandCompleter(Completer):
                 yield from self._context_completions(ctx_word)
             elif path_word is not None:
                 yield from _path_completions(path_word)
+            else:
+                yield from self._intent_completions(text)
             return
         parts = text.split(maxsplit=1)
         base_cmd = parts[0].lower()
@@ -439,8 +454,10 @@ class SlashCommandCompleter(Completer):
                     ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)
             return
         word = text[1:]
+        seen_cmds: set[str] = set()
 
         def _cmd_completion(cmd_name: str, meta: str):
+            seen_cmds.add(cmd_name)
             return _completion(self._completion_text(cmd_name, word), word, f"/{cmd_name}", meta)
 
         for cmd, desc in COMMANDS.items():
@@ -462,6 +479,13 @@ class SlashCommandCompleter(Completer):
                         cmd_name, f"🔌 {cmd_info.get('description', 'Plugin command')}")
         except Exception:
             pass
+
+        # Keyword tags and synonyms for slash search (e.g. /token, /pricing, /spend)
+        if word:
+            for cmd_name, desc_hint, tag in match_slash_keywords(word):
+                if cmd_name not in seen_cmds and self._command_allowed(f"/{cmd_name}"):
+                    full_desc = COMMANDS.get(f"/{cmd_name}", desc_hint)
+                    yield _cmd_completion(cmd_name, f"{full_desc} [keyword: '{tag}']")
 
 
 class SlashCommandAutoSuggest(AutoSuggest):

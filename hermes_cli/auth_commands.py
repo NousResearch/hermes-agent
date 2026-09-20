@@ -239,10 +239,19 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         login=lambda args: auth_mod._codex_device_code_login(),
         token=lambda creds: creds["tokens"]["access_token"],
         source=SOURCE_MANUAL_DEVICE_CODE,
+        # id_token/account_id ride creds["tokens"] (fourth drop point of #114201): the Codex CLI
+        # rejects an auth file lacking id_token ("missing field id_token"), and every brand-new
+        # `hermes auth add openai-codex` login was landing without either field even after the
+        # login exchange itself was fixed to surface them — this is the constructor call that
+        # actually discarded them on the way into the new pool entry's ``extra`` dict.
         fields=lambda creds, provider: {
             "refresh_token": creds["tokens"].get("refresh_token"),
             "base_url": creds.get("base_url"),
-            "last_refresh": creds.get("last_refresh")},
+            "last_refresh": creds.get("last_refresh"),
+            "extra": {
+                k: v for k in ("id_token", "account_id")
+                if (v := creds["tokens"].get(k))},
+        },
         activate_first=True),
     "xai-oauth": _OAuthAddSpec(
         login=lambda args: auth_mod._xai_oauth_device_code_login(

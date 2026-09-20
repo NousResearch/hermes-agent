@@ -164,6 +164,87 @@ def test_hermes_pkce_refresh_writes_back_to_singleton(tmp_path, monkeypatch):
     )
 
 
+def test_sync_codex_pool_entries_propagates_id_token_and_account_id(tmp_path, monkeypatch):
+    """#114201: a fresh Codex login must carry id_token/account_id onto pool aliases.
+
+    The Codex CLI rejects an auth file lacking ``id_token`` ("missing field id_token"), so a
+    ``device_code``/alias pool entry left without it is a dead credential for every Codex-CLI
+    image job the moment the singleton rotates past whatever token that entry was minted with —
+    even though the sync already carried access_token/refresh_token/last_refresh correctly.
+    """
+    store = {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {"id": "e1", "source": "device_code", "access_token": "old-access",
+                 "refresh_token": "old-refresh"},
+            ]
+        },
+    }
+    auth_codex._sync_codex_pool_entries(
+        store,
+        {"access_token": "new-access", "refresh_token": "new-refresh",
+         "id_token": "new-id-token", "account_id": "acct-123"},
+        "2026-09-20T00:00:00Z",
+    )
+    entry = store["credential_pool"]["openai-codex"][0]
+    assert entry["access_token"] == "new-access"
+    assert entry["id_token"] == "new-id-token"
+    assert entry["account_id"] == "acct-123"
+
+
+def test_pooled_credential_round_trip_preserves_id_token(tmp_path):
+    """PooledCredential has no declared id_token/account_id field, so without them in
+    ``_EXTRA_KEYS`` a from_dict()/to_dict() round trip silently strips what the sync just wrote.
+    """
+    payload = {
+        "id": "e1", "label": "cred", "auth_type": AUTH_TYPE_OAUTH, "priority": 0,
+        "source": "device_code", "access_token": "at", "refresh_token": "rt",
+        "id_token": "idt", "account_id": "acct-123",
+    }
+    entry = PooledCredential.from_dict("openai-codex", payload)
+    assert entry.id_token == "idt"
+    assert entry.account_id == "acct-123"
+    assert entry.to_dict()["id_token"] == "idt"
+    assert entry.to_dict()["account_id"] == "acct-123"
+
+
+def test_refresh_codex_peer_adopt_carries_id_token(monkeypatch):
+    """The peer-adopt shortcut (entry's refresh_token already superseded by the singleton) must
+    carry the singleton's id_token/account_id along with the adopted access/refresh pair — this
+    is the common case once the singleton has refreshed even once, so dropping the claims here
+    reproduces "missing field id_token" for nearly every pool-backed Codex image job.
+    """
+    monkeypatch.setattr(
+        A, "_provider_state_transaction",
+        lambda *a, **k: _FakeTxn({
+            "tokens": {
+                "access_token": "singleton-access", "refresh_token": "singleton-refresh",
+                "id_token": "singleton-id-token", "account_id": "singleton-acct",
+            }
+        }),
+    )
+    result = auth_codex._refresh_codex_auth_tokens(
+        {"access_token": "stale-access", "refresh_token": "stale-refresh"}, timeout_seconds=5.0)
+    assert result["access_token"] == "singleton-access"
+    assert result["id_token"] == "singleton-id-token"
+    assert result["account_id"] == "singleton-acct"
+
+
+class _FakeTxn:
+    """Minimal context manager standing in for ``_provider_state_transaction``."""
+
+    def __init__(self, state):
+        self._state = state
+
+    def __enter__(self):
+        return {}, self._state, None
+
+    def __exit__(self, *exc):
+        return False
+
+
 def test_manual_hermes_pkce_refresh_does_not_create_duplicate_singleton(
     tmp_path, monkeypatch
 ):

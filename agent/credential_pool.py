@@ -166,6 +166,13 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    # Codex identity claims (#114201): the Codex CLI rejects an auth file without id_token
+    # ("missing field id_token") and needs account_id as the ChatGPT-Account-Id header. Both
+    # ride the OAuth refresh response onto pool rows (hermes_cli/auth_codex.py::
+    # _sync_codex_pool_entries) but PooledCredential has no declared field for them — without
+    # this entry every from_dict()/to_dict() round trip through the dataclass silently strips
+    # them back off, even after the sync fix restores them on disk.
+    "id_token", "account_id",
     # Nous guest identity (``auth_method: anonymous``): the anon_ credential is the refresh material.
     "auth_method", "account_tier", "anon_token", "user_id", "org_id",
     # Classified failure semantics for the last exhaustion (agent/error_classifier.py).

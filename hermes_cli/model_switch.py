@@ -788,11 +788,12 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
 def get_authenticated_provider_slugs(
     current_provider: str = "", user_providers: dict = None, custom_providers: list | None = None
 ) -> list[str]:
-    """Slugs of providers that have credentials (models.dev in-memory cache; no extra network cost)."""
+    """Slugs of providers that have credentials (models.dev in-memory cache + disk catalog cache;
+    stale catalogs warm in the background, never in this call)."""
     try:
         return [p["slug"] for p in list_authenticated_providers(
             current_provider=current_provider, user_providers=user_providers,
-            custom_providers=custom_providers, max_models=0)]
+            custom_providers=custom_providers, max_models=0, non_blocking_catalogs=True)]
     except Exception:
         return []
 

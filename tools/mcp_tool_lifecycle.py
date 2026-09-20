@@ -145,14 +145,13 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     def selected_key(key) -> bool:
         if wildcard:
             return True
-        if _key_scope(key) != scope:
+        owner = _core._server_scope_keys.get(key, _key_scope(key))
+        if owner != scope:
             return False
         return names is None or _key_name(key) in names
 
     with _core._lock:
-        selected = [key for key in _core._servers if wildcard or _core._server_scope_keys.get(key) == scope]
-        if names is not None:
-            selected = [key for key in selected if _key_name(key) in names]
+        selected = [key for key in _core._servers if selected_key(key)]
         lazy_selected = [key for key in _core._lazy_server_configs if selected_key(key)]
         servers_snapshot = [_core._servers[key] for key in selected]
         if names is not None:

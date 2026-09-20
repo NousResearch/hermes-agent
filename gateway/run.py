@@ -2173,9 +2173,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
-    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
-    read_launchd_exit_timeout_s,
-    resolve_launchd_capped_drain)
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT)
 
 
 logger = logging.getLogger(__name__)
@@ -3499,36 +3497,6 @@ class GatewayRunner(
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
-
-    @staticmethod
-    def _load_launchd_exit_timeout(drain_timeout: float) -> Optional[float]:
-        """Read the live launchd ``ExitTimeOut`` this job runs under, if any.
-
-        launchd is the one supervisor the gateway cannot size from config: the per-user (gui)
-        domain clamps ``ExitTimeOut`` (measured 60s on macOS 26), and any signal-driven stop that
-        drains past it is SIGKILLed mid-teardown — the unclean-exit half of the state.db
-        corruption class. Returns ``None`` (fail-open, drain unchanged) when not launchd-owned or
-        when ``launchctl print`` is unavailable. Logs a WARNING when the configured drain exceeds
-        the live budget so the misconfiguration is visible at boot, not at the next SIGKILL.
-        """
-        # read_launchd_exit_timeout_s is already fail-open (returns None on any probe failure).
-        exit_timeout = read_launchd_exit_timeout_s()
-        if exit_timeout is None:
-            return None
-        effective = resolve_launchd_capped_drain(drain_timeout, exit_timeout)
-        if effective < drain_timeout:
-            logger.warning(
-                "restart_drain_timeout=%.0fs exceeds the live launchd exit timeout (%.0fs) for %s; "
-                "signal-driven stops will drain at most %.0fs so teardown finishes before launchd "
-                "SIGKILLs (launchd clamps ExitTimeOut in the per-user domain).",
-                drain_timeout, exit_timeout, os.environ.get("XPC_SERVICE_NAME", "this job"), effective,
-            )
-        else:
-            logger.info(
-                "launchd exit timeout for %s is %.0fs (drain %.0fs fits)",
-                os.environ.get("XPC_SERVICE_NAME", "this job"), exit_timeout, drain_timeout,
-            )
-        return exit_timeout
 
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""

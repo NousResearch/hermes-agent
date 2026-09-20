@@ -165,6 +165,8 @@ class _BatchAbandoned(BaseException):
 
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
     """Parse model-emitted arguments without repairing or coercing them."""
+    if isinstance(raw_arguments, dict):
+        return raw_arguments, None
     try:
         arguments = json.loads(raw_arguments)
     except (json.JSONDecodeError, TypeError):

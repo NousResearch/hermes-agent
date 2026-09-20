@@ -73,7 +73,7 @@ import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
-import { routedSessionIsLoading, threadLoadingState } from './thread-loading'
+import { composerStaysMounted, routedSessionIsLoading, threadLoadingState } from './thread-loading'
 import {
   backfillOlderTranscriptPage,
   mergeOlderTranscriptPage,
@@ -641,7 +641,25 @@ const ChatViewContent = memo(function ChatViewContent({
   // Hide the composer in the exhausted error state too: there's no live runtime
   // to send to until a retry rebinds one. Watch windows are pure spectators of a
   // subagent run driven elsewhere — no composer, transcript is read-only.
-  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
+  //
+  // Once this route has rendered with its composer, a later transient loader
+  // (periodic list/status refresh, hydrate through an empty frame) must not
+  // unmount it again — see composerStaysMounted (#117375).
+  const settledRoutedSessionRef = useRef<null | string>(null)
+
+  if (!loadingSession && isRoutedSessionView) {
+    settledRoutedSessionRef.current = routedSessionId
+  } else if (!isRoutedSessionView) {
+    settledRoutedSessionRef.current = null
+  }
+
+  const showChatBar = composerStaysMounted({
+    hideComposer: resumeExhausted || isWatchWindow(),
+    loadingSession,
+    routedSessionId,
+    settledRoutedSessionId: settledRoutedSessionRef.current
+  })
+
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResult>({

@@ -1587,19 +1587,33 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     return config
 
 
+def _sync_compression_reasoning_marker(agent, reasoning_override) -> None:
+    """Mirror the explicit ``reasoning_config_override`` marker onto the agent's session-init ``model_config``.
+    Conversation compression publishes the child row from that dict, so without the marker the child stores only
+    the effective ``reasoning_config``; a later resume then reads it as a legacy value and drops the explicit pin."""
+    init_config = getattr(agent, "_session_init_model_config", None)
+    if not isinstance(init_config, dict):
+        return
+    if isinstance(reasoning_override, dict):
+        init_config["reasoning_config_override"] = dict(reasoning_override)
+    else:
+        init_config.pop("reasoning_config_override", None)
+
+
 def _persist_live_session_runtime(session: dict | None) -> None:
     """Persist active session runtime so future resumes restore the same footer."""
     live = _live_session_agent_db(session)
     if live is None:
         return
     agent, session_key, db = live
+    reasoning_override = (session or {}).get("create_reasoning_override")
+    _sync_compression_reasoning_marker(agent, reasoning_override)
     try:
         row = db.get_session(session_key) or {}
         model_config = _runtime_model_config(agent, _parse_model_config(row.get("model_config")))
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
-        reasoning_override = (session or {}).get("create_reasoning_override")
         if isinstance(reasoning_override, dict):
             model_config["reasoning_config_override"] = reasoning_override
         else:
@@ -2407,6 +2421,8 @@ def _make_agent(
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         **_agent_cbs(sid))
+    # A resumed explicit pin must survive a compaction on the very first turn, before any runtime persist runs.
+    _sync_compression_reasoning_marker(agent, reasoning_config_override)
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)

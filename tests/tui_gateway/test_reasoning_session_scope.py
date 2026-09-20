@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -157,4 +157,108 @@ class TestStoredReasoningProvenance:
         server._persist_live_session_runtime(session)
         assert "reasoning_config_override" not in db.model_config
         assert db.model_config["reasoning_config"] == {"enabled": False}
+
+
+class TestCompressionChildKeepsExplicitMarker:
+    """save -> compress -> reopen: the explicit marker must survive the compression child.
+
+    Compression publishes the child row from ``agent._session_init_model_config``. That dict was seeded with only
+    the effective ``reasoning_config``, so the child looked like a legacy row and resume dropped the explicit pin.
+    """
+
+    EXPLICIT = {"enabled": True, "effort": "high"}
+
+    @staticmethod
+    def _agent(db, session_id, reasoning_config):
+        return SimpleNamespace(
+            _session_db=db, session_id=session_id, platform="tui", model="glm-5", provider="zai", base_url="",
+            api_mode="", service_tier=None, reasoning_config=reasoning_config,
+            _session_init_model_config={"max_iterations": 5, "reasoning_config": reasoning_config, "max_tokens": None},
+            working_directory=None, _memory_manager=None, context_compressor=SimpleNamespace(),
+            _flush_messages_to_session_db=lambda *a, **k: None, _persist_user_message_idx=None,
+            _session_messages=None, _gateway_session_key=None, _cached_system_prompt="sys",
+        )
+
+    @staticmethod
+    def _compress(agent):
+        from agent import conversation_compression as cc
+
+        cc._publish_rotated_compaction(
+            agent, [{"role": "user", "content": "hello"}], [{"role": "user", "content": "[handoff]"}],
+            new_system_prompt="sys", lease=SimpleNamespace(holder=None, ttl=60.0, watermark=None),
+            old_session_id="parent", compressed_user_turn_outcome="none",
+        )
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        database = SessionDB(tmp_path / "state.db")
+        database.create_session("parent", source="tui", model="glm-5")
+        database.append_message("parent", "user", "hello")
+        try:
+            yield database
+        finally:
+            database.close()
+
+    def test_explicit_marker_survives_save_compress_reopen(self, db) -> None:
+        agent = self._agent(db, "parent", self.EXPLICIT)
+        session = {"agent": agent, "session_key": "parent", "create_reasoning_override": self.EXPLICIT}
+
+        server._persist_live_session_runtime(session)
+        assert json.loads(db.get_session("parent")["model_config"])["reasoning_config_override"] == self.EXPLICIT
+
+        self._compress(agent)
+
+        assert agent.session_id != "parent"
+        child = db.get_session(agent.session_id)
+        child_config = json.loads(child["model_config"])
+        assert child_config["reasoning_config"] == self.EXPLICIT
+        assert child_config["reasoning_config_override"] == self.EXPLICIT
+        assert server._stored_session_runtime_overrides(child)["reasoning_config_override"] == self.EXPLICIT
+
+    def test_cleared_override_is_not_carried_into_the_child(self, db) -> None:
+        agent = self._agent(db, "parent", self.EXPLICIT)
+        session = {"agent": agent, "session_key": "parent", "create_reasoning_override": self.EXPLICIT}
+        server._persist_live_session_runtime(session)
+        assert agent._session_init_model_config["reasoning_config_override"] == self.EXPLICIT
+
+        # A global reasoning write clears the session pin; the child must not resurrect it.
+        session.pop("create_reasoning_override")
+        server._persist_live_session_runtime(session)
+        assert "reasoning_config_override" not in agent._session_init_model_config
+
+        self._compress(agent)
+
+        child = db.get_session(agent.session_id)
+        assert "reasoning_config_override" not in json.loads(child["model_config"])
+        assert "reasoning_config_override" not in server._stored_session_runtime_overrides(child)
+
+    @pytest.mark.parametrize("override", [EXPLICIT, None])
+    def test_make_agent_seeds_marker_before_first_persist(self, override) -> None:
+        """A resumed pin can hit compaction on its very first turn, before any runtime persist has run."""
+        fake_agent = MagicMock()
+        fake_agent._session_init_model_config = {"reasoning_config": {"enabled": True, "effort": "low"}}
+        fake_cfg = {"model": {"default": "glm-5", "provider": "zai"}, "agent": {"system_prompt": "test"}}
+        fake_runtime = {
+            "provider": "zai", "base_url": "https://api.z.ai/v1", "api_key": "sk-test", "api_mode": "chat_completions",
+            "command": None, "args": None, "credential_pool": None,
+        }
+        with (
+            patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+            patch("tui_gateway.server._get_db", return_value=MagicMock()),
+            patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"),
+            patch("tui_gateway.server._load_reasoning_config", return_value={"enabled": True, "effort": "low"}),
+            patch("tui_gateway.server._load_service_tier", return_value=None),
+            patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+            patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_runtime),
+            patch("run_agent.AIAgent", return_value=fake_agent),
+        ):
+            agent = server._make_agent("sid-1", "key-1", reasoning_config_override=override)
+
+        assert agent is fake_agent
+        if override is None:
+            assert "reasoning_config_override" not in fake_agent._session_init_model_config
+        else:
+            assert fake_agent._session_init_model_config["reasoning_config_override"] == override
 

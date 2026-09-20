@@ -106,6 +106,19 @@ def test_unrelated_400_does_not_strip_reasoning_fields():
     assert client.chat.completions.create.call_count == 1
 
 
+def test_top_level_max_tokens_value_error_with_reasoning_note_does_not_strip_reasoning_fields():
+    """A top-level output-cap 400 mentioning reasoning is not a rejection of the reasoning control."""
+    client = MagicMock()
+    client.base_url = "https://relay.example/v1"
+    client.chat.completions.create.side_effect = RuntimeError(
+        "Error code: 400 - max_tokens must be positive (reasoning is enabled for this model)")
+
+    with pytest.raises(RuntimeError, match="max_tokens must be positive"):
+        _call(False, client)
+    assert client.chat.completions.create.call_count == 1
+    assert client.chat.completions.create.call_args.kwargs["reasoning_effort"] == "none"
+
+
 def test_model_gating_400_naming_a_thinking_model_still_reaches_the_fallback_chain():
     """A route-gating 400 whose text merely contains a reasoning token inside the model id
     ("kimi-k2-thinking is not supported when using this account") is not a field rejection: no

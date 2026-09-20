@@ -1014,6 +1014,20 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.reasoning_mandatory
         assert result.retryable is True and result.should_fallback is False
 
+    @pytest.mark.parametrize(
+        ("msg", "expected"),
+        (
+            ("Error code: 400 - max_tokens must be positive (reasoning is enabled for this model)", False),
+            ("invalid request: max_tokens must be at least 1; note reasoning.effort is supported", False),
+            ("reasoning temperature must be positive", False),
+            ("Error code: 400 - {'error': 'reasoning.max_tokens must be positive'}", True),
+            ("max_tokens must be positive", False),
+        ),
+    )
+    def test_reasoning_value_constraint_requires_reasoning_max_tokens_field(self, msg, expected):
+        """Only a positive-value rejection of ``reasoning.max_tokens`` spends the reasoning-strip retry."""
+        assert is_reasoning_field_rejection(msg) is expected
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):

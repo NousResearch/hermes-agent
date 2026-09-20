@@ -15,7 +15,7 @@ import ssl
 import time
 from typing import Any, Dict, Optional
 
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
@@ -136,11 +136,14 @@ def handle_api_error(
 
     retry_count += 1
     elapsed_time = time.time() - api_start_time
+    # Liveness/watchdog label only (never shown in chat), so the classifier's
+    # "not retryable" verdict is named on the logged attempt line below instead.
     agent._touch_activity(f"API error recovery (attempt {retry_count}/{max_retries})")
 
     error_type, error_msg, _provider, _base, _model = log_api_error_attempt(
         agent, api_error, retry_count=retry_count, max_retries=max_retries, status_code=status_code,
         elapsed_time=elapsed_time, api_messages=api_messages, approx_tokens=approx_tokens,
+        retryable=bool(classified.retryable),
     )
 
     if agent._interrupt_requested:
@@ -229,13 +232,6 @@ def _is_local_validation_error(api_error: Any) -> bool:
     return not (isinstance(api_error, TypeError) and "nonetype" in _text and "not iterable" in _text)
 
 
-# Non-retryable per the classifier, yet handled by the overflow/backoff paths instead.
-_RETRYABLE_CLIENT_REASONS = frozenset({
-    FailoverReason.rate_limit, FailoverReason.overloaded, FailoverReason.context_overflow,
-    FailoverReason.payload_too_large, FailoverReason.long_context_tier, FailoverReason.thinking_signature,
-})
-
-
 @dataclass
 class UnrecoveredErrorVerdict:
     """``action``: ``"continue"`` (retry), ``"break"`` (fallback armed / redirect pending) or
@@ -297,7 +293,7 @@ def settle_unrecovered_error(
         or (
             not classified.retryable
             and not classified.should_compress
-            and classified.reason not in _RETRYABLE_CLIENT_REASONS
+            and classified.reason not in RETRYABLE_CLIENT_REASONS
         )
     ) and not is_context_length_error
 
@@ -370,6 +366,17 @@ def settle_unrecovered_error(
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
             retry_count = compression_attempts = 0
             return _verdict("break")
+        # Fallback first (above); only with nothing left to move to does the bounded auto-recovery
+        # ladder park the turn on a transient outage instead of ending it (#85426, #107307).
+        from agent.turn_recovery_autorecover import auto_recover_after_exhaustion
+        _ladder = auto_recover_after_exhaustion(
+            agent, api_error, classified, _retry, messages=messages,
+            conversation_history=conversation_history, api_call_count=api_call_count,
+        )
+        if _ladder is not None:
+            if _ladder["action"] == "continue":
+                retry_count = 0
+            return _verdict(_ladder["action"], _ladder.get("result"))
         return _verdict("return", max_retries_exhausted_result(
             agent, api_error, classified, max_retries=max_retries, is_rate_limited=is_rate_limited,
             error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,

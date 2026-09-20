@@ -37,6 +37,7 @@ from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 from tools.vision_tools_history_budget import (
+    native_turn_duplicate as _native_turn_duplicate,
     record_embed as _record_embed,
     release_embed as _release_embed,
     repeat_refusal as _repeat_refusal,
@@ -591,6 +592,9 @@ async def _vision_analyze_native(
     or a JSON error string (the normal tool-result contract) on failure."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
+    already_native = _native_turn_duplicate(image_url, region)
+    if already_native is not None:
+        return already_native
     # A cap > 0 RESERVES the slot here (atomic check-and-count); released below if no embed happens.
     refusal = _repeat_refusal(image_url)
     if refusal is not None:

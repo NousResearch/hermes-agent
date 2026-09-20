@@ -70,3 +70,25 @@ def test_compact_rewrites_legacy_full_manifests_in_place(ledger_home):
     assert {Path(i["path"]).name for i in by_id["abc123"]["before"]} == {"SKILL.md"}
     assert len(by_id["def456"]["before"]) == 50, "pre-rollback safety entries keep their full capture"
     assert "not json" in path.read_text(encoding="utf-8")
+
+
+def test_gc_blobs_removes_only_unreferenced(ledger_home):
+    """The blob store was write-only (#107539): after compaction, blobs no entry references are
+    deleted; every referenced blob survives so any entry can still roll back."""
+    from tools import skill_ledger
+    skills = ledger_home / "skills"
+    kept = _manifest(skills, "s", **{"SKILL.md": "v1"})
+    skill_ledger.append_entry("create", "s", before=[], after=kept, actor="agent")
+    orphan = skill_ledger._store_blob(b"never referenced by any entry")
+    assert (skill_ledger.blobs_dir() / orphan).exists()
+
+    deleted, freed = skill_ledger.gc_blobs()
+    assert (deleted, freed) == (1, len(b"never referenced by any entry"))
+    assert not (skill_ledger.blobs_dir() / orphan).exists()
+    assert skill_ledger.read_blob(kept[0]["sha256"]) == b"v1"
+
+    # A malformed line might hold references we cannot read: the sweep refuses rather than guesses.
+    with open(skill_ledger.ledger_path(), "a", encoding="utf-8") as fh:
+        fh.write("{broken\n")
+    skill_ledger._store_blob(b"orphan two")
+    assert skill_ledger.gc_blobs() == (0, 0)

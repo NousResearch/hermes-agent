@@ -37,6 +37,7 @@ import {
   refreshConnectionsRegistry,
   selectConnection
 } from '@/store/connections'
+import { managedUpdatesSupported } from '@/store/managed-updates'
 import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
@@ -161,11 +162,90 @@ function ModeCard({
   )
 }
 
+interface GatewaySettingsProps {
+  embedded?: boolean
+  subpage?: string
+}
+
+export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
+  // Recovery always keeps the complete connection form, regardless of a
+  // settings destination. Other tasks never mount that form or its probes.
+  if (!embedded && subpage === 'devices') {
+    return (
+      <SettingsContent>
+        <ConnectionsRegistrySection />
+      </SettingsContent>
+    )
+  }
+
+  if (!embedded && subpage === 'managed-updates') {
+    return <GatewayManagedUpdates />
+  }
+
+  return <GatewayConnectionSettings embedded={embedded} standalone={subpage !== undefined} />
+}
+
+function GatewayManagedUpdates() {
+  const { t } = useI18n()
+  const registry = useStore($connectionsRegistry)
+  const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
+  const supported = managedUpdatesSupported()
+
+  useEffect(() => {
+    if (!supported) {
+      return
+    }
+
+    let active = true
+    void refreshConnectionsRegistry()
+      .catch(() => {
+        if (active) {
+          setFailed(true)
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [supported])
+
+  if (supported && loading) {
+    return <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
+  }
+
+  const hasSsh = registry?.connections.some(connection => connection.kind === 'ssh')
+
+  return (
+    <SettingsContent>
+      {supported && !failed && hasSsh ? (
+        <ManagedUpdatesSection />
+      ) : (
+        <EmptyState
+          description={
+            !supported
+              ? t.settings.subpages.gatewayManagedUpdatesUnavailable
+              : failed
+                ? t.settings.gateway.failedLoad
+                : t.settings.subpages.gatewayManagedUpdatesEmpty
+          }
+          title={t.settings.managedUpdates.title}
+        />
+      )}
+    </SettingsContent>
+  )
+}
+
 // `embedded` trims the page chrome for reuse inside the boot-failure recovery
 // card: the outer title/intro, the "Save for next restart" action, and the
 // Diagnostics row are redundant there (the card owns its header + a single
 // reconnect action), so only the connection controls render.
-export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {}) {
+function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean; standalone: boolean }) {
   const { t } = useI18n()
   const g = t.settings.gateway
   const [loading, setLoading] = useState(true)
@@ -1148,7 +1228,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
   return (
     <SettingsContent bare={embedded}>
-      {embedded ? null : (
+      {embedded || standalone ? null : (
         <div className="mb-5">
           <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
             <Globe className="size-4 text-muted-foreground" />
@@ -1669,10 +1749,9 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       )}
 
-      {/* Unified Gateways page: the full connections registry (add/edit/delete
-          named agent sources) lives on this page now, below the window
-          connection controls. Hidden in the embedded (boot-recovery) form. */}
-      {embedded ? null : (
+      {/* Preserve the full legacy page outside subpage navigation, without
+          mounting registry editors in connection-only or recovery views. */}
+      {embedded || standalone ? null : (
         <>
           <ConnectionsRegistrySection />
           {/* Per-connection driver for the transactional managed SSH update

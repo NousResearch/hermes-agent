@@ -119,8 +119,8 @@ def test_mailbox_poll_skips_owner_lookup_without_a_mailbox(monkeypatch, tmp_path
     assert lookups == [tmp_path]
 
 
-def test_failing_mailbox_poll_backs_off_and_warns_once_per_window():
-    """A failing poll is retried only after the backoff and logged at WARNING once per window."""
+def test_failing_mailbox_poll_warns_once_per_window():
+    """A failing poll is logged at WARNING once per window; repeats within it are counted, not logged."""
     import logging
     records = []
 
@@ -139,12 +139,10 @@ def test_failing_mailbox_poll_backs_off_and_warns_once_per_window():
 
     guarded = rebind(session_notifications._poll_bot_live_delivery_guarded, {
         "_poll_bot_live_delivery_once": failing, "logger": log,
-        "_BOT_POLL_FAILURE_BACKOFF_S": session_notifications._BOT_POLL_FAILURE_BACKOFF_S,
         "_BOT_POLL_WARN_INTERVAL_S": session_notifications._BOT_POLL_WARN_INTERVAL_S})
     session = {}
-    for now in (0.0, 0.5, 1.0, 6.0, 12.0, 61.0):
+    for now in (0.0, 6.0, 12.0, 61.0):  # the poller calls at _BOT_DELIVERY_POLL_SECONDS cadence
         guarded("live", session, now)
-    assert len(attempts) == 4  # 0.0, 6.0, 12.0, 61.0 — the 0.5/1.0 passes sat out the backoff
     warnings = [r for r in records if r.levelno == logging.WARNING]
     assert [r.getMessage() for r in warnings] == [
         "Bot live-owner delivery poll failed (0 repeat(s) suppressed since the last report)",

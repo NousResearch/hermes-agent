@@ -184,7 +184,15 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
     try:
         import httpx
         base, url, headers = _apikey_request(key, base_env, default_url)
-        r = httpx.get(url, headers=headers, timeout=10)
+        if base.rstrip("/").endswith("/anthropic"):
+            # Anthropic-only gateway (no OpenAI-compat sibling, so no /models): probe the route the runtime uses.
+            r = _anthropic_messages_probe(base, key)
+            if r.status_code == 400:  # Anthropic-shaped 400 still proves route + auth (#66756)
+                return _row(pname, "ok", label=label)
+            if r.status_code == 403:
+                return _row(pname, "fail", "(access denied)", [f"Check {env_vars[0]} in .env"], label=label)
+        else:
+            r = httpx.get(url, headers=headers, timeout=10)
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
             r = httpx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
     except Exception as e:
@@ -194,9 +202,36 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
     return _row(pname, "ok", label=label) if r.status_code == 200 else _row(pname, "warn", f"(HTTP {r.status_code})", label=label)
 
 
+def _anthropic_messages_probe(base: str, key: str):
+    """POST ``<base>/v1/messages`` with ``max_tokens=1`` exactly as the Anthropic adapter would: same
+    auth family (Bearer for Azure Foundry, else x-api-key) and the same ``api-version`` query. Azure
+    Foundry's ``/anthropic`` route 404s on ``GET /models`` even when chat works (#66756)."""
+    import httpx
+    from agent.anthropic_adapter import _base_client_kwargs
+    from agent.anthropic_endpoints import _requires_bearer_auth
+    normalized, kwargs = _base_client_kwargs(base, None)
+    auth = {"Authorization": f"Bearer {key}"} if _requires_bearer_auth(normalized) else {"x-api-key": key}
+    headers = {"anthropic-version": "2023-06-01", "User-Agent": _HERMES_USER_AGENT, **auth}
+    model = str(_model_cfg().get("default") or "").strip() or "claude-sonnet-4-5"
+    body = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}
+    return httpx.post(normalized + "/v1/messages", headers=headers, params=kwargs.get("default_query"), json=body, timeout=10)
+
+
+def _model_cfg() -> dict:
+    try:
+        from hermes_cli.config import load_config_readonly
+        model_cfg = (load_config_readonly() or {}).get("model")
+    except Exception:
+        return {}
+    return model_cfg if isinstance(model_cfg, dict) else {}
+
+
 def _apikey_request(key: str, base_env, default_url) -> tuple:
     """(effective base, models URL, headers) for a generic Bearer-auth probe, with the per-vendor rewrites."""
     base = os.getenv(base_env, "") if base_env else ""
+    # Azure Foundry's base URL is per-resource and normally lives in config (model.base_url), not the env var.
+    if not base and base_env == "AZURE_FOUNDRY_BASE_URL" and str(_model_cfg().get("provider") or "").strip().lower() == "azure-foundry":
+        base = str(_model_cfg().get("base_url") or "").strip()
     # Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1 (OpenAI-compat surface exposing /models).
     if not base and key.startswith("sk-kimi-"):
         base = "https://api.kimi.com/coding/v1"

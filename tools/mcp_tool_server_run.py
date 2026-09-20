@@ -172,6 +172,21 @@ class MCPServerRunMixin:
         self._reconnect_event.clear()
         return "reconnect"
 
+    def _log_park(self, msg: str, *args) -> None:
+        """Park chatter control (#115713): re-parking a server that never revived is not a state
+        transition — ``hermes mcp list`` already surfaces the parked state, so one identical
+        WARNING per self-probe carries no new information. The first park (and the revived line
+        in ``_mark_session_proven``) stays a WARNING; an identical repeat while still parked is
+        demoted to DEBUG so a long-lived gateway's error log is not flooded (10k+ identical
+        lines/month). A park for a DIFFERENT reason (auth error after connection refused) is new
+        information and warns again."""
+        line = msg % args if args else msg
+        if self._was_parked and line == self._last_park_line:
+            logger.debug(msg, *args)
+        else:
+            self._last_park_line = line
+            logger.warning(msg, *args)
+
     async def _park(self, revival_reason: str) -> bool:
         """Drop this server's tools and wait for a reconnect request; True when shutdown came instead.
         The run task must NOT exit (it is the only ``_reconnect_event`` listener, so returning
@@ -189,20 +204,57 @@ class MCPServerRunMixin:
         self._park_reason = revival_reason
         self._deregister_tools()
         self._reconnect_event.clear()
-        outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)
-        if outcome == "shutdown":
+        paused = False
+        while True:
+            outcome = await self._wait_for_reconnect_or_shutdown(
+                timeout=_core._PARKED_RETRY_INTERVAL)
+            if outcome == "shutdown":
+                return True
+            # A disabled or deleted config entry must stop the self-probe here: the probe
+            # rebuilds the transport from the config captured at start, so it would re-run
+            # OAuth setup for a server the user turned off, every interval, for the life of
+            # the process (background loops that do not run the gateway reconcile tick
+            # never learn the entry changed). An explicit reconnect request — manual
+            # refresh or `hermes mcp login` — still revives immediately regardless of the
+            # config gate; only the unattended probe honours it. Announce the pause once:
+            # a line per skipped wake would be the very flood this gate exists to stop.
+            if outcome == "self-probe" and not self._still_configured_enabled():
+                (logger.debug if paused else logger.info)(
+                    "MCP server '%s': parked entry is disabled or gone from mcp_servers; pausing the "
+                    "self-probe until it is re-enabled", self.name)
+                paused = True
+                continue
+            # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
+            # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
+            # task-local ContextVar reaches it; it stays set for the task's life — every later
+            # revival of a once-parked server is unattended too. Left interactive, an expired
+            # refresh token opened a new authorize tab every _PARKED_RETRY_INTERVAL, all night.
+            if outcome == "self-probe":
+                from tools.mcp_oauth import _oauth_interactive_enabled
+
+                _oauth_interactive_enabled.set(False)
+            logger.debug(
+                "MCP server '%s': attempting revival %s (%s); rebuilding transport.",
+                self.name,
+                revival_reason,
+                outcome,
+            )
+            return False
+
+    def _still_configured_enabled(self) -> bool:
+        """Whether ``mcp_servers`` on disk still wants this server connected: entry present
+        and ``enabled`` not false. Config read is cached on the file signature, so a parked
+        task polling this every ``_PARKED_RETRY_INTERVAL`` stays cheap. Fail-open on a
+        config-read error: a broken config must not wedge a healthy server's revival."""
+        try:
+            from tools import mcp_tool_config as _config
+            entry = (_config._load_mcp_config() or {}).get(self.name)
+            if entry is None:
+                return False
+            from tools.mcp_tool_common import _parse_boolish
+            return _parse_boolish(entry.get("enabled", True), default=True)
+        except Exception:
             return True
-        # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
-        # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
-        # task-local ContextVar reaches it; it stays set for the task's life — every later
-        # revival of a once-parked server is unattended too. Left interactive, an expired
-        # refresh token opened a new authorize tab every _PARKED_RETRY_INTERVAL, all night.
-        if outcome == "self-probe":
-            from tools.mcp_oauth import _oauth_interactive_enabled
-            _oauth_interactive_enabled.set(False)
-        logger.debug("MCP server '%s': attempting revival %s (%s); rebuilding transport.",
-                     self.name, revival_reason, outcome)
-        return False
 
     async def _prepare_run(self, config: dict) -> bool:
         """Bind config, build sampling/elicitation handlers, validate HTTP. False when the server
@@ -339,7 +391,7 @@ class MCPServerRunMixin:
         else:
             self._reconnect_retries += 1
             if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
-                logger.warning(
+                self._log_park(
                     "MCP server '%s': %d consecutive reconnects without a healthy session (rapid-drop budget "
                     "exhausted), parking; will self-probe every %ds until it recovers (state: degraded → parked)",
                     self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL)
@@ -401,7 +453,7 @@ class MCPServerRunMixin:
             return await self._on_permanent_error(root, budget)
         self._reconnect_retries += 1
         if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
-            logger.warning(
+            self._log_park(
                 "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe every %ds "
                 "until it recovers (state: degraded → parked): %s: %s",
                 self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL,
@@ -421,12 +473,12 @@ class MCPServerRunMixin:
             detail = (f"authentication, parking until credentials change; re-authenticate with "
                       f"`hermes mcp login {self.name}`" if _errors._is_auth_error(root)
                       else "connection with a permanent error, parking without retries")
-            logger.warning("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
+            self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
                            self.name, detail, type(root).__name__, redact_credential_url(root))
             return await self._park_initial_failure(exc, "after permanent initial failure", budget)
         budget.initial_retries += 1
         if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:
-            logger.warning(
+            self._log_park(
                 "MCP server '%s' failed initial connection after %d attempts, parking until a reconnect is "
                 "requested (state: connecting → parked): %s: %s",
                 self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__,
@@ -455,7 +507,7 @@ class MCPServerRunMixin:
             await asyncio.sleep(_jittered(1.0))
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.
-        logger.warning(
+        self._log_park(
             "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
             "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL,
             type(root).__name__, redact_credential_url(root))

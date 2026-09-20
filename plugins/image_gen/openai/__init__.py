@@ -1,6 +1,9 @@
 """OpenAI GPT Image 2 and 2.5 Flare/Sunburst quality tiers;
 base64 output → image cache. Selection: ``OPENAI_IMAGE_MODEL`` → ``image_gen.openai.model`` →
-``image_gen.model`` → :data:`DEFAULT_MODEL`."""
+``image_gen.model`` → :data:`DEFAULT_MODEL`; an id outside the catalog is sent verbatim.
+Endpoint: ``image_gen.openai.base_url`` → the named endpoint ``image_gen.openai.provider`` →
+``OPENAI_BASE_URL`` → SDK default; key: env named by ``image_gen.openai.key_env`` → the named
+endpoint's credential → ``OPENAI_API_KEY``."""
 
 from __future__ import annotations
 
@@ -13,8 +16,9 @@ from agent.secret_scope import get_secret
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
-    StaticImageGenProvider, collect_source_images, error_factory, import_openai, materialize_image,
-    openai_importable, prompt_required_error, record_token_usage, resolve_static_model, size_for)
+    StaticImageGenProvider, collect_source_images, error_factory, import_openai, load_image_gen_config,
+    materialize_image, openai_importable, prompt_required_error, record_token_usage, resolve_static_model,
+    size_for)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +44,52 @@ MODELS = {
 
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
-        MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai")
+        MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai", passthrough=True)
+
+
+def _named_endpoint(name: str) -> Tuple[str, str]:
+    """``(base_url, api_key)`` of the user-declared custom endpoint *name* (``providers:`` /
+    ``custom_providers:``), so image generation reuses a chat endpoint's URL and credential without
+    duplicating the key into OpenAI variables (#83080). Unknown name → ``("", "")`` with a warning."""
+    from hermes_cli.runtime_provider import _get_named_custom_provider
+
+    entry = _get_named_custom_provider(name)
+    if not entry:
+        logger.warning("image_gen.openai.provider %r matches no custom endpoint in providers:", name)
+        return "", ""
+    key_env = str(entry.get("key_env") or "").strip()
+    api_key = str(entry.get("api_key") or "").strip() or (get_secret(key_env) if key_env else None) or ""
+    return str(entry.get("base_url") or "").strip().rstrip("/"), api_key
+
+
+def _resolve_endpoint() -> Tuple[str, str]:
+    """``(base_url, api_key)`` — ``image_gen.openai.base_url`` → ``OPENAI_BASE_URL`` → ``""`` (SDK default);
+    the env var named by ``image_gen.openai.key_env`` → ``OPENAI_API_KEY``. Only the var NAME lives in
+    config.yaml; ``is_available()`` and ``generate()`` share this so they cannot disagree (#65309)."""
+    cfg = load_image_gen_config("openai")
+    named = str(cfg.get("provider") or "").strip()
+    named_base, named_key = _named_endpoint(named) if named else ("", "")
+    base_url = (str(cfg.get("base_url") or "").strip().rstrip("/") or named_base
+                or os.environ.get("OPENAI_BASE_URL", "").strip())
+    key_env = str(cfg.get("key_env") or "").strip()
+    api_key = (get_secret(key_env) if key_env else None) or named_key or get_secret("OPENAI_API_KEY") or ""
+    return base_url, api_key
+
+
+def _build_client(openai: Any, base_url: str, api_key: str) -> Any:
+    """``openai.OpenAI`` on Hermes' env-only-proxy httpx client, so a local/custom endpoint never
+    routes through a macOS system proxy whose ExceptionsList httpx cannot see (#64888). The project
+    header is blanked: an ``OPENAI_PROJECT_ID`` set for chat makes ``/images/generations`` 403 on
+    projects with a model allow-list, and the key already carries the project (#60748)."""
+    from agent.process_bootstrap import build_keepalive_http_client
+
+    kwargs: Dict[str, Any] = {"api_key": api_key, "default_headers": {"OpenAI-Project": ""}}
+    if base_url:
+        kwargs["base_url"] = base_url
+    http_client = build_keepalive_http_client(base_url)
+    if http_client is not None:
+        kwargs["http_client"] = http_client
+    return openai.OpenAI(**kwargs)
 
 
 def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
@@ -93,7 +142,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         key="OPENAI_API_KEY", prompt="OpenAI API key", url="https://platform.openai.com/api-keys")
 
     def is_available(self) -> bool:
-        return bool(get_secret("OPENAI_API_KEY")) and openai_importable()
+        return bool(_resolve_endpoint()[1]) and openai_importable()
 
     def capabilities(self) -> Dict[str, Any]:
         # images.edit() accepts up to 16 source images.
@@ -108,11 +157,11 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai", aspect)
-        api_key = get_secret("OPENAI_API_KEY")
+        base_url, api_key = _resolve_endpoint()
         if not api_key:
             return error_factory("openai", aspect)(
-                "OPENAI_API_KEY not set. Run `hermes tools` → Image "
-                "Generation → OpenAI to configure, or `hermes setup` "
+                "OPENAI_API_KEY not set (or the variable named by image_gen.openai.key_env is empty). "
+                "Run `hermes tools` → Image Generation → OpenAI to configure, or `hermes setup` "
                 "to add the key.",
                 "auth_required")
 
@@ -124,12 +173,14 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         sources = collect_source_images(image_url, reference_image_urls, limit=16)
         is_edit = bool(sources)
         fail = error_factory("openai", aspect, model=tier_id, prompt=prompt)
-        client = openai.OpenAI(api_key=api_key)
+        client = _build_client(openai, base_url, api_key)
 
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.
-        request: Dict[str, Any] = dict(
-            model=meta["api_model"], prompt=prompt, size=size, n=1, quality=meta["quality"])
+        # A custom (non-catalog) model id carries no quality tier: gateways reject unknown enum values.
+        request: Dict[str, Any] = dict(model=meta["api_model"], prompt=prompt, size=size, n=1)
+        if meta["quality"] is not None:
+            request["quality"] = meta["quality"]
         if is_edit:
             try:
                 files = [_named_bytes_io(ref) for ref in sources]

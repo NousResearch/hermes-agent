@@ -230,6 +230,8 @@ def _warn_stale_serve_runtimes(rows) -> None:
     print("    Ask their owner to relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend.")
     if sys.platform == "linux" and any(row.get("supervisor") == "systemd" for row in rows):
         print("    For unit-managed backends: `systemctl --user restart hermes-serve.service`.")
+    if sys.platform == "darwin" and any(row.get("supervisor") == "launchd" for row in rows):
+        print("    For launchd-managed backends: `launchctl kickstart -k gui/$UID/<label>`.")
 
 
 def _owed_stale_serve_rows(rows) -> list[dict]:

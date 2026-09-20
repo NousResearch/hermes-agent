@@ -548,6 +548,30 @@ def test_snapshot_and_rollback_leave_ledger_and_archive_alone(backup_env):
     assert (skills / ".archive" / "pruned-later" / "SKILL.md").exists()
 
 
+def test_snapshot_skips_nested_venv_and_rollback_carries_it_back(backup_env):
+    """A regeneratable dir inside a skill (venv, node_modules) is never tarred — one torch venv made
+    every snapshot 349 MB (#107539) — and rollback moves the live copy back rather than dropping it.
+    A plain FILE named ``venv`` is skill content and stays in."""
+    cb, skills = backup_env["cb"], backup_env["skills"]
+    _write_skill(skills, "alpha", body="v1")
+    (skills / "alpha" / "venv" / "lib").mkdir(parents=True)
+    (skills / "alpha" / "venv" / "lib" / "big.so").write_bytes(b"x" * 4096)
+    (skills / "alpha" / "scripts").mkdir()
+    (skills / "alpha" / "scripts" / "venv").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    with tarfile.open(snap_dir / "skills.tar.gz", "r:gz") as tf:
+        members = set(tf.getnames())
+    assert "alpha/scripts/venv" in members
+    assert not any(n.startswith("alpha/venv") for n in members), members
+
+    _write_skill(skills, "alpha", body="v2")
+    ok, msg, _ = cb.rollback(snap_dir.name)
+    assert ok, msg
+    assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    assert (skills / "alpha" / "venv" / "lib" / "big.so").exists(), "live venv carried back after rollback"
+
+
 def test_rollback_preserves_top_level_git(backup_env):
     """Rollback must preserve repository .git metadata untouched in the skills root."""
     cb = backup_env["cb"]

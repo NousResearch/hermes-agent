@@ -111,6 +111,12 @@ curl http://localhost:8642/v1/chat/completions \
 **流中的工具进度：**
 - **Chat Completions**：Hermes 发出 `event: hermes.tool.progress` 以提供工具启动可见性，同时不污染持久化的 assistant 文本。
 - **Responses**：Hermes 在 SSE 流期间发出符合规范的 `function_call` 和 `function_call_output` 输出项，让客户端能够实时渲染结构化工具 UI。
+**模型推理**（仅当模型确实产生了推理内容且解析后的 `reasoning` 配置允许时才会发出；输入侧的关闭方式是 `model_options.reasoning.enabled: false`）：
+- **Chat Completions**：推理增量以 `choices[0].delta.reasoning_content` 块的形式到达（DeepSeek 风格的字段，Open WebUI、opencode 和 Vercel AI SDK 会将其渲染为思考块）；回答文本仍留在 `delta.content` 中。
+- **Responses**：每一段思考都是一个符合规范的 `reasoning` 输出项——`response.output_item.added`（`item.type: "reasoning"`）、`response.reasoning_summary_part.added`、`response.reasoning_summary_text.delta` … `response.reasoning_summary_text.done`、`response.reasoning_summary_part.done`、`response.output_item.done`——在下一个 message 或 `function_call` 项打开之前关闭，并在 `response.completed` 的 output 中以 `{"id": "rs_…", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "…"}]}` 的形式回显。`sequence_number` 在推理、文本和工具事件之间保持单调递增。
+- **非流式**：`/v1/chat/completions` 在 `choices[0].message.reasoning_content` 上返回本轮的推理内容；`/v1/responses` 在 message（以及该步骤的 `function_call` 项）之前返回同样的 `reasoning` 输出项，`GET /v1/responses/{id}` 回放时亦然。
+- 将上一个响应的 `output` 列表原样作为下一次的 `input` 回传（Responses SDK 客户端的做法）没有问题：输入中的 `reasoning` 项会被忽略，而不会被解析为空的 user 轮次。
+- 支持情况通过 `GET /v1/capabilities` 上的 `features.reasoning_streaming: true` 公布。
 
 ### POST /v1/responses
 
@@ -214,7 +220,8 @@ OpenAI Responses API 格式。通过 `previous_response_id` 支持服务端对�
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "reasoning_streaming": true
   }
 }
 ```

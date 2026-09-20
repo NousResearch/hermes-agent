@@ -36,6 +36,7 @@ import importlib
 import importlib.util
 import logging
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from providers.base import ProviderProfile
@@ -44,14 +45,38 @@ logger = logging.getLogger(__name__)
 
 _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
+_REGISTRATION_OWNERS: dict[str, str] = {}
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
 _discovering = False
+_registration_owner = "user"
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
     Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
 )
+
+
+@contextmanager
+def _registration_owned_by(owner: str):
+    """Attribute registrations performed by one discovery source.
+
+    Direct calls default to user ownership because post-discovery registration is the
+    out-of-tree extension seam. Discovery temporarily marks shipped profiles as bundled.
+    """
+    global _registration_owner
+    previous = _registration_owner
+    _registration_owner = owner
+    try:
+        yield
+    finally:
+        _registration_owner = previous
+
+
+def _provider_name_is_user_owned(name: str) -> bool:
+    """Whether the active canonical name or alias was last claimed by a user plugin."""
+    canonical = _ALIASES.get(name, name)
+    return _REGISTRATION_OWNERS.get(canonical) == "user"
 
 
 def _sync_auth_registry() -> None:
@@ -83,6 +108,7 @@ def register_provider(profile: ProviderProfile) -> None:
     """
     global _PROVIDER_LIST_CACHE
     _REGISTRY[profile.name] = profile
+    _REGISTRATION_OWNERS[profile.name] = _registration_owner
     for alias in profile.aliases:
         _ALIASES[alias] = profile.name
     _PROVIDER_LIST_CACHE = None
@@ -244,7 +270,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
             return
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)
+        with _registration_owned_by(source):
+            spec.loader.exec_module(module)
     except Exception as exc:
         logger.warning(
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
@@ -321,7 +348,8 @@ def _discover_entry_point_providers() -> None:
             )
             continue
         try:
-            loaded = ep.load()
+            with _registration_owned_by("user"):
+                loaded = ep.load()
         except Exception as exc:
             logger.warning(
                 "Failed to load entry-point provider plugin %r: %s", ep.name, exc
@@ -341,7 +369,8 @@ def _discover_entry_point_providers() -> None:
                 )
                 continue
             try:
-                loaded()
+                with _registration_owned_by("user"):
+                    loaded()
             except Exception as exc:
                 logger.warning(
                     "Entry-point provider plugin %r raised on invocation: %s",
@@ -467,7 +496,8 @@ def _run_discovery_steps() -> None:
             if modname.startswith("_") or modname == "base":
                 continue
             try:
-                importlib.import_module(f"providers.{modname}")
+                with _registration_owned_by("bundled"):
+                    importlib.import_module(f"providers.{modname}")
             except ImportError as exc:
                 logger.warning(
                     "Failed to import legacy provider module %s: %s", modname, exc

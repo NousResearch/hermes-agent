@@ -125,6 +125,8 @@ def _isolated_registries():
     """Snapshot both registries; restore on teardown so nothing leaks."""
     saved_registry = dict(providers._REGISTRY)
     saved_aliases = dict(providers._ALIASES)
+    saved_registration_owners = dict(providers._REGISTRATION_OWNERS)
+    saved_registration_owner = providers._registration_owner
     saved_discovered = providers._discovered
     saved_auth_keys = set(auth_mod.PROVIDER_REGISTRY)
     saved_plugin_modules = {
@@ -132,6 +134,7 @@ def _isolated_registries():
     }
     providers._REGISTRY.clear()
     providers._ALIASES.clear()
+    providers._REGISTRATION_OWNERS.clear()
     providers._PROVIDER_LIST_CACHE = None
     providers._discovered = False
     providers._discovering = False
@@ -149,6 +152,9 @@ def _isolated_registries():
     providers._REGISTRY.update(saved_registry)
     providers._ALIASES.clear()
     providers._ALIASES.update(saved_aliases)
+    providers._REGISTRATION_OWNERS.clear()
+    providers._REGISTRATION_OWNERS.update(saved_registration_owners)
+    providers._registration_owner = saved_registration_owner
     providers._PROVIDER_LIST_CACHE = None
     providers._discovered = saved_discovered
     providers._discovering = False
@@ -172,4 +178,50 @@ def test_post_discovery_registration_is_mirrored(_isolated_registries, monkeypat
         )
     )
     assert LATE in auth_mod.PROVIDER_REGISTRY
+    assert auth_mod.PROVIDER_REGISTRY[LATE_ALIAS] is auth_mod.PROVIDER_REGISTRY[LATE]
+
+
+def test_user_profile_replaces_same_name_auth_owner(_isolated_registries, monkeypatch, tmp_path):
+    """A user replacement owns both profile-driven auth and the mirrored registry row."""
+    from hermes_cli.auth import ProviderConfig
+    from hermes_cli.auth_plugin_providers import dispatch_plugin_auth
+
+    monkeypatch.setattr(providers, "_discover_entry_point_providers", lambda: None)
+    monkeypatch.setattr(providers, "_BUNDLED_PLUGINS_DIR", tmp_path)
+    monkeypatch.setattr(providers, "_user_plugins_dir", lambda: None)
+    monkeypatch.setattr(providers, "_installed_plugins_dir", lambda: None)
+    providers._discover_providers()
+    auth_mod.PROVIDER_REGISTRY[LATE] = ProviderConfig(LATE, "Core", "api_key")
+    handled = []
+
+    providers.register_provider(ProviderProfile(
+        name=LATE, display_name="Replacement", auth_type="oauth_external",
+        base_url="https://replacement.example/v1",
+        auth_handler=lambda action, args: handled.append(action) or True,
+    ))
+
+    assert dispatch_plugin_auth("status", object(), LATE) is True
+    assert handled == ["status"]
+    mirrored = auth_mod.PROVIDER_REGISTRY[LATE]
+    assert (mirrored.name, mirrored.auth_type, mirrored.inference_base_url) == (
+        "Replacement", "oauth_external", "https://replacement.example/v1")
+
+
+def test_user_profile_replaces_existing_auth_alias_owner(_isolated_registries, monkeypatch, tmp_path):
+    """An alias claimed by a user profile replaces the stale core alias row."""
+    from hermes_cli.auth import ProviderConfig
+
+    monkeypatch.setattr(providers, "_discover_entry_point_providers", lambda: None)
+    monkeypatch.setattr(providers, "_BUNDLED_PLUGINS_DIR", tmp_path)
+    monkeypatch.setattr(providers, "_user_plugins_dir", lambda: None)
+    monkeypatch.setattr(providers, "_installed_plugins_dir", lambda: None)
+    providers._discover_providers()
+    auth_mod.PROVIDER_REGISTRY[LATE_ALIAS] = ProviderConfig("core-owner", "Core", "api_key")
+
+    providers.register_provider(ProviderProfile(
+        name=LATE, display_name="Replacement", auth_type="oauth_external",
+        base_url="https://replacement.example/v1", aliases=(LATE_ALIAS,),
+    ))
+
+    assert providers.get_provider_profile(LATE_ALIAS) is providers.get_provider_profile(LATE)
     assert auth_mod.PROVIDER_REGISTRY[LATE_ALIAS] is auth_mod.PROVIDER_REGISTRY[LATE]

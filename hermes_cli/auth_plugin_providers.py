@@ -58,31 +58,35 @@ def register_plugin_provider(pp: Any) -> None:
     PROVIDER_REGISTRY[pp.name] = pconfig
     PLUGIN_MIRRORED_PROVIDERS.add(pp.name)
     for alias in pp.aliases:  # so resolve_provider() resolves them too
-        PROVIDER_REGISTRY.setdefault(alias, pconfig)
+        from providers import _provider_name_is_user_owned
+        if alias not in PROVIDER_REGISTRY or _provider_name_is_user_owned(alias):
+            PROVIDER_REGISTRY[alias] = pconfig
 
 
 def sync_plugin_provider_registry() -> int:
     """Mirror provider-plugin profiles into ``PROVIDER_REGISTRY``; return how many were added.
 
-    Idempotent (existing entries are never replaced), so it is safe from resolution paths. It runs at
-    auth import and again whenever a name is missing (:func:`registry_lookup`) or when ``providers``
-    finishes discovery, because the import-time pass can observe a *partial* profile list: a plugin
-    whose own imports pull ``hermes_cli.auth`` in mid-``_discover_providers()`` sees only what was
-    registered so far, and every later plugin would otherwise fail with "Unknown provider" (#102123).
+    Idempotent for bundled profiles, while user-owned names and aliases replace the auth row just as
+    they replace the active ``ProviderProfile``. It runs at auth import and again whenever a name is
+    missing (:func:`registry_lookup`) or when ``providers`` finishes discovery, because the import-time
+    pass can observe a *partial* profile list: a plugin whose own imports pull ``hermes_cli.auth`` in
+    mid-``_discover_providers()`` sees only what was registered so far, and every later plugin would
+    otherwise fail with "Unknown provider" (#102123).
     """
     from hermes_cli.auth import PROVIDER_REGISTRY
 
     try:
-        from providers import list_providers
+        from providers import _provider_name_is_user_owned, list_providers
         profiles = list_providers()
     except Exception:
         return 0
     added = 0
     for pp in profiles:
-        if pp.name in PROVIDER_REGISTRY:
+        if pp.name in PROVIDER_REGISTRY and not _provider_name_is_user_owned(pp.name):
             continue
+        was_present = pp.name in PROVIDER_REGISTRY
         register_plugin_provider(pp)
-        added += pp.name in PROVIDER_REGISTRY
+        added += not was_present and pp.name in PROVIDER_REGISTRY
     return added
 
 

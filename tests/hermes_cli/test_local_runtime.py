@@ -959,6 +959,71 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
     assert result is None  # no exception escaped
 
 
+def test_ensure_local_runtime_serializes_racing_callers(tmp_path, monkeypatch):
+    """Cross-process boot race (#116682): two backends starting in the same second must not
+    both spawn a router on the stable port. Neither caller here ever sees the other's
+    in-process ``_SUPERVISOR`` (each opens its own fd for the boot lock, exactly like two
+    separate OS processes would) — only the cross-process file lock can serialize them."""
+    import time as _time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap
+    from hermes_cli.local_runtime import supervisor as sup_mod
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    mdir = bootstrap.models_dir()
+    mdir.mkdir(parents=True, exist_ok=True)
+    (mdir / "stub-Q4_K_M.gguf").touch()
+
+    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *a, **k: None)
+    monkeypatch.setattr(bootstrap, "_presets_stale", lambda: False)
+    monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b1"])
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.default_tag", lambda: "b1")
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+                        lambda tag, backend: tmp_path / "install")
+
+    spawns = []
+
+    class _FakeSupervisor:
+        def __init__(self, *a, **k):
+            self.port = 18434
+            self.api_key = "k"
+            self.proc = None
+
+        @property
+        def base_url(self):
+            return f"http://127.0.0.1:{self.port}/v1"
+
+        def start(self, timeout_s=120):
+            spawns.append(1)
+            _time.sleep(0.3)  # widen the window the other caller races into
+            path = sup_mod.state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "base_url": self.base_url, "api_key": self.api_key, "pid": os.getpid(),
+            }), encoding="utf-8")
+
+    monkeypatch.setattr(sup_mod, "LlamaServerSupervisor", _FakeSupervisor)
+
+    barrier = threading.Barrier(2)
+    results = []
+
+    def _boot():
+        barrier.wait()
+        results.append(bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}}))
+
+    threads = [threading.Thread(target=_boot) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(spawns) == 1, (
+        "both racing callers spawned a router instead of the second adopting the "
+        "first's published state (#116682)")
+
+
 def test_manifest_verified_tolerates_non_dict_manifest(tmp_path):
     """A parseable-but-non-object manifest used to raise AttributeError out of
     manifest_verified (the .get ran inside a try that only caught decode/OSError),

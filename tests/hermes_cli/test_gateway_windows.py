@@ -17,9 +17,24 @@ _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 
-def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
-    """A broken/empty locale must not leave us without a decoder (issue #38172)."""
+def test_schtasks_encoding_prefers_the_console_codepage(monkeypatch):
+    """The console's OEM code page wins over ``locale`` — under UTF-8 mode (``PYTHONUTF8=1``)
+    ``locale.getpreferredencoding()`` reports ``utf-8`` while ``schtasks.exe`` still writes OEM
+    bytes, so a locale-based decoder turns localized output into mojibake and the localized
+    fallback patterns never match."""
 
+    monkeypatch.setattr(gateway_windows, "_console_codepage", lambda: 936)
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
+    assert gateway_windows._schtasks_encoding() == "cp936"
+
+
+def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
+    """A broken/empty locale must not leave us without a decoder (issue #38172).
+
+    Console code page unavailable (off-Windows / ctypes failure) is the only path that reaches
+    the locale fallback now, so pin it explicitly."""
+
+    monkeypatch.setattr(gateway_windows, "_console_codepage", lambda: None)
     monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "")
     assert gateway_windows._schtasks_encoding() == "utf-8"
 

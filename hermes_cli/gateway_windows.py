@@ -56,10 +56,30 @@ _TASK_RESTART_COUNT = 999
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
 
+def _console_codepage() -> int | None:
+    """The console/OEM code page Windows hands to ``schtasks.exe`` output, or ``None`` off-Windows."""
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetOEMCP())
+    except Exception:
+        return None
+
+
 def _schtasks_encoding() -> str:
-    """Console encoding for ``schtasks.exe`` output: localized Windows emits the OEM/ANSI code page,
-    not UTF-8, and decoding with the wrong codec raised UnicodeDecodeError in subprocess' reader
-    threads. Prefer the locale's preferred encoding, fall back to UTF-8."""
+    """Console encoding for ``schtasks.exe`` output: localized Windows emits OEM bytes, not UTF-8.
+
+    ``locale.getpreferredencoding()`` is **not** usable here: under UTF-8 mode
+    (``PYTHONUTF8=1`` / ``-X utf8`` — common on Windows Hermes installs) it returns
+    ``"utf-8"`` while ``schtasks.exe`` still writes the OEM code page. The output then decodes to
+    mojibake (no crash, thanks to ``errors="replace"``) and the localized
+    ``_FALLBACK_PATTERNS`` — "access is denied" in Spanish/Czech/... — can never match, so the
+    Startup-folder fallback silently degrades. Ask Windows for the real console code page instead,
+    and only fall back to the locale when that is unavailable.
+    """
+    codepage = _console_codepage()
+    if codepage:
+        return f"cp{codepage}"
     try:
         return locale.getpreferredencoding(False) or "utf-8"
     except Exception:

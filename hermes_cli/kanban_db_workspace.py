@@ -8,10 +8,8 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import subprocess
-import time
 import unicodedata
 from pathlib import Path
 from typing import Optional
@@ -139,6 +137,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             return
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
+        from hermes_cli.kanban_survivor import remove_workspace_dir
         if kind not in _REMOVABLE_KINDS or not path:
             # Not removable itself, but completing may still unblock a deferred
             # parent scratch cleanup (e.g. a 'dir' child of a scratch parent).
@@ -158,7 +157,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         # lingering worker never has its cwd deleted from under it.
         if kind == "worktree":
             _cleanup_worker_tmux(conn, task_id)
-            _cleanup_worktree_workspace(task_id, path, row["branch_name"])
+            _cleanup_worktree_workspace(task_id, path, row["branch_name"], conn=conn)
             _try_cleanup_parent_workspaces(conn, task_id)
             return
         wp = Path(path)
@@ -169,8 +168,8 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             # See #28818.
             if _is_managed_scratch_path(wp):
                 release_lsp_clients(str(wp))
-                shutil.rmtree(wp, ignore_errors=True)
-                _kb._log.debug("Removed scratch workspace: %s", wp)
+                if remove_workspace_dir(conn, task_id, wp):
+                    _kb._log.debug("Removed scratch workspace: %s", wp)
             else:
                 _kb._log.warning(
                     "Refusing to remove out-of-scratch workspace for task %s: %s "
@@ -189,7 +188,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
 
 
 def _cleanup_worktree_workspace(
-    task_id: str, path: str, branch_name: Optional[str] = None
+    task_id: str, path: str, branch_name: Optional[str] = None, *, conn=None
 ) -> None:
     """Remove a finished task's linked git worktree when it holds no work.
     Mirrors the CLI startup pruner (``cli._prune_stale_worktrees``): removal
@@ -241,17 +240,8 @@ def _cleanup_worktree_workspace(
         # No --force: git's own dirty guard re-verifies at removal time, so if
         # the tree became dirty since our check (TOCTOU) removal fails safe.
         release_lsp_clients(str(worktree_path))
-        result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
-        if result.returncode != 0:
-            # Windows can retain a directory handle briefly after cwd changes.
-            # Retry once without --force; Git still enforces its dirty guard.
-            time.sleep(0.1)
-            result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
-        if result.returncode != 0:
-            _kb._log.warning(
-                "git worktree remove failed for task %s at %s: %s",
-                task_id, wp, (result.stderr or result.stdout or "").strip(),
-            )
+        from hermes_cli.kanban_survivor import remove_workspace_dir
+        if not remove_workspace_dir(conn, task_id, wp, worktree_root=repo_root):
             return
         _kb._log.debug("Removed worktree workspace: %s", wp)
         branch = (branch_name or "").strip() or f"wt/{task_id}"
@@ -282,14 +272,15 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 or _has_active_children(conn, parent_id)
             ):
                 continue
+            from hermes_cli.kanban_survivor import remove_workspace_dir
             if row["workspace_kind"] == "worktree":
-                _cleanup_worktree_workspace(parent_id, row["workspace_path"], row["branch_name"])
+                _cleanup_worktree_workspace(parent_id, row["workspace_path"], row["branch_name"], conn=conn)
                 continue
             wp = Path(row["workspace_path"])
             if wp.is_dir() and _is_managed_scratch_path(wp):
                 release_lsp_clients(str(wp))
-                shutil.rmtree(wp, ignore_errors=True)
-                _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
+                if remove_workspace_dir(conn, parent_id, wp):
+                    _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
     except Exception:
         pass  # best-effort
 
@@ -584,6 +575,8 @@ def _set_task_column(conn: sqlite3.Connection, task_id: str, column: str, value:
 
 def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str) -> None:
     _set_task_column(conn, task_id, "workspace_path", str(path))
+    from hermes_cli.kanban_survivor import record_baseline
+    record_baseline(conn, task_id, path)
 
 
 def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) -> None:

@@ -126,6 +126,46 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), reaps workers that outlived their finished run (a worker still alive after its own `kanban_complete`/`kanban_block` is terminated once its run has been closed for two minutes, leaving it time to finish its final turn — matched by PID *and* spawn-time fingerprint, so a recycled PID is never signalled; recorded as a `terminal_worker_reaped` event), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
+### Code survivors on completion
+
+Pushing a reviewed branch is preferred. Completion also accepts a harness-written
+`implementation.patch` attachment: it contains the binary Git diff from a published
+ancestor to the current files, including non-ignored untracked files. An unpublished
+dispatch baseline is not a recoverable base. If no published ancestor survives,
+the harness saves a self-contained Git bundle containing the HEAD history plus a
+snapshot commit of the current files. The real Git index and branch are not changed.
+A clean HEAD is accepted as a ref survivor only after querying a durable remote
+branch that contains it. Local origins inside workspace or temporary directories
+(including symlinks and URL aliases), stale tracking refs, and dirty trees do not qualify.
+
+The completion result and event record the survivor. Attachment-only completion says
+`NOT PUSHED`; the `implementation.json` sidecar records repository paths, published
+`base_sha` values, artifact paths, SHA-256 digests, and byte counts. Clone each durable
+remote and check out its recorded base before applying the patch from the workspace
+root with `git apply /path/to/implementation.patch`. For a bundle, clone the listed
+bundle into its repository path instead (`git clone /path/to/implementation-0.bundle repo`).
+Mixed workspaces can require both bundles and a patch; follow the sidecar's repository
+mapping. Repeated capture of unchanged content reuses attachments; changed captures
+preserve earlier versions under distinct names.
+
+If code cannot be captured (missing repository, failed Git/read/write, attachment
+size limit, or an empty patch despite `metadata.changed_files`), completion refuses
+with `survivor_unavailable` and records a durable `workspace_held` event. Cleanup skips
+held workspaces until an explicit successful completion/capture clears the hold.
+All workspace directory removal goes through one path-bound capture-and-delete
+function, including archive GC's legacy fallback when no workspace path is stored.
+Missing targets and capture failures refuse deletion and log a HELD event.
+Board hard-delete refuses boards with retained workspaces or attachments; archive
+those boards instead so their recovery data remains available.
+Nested repositories inside another repository require separate recovery and are held
+rather than emitting a misleading gitlink patch. Sibling repositories in scratch
+are supported. Repositories created after dispatch use a reachable remote ancestor
+as their base, or a complete initial-tree patch when none is available.
+
+Completion cleanup, deferred-parent cleanup, and archive GC all use the same capture
+guard before removing a workspace. This does not turn arbitrary non-Git scratch files
+into deliverables: continue declaring those in `artifacts`.
+
 ## Boards (multi-project)
 
 Boards let you separate unrelated streams of work — one per project, repo,
@@ -173,7 +213,7 @@ hermes kanban boards rename atm10-server "ATM10 (Prod)"
 # Recoverable by moving the dir back.
 hermes kanban boards rm atm10-server
 
-# Hard delete — `rm -rf` the board dir. No recovery.
+# Hard delete — only without retained workspaces or attachments. No recovery.
 hermes kanban boards rm atm10-server --delete
 ```
 

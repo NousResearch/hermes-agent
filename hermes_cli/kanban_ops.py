@@ -304,7 +304,6 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
-    import shutil
     scratch_root = kb.workspaces_root()
     removed_ws = 0
     with kbc.connect_closing() as conn:
@@ -313,12 +312,14 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             "WHERE status = 'archived'"
         ).fetchall()
     for row in rows:
+        from hermes_cli.kanban_survivor import remove_workspace_dir
         if row["workspace_kind"] == "worktree":
             # Backstop for worktrees that escaped the completion/archive hook.
             # Same safety predicate: only clean, fully-pushed worktrees go.
             wt_path = row["workspace_path"]
             if wt_path and Path(wt_path).is_dir():
-                kbw._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"])
+                with kbc.connect_closing() as conn:
+                    kbw._cleanup_worktree_workspace(row["id"], wt_path, row["branch_name"], conn=conn)
                 if not Path(wt_path).is_dir():
                     removed_ws += 1
             continue
@@ -335,8 +336,9 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             # Safety: never delete outside the scratch root.
             continue
         if path.exists() and path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-            removed_ws += 1
+            with kbc.connect_closing() as conn:
+                if remove_workspace_dir(conn, row["id"], path):
+                    removed_ws += 1
 
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)

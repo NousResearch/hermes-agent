@@ -678,8 +678,8 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
             suffix += 1
         d.rename(target)
         return {"slug": normed, "action": "archived", "new_path": str(target)}
-    import shutil
-    shutil.rmtree(d)
+    from hermes_cli.kanban_survivor import remove_workspace_dir
+    remove_workspace_dir(None, None, d, board=True)
     return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
@@ -1031,6 +1031,13 @@ CREATE TABLE IF NOT EXISTS task_runs (
 -- dashboard can list/download and ``build_worker_context`` can surface
 -- the absolute path to the worker (which has full file-tool access). See
 -- #35338.
+CREATE TABLE IF NOT EXISTS task_workspace_survivors (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    bases TEXT NOT NULL DEFAULT '{}',
+    held_reason TEXT,
+    survivor TEXT
+);
+
 CREATE TABLE IF NOT EXISTS task_attachments (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id      TEXT NOT NULL,
@@ -2733,6 +2740,31 @@ def complete_task(
         return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
+    trow = conn.execute(
+        "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if expected_run_id is None and not force and trow and _claim_is_live(trow):
+        raise LiveClaimError(task_id)
+    # Reject stale workers before doing filesystem work or recording a hold.
+    candidate = get_task(conn, task_id)
+    if candidate is None or candidate.status not in ('running', 'ready', 'blocked', 'review'):
+        return False
+    if expected_run_id is not None and candidate.current_run_id != expected_run_id:
+        return False
+    from hermes_cli.kanban_survivor import preserve
+    survivor = preserve(conn, task_id, metadata)
+    if survivor:
+        metadata = dict(metadata or {}, survivor=survivor)
+        survivor_note = (
+            f"survivor=patch {survivor['path']} {survivor['sha256']} {survivor['bytes']} NOT PUSHED"
+            if survivor['kind'] == 'patch' else
+            f"survivor=bundle {survivor['sidecar']} NOT PUSHED"
+            if survivor['kind'] == 'bundle' else "survivor=ref " + " ".join(
+                f"{ref['remote']}/{ref['branch']}@{ref['sha']}" for ref in survivor["refs"]
+            )
+        )
+        result = '\n'.join(filter(None, [result, survivor_note]))
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
@@ -2882,6 +2914,8 @@ def _completed_event_payload(
     if verified_cards:
         payload["verified_cards"] = verified_cards
     if isinstance(metadata, dict):
+        if metadata.get("survivor"):
+            payload["survivor"] = metadata["survivor"]
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
             payload["artifacts"] = cleaned

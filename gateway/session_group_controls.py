@@ -103,6 +103,7 @@ def _group(authority, actor, home, method, params, *, state_owner=None):
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
+    disband_service = service
     room_authorizer = getattr(service, 'authorize_room', None)
     if service is not None:
         if Path(service.db_path).resolve() != Path(db_path).resolve():
@@ -178,7 +179,10 @@ def _group(authority, actor, home, method, params, *, state_owner=None):
 
     def disband():
         from gateway.session_group_disband import disband as canonical_disband
-        return canonical_disband(authority, actor, service, params, state_owner)
+        # Disband distinguishes a genuinely metadata-only connection from an
+        # installed pinned runtime which has stopped. General read/create
+        # downgrade behavior remains unchanged.
+        return canonical_disband(authority, actor, disband_service, params, state_owner)
 
     def state():
         room = rooms.room_state(db_path, **params)

@@ -1045,11 +1045,33 @@ def _sweep(entries, result: Dict[str, int], delete) -> None:
             delete(item, reason)
 
 
+def _rmtree_make_writable(func, path, exc_info) -> None:
+    """Retry a failed tree removal after clearing Windows read-only attributes."""
+    exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    if not isinstance(exc, PermissionError):
+        raise exc
+    for target in (path, os.path.dirname(path)):
+        if target:
+            try:
+                os.chmod(target, os.stat(target).st_mode | stat_mod.S_IWUSR)
+            except OSError:
+                pass
+    func(path)
+
+
+def _rmtree(path: Path) -> None:
+    """Remove a checkpoint tree, including Git's read-only object files on Windows."""
+    try:
+        shutil.rmtree(path, onexc=_rmtree_make_writable)
+    except TypeError:  # Python 3.11 uses the legacy ``onerror`` callback name.
+        shutil.rmtree(path, onerror=_rmtree_make_writable)
+
+
 def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str, label) -> None:
     """rmtree ``child``, crediting bytes + ``result[key]``; failures count as ``errors`` when tracked."""
     try:
         size = _dir_size_bytes(child)
-        shutil.rmtree(child)
+        _rmtree(child)
         result["bytes_freed"] += size
         result[key] += 1
     except OSError as exc:
@@ -1266,7 +1288,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        _rmtree(base)
         out.update(bytes_freed=size, deleted=True)
     except OSError as exc:
         logger.warning("Could not clear checkpoint base %s: %s", base, exc)

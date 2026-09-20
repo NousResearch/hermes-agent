@@ -630,8 +630,10 @@ async def converse_ws(ws: "WebSocket") -> None:
 
     def _resolve():
         import numpy as np
+        from hermes_cli.config import load_config
         from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
-        from tools.voice_converse_loop import resample_synth, resolve_converse_synthesizer
+        from tools.voice_converse_loop import (
+            parse_smart_turn_config, resample_synth, resolve_converse_synthesizer)
         from hermes_cli.web_routers._converse_loop import ConverseSession, create_voice_session
 
         stt_model = _converse_stt_model(profile)
@@ -641,8 +643,10 @@ async def converse_ws(ws: "WebSocket") -> None:
             # fallback) — works with any provider, incl. edge — wrapped to emit at output_rate.
             synth = resample_synth(resolve_converse_synthesizer(cfg), output_rate)
             cap = _resolve_max_text_length(_get_provider(cfg), cfg)
+            endpoint_model, endpoint_threshold = parse_smart_turn_config(load_config())
         session = ConverseSession(
-            np, stt_model=stt_model, input_rate=input_rate, quiet_interval=quiet_interval)
+            np, stt_model=stt_model, input_rate=input_rate, quiet_interval=quiet_interval,
+            endpoint_model=endpoint_model, endpoint_threshold=endpoint_threshold)
         sid = create_voice_session()
         return synth, cap, session, sid
 

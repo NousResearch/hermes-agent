@@ -124,6 +124,102 @@ def test_capture_until_quiet_produces_wav_from_shim(tmp_path):
     vm._unlink_quietly(wav_path)
 
 
+# ── Smart Turn v3 adaptive endpoint ──
+
+from tools.voice_converse_loop import parse_smart_turn_config  # noqa: E402
+
+
+class _ScriptedDetector:
+    """Stand-in for SmartTurnDetector: returns a scripted P(complete) per call."""
+
+    def __init__(self, probs):
+        self._probs = list(probs)
+        self.threshold = 0.5
+        self.calls = 0
+        self.last_len = 0
+
+    def turn_complete_probability(self, audio_f32):
+        self.last_len = int(np.asarray(audio_f32).size)
+        p = self._probs[min(self.calls, len(self._probs) - 1)]
+        self.calls += 1
+        return float(p)
+
+
+def _adaptive_session(detector, *, endpoint_blocks=2, max_blocks=60):
+    session = ConverseSession(np)  # endpoint_model defaults off -> no real model load
+    session._turn_detector = detector
+    session._endpoint_threshold = detector.threshold
+    session._endpoint_blocks = endpoint_blocks
+    session._max_blocks = max_blocks
+    return session
+
+
+def _feed_silence(session, blocks):
+    silence = np.zeros(session._block, dtype=np.int16).tobytes()
+    for _ in range(blocks):
+        session.stream.feed(silence)
+
+
+def test_parse_smart_turn_config_defaults_off():
+    assert parse_smart_turn_config({}) == (False, 0.5)
+    assert parse_smart_turn_config({"voice": {}}) == (False, 0.5)
+    assert parse_smart_turn_config({"voice": {"endpoint": {"model": "none"}}})[0] is False
+    assert parse_smart_turn_config(None) == (False, 0.5)
+
+
+def test_parse_smart_turn_config_enabled_with_threshold():
+    enabled, thr = parse_smart_turn_config(
+        {"voice": {"endpoint": {"model": "smart-turn-v3", "threshold": 0.7}}})
+    assert enabled is True
+    assert thr == pytest.approx(0.7)
+    # threshold clamps into [0, 1]
+    assert parse_smart_turn_config(
+        {"voice": {"endpoint": {"model": "x", "threshold": 5}}})[1] == 1.0
+
+
+def test_adaptive_commits_immediately_when_turn_sounds_complete():
+    det = _ScriptedDetector([0.95])
+    session = _adaptive_session(det)
+    _feed_silence(session, session._endpoint_blocks + 4)
+    wav_path = session._capture_adaptive(silence_rms=float(vm.SILENCE_RMS_THRESHOLD))
+    assert det.calls == 1  # committed on the first candidate pause
+    with wave.open(wav_path, "rb") as wf:
+        assert wf.getnframes() > 0
+    vm._unlink_quietly(wav_path)
+
+
+def test_adaptive_holds_then_commits_capturing_more_audio():
+    # Two "not done yet" verdicts, then complete: the mic stays open across the holds.
+    det = _ScriptedDetector([0.1, 0.2, 0.9])
+    session = _adaptive_session(det)
+    _feed_silence(session, session._endpoint_blocks * 4 + 4)
+    wav_path = session._capture_adaptive(silence_rms=float(vm.SILENCE_RMS_THRESHOLD))
+    assert det.calls == 3  # held twice, committed on the third check
+    vm._unlink_quietly(wav_path)
+
+
+def test_adaptive_gives_up_after_max_holds():
+    # Model never says complete; the hold budget bounds the wait (no run to _max_blocks).
+    det = _ScriptedDetector([0.0])
+    session = _adaptive_session(det, max_blocks=500)
+    _feed_silence(session, session._endpoint_blocks * 6 + 4)
+    wav_path = session._capture_adaptive(silence_rms=float(vm.SILENCE_RMS_THRESHOLD))
+    from tools.voice_converse_loop import _MAX_ENDPOINT_HOLDS
+
+    assert det.calls == _MAX_ENDPOINT_HOLDS  # committed once the budget was spent
+    vm._unlink_quietly(wav_path)
+
+
+def test_frames_to_f32_resamples_non_16k_capture():
+    session = ConverseSession(np, input_rate=48000)
+    frames = [np.full(session._block, 4000, dtype=np.int16) for _ in range(10)]
+    out = session._frames_to_f32_16k(frames)
+    total = session._block * 10
+    assert out.dtype == np.float32
+    assert abs(out.size - round(total * 16000 / 48000)) <= 1
+    assert float(np.max(np.abs(out))) <= 1.0
+
+
 # ── ConverseSession barge-in / playing flag ──
 
 def test_converse_session_barge_in_sets_interrupt_and_stops_tts():

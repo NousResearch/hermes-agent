@@ -69,6 +69,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "fal",
         "edge-tts", "tts-premium",
         "voice",  # faster-whisper / sounddevice / numpy
+        "voice-endpoint",  # onnxruntime / transformers — Smart Turn v3 endpointer
         "modal", "daytona", "vercel",
         "messaging", "slack", "matrix", "dingtalk", "feishu", "google-chat",
         "honcho", "hindsight",

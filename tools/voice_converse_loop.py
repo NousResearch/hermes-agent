@@ -74,6 +74,17 @@ _ENDPOINT_SILENCE_MS = 700
 # pathological case so "listening" can never run to half a minute.
 _MAX_UTTERANCE_MS = 12_000
 
+# ── Smart Turn v3 adaptive endpoint (opt-in) ──
+# When the semantic endpointer is enabled, the fixed silence window above is only a CANDIDATE
+# pause: on reaching it we ask Smart Turn whether the utterance *sounds* finished. If it says
+# "not yet" (P < threshold — the user trailed off mid-thought), we keep listening for another
+# window instead of committing. To bound the wait when the user genuinely stopped mid-phrase,
+# cap the number of consecutive "hold" verdicts; after that we commit anyway. A "hold" costs one
+# window (~700 ms), so the worst-case added tail is _MAX_ENDPOINT_HOLDS * _ENDPOINT_SILENCE_MS —
+# far tighter than running to _MAX_UTTERANCE_MS. Real speech resuming resets the budget.
+_MAX_ENDPOINT_HOLDS = 3
+_SMART_TURN_DEFAULT_THRESHOLD = 0.5
+
 
 class _NetworkMicStream:
     """A ``sounddevice.InputStream``-shaped shim over a queue of inbound PCM.
@@ -191,7 +202,8 @@ class ConverseSession:
     def __init__(
         self, np: Any, *, stt_model: Optional[str] = None,
         barge_multiplier: Optional[float] = None, input_rate: int = 16000,
-        quiet_interval: float = 0.0,
+        quiet_interval: float = 0.0, endpoint_model: bool = False,
+        endpoint_threshold: float = _SMART_TURN_DEFAULT_THRESHOLD,
     ) -> None:
         from tools import voice_mode as _vm
 
@@ -247,6 +259,20 @@ class ConverseSession:
         self._pre_roll: deque = deque(maxlen=max(1, _PRE_ROLL_MS // 30))
         self._endpoint_blocks = max(1, _ENDPOINT_SILENCE_MS // 30)
         self._max_blocks = max(1, _MAX_UTTERANCE_MS // 30)
+        # Optional Smart Turn v3 semantic endpointer. Loaded here (once, module-cached) only when
+        # enabled, so nothing touches onnxruntime/transformers unless the config opts in; if the
+        # deps or weights are missing, load returns None and capture falls back to the fixed timer.
+        self._endpoint_threshold = float(endpoint_threshold)
+        self._turn_detector: Any = None
+        if endpoint_model:
+            try:
+                from tools.turn_detector import load_turn_detector
+
+                self._turn_detector = load_turn_detector(self._endpoint_threshold)
+            except Exception:  # noqa: BLE001 - never let endpointer setup break a connection
+                _log.warning("smart-turn endpointer failed to load; using fixed endpoint",
+                             exc_info=True)
+                self._turn_detector = None
         self._worker: Optional[threading.Thread] = None
         # Called with the trip phase name ("generation"/"playback") on every trip.
         self.on_trip: Optional[Callable[[str], None]] = None
@@ -384,12 +410,15 @@ class ConverseSession:
         # max(). The short endpoint window (_ENDPOINT_SILENCE_MS) keeps the "listening" tail snappy.
         silence_rms = max(float(vm.SILENCE_RMS_THRESHOLD),
                           self._detector.quiet_floor * _CONVERSE_ENDPOINT_FLOOR_MULT)
-        wav_path = vm._capture_until_quiet(
-            self.stream, np, self._block, self._pre_roll,
-            endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
-            sample_rate=self._input_rate, silence_rms=silence_rms,
-        )
-        # _capture_until_quiet drained the pre-roll into the WAV; start fresh.
+        if self._turn_detector is not None:
+            wav_path = self._capture_adaptive(silence_rms)
+        else:
+            wav_path = vm._capture_until_quiet(
+                self.stream, np, self._block, self._pre_roll,
+                endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
+                sample_rate=self._input_rate, silence_rms=silence_rms,
+            )
+        # capture drained the pre-roll into the WAV; start fresh.
         self._pre_roll.clear()
         result = vm.transcribe_recording(wav_path, model=self._stt_model)
         vm._unlink_quietly(wav_path)
@@ -397,6 +426,67 @@ class ConverseSession:
             _log.debug("converse transcription failed: %s", result.get("error"))
             return ""
         return str(result.get("transcript") or "").strip()
+
+    def _capture_adaptive(self, silence_rms: float) -> str:
+        """Semantic endpoint: mirror the fixed-silence capture, but on reaching a candidate pause
+        ask Smart Turn whether the utterance *sounds* finished. If it doesn't (the user trailed off
+        mid-thought), keep listening for another window instead of committing — bounded by
+        ``_MAX_ENDPOINT_HOLDS`` consecutive holds and the ``_max_blocks`` hard cap. Returns a WAV
+        path, exactly like :func:`~tools.voice_mode._capture_until_quiet`."""
+        vm, np = self._vm, self._np
+        frames = list(self._pre_roll)
+        quiet = 0
+        holds = 0
+        for _ in range(self._max_blocks):
+            data, _ = self.stream.read(self._block)
+            if self._stop.is_set():
+                break
+            frames.append(data.copy())
+            if vm._rms(np, data) < silence_rms:
+                quiet += 1
+            else:
+                quiet = 0
+                holds = 0  # the user resumed talking — restore the full patience budget
+            if quiet < self._endpoint_blocks:
+                continue
+            # Candidate pause reached. Consult the semantic endpointer on the utterance so far.
+            try:
+                prob = self._turn_detector.turn_complete_probability(
+                    self._frames_to_f32_16k(frames))
+            except Exception:  # noqa: BLE001 - a model hiccup must not wedge the turn
+                _log.debug("smart-turn inference failed; committing on silence", exc_info=True)
+                break
+            # Route the per-decision trace through the VAD diagnostic hook so it surfaces on
+            # stderr/journal under HERMES_VOICE_DEBUG=1 (the same channel used to tune the VAD),
+            # and stays at debug level otherwise. This is THE signal for tuning the threshold.
+            if prob >= self._endpoint_threshold:
+                vm._vad_log(f"smart-turn: p={prob:.3f} >= {self._endpoint_threshold:.2f} -> commit")
+                break
+            holds += 1
+            if holds >= _MAX_ENDPOINT_HOLDS:
+                vm._vad_log(f"smart-turn: p={prob:.3f} held {holds}x -> commit (budget spent)")
+                break
+            vm._vad_log(f"smart-turn: p={prob:.3f} < {self._endpoint_threshold:.2f} -> hold "
+                        f"(keep listening, {holds}/{_MAX_ENDPOINT_HOLDS})")
+            quiet = 0  # keep the mic open for another window
+        return vm.AudioRecorder._write_wav(
+            np.concatenate(frames, axis=0), sample_rate=self._input_rate)
+
+    def _frames_to_f32_16k(self, frames: list) -> Any:
+        """Concatenate int16 capture blocks into a 16 kHz mono float32 array for Smart Turn.
+        Values are scaled to [-1, 1); a non-16 kHz capture rate is linearly resampled to 16 kHz
+        (the model's fixed rate). Only the model's window is ever consumed, but the whole utterance
+        is passed — :meth:`turn_complete_probability` keeps the trailing 8 s."""
+        np = self._np
+        audio = np.concatenate(frames, axis=0).astype(np.float32) / 32768.0
+        if self._input_rate != 16000 and audio.size:
+            n_out = int(round(audio.size * 16000 / self._input_rate))
+            if n_out > 0:
+                audio = np.interp(
+                    np.linspace(0.0, 1.0, n_out, endpoint=False),
+                    np.linspace(0.0, 1.0, audio.size, endpoint=False), audio,
+                ).astype(np.float32)
+        return audio
 
 
 def split_text_for_tts_stream(text: str, cap: int) -> list:
@@ -540,6 +630,33 @@ def parse_quiet_interval(raw: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return 0.0 if val <= 0 else min(val, _QUIET_INTERVAL_MAX)
+
+
+def parse_smart_turn_config(cfg: Any) -> Tuple[bool, float]:
+    """Read the Smart Turn v3 semantic-endpoint settings from a loaded config dict →
+    ``(enabled, threshold)``. Shape (all optional; the feature is OFF by default)::
+
+        voice:
+          endpoint:
+            model: smart-turn-v3   # any truthy string enables it; false/none disables
+            threshold: 0.5         # P(turn complete) at/above which the turn commits
+
+    Missing/malformed config → ``(False, _SMART_TURN_DEFAULT_THRESHOLD)`` so a box that
+    never opts in keeps the fixed silence endpoint untouched."""
+    threshold = _SMART_TURN_DEFAULT_THRESHOLD
+    try:
+        voice = cfg.get("voice") if isinstance(cfg, dict) else None
+        endpoint = voice.get("endpoint") if isinstance(voice, dict) else None
+        if not isinstance(endpoint, dict):
+            return False, threshold
+        model = endpoint.get("model")
+        enabled = bool(model) and str(model).strip().lower() not in ("", "none", "false", "off")
+        raw_thr = endpoint.get("threshold")
+        if raw_thr is not None:
+            threshold = min(1.0, max(0.0, float(raw_thr)))
+        return enabled, threshold
+    except (AttributeError, TypeError, ValueError):
+        return False, threshold
 
 
 async def drive_converse_turns(

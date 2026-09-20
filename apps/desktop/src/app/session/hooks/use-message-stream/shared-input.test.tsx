@@ -1,9 +1,9 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useSubmitPrompt } from '@/app/session/hooks/use-prompt-actions/submit'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
-import type { GatewayEvent } from '@hermes/shared'
 
 import { renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'

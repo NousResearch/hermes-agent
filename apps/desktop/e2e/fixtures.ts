@@ -29,6 +29,7 @@ import { _electron, type ElectronApplication, type Page } from '@playwright/test
 import { waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke'
 import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { resolveElectronBinary } from './electron-binary'
 import { installErrorBannerGuard } from './test'
@@ -260,52 +261,11 @@ export function findElectron(): string {
   // The dev:electron script in package.json does exactly this: `electron .`
   // after building. We replicate that here.
   //
-<<<<<<< HEAD
   // The desktop package is searched first: npm workspaces only hoist
   // `electron` to the repo root when nothing conflicts, so a workspace-local
   // install is just as ordinary an outcome as a hoisted one. The rules live in
   // ./electron-binary so they can be unit-tested per platform.
   return resolveElectronBinary([DESKTOP_ROOT, REPO_ROOT])
-=======
-  // Platform note: the binary inside electron's dist folder carries a
-  // platform suffix — `electron` on POSIX, `electron.exe` on Windows. The
-  // bare name is only correct on POSIX; on win32 the .exe must be probed
-  // first, or every launch dies with "The system cannot find the path
-  // specified.". `which` is also POSIX-only, and in a Git-Bash host shell it
-  // resolves to node_modules/.bin/electron — a POSIX shell shim that a
-  // Windows-spawned process cannot execute at all.
-  const binName = process.platform === 'win32' ? 'electron.exe' : 'electron'
-  const candidates = [
-    path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', binName),
-    path.join(DESKTOP_ROOT, 'node_modules', 'electron', 'dist', binName),
-  ]
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate
-    }
-  }
-
-  // Fall back to PATH lookup — platform-appropriate.
-  const result = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['electron'], {
-    encoding: 'utf8',
-  })
-
-  const found = result.status === 0 && result.stdout.trim()
-    ? result.stdout.trim().split(/\r?\n/)[0].trim()
-    : ''
-
-  // On Windows, `where electron` may surface a POSIX shell shim (e.g. from a
-  // Git-Bash PATH entry) — those cannot be spawned directly. Accept only a
-  // real executable.
-  if (found && (process.platform !== 'win32' || /\.exe$/.test(found) || /\.cmd$/.test(found))) {
-    return found
-  }
-
-  throw new Error(
-    'Electron binary not found. Run "npm install" from the repo root to install devDependencies.',
-  )
->>>>>>> 02e6f9a4250 (fix(desktop-e2e): platform-aware electron resolution and robust teardown on Windows)
 }
 
 /**
@@ -319,10 +279,12 @@ async function teardownApp(app: ElectronApplication): Promise<void> {
     app.close().catch(() => undefined),
     new Promise((resolve) => setTimeout(resolve, 15_000)),
   ])
+
   // If close() already succeeded, the app is disposed and process() can
   // throw or return undefined — treat "gone" as success.
   try {
     const proc = app.process()
+
     if (proc && proc.exitCode === null && !proc.killed) {
       // Tree-kill: killing only the electron root orphans its spawned
       // backend child, which keeps inherited stdio handles open and stalls
@@ -611,6 +573,48 @@ export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFi
   const { page, app } = fixture
 
   await waitForChatReady(page, timeoutMs)
+  // Wait for the composer to exist in the DOM (not necessarily interactive yet).
+  await page.waitForSelector('textarea, [contenteditable="true"]', {
+    state: 'attached',
+    timeout: timeoutMs,
+  })
+
+  // Now poll until no full-screen overlay covers the viewport center.
+  // elementFromPoint returns the topmost element at a point — if it's part
+  // of a fixed inset-0 overlay (onboarding/connecting/boot-failure), the
+  // app isn't ready yet.
+  await page.waitForFunction(
+    () => {
+      const el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2)
+
+      if (!el) {
+        return false
+      }
+
+      // Walk up to the nearest positioned ancestor — overlays are
+      // `position: fixed; inset: 0`. If the hit element or an ancestor
+      // is a full-viewport fixed overlay, we're still covered.
+      let node: Element | null = el
+
+      while (node) {
+        const cs = window.getComputedStyle(node)
+
+        if (cs.position === 'fixed') {
+          const rect = node.getBoundingClientRect()
+
+          if (rect.left <= 0 && rect.top <= 0 && rect.right >= window.innerWidth && rect.bottom >= window.innerHeight) {
+            return false
+          }
+        }
+
+        node = node.parentElement
+      }
+
+      return true
+    },
+    undefined,
+    { timeout: timeoutMs },
+  )
 
   // On Electron 40.x, ready-to-show may never fire (electron/electron#51972)
   // and the window stays hidden even though the DOM is rendered. The main

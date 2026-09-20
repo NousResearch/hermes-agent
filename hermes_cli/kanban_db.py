@@ -3077,7 +3077,7 @@ def edit_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
-    metadata: Optional[dict] = None,
+    metadata: Optional[dict] = None, board: Optional[str] = None,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
     changed_fields = [
@@ -3146,16 +3146,8 @@ def edit_task(
                 },
                 run_id=run_id,
             )
-    notify_task_updated(conn, task_id, changed_fields)
+    notify_task_updated(conn, task_id, changed_fields, board=board)
     return True
-
-
-def edit_completed_task_result(
-    conn: sqlite3.Connection, task_id: str, *, result: str, summary: Optional[str] = None,
-    metadata: Optional[dict] = None,
-) -> bool:
-    """Backfill the user-visible result for an already completed task."""
-    return edit_task(conn, task_id, result=result, summary=summary, metadata=metadata)
 
 
 def block_task(

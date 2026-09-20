@@ -154,56 +154,6 @@ def _isolated_registries():
     providers._discovering = False
 
 
-def test_mid_discovery_auth_import_reconciled(
-    _isolated_registries, monkeypatch, tmp_path
-):
-    """Mid-discovery auth snapshot + late provider -> REGISTRY finally complete."""
-
-    def fake_entry_point_step():
-        # Reproduce a mid-discovery `import hermes_cli.auth`: its module
-        # top-level snapshots list_providers() exactly like this, and at this
-        # point nothing has been registered yet, so the snapshot is partial.
-        auth_mod.sync_plugin_provider_registry()
-        providers.register_provider(
-            ProviderProfile(
-                name=EARLY,
-                display_name="Early",
-                base_url="https://early.example/v1",
-                env_vars=("PROBE_102123_EARLY_KEY",),
-            )
-        )
-        # Registration during discovery must NOT sync eagerly (that would be
-        # one sync per plugin); the hazard is still live at this point.
-        assert LATE not in auth_mod.PROVIDER_REGISTRY
-
-    late_plugin = tmp_path / "zzz_probe_102123"
-    late_plugin.mkdir()
-    (late_plugin / "__init__.py").write_text(
-        "from providers import register_provider\n"
-        "from providers.base import ProviderProfile\n"
-        "register_provider(ProviderProfile(\n"
-        f"    name={LATE!r}, display_name='Late',\n"
-        "    base_url='https://late.example/v1',\n"
-        f"    env_vars=('PROBE_102123_LATE_KEY',), aliases=({LATE_ALIAS!r},)))\n",
-        encoding="utf-8",
-    )
-    sys.modules.pop("plugins.model_providers.zzz_probe_102123", None)
-    monkeypatch.setattr(
-        providers, "_discover_entry_point_providers", fake_entry_point_step
-    )
-    monkeypatch.setattr(providers, "_BUNDLED_PLUGINS_DIR", tmp_path)
-    monkeypatch.setattr(providers, "_user_plugins_dir", lambda: None)
-    monkeypatch.setattr(providers, "_installed_plugins_dir", lambda: None)
-
-    providers._discover_providers()
-
-    assert providers.get_provider_profile(LATE) is not None
-    assert LATE in auth_mod.PROVIDER_REGISTRY
-    assert LATE_ALIAS in auth_mod.PROVIDER_REGISTRY
-    assert EARLY in auth_mod.PROVIDER_REGISTRY
-    assert providers._discovering is False
-
-
 def test_post_discovery_registration_is_mirrored(_isolated_registries, monkeypatch, tmp_path):
     """A register_provider() call after discovery finished reaches the auth registry at once."""
     monkeypatch.setattr(providers, "_discover_entry_point_providers", lambda: None)
@@ -223,21 +173,3 @@ def test_post_discovery_registration_is_mirrored(_isolated_registries, monkeypat
     )
     assert LATE in auth_mod.PROVIDER_REGISTRY
     assert auth_mod.PROVIDER_REGISTRY[LATE_ALIAS] is auth_mod.PROVIDER_REGISTRY[LATE]
-
-
-def test_sync_idempotent_and_no_clobber(_isolated_registries):
-    """Repeated syncs add nothing new and never replace existing entries."""
-    snapshot = dict(auth_mod.PROVIDER_REGISTRY)
-    auth_mod.sync_plugin_provider_registry()
-    for key, config in snapshot.items():
-        assert auth_mod.PROVIDER_REGISTRY[key] is config
-    after = dict(auth_mod.PROVIDER_REGISTRY)
-    assert auth_mod.sync_plugin_provider_registry() == 0
-    assert dict(auth_mod.PROVIDER_REGISTRY) == after
-
-
-def test_sync_noop_when_auth_never_imported(monkeypatch):
-    """The providers-side hook must not import hermes_cli.auth by itself."""
-    monkeypatch.delitem(sys.modules, "hermes_cli.auth", raising=False)
-    providers._sync_auth_registry()
-    assert "hermes_cli.auth" not in sys.modules

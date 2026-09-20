@@ -18,6 +18,7 @@ import type { RpcEvent } from '@/types/hermes'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleInputRequestEvent } from './input-requests'
+import { isJarvisVoiceGatewayEvent, publishJarvisGatewayEvent } from './jarvis'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleControlEvent } from './session-control'
@@ -237,8 +238,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       for (const handler of HANDLERS) {
         if (handler(ctx)) {
+          publishJarvisGatewayEvent(ctx)
           return
         }
+      }
+
+      if (isJarvisVoiceGatewayEvent(event.type)) {
+        publishJarvisGatewayEvent(ctx)
       }
     },
     // The deps object is rebuilt by the caller each render, but every field it

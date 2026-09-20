@@ -198,6 +198,10 @@ class GitHubSource(SkillSource):
         # + governance card; `trusted` via tools/skills_guard.py::TRUSTED_REPOS.
         {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        # 20 skills, one per CLI coding agent, that hand a bounded task to a different
+        # vendor's agent running headless. Flat skills/<name>/SKILL.md, MIT. Community
+        # trust (NOT in tools/skills_guard.py::TRUSTED_REPOS).
+        {"repo": "amirkiarafiei/subagent-cli-skills", "path": "skills/"},
         # --- Science bucket ---
         # Two scientific-skill repos share one hub category via the tap-level "bucket" key so
         # their skills surface together. Both stay `community` trust on purpose (NOT in

@@ -615,8 +615,9 @@ DEFAULT_CONFIG = {
         # compression request timeout (auxiliary.compression.timeout, min 300s): the host never judges
         # silence before the summary request itself would time out.
         "context_timeout_seconds": 120,
-        # Absolute cap on the *pre-commit* compress_context wait (summary/stream phase) even while
-        # tokens move. Clamped >= context_timeout_seconds when that is > 0. A started SessionDB
+        # Cap on pre-stream compress_context work. Once substantive output starts, the provider
+        # stream's inactivity + hard-ceiling guards take over. Clamped >=
+        # context_timeout_seconds when that is > 0. A started SessionDB
         # commit is never abandoned: past the ceiling it is logged (WARNING, then ERROR) and
         # surfaced on the warning channel while the host keeps waiting.
         "context_total_ceiling_seconds": 600,

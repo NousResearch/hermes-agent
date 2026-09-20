@@ -4423,6 +4423,18 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
+                # Suspend the typing refresh before the first delivery attempt, not just in
+                # the turn's finally (#117300): if the final send stalls (platform accepted it
+                # but the HTTP ack never returns), control never reaches the finally, and
+                # _keep_typing keeps refreshing sendChatAction forever while the agent is
+                # already idle and the user can read the answer. Reuse the existing
+                # _typing_paused mechanism: _keep_typing skips paused chats each tick and
+                # _stop_typing_refresh's finally discards it, so it cannot leak into the next
+                # turn. No new await on the delivery path (a fire-and-forget stop task was
+                # measured to have no effect).
+                if text_content or extracted.images or extracted.media_files or extracted.local_files \
+                        or _tts_paths or _tts_caption_delivered:
+                    self.pause_typing_for_chat(event.source.chat_id)
                 if text_content and not _tts_caption_delivered:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,

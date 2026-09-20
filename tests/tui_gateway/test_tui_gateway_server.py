@@ -20419,6 +20419,28 @@ class TestResolveRuntimeWithFallback:
         assert resolution.selected_model == "deepseek-v4-pro"
         assert resolution.used_fallback is True
 
+    def test_quota_auth_error_is_logged_as_rate_limited_not_auth_failed(self, monkeypatch, caplog):
+        """#117482 sibling surface: a 429/quota AuthError on the primary reads as quota in the
+        gateway's fallback log, never as an auth failure."""
+        import logging
+
+        from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("quota exhausted (429)", provider="openai-codex",
+                                code=CODEX_RATE_LIMITED_CODE, relogin_required=False)
+            return {"provider": "deepseek", "api_key": "fb-tok"}
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+        monkeypatch.setattr(server, "_load_fallback_model",
+                            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}])
+        with caplog.at_level(logging.WARNING, logger=server.__name__):
+            resolution = server._resolve_runtime_with_fallback({"requested": "openai-codex"})
+        assert resolution.used_fallback is True
+        assert "Primary rate-limited (429)" in caplog.text
+        assert "auth failed" not in caplog.text
+
     def test_auth_error_skips_provider_only_fallback(self, monkeypatch):
         """Auth fallback requires one complete provider/model pair."""
         from hermes_cli.auth import AuthError

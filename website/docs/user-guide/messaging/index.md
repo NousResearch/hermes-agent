@@ -614,6 +614,8 @@ systemctl --user restart hermes-gateway   # or: sudo systemctl restart hermes-ga
 
 Prefer `hermes gateway restart` when in-flight agent turns matter: it asks the gateway to drain first (`SIGUSR1`, honoring the restart wait budget) and waits for the replacement, while a raw `systemctl restart` stops the current process on systemd's schedule. After updating Hermes, run `hermes gateway restart` once so the running service picks up the regenerated unit that contains the `ExecStop=` line (`hermes gateway status` warns while the installed unit is outdated).
 
+The installed unit also maps `systemctl reload hermes-gateway` to `SIGUSR1`. For Hermes, `reload` therefore means a graceful drain, process exit, and supervisor relaunch; it is **not** an in-process configuration reload. Use `hermes gateway restart` when you want the CLI to wait for and verify the replacement process.
+
 :::tip Headless VMs: user service + linger avoids root prompts
 A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
 

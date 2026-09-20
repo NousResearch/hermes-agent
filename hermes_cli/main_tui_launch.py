@@ -342,11 +342,12 @@ def _ensure_tui_node() -> None:
     try:
         # Helper logs to stderr; stdout carries `command -v node` — subshell PATH
         # edits don't leak back into Python, so the capture is the bridge.
+        from tools.environments.local import _find_bash  # not a bare "bash": System32's WSL stub wins CreateProcess
         result = subprocess.run(
-            ["bash", "-c", f'source "{helper}" >&2 && ensure_node >&2 && command -v node'],
+            [_find_bash(), "-c", f'source "{helper}" >&2 && ensure_node >&2 && command -v node'],
             env={**os.environ, "HERMES_HOME": hermes_home},
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, RuntimeError, subprocess.SubprocessError):  # RuntimeError: no Git Bash on Windows
         return
 
     parts = os.environ.get("PATH", "").split(os.pathsep)

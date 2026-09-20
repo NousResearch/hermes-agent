@@ -163,6 +163,7 @@ def _neutral_session(**compression_ctor):
     agent = SimpleNamespace(
         model="unset-test-model",
         provider="",
+        base_url="",
         context_compressor=compressor,
         compression_enabled=True,
         compression_idle_compact_after_seconds=0,

@@ -4666,6 +4666,7 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
+    from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
@@ -4676,8 +4677,7 @@ def _start_gateway_housekeeping(
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
-        chores.append((1, "Cron durable delivery queue drain",
-                       lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
+        chores.append((1, DRAIN_LABEL, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
         (60, "Media cache cleanup", _housekeeping_media_caches),
@@ -4700,6 +4700,16 @@ def _start_gateway_housekeeping(
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
 
+    # Between ticks the queue file is watched so a worker's send goes out when it is queued,
+    # not up to ``interval`` later (#117307); the tick's drain above remains the fallback.
+    queue_watch = None
+    if adapters is not None or runner is not None:
+        def served_homes() -> list:
+            return [home for _name, home in _handoff_watch_scopes(runner)] if runner is not None else [None]
+
+        queue_watch = DeliveryQueueWatch(
+            served_homes, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner))
+
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0
     while not stop_event.is_set():
@@ -4707,7 +4717,7 @@ def _start_gateway_housekeeping(
         for every, label, fn in chores:
             if tick_count % every == 0:
                 _housekeeping_chore(label, fn)
-        stop_event.wait(timeout=interval)
+        wait_for_next_tick(stop_event, interval, queue_watch, _housekeeping_chore)
     logger.info("Gateway housekeeping stopped")
 
 
@@ -5056,6 +5066,19 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
             root.setLevel(_stderr_level)
 
 
+def _start_gateway_make_restart_signal_handler(runner):
+    """Build the SIGUSR1 handler: log what the signal means, then the drain-aware service restart."""
+    def restart_signal_handler():
+        # systemd's `reload` verb (ExecReload=kill -USR1) lands here too; say so, because operators
+        # expect `reload` to mean an in-process config reload, not a drain-and-relaunch (#117267).
+        logger.info(
+            "SIGUSR1 received (systemctl reload / hermes gateway restart): performing a graceful "
+            "gateway restart — drain active turns, exit, supervisor relaunches. Not an in-process "
+            "config reload.")
+        runner.request_restart(detached=False, via_service=True)
+    return restart_signal_handler
+
+
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     def shutdown_signal_handler(received_signal=None):
@@ -5366,8 +5389,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     shutdown_signal_handler = _start_gateway_make_shutdown_signal_handler(
         runner, _signal_initiated_shutdown)
 
-    def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+    restart_signal_handler = _start_gateway_make_restart_signal_handler(runner)
 
     loop = asyncio.get_running_loop()
 

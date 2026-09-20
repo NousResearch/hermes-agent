@@ -203,6 +203,16 @@ class ProviderProfile:
         """
         return {}
 
+    def default_reasoning_config(self, model: str | None = None) -> dict | None:
+        """Reasoning config the main loop sends when ``agent.reasoning_effort`` is unset.
+
+        None (default) hands the unset state to ``build_api_kwargs_extras`` as ``reasoning_config=None``,
+        where each profile already decides (Nous/OpenRouter fill medium; Anthropic omits). A profile
+        that would otherwise leave the route's own default in charge returns the config here so the
+        agent records it as what went on the wire (the reasoning-rejection ladder reads that).
+        """
+        return None
+
     def build_api_kwargs_extras(
         self,
         *,

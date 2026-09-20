@@ -328,6 +328,7 @@ import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
+import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
@@ -436,6 +437,7 @@ import {
   rateLimitFromHeaders,
   resolveBehindLocally
 } from './update-api-check'
+import { updateCheckAgent } from './update-api-proxy'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -3494,6 +3496,7 @@ function fetchGitHubApiOnce(url, accept, token) {
     const req = https.get(
       url,
       {
+        agent: updateCheckAgent(url),
         headers: githubApiHeaders(
           {
             Accept: accept,
@@ -4231,7 +4234,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
     // anything.  Runs while the backend is still alive.
-    preflightStateDb(HERMES_HOME, rememberLog)
+    await preflightStateDb(HERMES_HOME, rememberLog)
 
     if (IS_WINDOWS && resolveUpdateScriptHandoff(updateRoot)) {
       const message = windowsUpdatePrerequisiteError(updateRoot)
@@ -4619,7 +4622,7 @@ function runningAppBundle() {
 // desktop Electron process itself, before the backend is killed and
 // before the updater is spawned — a separate safety net from the
 // Python-level pre-update snapshot inside `hermes update`.
-function preflightStateDb(hermesHome, rememberLog) {
+async function preflightStateDb(hermesHome, rememberLog) {
   const stateDbPath = path.join(hermesHome, 'state.db')
 
   if (!fileExists(stateDbPath)) {
@@ -4651,6 +4654,17 @@ function preflightStateDb(hermesHome, rememberLog) {
           '[updates] state.db header is INVALID before update — ' +
             'this indicates pre-existing corruption or a concurrent write issue'
         )
+      }
+
+      if (
+        !(await readPreUpdateBackupEnabled(
+          resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
+          hermesHome
+        ))
+      ) {
+        rememberLog('[updates] emergency state.db backup disabled by updates.pre_update_backup')
+
+        return
       }
 
       // Emergency timestamped backup, separate from the Python-level snapshot.
@@ -4727,7 +4741,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   // ── Pre-flight state.db integrity guard (#68474) ──
-  preflightStateDb(HERMES_HOME, rememberLog)
+  await preflightStateDb(HERMES_HOME, rememberLog)
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and
   // self-heal to main when the pinned branch no longer exists on origin).

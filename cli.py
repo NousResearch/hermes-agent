@@ -4140,7 +4140,7 @@ _TERMINAL_PROVIDER_REASONS = frozenset({
 })
 
 
-def _single_query_exit_code(result) -> int:
+def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -> int:
     """Map a one-shot turn result onto a process exit code, for both `-q` and `-Q`.
 
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
@@ -4149,10 +4149,15 @@ def _single_query_exit_code(result) -> int:
     failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
     (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
     WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
-    One that failed on a terminal provider error (credential revoked, model gone) exits
-    ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` (EX_CONFIG): the dispatcher blocks the card at once.
+    The same sentinel applies when credential resolution itself is a quota/rate-limit
+    AuthError (no turn result object is produced). One that failed on a terminal provider
+    error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
+    (EX_CONFIG): the dispatcher blocks the card at once.
     """
     if not isinstance(result, dict):
+        if credentials_rate_limited and os.environ.get("HERMES_KANBAN_TASK"):
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+            return KANBAN_RATE_LIMIT_EXIT_CODE
         return 1
     if result.get("interrupted"):
         return 130
@@ -4608,10 +4613,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                         emitter.attach(cli.agent)
                     _run_quiet_single_query(cli, effective_query, emitter=emitter)
 
+            fail_code = _single_query_exit_code(
+                None, credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False))
             if emitter is not None:
                 emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
-                                    session_id=cli.session_id or "", exit_code=1)
-            exit_single_query(1)  # credentials or agent init failed
+                                    session_id=cli.session_id or "", exit_code=fail_code)
+            exit_single_query(fail_code)  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
         if _query_label:

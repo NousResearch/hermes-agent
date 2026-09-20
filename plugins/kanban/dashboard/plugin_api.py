@@ -578,13 +578,7 @@ def _apply_status(conn, task_id: str, s: str, p, unknown_detail: str) -> bool:
 
 
 def _set_priority(conn, task_id: str, priority: int, board: Optional[str]) -> None:
-    with kanban_db.write_txn(conn):
-        conn.execute("UPDATE tasks SET priority = ? WHERE id = ?", (int(priority), task_id))
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'reprioritized', ?, ?)",
-            (task_id, json.dumps({"priority": int(priority)}), int(time.time())))
-    # Mutation-boundary observer (post-commit): this direct-SQL write bypasses every kanban_db mutator.
-    kanban_db.notify_task_updated(conn, task_id, ("priority",), board=board)
+    kanban_db.edit_task(conn, task_id, priority=int(priority), board=board)
 
 
 def _apply_model_override(conn, task_id: str, p) -> bool:

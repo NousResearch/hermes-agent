@@ -85,6 +85,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    from agent.agent_init import config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
     agent.compression_enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).lower() in {"true", "1", "yes"}
     agent.codex_responses_native_compaction = is_truthy_value(compression.get("codex_responses_native", False))
@@ -136,17 +137,22 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         cc.threshold_percent = cc._effective_threshold_percent(cc.context_length, base)
     except Exception:
         cc.threshold_percent = pct
-    raw_ctx = model_cfg.get("context_length")
-    if raw_ctx is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            if (new_ctx := int(raw_ctx)) > 0:
-                cc._config_context_length = new_ctx
-                with contextlib.suppress(Exception):
-                    cc.context_length = new_ctx
+    # Same scoping rule as construction and the switch path: the pin describes the configured default
+    # route, so a session that /model-switched elsewhere must not have it re-applied on a config save
+    # (None = absent, invalid, or scoped out).
+    new_ctx = config_context_length_for_runtime(agent, cfg)
+    if new_ctx is not None:
+        # Both cached copies: the compressor's (its own re-resolution) and the agent's
+        # (switch/fallback + every display surface). Writing one left the other stale, so the
+        # session showed a pinned ceiling while compressing against a different window (#116467).
+        set_config_context_length(agent, new_ctx)
+        with contextlib.suppress(Exception):
+            cc.context_length = new_ctx
     elif getattr(cc, "_config_context_length", None) is not None:
         # model.context_length removed: drop the override and force re-inference from model metadata on
         # next access (construction's deferred resolution); re-applies the small-context floor too.
-        cc._config_context_length = cc._resolved_context_length = None
+        set_config_context_length(agent, None)
+        cc._resolved_context_length = None
     cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(compression.get("threshold_tokens"))
     # Invalidate the cached trigger so the next preflight re-derives from percent/window, then the cap.
     cc._threshold_tokens = cc._tail_token_budget = None

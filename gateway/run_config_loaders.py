@@ -21,7 +21,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT, parse_cron_drain_timeout,
     parse_restart_after_turn_timeout, parse_restart_drain_timeout,
-    parse_signal_interrupt_grace_timeout, read_launchd_exit_timeout_s,
+    launchd_service_label, parse_signal_interrupt_grace_timeout, read_launchd_exit_timeout_s,
     resolve_launchd_capped_drain,
 )
 from gateway.session import SessionSource
@@ -337,8 +337,11 @@ class GatewayConfigLoadersMixin:
         when ``launchctl print`` is unavailable. Logs a WARNING when the configured drain exceeds
         the live budget so the misconfiguration is visible at boot, not at the next SIGKILL.
         """
+        label = launchd_service_label()
+        if label is None:
+            return None
         # read_launchd_exit_timeout_s is already fail-open (returns None on any probe failure).
-        exit_timeout = read_launchd_exit_timeout_s()
+        exit_timeout = read_launchd_exit_timeout_s(label)
         if exit_timeout is None:
             return None
         effective = resolve_launchd_capped_drain(drain_timeout, exit_timeout)
@@ -347,12 +350,12 @@ class GatewayConfigLoadersMixin:
                 "restart_drain_timeout=%.0fs exceeds the live launchd exit timeout (%.0fs) for %s; "
                 "signal-driven stops will drain at most %.0fs so teardown finishes before launchd "
                 "SIGKILLs (launchd clamps ExitTimeOut in the per-user domain).",
-                drain_timeout, exit_timeout, os.environ.get("XPC_SERVICE_NAME", "this job"), effective,
+                drain_timeout, exit_timeout, label, effective,
             )
         else:
             logger.info(
                 "launchd exit timeout for %s is %.0fs (drain %.0fs fits)",
-                os.environ.get("XPC_SERVICE_NAME", "this job"), exit_timeout, drain_timeout,
+                label, exit_timeout, drain_timeout,
             )
         return exit_timeout
 

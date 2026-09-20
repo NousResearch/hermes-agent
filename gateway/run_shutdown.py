@@ -2072,8 +2072,7 @@ class GatewayShutdownMixin:
                 logger.warning(
                     "Shutdown drain capped to %.0fs (configured %.0fs) to fit the live launchd exit "
                     "timeout of %.0fs — launchd SIGKILLs past it",
-                    timeout, self._restart_drain_timeout,
-                    getattr(self, "_launchd_exit_timeout_s", None) or 0.0,
+                    timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
                 )
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:

@@ -1,3 +1,8 @@
+
+
+def _fire_claim_owner_is_dead(claim: Any) -> bool:
+    return False
+
 """Cron job storage: ~/.hermes/cron/jobs.json; output in
 ~/.hermes/cron/output/{job_id}/{timestamp}.md"""
 

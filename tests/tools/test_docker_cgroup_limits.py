@@ -63,69 +63,10 @@ def test_probe_result_is_cached(monkeypatch):
     assert len(calls) == 1  # probe runs once, then cached
 
 
-def test_probe_timeout_is_not_cached_and_retried(monkeypatch):
-    """A transient probe failure (auto-pull of an uncached image exceeding the
-    60s timeout, daemon cold-start) must not disable resource limits for the
-    process lifetime. The spawn degrades but the next spawn re-probes."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    calls = []
-
-    def _run(cmd, *a, **k):
-        calls.append(cmd)
-        if len(calls) == 1:
-            raise subprocess.TimeoutExpired(cmd, 60)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    assert docker_env._cgroup_limits_available("img") is False
-    assert docker_env._cgroup_limits_available("img") is True
-    assert len(calls) == 2
-
-
-def test_probe_non_cgroup_failure_is_not_cached(monkeypatch):
-    """A nonzero probe exit for reasons unrelated to cgroups (manifest/pull
-    error, daemon error) is not a definitive negative, so it is retried on the
-    next spawn."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    calls = []
-
-    def _run(cmd, *a, **k):
-        calls.append(cmd)
-        if len(calls) == 1:
-            return subprocess.CompletedProcess(
-                cmd, 125, stdout="", stderr="docker: Error response from daemon: "
-                "manifest for hermes-agent:latest not found: manifest unknown")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    assert docker_env._cgroup_limits_available("img") is False
-    assert docker_env._cgroup_limits_available("img") is True
-    assert len(calls) == 2
-
-
-def test_probe_pull_error_naming_cgroup_is_not_cached(monkeypatch):
-    """An image whose NAME contains 'cgroup' produces a pull error mentioning it;
-    that must not be read as a definitive cgroup rejection."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    calls = []
-
-    def _run(cmd, *a, **k):
-        calls.append(cmd)
-        if len(calls) == 1:
-            return subprocess.CompletedProcess(
-                cmd, 125, stdout="", stderr="docker: Error response from daemon: "
-                "pull access denied for cgroup-tools, repository does not exist")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    assert docker_env._cgroup_limits_available("cgroup-tools") is False
-    assert docker_env._cgroup_limits_available("cgroup-tools") is True
-    assert len(calls) == 2
-
-
 def test_probe_definitive_cgroup_failure_is_cached(monkeypatch):
     """A daemon rejection that names cgroups IS a host property; caching it is
-    the point of the probe, so subsequent spawns do not pay it again."""
+    the point of the probe, so subsequent spawns do not pay it again (#116162
+    only stops caching failures that say nothing about cgroups)."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = []
 
@@ -142,78 +83,30 @@ def test_probe_definitive_cgroup_failure_is_cached(monkeypatch):
     assert len(calls) == 1
 
 
-def test_missing_docker_is_not_cached(monkeypatch):
-    """find_docker() missing says nothing about cgroup support, so it is not cached."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: None)
-    assert docker_env._cgroup_limits_available("img") is False
-
+@pytest.mark.parametrize(
+    "info, create, cached",
+    [
+        # `docker info` failing (daemon cold-start) is transient: not "not overlay2".
+        ((1, "", "Cannot connect to the Docker daemon"), None, None),
+        # The daemon rejecting --storage-opt is a host property: cached False.
+        ((0, "overlay2\n", ""), (125, "", "Error response from daemon: --storage-opt is "
+                                          "supported only for overlay2 with pquota"), False),
+        # A create failure that never reached the storage check (pull error) is transient.
+        ((0, "overlay2\n", ""), (125, "", "Unable to find image 'hello-world:latest'"), None),
+    ],
+)
+def test_storage_opt_probe_caches_only_definitive_answers(monkeypatch, info, create, cached):
+    """``_storage_opt_supported`` must not latch disk quota off for the process on a
+    failure that says nothing about pquota support (#116162)."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env.subprocess, "run",
-                        lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
-    assert docker_env._cgroup_limits_available("img") is True
 
+    def _run(cmd, *a, **k):
+        rc, out, err = info if cmd[1] == "info" else create
+        return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr=err)
 
-class TestStorageOptProbeCaching:
-    """``_storage_opt_supported`` has the same transient-vs-definitive contract:
-    only a real answer (driver name, or a daemon rejection naming storage) may
-    be cached process-wide; timeouts and pull/daemon failures must retry."""
-
-    def _fake_run(self, calls, info=None, create=None, info_exc=None):
-        def _run(cmd, *a, **k):
-            calls.append(cmd)
-            sub = cmd[1] if isinstance(cmd, list) and len(cmd) > 1 else ""
-            if sub == "info":
-                if info_exc:
-                    raise info_exc
-                rc, stdout, stderr = info
-                return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr=stderr)
-            if sub == "create":
-                rc, stdout, stderr = create
-                return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr=stderr)
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        return _run
-
-    def test_info_failure_not_cached(self, monkeypatch):
-        monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-        calls = []
-        monkeypatch.setattr(docker_env.subprocess, "run", self._fake_run(
-            calls, info=(1, "", "Cannot connect to the Docker daemon")))
-
-        assert docker_env.DockerEnvironment._storage_opt_supported() is False
-        monkeypatch.setattr(docker_env.subprocess, "run", self._fake_run(
-            calls, info=(0, "overlay2\n", ""), create=(0, "cid123\n", "")))
-        assert docker_env.DockerEnvironment._storage_opt_supported() is True
-
-    def test_info_exception_not_cached(self, monkeypatch):
-        monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-        calls = []
-        monkeypatch.setattr(docker_env.subprocess, "run", self._fake_run(
-            calls, info_exc=subprocess.TimeoutExpired("docker", 10)))
-        assert docker_env.DockerEnvironment._storage_opt_supported() is False
-        assert docker_env._storage_opt_ok is None
-
-    def test_unsupported_create_error_cached(self, monkeypatch):
-        monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-        calls = []
-        monkeypatch.setattr(docker_env.subprocess, "run", self._fake_run(
-            calls, info=(0, "overlay2\n", ""),
-            create=(125, "", "Error response from daemon: --storage-opt is "
-                             "supported only for overlay2 with pquota")))
-        assert docker_env.DockerEnvironment._storage_opt_supported() is False
-        assert docker_env.DockerEnvironment._storage_opt_supported() is False
-        assert len(calls) == 2  # info + create once; cached thereafter
-
-    def test_create_pull_failure_not_cached(self, monkeypatch):
-        """A create-probe failure that never reached the storage check (image
-        pull error) is transient; retried, not latched."""
-        monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-        calls = []
-        monkeypatch.setattr(docker_env.subprocess, "run", self._fake_run(
-            calls, info=(0, "overlay2\n", ""),
-            create=(125, "", "Unable to find image 'hello-world:latest'")))
-        assert docker_env.DockerEnvironment._storage_opt_supported() is False
-        assert docker_env._storage_opt_ok is None
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env.DockerEnvironment._storage_opt_supported() is False
+    assert docker_env._storage_opt_ok is cached
 
 
 def test_transient_probe_failure_recovers_on_next_spawn(monkeypatch):

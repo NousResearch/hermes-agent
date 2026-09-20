@@ -365,19 +365,6 @@ def _resolve_host_user_spec() -> Optional[str]:
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
 _cgroup_limits_ok: Optional[bool] = None  # cached result across instances
 
-# stderr fragments meaning the probe container/image never ran, so the failure says
-# nothing about the capability being probed. Checked BEFORE capability keywords: an
-# image named e.g. "cgroup-tools" produces a pull error mentioning "cgroup", which
-# must not be read as a cgroup rejection.
-_PROBE_NONDETERMINATE_STDERR = (
-    "unable to find image", "manifest", "pull access denied", "pulling fs layer",
-    "toomanyrequests", "failed to resolve reference", "error pulling",
-    "cannot connect to the docker daemon", "connection refused", "context deadline exceeded")
-
-
-def _probe_stderr_indeterminate(stderr: str) -> bool:
-    return any(s in stderr for s in _PROBE_NONDETERMINATE_STDERR)
-
 
 def _cgroup_limits_available(image: str) -> bool:
     """Probe once per process whether ``--cpus``/``--memory``/``--pids-limit`` work here, via a
@@ -407,21 +394,21 @@ def _cgroup_limits_available(image: str) -> bool:
         _cgroup_limits_ok = True
         return True
     stderr = (result.stderr or "").strip()
-    stderr_l = stderr.lower()
-    if "cgroup" in stderr_l and not _probe_stderr_indeterminate(stderr_l):
-        _cgroup_limits_ok = False
-        logger.warning(
-            "Cgroup resource limits (--cpus/--memory/--pids-limit) not "
-            "available in this environment. Containers will run without "
-            "CPU, memory or PID limits. To enable, delegate the cpu, "
-            "memory and pids cgroup controllers to this container. Probe stderr: %s",
-            stderr[:500])
-    else:
+    if "cgroup" not in stderr.lower():
+        # Pull/manifest/daemon errors say nothing about cgroup support: not cached.
         logger.warning(
             "Cgroup limit probe could not determine support (docker exited %d: %s). "
             "Containers run without CPU/memory/PID limits until a probe succeeds.",
             result.returncode, stderr[:500])
-    return _cgroup_limits_ok or False
+        return False
+    _cgroup_limits_ok = False
+    logger.warning(
+        "Cgroup resource limits (--cpus/--memory/--pids-limit) not "
+        "available in this environment. Containers will run without "
+        "CPU, memory or PID limits. To enable, delegate the cpu, "
+        "memory and pids cgroup controllers to this container. Probe stderr: %s",
+        stderr[:500])
+    return False
 
 
 def _docker_unavailable(log_msg: str, *log_args, error: str, hint: str, exc_info: bool = False):
@@ -999,10 +986,8 @@ class DockerEnvironment(BaseEnvironment):
                 if probe.stdout.strip():
                     subprocess.run([docker, "rm", probe.stdout.strip()],
                                    capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
-            elif not _probe_stderr_indeterminate((probe.stderr or "").lower()) and \
-                    any(s in (probe.stderr or "").lower()
-                        for s in ("storage", "quota", "overlay2")):
-                _storage_opt_ok = False  # daemon said storage-opt is unsupported; host property
+            elif "storage" in (probe.stderr or "").lower():
+                _storage_opt_ok = False  # daemon rejected --storage-opt: a host property
             # else: pull/daemon failure unrelated to storage-opt; not cached, retried next spawn
         except Exception:
             return False  # TimeoutExpired, missing binary; transient, retried next spawn

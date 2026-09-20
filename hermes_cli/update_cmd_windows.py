@@ -1207,14 +1207,26 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
         gateway_windows._write_start_attestation(ready_pids, "post-update relaunch")
 
 
-def _resume_windows_gateways_after_update(token: dict | None) -> None:
-    """Restart Windows profile gateways previously paused for update."""
+def _resume_windows_gateways_after_update(token: dict | None) -> bool:
+    """Restart Windows profile gateways previously paused for update.
+
+    Return whether the token carried restart work. The already-current update path uses
+    this signal to let freshly started gateways publish their fleet identity before it
+    evaluates an older pending-restart receipt.
+    """
     from hermes_cli.update_cmd import _m
     if not token or not token.get("resume_needed"):
-        return
+        return False
     if not _m()._is_windows():
         token["resume_needed"] = False
-        return
+        return False
+    had_restart_work = bool(
+        token.get("services")
+        or token.get("profiles")
+        or any(entry.get("argv") for entry in token.get("unmapped") or [])
+        or token.get("cold_start_if_installed")
+        or token.get("cold_start_profiles")
+    )
     # Regenerate launcher scripts before respawning so a legacy pythonw-era
     # autostart entry comes back on the current design at next login too.
     _m()._refresh_windows_gateway_launchers()
@@ -1229,7 +1241,7 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
             token["cold_start_if_installed"] = False
         _cold_start_attested_profiles(token)
         token["resume_needed"] = False
-        return
+        return had_restart_work
     relaunched, unmapped_relaunched = _relaunch_paused_gateways(token, profiles, unmapped)
     if relaunched or unmapped_relaunched:
         _verify_relaunched_gateways_alive(token, profiles, unmapped)
@@ -1242,6 +1254,7 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     # keep the profiles that WERE running from being relaunched.
     _cold_start_attested_profiles(token)
     token["resume_needed"] = False
+    return had_restart_work
 
 
 def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume, gateway_mode: bool):

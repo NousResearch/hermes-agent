@@ -32,6 +32,7 @@ _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 # bootstrap and publishes ``gateway_state.json``. Keep the readiness poll bounded,
 # but allow the default systemd startup budget plus status-publication slack.
 _FLEET_PROBE_SETTLE_TIMEOUT_SECONDS = 120.0
+_WINDOWS_RESUME_SETTLE_TIMEOUT_SECONDS = 15.0
 
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
 _LIST_GATEWAY_UNITS = ["list-units", "hermes-gateway*", "hermes-serve*", "--plain", "--no-legend", "--no-pager"]
@@ -510,7 +511,9 @@ def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplet
         sys.exit(1)
 
 
-def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
+def _apply_pending_fleet_restart_catchup(
+    *, defer: bool = False, settle_after_windows_resume: bool = False,
+) -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
     No-op when nothing is pending; exits 1 on incomplete catch-up so automation
@@ -519,7 +522,18 @@ def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     cgroup would kill the caller.
     """
     from hermes_cli.update_cmd import _run_pending_fleet_restart
-    if not _pending_fleet_restart_needed():
+    pending = _pending_fleet_restart_needed()
+    if pending and settle_after_windows_resume:
+        # Windows cold-start/resume verifies the process before the gateway has necessarily
+        # published its code identity. Give that fresh process the same bounded publication
+        # window as the normal fleet verifier before deciding an older receipt still needs a
+        # destructive second restart. Once the row appears, the pending predicate also
+        # discharges a matching marker/receipt obligation.
+        deadline = _time.monotonic() + _WINDOWS_RESUME_SETTLE_TIMEOUT_SECONDS
+        while pending and _time.monotonic() < deadline:
+            _time.sleep(0.5)
+            pending = _pending_fleet_restart_needed()
+    if not pending:
         return
     if defer:
         print()

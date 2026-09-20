@@ -362,6 +362,27 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     assert "Pending fleet restart completed" in capsys.readouterr().out
 
 
+def test_fresh_windows_resume_settles_before_pending_restart(monkeypatch):
+    """A cold-started gateway may publish its current-code row after its PID is ready."""
+    pending = iter((True, True, False))
+    restarted = []
+    monkeypatch.setattr(
+        update_cmd_fleet, "_pending_fleet_restart_needed", lambda: next(pending)
+    )
+    monkeypatch.setattr(update_cmd_fleet._time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_run_pending_fleet_restart",
+        lambda: restarted.append(True) or True,
+    )
+
+    update_cmd_fleet._apply_pending_fleet_restart_catchup(
+        settle_after_windows_resume=True
+    )
+
+    assert restarted == []
+
+
 # ---------------------------------------------------------------------------
 # cmd_update integration (mocked git / restart)
 # ---------------------------------------------------------------------------

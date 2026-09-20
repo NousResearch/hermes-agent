@@ -1238,7 +1238,7 @@ def _finish_already_up_to_date(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
-    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    _windows_resume_ran = _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
     # gate so a partial outcome can't strand the fleet on stale code.
     # Catch up even on the "Already up to date" path — that early return is what left the gateway on stale
@@ -1246,7 +1246,10 @@ def _finish_already_up_to_date(
     # demotes the outcome to partial, but must not strand the fleet on stale code (#91277 fleet contract —
     # the pending-restart check always executes). Under --no-gateway-restart the
     # catch-up is deferred instead (executing it would kill the cron's own gateway).
-    _apply_pending_fleet_restart_catchup(defer=no_gateway_restart)
+    _apply_pending_fleet_restart_catchup(
+        defer=no_gateway_restart,
+        settle_after_windows_resume=bool(_windows_resume_ran),
+    )
     if not current_checkout_complete:
         if gateway_mode:
             _write_gateway_update_exit_code(False)

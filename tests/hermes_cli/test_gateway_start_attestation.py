@@ -95,6 +95,20 @@ def test_report_gateway_start_failure_is_loud_not_checkmark(monkeypatch, tmp_pat
     assert "schtasks /Run /TN Hermes_Gateway_x" in out
 
 
+def test_direct_spawn_reports_only_the_verified_pid(monkeypatch, attest_home, capsys):
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 43560)
+    monkeypatch.setattr(
+        gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: [53320]
+    )
+    gateway_windows._LAST_SPAWN_BREAKAWAY_FALLBACK["fallback"] = False
+
+    gateway_windows._start_or_report_running([])
+
+    out = capsys.readouterr().out
+    assert "Gateway started via direct spawn (PID: 53320)" in out
+    assert "43560" not in out
+
+
 # ---------------------------------------------------------------------------
 # Start attestation: report-async-death on the next CLI invocation
 # ---------------------------------------------------------------------------

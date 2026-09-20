@@ -69,3 +69,37 @@ def test_install_is_skipped_while_manifests_and_electron_are_unchanged(tmp_path,
     (tmp_path / "apps" / "desktop" / "package.json").write_text('{"name": "bumped"}', encoding="utf-8")
     main_desktop._install_desktop_workspace_deps("npm", {})
     assert calls == [tmp_path, tmp_path], "a changed manifest must reinstall"
+
+
+def test_failed_reinstall_drops_the_stamp_so_the_next_update_repairs(tmp_path, monkeypatch):
+    """The stamp is written on success only; an interrupted full `npm ci` after a code-only update
+    must not leave an older matching stamp behind, or the half-installed tree is never revisited."""
+    import pytest
+
+    import hermes_cli.main as main_mod
+    import hermes_cli.main_web_build as web_build
+    from hermes_constants import get_default_hermes_root
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(main_desktop, "_nixos_build_env", lambda: {})
+    (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}', encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "apps" / "desktop").mkdir(parents=True)
+    (tmp_path / "apps" / "desktop" / "package.json").write_text("{}", encoding="utf-8")
+    electron = tmp_path / "node_modules" / "electron"
+    electron.mkdir(parents=True)
+    (electron / "package.json").write_text("{}", encoding="utf-8")
+    codes = [0, 1, 0]
+    monkeypatch.setattr(web_build, "_run_npm_install_deterministic",
+                        lambda npm, cwd, **kw: type("R", (), {"returncode": codes.pop(0)})())
+
+    main_desktop._install_desktop_workspace_deps("npm", {})  # success → stamp
+    (electron / "package.json").unlink()  # pass 1 pruned Electron → full install needed
+    with pytest.raises(SystemExit):
+        main_desktop._install_desktop_workspace_deps("npm", {})  # interrupted mid-extract
+    (electron / "package.json").write_text("{}", encoding="utf-8")  # partially reified tree
+
+    assert not list(get_default_hermes_root().glob(".npm_lock_hash_*_desktop"))
+    main_desktop._install_desktop_workspace_deps("npm", {})
+    assert codes == [], "the next update must run the install again, not skip on the stale stamp"

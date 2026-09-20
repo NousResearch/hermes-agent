@@ -6,6 +6,7 @@ import logging
 from contextlib import suppress
 import hashlib
 import json
+import contextlib
 import os
 import shutil
 import subprocess
@@ -528,13 +529,7 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     if (web_dir / "package.json").is_file() and not _web_build_toolchain_ready(
         *_web_toolchain_roots(web_dir)):
         return True
-    try:
-        cache_file = _npm_lock_cache_file(hermes_root)
-        if not cache_file.exists():
-            return True
-        return cache_file.read_text(encoding="utf-8").strip() != current
-    except OSError:
-        return True
+    return not _npm_stamp_matches(hermes_root, current)
 
 
 def _npm_lock_cache_file(hermes_root: Path, scope: str = "") -> Path:
@@ -543,6 +538,21 @@ def _npm_lock_cache_file(hermes_root: Path, scope: str = "") -> Path:
     from hermes_cli.update_cmd import _m
     cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
     return hermes_root / f".npm_lock_hash_{cache_key}{scope}"
+
+
+def _npm_stamp_matches(hermes_root: Path, current: str, scope: str = "") -> bool:
+    """True when the recorded digest for *scope* equals *current*; a missing/unreadable stamp never matches."""
+    try:
+        return _npm_lock_cache_file(hermes_root, scope).read_text(encoding="utf-8").strip() == current
+    except OSError:
+        return False
+
+
+def _clear_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
+    """Drop the stamp before an install attempt: it is written on success only, so a stale one must not
+    outlive a failed reinstall (or the next update would skip the repair)."""
+    with contextlib.suppress(OSError):
+        _npm_lock_cache_file(hermes_root, scope).unlink()
 
 
 def _record_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
@@ -563,10 +573,7 @@ def _desktop_deps_changed(hermes_root: Path) -> bool:
     current = _npm_manifests_digest()
     if current is None or not (_m().PROJECT_ROOT / "node_modules" / "electron" / "package.json").is_file():
         return True
-    try:
-        return _npm_lock_cache_file(hermes_root, "_desktop").read_text(encoding="utf-8").strip() != current
-    except OSError:
-        return True
+    return not _npm_stamp_matches(hermes_root, current, "_desktop")
 
 
 def _repair_node_deps_on_current_checkout(

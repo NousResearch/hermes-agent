@@ -559,6 +559,17 @@ class SessionEntry:
             result["origin"] = self.origin.to_dict()
         return result
 
+
+
+def _parse_iso_or_raise(data: Dict[str, Any], key: str) -> Optional[datetime]:
+    """Parse an ISO timestamp from data[key]; raise ValueError on missing/invalid."""
+    value = data.get(key)
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Invalid {key!r}: {e}") from e
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionEntry":
         origin = data.get("origin")
@@ -575,7 +586,10 @@ class SessionEntry:
             # The pair is written atomically; a partial/malformed pair must not auto-resume.
             token = started_at = None
 
-        session_key, session_id = data["session_key"], data["session_id"]
+        session_key = data.get("session_key")
+        session_id = data.get("session_id")
+        if not session_key or not session_id:
+            raise ValueError("Missing required session_key or session_id in session data")
         # CWE-22: session_id becomes a filename (strict); session_key allows interior ``/``.
         if _is_path_unsafe(session_id):
             raise ValueError("Invalid session_id: potential directory traversal detected")
@@ -588,8 +602,8 @@ class SessionEntry:
         transport_profile = data.get("transport_profile")
         return cls(
             session_key=session_key, session_id=session_id,
-            created_at=datetime.fromisoformat(data["created_at"]),
-            updated_at=datetime.fromisoformat(data["updated_at"]), origin=origin,
+            created_at=_parse_iso_or_raise(data, "created_at"),
+            updated_at=_parse_iso_or_raise(data, "updated_at"), origin=origin,
             display_name=data.get("display_name"), platform=platform,
             chat_type=data.get("chat_type", "dm"), metadata=dict(data.get("metadata") or {}),
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),

@@ -298,6 +298,8 @@ def test_required_denial_and_unknown_never_rescue(lab, capability, mode):
 
 @pytest.mark.parametrize("capability", ["search", "extract"])
 def test_unloaded_consumer_does_not_expose_fallback(lab, capability):
+    from agent.transports import codex as codex_transport
+    from agent.web_required_provider import RequiredWebProviderError
     from agent.web_search_provider import WebSearchProvider
     from agent import web_search_registry as providers
     from hermes_cli.plugins import get_plugin_manager
@@ -324,11 +326,15 @@ def test_unloaded_consumer_does_not_expose_fallback(lab, capability):
     other = Other()
     providers.register_provider(other, scope=hermes_home_key())
     assert get_plugin_manager().unload("quota-lab")
+    assert codex_transport._xai_prefers_native_web_search() is False
+    assert codex_transport._openai_prefers_native_web_search() is False
     result = _call(capability)
     assert result.get("error") or result.get("success") is False, result
     assert other.calls == provider.calls == escapes == []
-    assert providers.get_active_search_provider() is None
-    assert providers.get_active_extract_provider() is None
+    with pytest.raises(RequiredWebProviderError):
+        providers.get_active_search_provider()
+    with pytest.raises(RequiredWebProviderError):
+        providers.get_active_extract_provider()
 
 
 @pytest.mark.parametrize("capability", ["search", "extract"])
@@ -344,6 +350,8 @@ def test_unloaded_consumer_does_not_expose_fallback(lab, capability):
     ],
 )
 def test_faults_never_admit_or_rescue(lab, capability, fault, monkeypatch):
+    from agent.transports import codex as codex_transport
+    from agent.web_required_provider import RequiredWebProviderError
     from agent import web_search_registry as providers
     from tools.web_tools import check_web_api_key
 
@@ -364,6 +372,8 @@ def test_faults_never_admit_or_rescue(lab, capability, fault, monkeypatch):
         ),
     }
     mutations[fault]()
+    assert codex_transport._xai_prefers_native_web_search() is False
+    assert codex_transport._openai_prefers_native_web_search() is False
     result = _call(capability)
     assert "required_web_provider" in result.get("error", ""), result
     assert provider.calls == escapes == []
@@ -371,7 +381,8 @@ def test_faults_never_admit_or_rescue(lab, capability, fault, monkeypatch):
     # capability leaves the other tool visible; the failed capability itself
     # still refuses and cannot fall back.
     assert check_web_api_key() is (fault == "capability")
-    assert providers._resolve(None, capability=capability) is None
+    with pytest.raises(RequiredWebProviderError):
+        providers._resolve(None, capability=capability)
 
 
 def test_search_only_required_provider_keeps_search_visible_and_extract_closed(lab):
@@ -393,6 +404,8 @@ def test_search_only_required_provider_keeps_search_visible_and_extract_closed(l
     [None, "{}", "web: []", "[]", "web: [broken", "web: {required_provider: other}"],
 )
 def test_policy_loss_after_binding_never_restores_legacy(lab, content):
+    from agent.transports import codex as codex_transport
+
     home, provider, escapes, _ = lab
     assert _call("search")["success"]
     provider.calls.clear()
@@ -401,6 +414,8 @@ def test_policy_loss_after_binding_never_restores_legacy(lab, content):
         path.unlink()
     else:
         path.write_text(content)
+    assert codex_transport._xai_prefers_native_web_search() is False
+    assert codex_transport._openai_prefers_native_web_search() is False
     for capability in ("search", "extract"):
         result = _call(capability)
         assert "required_web_provider" in result.get("error", ""), result
@@ -611,6 +626,7 @@ def test_required_binding_closes_search_hook_skip_and_registry_bypasses(
 ):
     """Mandatory routing lives below optional hooks and every public dispatch surface."""
     from agent import web_search_registry as providers
+    from agent.transports import codex as codex_transport
     from hermes_cli import plugins
     from model_tools import handle_function_call
     from tools.registry import registry
@@ -619,6 +635,8 @@ def test_required_binding_closes_search_hook_skip_and_registry_bypasses(
     home, required, escapes, _ = lab
     required.calls.clear()
     _configure_conflicting_legacy_backend(home)
+    assert codex_transport._xai_prefers_native_web_search() is False
+    assert codex_transport._openai_prefers_native_web_search() is False
     legacy = _LegacyEscapeProvider()
     providers.register_provider(legacy, scope=hermes_home_key())
 

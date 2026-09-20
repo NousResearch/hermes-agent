@@ -49,8 +49,11 @@ With this setting:
 
 - A missing, unloaded, unavailable, incompatible, or replaced provider fails
   closed. Hermes does not select a global registration or another provider.
-- Native search memoization and limit bucketing, extract-cache reads/writes, and
-  keyless fallback/rescue cannot bypass the mediator. The provider owns request
+- Native search memoization and limit bucketing, extract-cache reads/writes,
+  keyless fallback/rescue, and provider-native server-side search cannot bypass
+  the mediator. A stale tool-schema snapshot keeps Hermes's client-side dispatch
+  so policy drift or provider failure is refused locally instead of being
+  swapped for an xAI/OpenAI native search tool. The provider owns request
   authentication, admission/accounting, cache policy, permitted retries, stable
   request identity, bounded transport, and unknown-outcome recovery.
 - Existing URL-secret, SSRF, and website-policy checks remain. Required-provider

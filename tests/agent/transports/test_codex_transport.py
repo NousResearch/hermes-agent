@@ -1131,6 +1131,53 @@ class TestCodexBuildKwargs:
         names = [t.get("name") for t in tools if t.get("type") == "function"]
         assert "web_search" in names
 
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "conflicting backend selection",
+            "policy changed; restart required",
+            "unsupported request policy version",
+            "configured plugin is missing or unloaded",
+            "provider replaced; restart required",
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("is_xai_responses", "is_codex_backend", "client_name"),
+        [(True, False, "hermes_web_search"), (False, True, "web_search")],
+    )
+    def test_required_provider_failure_never_swaps_to_native_web_search(
+        self,
+        transport,
+        monkeypatch,
+        reason,
+        is_xai_responses,
+        is_codex_backend,
+        client_name,
+    ):
+        """A stale schema must retain client dispatch after policy failure."""
+        from agent.web_required_provider import RequiredWebProviderError
+
+        def fail_closed():
+            raise RequiredWebProviderError(f"required_web_provider: {reason}")
+
+        monkeypatch.setattr(
+            "agent.web_required_provider.required_provider_name", fail_closed
+        )
+        kw = transport.build_kwargs(
+            model="grok-4.6" if is_xai_responses else "gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Search."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_xai_responses=is_xai_responses,
+            is_codex_backend=is_codex_backend,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert client_name in names
+
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
     # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.
@@ -1571,6 +1618,26 @@ class TestXaiWebSearchBackendPreference:
             lambda: SimpleNamespace(name="firecrawl"),
         )
         assert codex_mod._xai_prefers_native_web_search() is False
+
+    def test_required_provider_keeps_xai_and_openai_on_client_dispatch(
+        self, monkeypatch
+    ):
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(
+            "agent.web_required_provider.required_provider_name",
+            lambda: "quota-coordinator",
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: SimpleNamespace(name="xai"),
+        )
+        assert codex_mod._xai_prefers_native_web_search() is False
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: SimpleNamespace(name="openai-native"),
+        )
+        assert codex_mod._openai_prefers_native_web_search() is False
 
     def test_no_provider_legacy_fallback_xai(self, monkeypatch):
         """When no provider is registered, fall back to _get_search_backend."""

@@ -29,7 +29,7 @@ import yaml
 PLUGIN_NAME = "quota-coordinator"
 PROFILE_NAME = "coding-hermes"
 SERVER_NAME = "searxng.quota.invalid"
-OPENSSL = Path("/opt/homebrew/bin/openssl")
+OPENSSL = shutil.which("openssl")
 CANDIDATE_PLUGIN = Path.home() / ".hermes-quota-offline-candidate" / PLUGIN_NAME
 REVIEWED_SOURCE = Path.home() / ".hermes-quota-reviewed-source"
 
@@ -115,8 +115,9 @@ class SyntheticTLSServer:
 
 
 def _openssl(root: Path, *args: str) -> None:
+    assert OPENSSL is not None
     completed = subprocess.run(
-        [str(OPENSSL), *args],
+        [OPENSSL, *args],
         cwd=root,
         env={"HOME": str(root), "PATH": "/usr/bin:/bin"},
         stdin=subprocess.DEVNULL,
@@ -134,7 +135,8 @@ def _openssl(root: Path, *args: str) -> None:
 
 @pytest.fixture(scope="module")
 def certificates(tmp_path_factory) -> Generator[CertificateSet, None, None]:
-    assert OPENSSL.is_file(), "offline OpenSSL executable unavailable"
+    if OPENSSL is None:
+        pytest.skip("offline OpenSSL executable unavailable")
     root = tmp_path_factory.mktemp("quota-provider-certs")
     os.chmod(root, 0o700)
     ca_key = root / "ca.key"
@@ -294,10 +296,12 @@ def _install(
     assert REVIEWED_SOURCE.is_dir(), REVIEWED_SOURCE
 
     _reset_runtime_state()
-    default_root = Path.home() / ".hermes"
+    # External candidate/source inputs are read-only constants resolved during
+    # collection. Runtime profile state must stay under this test's tmp_path.
+    task_home = tmp_path / "task-home"
+    default_root = task_home / ".hermes"
     profile_home = default_root / "profiles" / profile_name
-    if profile_home.exists():
-        shutil.rmtree(profile_home)
+    assert not profile_home.exists()
     profile_home.mkdir(mode=0o700, parents=True)
     plugins_root = profile_home / "plugins"
     plugins_root.mkdir(mode=0o700)
@@ -348,6 +352,7 @@ def _install(
         yaml.safe_dump(config, sort_keys=True), encoding="utf-8"
     )
 
+    monkeypatch.setenv("HOME", str(task_home))
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
     monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(empty_bundled))
     monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "0")
@@ -368,7 +373,6 @@ def _close_lab(lab: Lab) -> None:
     finally:
         lab.listener.close()
         _reset_runtime_state()
-        shutil.rmtree(lab.profile_home, ignore_errors=True)
 
 
 def _plugin_error(lab: Lab) -> str:

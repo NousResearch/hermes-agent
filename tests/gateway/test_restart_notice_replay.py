@@ -14,8 +14,11 @@ import pytest
 
 import gateway.delivery as delivery
 import gateway.run as gateway_run
+import gateway.run_restart_notifications as notices
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
+from plugins.platforms.teams.adapter import TeamsAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 ONLINE_NOTICE = "♻️ Gateway online — Hermes is back and ready."
 
@@ -128,3 +131,175 @@ async def test_partial_delivery_is_persisted_and_not_repeated(boot_notice):
     # Nothing pending: a later reconnect stays silent.
     await _reconnect(recovered, Platform.DISCORD, discord)
     discord.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery", ["polling", "known-unsent"])
+async def test_planned_home_recovers_without_another_reconnect(boot_notice, monkeypatch, recovery):
+    runner, marker = boot_notice
+    runner._running, runner._restart_requested = True, False
+    discord = _adapter()
+    runner.adapters[Platform.DISCORD] = discord
+    cfg = PlatformConfig(enabled=True, token="test-token", home_channel=HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="42", thread_id="7", name="Telegram"))
+    runner.config.platforms[Platform.TELEGRAM] = cfg
+    telegram = TelegramAdapter(cfg)
+    telegram._running = True
+    telegram._rich_send_disabled = True
+    telegram.send_typing = AsyncMock()
+    telegram._write_runtime_status_safe = Mock()
+    generation, _ = telegram._begin_polling_generation()
+    telegram._send_path_degraded = recovery == "polling"
+    telegram._wait_for_reconnection = AsyncMock(return_value=False)
+    bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=42)))
+    if recovery == "polling":
+        telegram._bot = bot
+    waiting, release = asyncio.Event(), asyncio.Event()
+
+    async def recover(delay):
+        waiting.set()
+        await release.wait()
+        await asyncio.sleep(0)
+
+    class AsyncioProxy:
+        def __getattr__(self, name):
+            return recover if name == "sleep" else getattr(asyncio, name)
+    monkeypatch.setattr(notices, "asyncio", AsyncioProxy())
+    runner._failed_platforms[Platform.TELEGRAM] = {}
+    await runner._install_reconnected_adapter(Platform.TELEGRAM, telegram)
+    task = asyncio.gather(*runner._background_tasks)
+    try:
+        await asyncio.wait_for(waiting.wait(), 3)
+        discord.send.assert_awaited_once()
+        bot.send_message.assert_not_awaited()
+        assert json.loads(marker.read_text())["delivered_targets"] == [["discord", "unit-test-home", None]]
+        if recovery == "polling":
+            assert telegram._record_polling_progress(generation)
+        else:
+            telegram._wait_for_reconnection.assert_awaited_once()
+            telegram._bot = bot
+        concurrent = asyncio.create_task(runner._replay_pending_planned_restart_notification())
+        release.set()
+        await asyncio.wait_for(asyncio.gather(task, concurrent), 3)
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.call_args.kwargs["message_thread_id"] == 7
+        discord.send.assert_awaited_once()
+        assert not marker.exists()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", [
+    "exhausted", "refused-exhausted", "cancel-wait", "cancel-send", "timeout", "ambiguous", "retryable",
+    "new-marker-wait", "new-marker-send", "restart", "boot-replaced", "boot-empty",
+])
+async def test_planned_home_progress_and_generation_survive_interruption(boot_notice, monkeypatch, outcome):
+    runner, marker = boot_notice
+    runner._running, runner._restart_requested = True, False
+    monkeypatch.setattr(notices, "_RESTART_NOTICE_TIMEOUT", 2.0)
+    discord = _adapter()
+    runner.adapters[Platform.DISCORD] = discord
+    cfg = PlatformConfig(enabled=True, home_channel=HomeChannel(
+        platform=Platform("teams"), chat_id="42", name="Teams"))
+    adapter = TeamsAdapter(cfg)
+    adapter._running = True
+    runner.config.platforms[Platform("teams")] = cfg
+    runner.adapters[Platform("teams")] = adapter
+    waiting, sending, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    accepted = []
+    wait_outcomes = {"exhausted", "refused-exhausted", "cancel-wait", "new-marker-wait", "restart"}
+    monkeypatch.setattr(type(adapter), "send_path_degraded", property(lambda _: outcome in wait_outcomes - {"refused-exhausted"}))
+
+    async def provider_send(chat_id, content):
+        accepted.append((chat_id, content))
+        sending.set()
+        if outcome in {"cancel-send", "timeout", "new-marker-send"}:
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()  # cancellation-resistant provider must not pin shutdown
+        if outcome == "ambiguous":
+            raise TimeoutError("provider accepted; response was lost")
+        return SimpleNamespace(id="accepted")
+
+    adapter._app = SimpleNamespace(send=provider_send)
+    if outcome == "refused-exhausted":
+        adapter.send = AsyncMock(return_value=SendResult(
+            success=False, retryable=True, known_unsent=True, retry_after=60))
+    if outcome == "retryable":
+        # Retryable alone is not proof of non-delivery (other adapters can return this).
+        adapter.send = AsyncMock(return_value=SendResult(success=False, retryable=True))
+
+    async def wait(delay):
+        waiting.set()
+        if outcome in {"exhausted", "refused-exhausted"}:
+            await asyncio.sleep(delay)
+        else:
+            await release.wait()
+    class AsyncioProxy:
+        def __getattr__(self, name):
+            return wait if name == "sleep" else getattr(asyncio, name)
+    monkeypatch.setattr(notices, "asyncio", AsyncioProxy())
+
+    if outcome == "boot-empty":
+        marker.unlink()
+    runner._capture_planned_restart_notification()
+    newer = '{"requested_at": 999, "via_service": true}'
+    if outcome in {"boot-empty", "boot-replaced"}:
+        marker.write_text(newer)
+    task = asyncio.create_task(runner._replay_pending_planned_restart_notification())
+    try:
+        if outcome in wait_outcomes | {"cancel-send", "new-marker-send"}:
+            await asyncio.wait_for((waiting if outcome in wait_outcomes else sending).wait(), 3)
+            if outcome.startswith("new-marker"):
+                marker.write_text(newer)
+            if outcome == "restart":
+                runner._restart_requested = True
+            if outcome.startswith("cancel"):
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 3)
+            elif outcome not in {"exhausted", "refused-exhausted"}:
+                release.set()
+        if not task.cancelled():
+            await asyncio.wait_for(task, 5)
+        if outcome.startswith("new-marker") or outcome.startswith("boot-"):
+            assert marker.read_text() == newer
+            await runner._replay_pending_planned_restart_notification()
+            assert marker.read_text() == newer
+            assert len(accepted) == (1 if outcome == "new-marker-send" else 0)
+            return
+        discord.send.assert_awaited_once()
+        if outcome in wait_outcomes:
+            data = json.loads(marker.read_text())
+            assert data["delivered_targets"] == [["discord", "unit-test-home", None]]
+            assert not data["attempted_targets"]
+            assert not accepted
+            if outcome == "refused-exhausted":
+                adapter.send.assert_awaited_once()  # retry_after exceeds budget: do not retry early
+        else:
+            # Cancellation may leave a consumed-attempt marker until the next replay.
+            await runner._replay_pending_planned_restart_notification()
+            assert not marker.exists()
+            assert len(accepted) == (0 if outcome == "retryable" else 1)
+            if outcome == "retryable":
+                adapter.send.assert_awaited_once()
+        # A new process retries only the homes still owed, never the delivered/ambiguous ones.
+        fresh = object.__new__(gateway_run.GatewayRunner)
+        fresh.__dict__.update(runner.__dict__)
+        del fresh._planned_restart_notification_payload
+        fresh._restart_requested = False
+        replacement = _adapter()
+        fresh.adapters = {Platform.DISCORD: discord, Platform("teams"): replacement}
+        await fresh._replay_pending_planned_restart_notification()
+        assert replacement.send.await_count == (1 if outcome in wait_outcomes else 0)
+        discord.send.assert_awaited_once()
+        assert not marker.exists()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)

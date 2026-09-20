@@ -718,22 +718,25 @@ class GatewayNotificationsMixin(GatewayRestartNotificationsMixin):
                 continue
             yield platform, platform_cfg, home, transport
 
+    async def _dispatch_home_channel_message(self, platform, home, transport, message: str):
+        """Keep the adapter's send certainty available to planned-restart replay."""
+        from gateway.run import _non_conversational_metadata
+        metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
+        if transport.is_relay:
+            metadata = dict(metadata or {})
+            if home.user_id:
+                metadata["user_id"] = home.user_id
+            if home.scope_id:
+                metadata["scope_id"] = home.scope_id
+        send_metadata = _non_conversational_metadata(metadata, platform=platform)
+        if send_metadata is not None or transport.is_relay:
+            return await transport.send(platform, str(home.chat_id), message, metadata=send_metadata)
+        return await transport.adapter.send(str(home.chat_id), message)
+
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
-        from gateway.run import _non_conversational_metadata
         try:
-            metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
-            if transport.is_relay:
-                metadata = dict(metadata or {})
-                if home.user_id:
-                    metadata["user_id"] = home.user_id
-                if home.scope_id:
-                    metadata["scope_id"] = home.scope_id
-            send_metadata = _non_conversational_metadata(metadata, platform=platform)
-            if send_metadata is not None or transport.is_relay:
-                result = await transport.send(platform, str(home.chat_id), message, metadata=send_metadata)
-            else:
-                result = await transport.adapter.send(str(home.chat_id), message)
+            result = await self._dispatch_home_channel_message(platform, home, transport, message)
             if _send_failed(result):
                 logger.warning(failure_fmt, platform.value, home.chat_id, _send_error(result))
                 return False
@@ -761,46 +764,6 @@ class GatewayNotificationsMixin(GatewayRestartNotificationsMixin):
             logger.debug("Free tier startup line skipped: %s", exc)
             return None
         return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
-
-    _planned_restart_notice_lock: Optional[asyncio.Lock] = None
-
-    async def _replay_pending_planned_restart_notification(self) -> None:
-        """Send the planned-restart online notice to every home channel still owed one; clear
-        ``.restart_pending.json`` only once all of them were reached.
-
-        Runs from the boot pass and again from ``_install_reconnected_adapter``, so a home whose
-        platform was down at boot gets its notice when the platform comes back (#112109). Delivered
-        targets are recorded in the marker so neither a later replay nor the next process (if this
-        one restarts first) notifies a home twice. The lock serializes a boot pass that outlived the
-        restore gate against a concurrent reconnect replay.
-        """
-        from gateway.run import _planned_restart_notification_path
-        from utils import atomic_json_write
-
-        if self._planned_restart_notice_lock is None:
-            self._planned_restart_notice_lock = asyncio.Lock()
-        async with self._planned_restart_notice_lock:
-            path = _planned_restart_notification_path()
-            if not path.exists():
-                return
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                delivered = {tuple(target) for target in data.get("delivered_targets", [])}
-                # Owed targets come from config, not live transports: a removed home or an opt-out
-                # (gateway_restart_notification=false) must not keep the marker alive forever.
-                owed = {
-                    _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
-                    for platform, cfg in self.config.platforms.items()
-                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
-                }
-                delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
-                if owed <= delivered:
-                    path.unlink(missing_ok=True)
-                    return
-                data["delivered_targets"] = [list(target) for target in delivered]
-                atomic_json_write(path, data, indent=None)
-            except Exception:
-                logger.warning("Planned-restart notification remains pending", exc_info=True)
 
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None

@@ -283,10 +283,17 @@ Review staged writes from the CLI or any messaging platform:
 
 ```
 /memory pending             # list staged memory writes (auto ones tagged [auto])
+/memory diff <id>           # inspect full proposed changes against current memory
 /memory approve <id>        # apply one (or 'all')
 /memory reject <id>         # drop one (or 'all')
 /memory approval on         # turn the gate on (or 'off') and persist it
 ```
+
+The diff is read-only and uses the current saved entries, not just the proposal's
+substring selector. Character counts are advisory: approval still revalidates the
+proposal and all safety checks. If a proposal cannot be projected (for example,
+its anchor is stale), the command shows the error and complete staged payload
+without applying or discarding it.
 
 This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background

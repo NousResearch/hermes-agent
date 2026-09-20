@@ -39,3 +39,15 @@ test('buildBrowserWindowUrl builds a packaged file URL with the flag before the 
 
   assert.match(url, /^file:\/\/.*index\.html\?win=browser&tab=abc#\/$/)
 })
+
+test('buildBrowserWindowUrl carries the ide scope so the pop-out finds its tab', () => {
+  const url = buildBrowserWindowUrl('url:1', { devServer: 'http://localhost:5173', scope: 'ide' })
+
+  assert.equal(url, 'http://localhost:5173/?win=browser&scope=ide&tab=url%3A1#/')
+})
+
+test('buildBrowserWindowUrl omits the scope for an unscoped pop-out', () => {
+  const url = buildBrowserWindowUrl('url:1', { devServer: 'http://localhost:5173' })
+
+  assert.ok(!url.includes('scope='))
+})

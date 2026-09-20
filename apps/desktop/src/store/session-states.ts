@@ -70,7 +70,7 @@ import {
 } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
-import { isBrowserWindow, isSecondaryWindow } from './windows'
+import { isBrowserWindow, isIdeWindow, isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
 // Reactive per-runtime session state (view mirror of the wiring cache).
@@ -873,7 +873,10 @@ export interface SessionTileWorkspaceScope {
 // (and drops runtime bindings so each tile re-resumes against the now-current
 // gateway — which also settles the "tile resumes against the wrong backend" and
 // "stale runtime after respawn" bugs by construction).
-const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
+// Window-scoped: the Hermes IDE window keeps its OWN tab set (IDE sessions
+// live only there), so it persists under its own key instead of sharing the
+// primary window's strip.
+const TILES_KEY = isIdeWindow() ? 'hermes.desktop.sessionTiles.ide.v1' : 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
 const TILE_PANE_PREFIX = 'session-tile:'
 const BOTS_TILE_BUCKET = '__bots_workspace__'

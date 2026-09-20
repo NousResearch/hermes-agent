@@ -841,6 +841,7 @@
 [data-ref='url'],
 [data-ref='image'],
 [data-ref='session'],
+[data-ref='element'],
 [data-ref='theme'] {
   --ref-color: color-mix(in srgb, var(--ui-accent-secondary) 82%, var(--foreground));
 }

@@ -107,11 +107,74 @@ export function windowBrowserTabId(): null | string {
   }
 }
 
+export const PREVIEW_TABS_GLOBAL_KEY = 'hermes.desktop.previewTabs.v2'
+export const PREVIEW_TABS_IDE_KEY = 'hermes.desktop.previewTabs.ide.v1'
+
+/**
+ * The persisted store key for the in-app Browser's tabs.
+ *
+ * The IDE keeps its tabs under its own key (they are its tabs, not the
+ * primary window's), and its popped-out Browser windows share that same key —
+ * a pop-out is one of those tabs in another window, so both halves must read
+ * one list or the pop-out renders blank (the regression this helper fixes).
+ * A scoped pop-out carries `scope=ide`; everything else reads the global key.
+ */
+export function previewTabsStorageKey(search: string): string {
+  let scoped = false
+
+  try {
+    const params = new URLSearchParams(search)
+
+    scoped = params.get('win') === 'ide' || params.get('scope') === 'ide'
+  } catch {
+    scoped = false
+  }
+
+  return scoped ? PREVIEW_TABS_IDE_KEY : PREVIEW_TABS_GLOBAL_KEY
+}
+
+// An "ide" window is the Hermes IDE: a dedicated full-size surface hosting the
+// explorer, the editor, the IDE-scoped chat column, and the shared in-app
+// browser. It is a specialized shell rather than a peer of the primary app, so
+// it is auxiliary like the HUD and the popped-out browser — no install /
+// onboarding overlays, no single-claim channels. It is NOT transparent: it
+// boots with the same pre-paint as every opaque window.
+export function isIdeWindow(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
+  try {
+    return new URLSearchParams(search).get('win') === 'ide'
+  } catch {
+    return false
+  }
+}
+
+// The workspace root the opener carried into the IDE window (`?cwd=`), if any —
+// read from the query string before the hash, like every window flag. Any hash
+// tail is stripped defensively (URLSearchParams would otherwise keep it as part
+// of the last value). Not cached (read a handful of times per boot) so tests
+// stay honest per search.
+export function ideSeedCwd(search = typeof window === 'undefined' ? '' : window.location.search): null | string {
+  try {
+    const hashAt = search.indexOf('#')
+    const raw = hashAt === -1 ? search : search.slice(0, hashAt)
+    const value = new URLSearchParams(raw).get('cwd')?.trim() ?? ''
+
+    return value || null
+  } catch {
+    return null
+  }
+}
+
+// True when the shell can open (or focus) the Hermes IDE window.
+export function canOpenIdeWindow(): boolean {
+  return typeof window !== 'undefined' && typeof window.hermesDesktop?.ide?.open === 'function'
+}
+
 // True for any window that is NOT the primary app instance — a secondary
-// session window, the HUD, or a popped-out Browser. Single-claim channels
-// (the quick-entry capture bridge, the pet overlay control bridge) and the
-// install/onboarding overlays belong to the primary alone.
-export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow() || isBrowserWindow()
+// session window, the HUD, a popped-out Browser, or the Hermes IDE. Single-claim
+// channels (the quick-entry capture bridge, the pet overlay control bridge) and
+// the install/onboarding overlays belong to the primary alone.
+export const isAuxiliaryWindow = (): boolean =>
+  isSecondaryWindow() || isHudWindow() || isBrowserWindow() || isIdeWindow()
 
 // A full peer window renders the ordinary app shell against the backend that
 // Electron already has running. It is not an auxiliary/specialized renderer,

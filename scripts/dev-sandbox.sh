@@ -162,6 +162,16 @@ export HERMES_HOME="$SANDBOX_ROOT/hermes-home"
 export HERMES_DESKTOP_USER_DATA_DIR="$SANDBOX_ROOT/user-data"
 export HERMES_DESKTOP_APP_NAME="$SANDBOX_NAME"
 
+# Git-Bash/MSYS hands native processes POSIX paths, and with automatic path
+# conversion disabled (the default in some setups) Electron resolves
+# `/d/work/.hermes-sandbox/...` relative to the current drive — the sandbox
+# silently lands in `D:\d\work\...` with an empty home. Hand native Windows
+# paths to the native app; no-op everywhere cygpath is absent.
+if command -v cygpath >/dev/null 2>&1; then
+  export HERMES_HOME="$(cygpath -w "$HERMES_HOME")"
+  export HERMES_DESKTOP_USER_DATA_DIR="$(cygpath -w "$HERMES_DESKTOP_USER_DATA_DIR")"
+fi
+
 mkdir -p "$HERMES_HOME" "$HERMES_DESKTOP_USER_DATA_DIR"
 
 if [ -n "$SEED_DIR" ]; then

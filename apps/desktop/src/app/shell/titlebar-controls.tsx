@@ -16,6 +16,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { toggleHud } from '@/store/hud'
+import { openIdeWindow } from '@/store/ide'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -201,6 +202,18 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // Static system tools — always pinned to the screen's right edge so the
   // left titlebar stays free for tabs (#107351).
   const systemTools: TitlebarTool[] = [
+    {
+      // The Hermes IDE is its own window kind (store/ide.ts opens it; the
+      // renderer branch lives in app/contrib/controller.tsx).
+      actionId: 'view.openIde',
+      icon: <TitlebarIcon name="code" />,
+      id: 'ide',
+      label: t.titlebar.openIde,
+      onSelect: () => {
+        triggerHaptic('open')
+        void openIdeWindow()
+      }
+    },
     {
       actionId: 'nav.settings',
       icon: <TitlebarIcon name="settings-gear" />,

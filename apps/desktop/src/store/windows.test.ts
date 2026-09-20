@@ -6,6 +6,8 @@ import {
   canOpenBrowserWindow,
   canOpenNewWindow,
   canOpenSessionWindow,
+  ideSeedCwd,
+  isIdeWindow,
   isPeerInstanceWindow,
   isProfilePinnedWindow,
   openBrowserInNewWindow,
@@ -78,6 +80,29 @@ describe('isProfilePinnedWindow', () => {
     expect(isProfilePinnedWindow('?peer=1&profile=work&connectionId=remote')).toBe(false)
     expect(isProfilePinnedWindow('?profileWindow=0')).toBe(false)
     expect(isProfilePinnedWindow('')).toBe(false)
+  })
+})
+
+describe('isIdeWindow', () => {
+  it('recognizes only the ide window flag', () => {
+    expect(isIdeWindow('?win=ide')).toBe(true)
+    expect(isIdeWindow('?win=ide&profile=work&cwd=%2Frepo')).toBe(true)
+    expect(isIdeWindow('?win=hud')).toBe(false)
+    expect(isIdeWindow('?win=browser')).toBe(false)
+    expect(isIdeWindow('?peer=1')).toBe(false)
+    expect(isIdeWindow('')).toBe(false)
+  })
+})
+
+describe('ideSeedCwd', () => {
+  it('reads the workspace seed carried before the hash', () => {
+    expect(ideSeedCwd('?win=ide&cwd=%2Frepo%2Fone#/')).toBe('/repo/one')
+  })
+
+  it('is null without a usable seed', () => {
+    expect(ideSeedCwd('?win=ide')).toBe(null)
+    expect(ideSeedCwd('?win=ide&cwd=%20%20')).toBe(null)
+    expect(ideSeedCwd('')).toBe(null)
   })
 })
 

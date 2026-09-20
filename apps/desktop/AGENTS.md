@@ -287,3 +287,26 @@ disagree about whether the notice was shown. Sign-in goes through the existing
 connector transfer and reports `reason`, `account_email` and `model` on completion; every entry
 point (Billing, status chip, ready screen) opens the one free-tier sign-in dialog. Never branch on
 provider display names: the picker row carries `free_tier_row`, status cards carry `free_tier`.
+
+## Surface: the Hermes IDE window (`?win=ide`)
+
+A specialized window kind (instance-window construction + the HUD's surface flag) that mounts the
+same wiring around a fixed four-region shell: explorer rail, editor column over a docked browser
+pane, chat column, status bar. Entered from the titlebar icon (right system cluster), `Mod+Shift+E`,
+and the command palette; focus-or-create, never a duplicate. `src/app/ide/regions.ts` is the frame's
+whole region contract — grow regions without touching the shell.
+
+Three scoping invariants, each mirroring an existing precedent:
+
+- **Sessions**: IDE chats are ordinary sessions created with `source: 'ide'`. The IDE lists them
+  through the REST source filter; the primary sidebar excludes them in its two source lists; and
+  `_gui_surface_toolsets` folds `desktop_ui` in for `ide` (the shared browser rides on it), keyed on
+  the session's source like every other surface. No schema, no id pointers.
+- **Window-scoped persistence**: the IDE keeps its own session tiles and browser tabs because the
+  `sessionTiles` and `previewTabs` (+ right-rail active tab) storage keys are selected by
+  `isIdeWindow()` — the same window-kind predicate every other surface flag uses.
+- **Reuse over rewrite**: explorer = `useProjectTree`/`ProjectTree` bound to the IDE workspace root;
+  editor = the shared CodeMirror surface with the preview's stale-on-disk save guard; chat column =
+  `SessionTilePane` (the real transcript/composer/tools); browser = `PreviewTilePane`, plus Inspect
+  (element → selector + trimmed outerHTML) and Add page to chat, both routed to the active IDE
+  composer via `requestComposerInsert`.

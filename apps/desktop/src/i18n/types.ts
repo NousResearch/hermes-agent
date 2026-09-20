@@ -399,6 +399,56 @@ export interface Translations {
     resetHudLayout: string
     layoutEditor: string
     layoutEditorTitle: (modifier: string) => string
+    openIde: string
+  }
+  ide: {
+    title: string
+    noWorkspace: string
+    explorerTitle: string
+    explorerEmptyTitle: string
+    explorerEmptyBody: string
+    editorTitle: string
+    editorEmptyTitle: string
+    editorEmptyBody: string
+    chatTitle: string
+    chatEmptyTitle: string
+    chatEmptyBody: string
+    browserTitle: string
+    browserEmptyTitle: string
+    browserEmptyBody: string
+    toggleExplorer: string
+    toggleChat: string
+    toggleBrowser: string
+    resizeExplorer: string
+    resizeChat: string
+    resizeBrowser: string
+    refreshExplorer: string
+    explorerUnreadable: (error: string) => string
+    editorTabsLabel: string
+    closeTab: string
+    closeTabLabel: (name: string) => string
+    reloadFromDisk: string
+    tooLargeTitle: string
+    tooLargeBody: string
+    loadFailedTitle: string
+    closeDirtyTitle: string
+    closeDirtyBody: string
+    closeDirtyConfirm: string
+    diskChangedTitle: string,
+    diskChangedBody: string,
+    overwrite: string,
+    chatTabsLabel: string,
+    chatNew: string,
+    chatRecent: string,
+    chatCreateFailed: string,
+    browserTabsLabel: string,
+    browserOpen: string,
+    browserNewTab: string,
+    browserInspect: string,
+    browserAddPage: string,
+    browserInspectFailed: string,
+    openFolder: string,
+    openFolderFailed: string,
   }
 
   keybinds: {
@@ -1810,6 +1860,7 @@ export interface Translations {
     hermesActiveSessions: (version: string, count: number) => string
     restartGateway: string
     openBrowser: string
+    openIde: string
     gatewayRestartFailed: string
     sharedGatewayRestartTitle: string
     sharedGatewayRestartDescription: (bots: string) => string

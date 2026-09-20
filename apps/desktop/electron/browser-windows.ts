@@ -16,10 +16,18 @@ export const BROWSER_WINDOW_MIN_HEIGHT = 400
  */
 export function buildBrowserWindowUrl(
   tabId: null | string | undefined,
-  { devServer, rendererIndexPath }: { devServer?: null | string; rendererIndexPath?: string } = {}
+  {
+    devServer,
+    rendererIndexPath,
+    scope
+  }: { devServer?: null | string; rendererIndexPath?: string; scope?: 'ide' } = {}
 ): string {
   const tab = typeof tabId === 'string' ? tabId.trim() : ''
-  const query = `?win=browser${tab ? `&tab=${encodeURIComponent(tab)}` : ''}`
+  // `scope=ide` keeps the pop-out reading the same tab store as the window it
+  // came from — the IDE keeps its browser tabs under its own key, so a pop-out
+  // without the scope finds no tab and renders blank.
+  const scopeParam = scope ? `&scope=${encodeURIComponent(scope)}` : ''
+  const query = `?win=browser${scopeParam}${tab ? `&tab=${encodeURIComponent(tab)}` : ''}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer

@@ -1802,8 +1802,10 @@ def _load_tool_progress_mode() -> str:
 def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
-    backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
-    return {"project", "desktop_ui"} if platform == "desktop" else {"project"}
+    backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule). The Hermes IDE window is a
+    desktop-class GUI surface (it hosts the shared in-app browser), so its sessions keep the same
+    client toolsets."""
+    return {"project", "desktop_ui"} if platform in ("desktop", "ide") else {"project"}
 
 
 def _tui_notice(text: str) -> None:

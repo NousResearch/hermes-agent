@@ -301,6 +301,23 @@ export function refChipLabel(type: string, id: string): string {
     return id || 'terminal'
   }
 
+  // An inspected element: the value is `<selector> :: <page> :: <collapsed
+  // html>`. The chip shows the selector's last two segments ("svg > path"), so
+  // a pick reads as a compact mention — the full selector and the code stay in
+  // the reference payload (hover title) instead of flooding the transcript.
+  if (type === 'element') {
+    const [selector] = id.split(' :: ')
+
+    const segments = (selector || '')
+      .split('>')
+      .map(part => part.trim())
+      .filter(Boolean)
+
+    const label = segments.slice(-2).join(' > ') || 'element'
+
+    return label.length > 28 ? `${label.slice(0, 27)}…` : label
+  }
+
   if (type === 'session') {
     return sessionRefFallbackLabel(id)
   }

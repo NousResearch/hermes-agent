@@ -144,6 +144,15 @@ const $projectTree = atom<ProjectTreeState>(initialState)
 let nextRootRequestId = 0
 let lastConnectionKey = ''
 
+// Connection re-homes (wiring's soft-switch wipe) clear this store out from
+// under mounted hooks. Without a re-arm a hook that already ran its load effect
+// renders "loading" forever with no retry path: the wipe bumps the requestId so
+// every in-flight commit is dropped, and neither `connectionKey` nor `cwd`
+// changed for the effect to re-run. This nonce is the re-arm — every mounted
+// tree reloads its root after a wipe. (A fresh window that mounts with a
+// preset cwd, like the IDE's URL-seeded workspace, hits this at boot.)
+const $treeResetNonce = atom(0)
+
 // While the root is errored (ENOENT during a session's cwd race, a folder that
 // reappears after a checkout, a remote that wasn't ready), keep retrying on a
 // slow cadence so the tree self-heals instead of staying "UNREADABLE" forever.
@@ -279,6 +288,7 @@ export function resetProjectTreeState() {
   lastConnectionKey = ''
   clearProjectTree()
   clearProjectDirCache()
+  $treeResetNonce.set($treeResetNonce.get() + 1)
 }
 
 // Non-destructive live refresh as the agent edits: preserves expansion + loaded
@@ -394,6 +404,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   const state = useStore($projectTree)
   const connection = useStore($connection)
   const workspaceTick = useStore($workspaceChangeTick)
+  const resetNonce = useStore($treeResetNonce)
   const connectionKey = desktopFsCacheKey(connection)
   // Subscribed so a toggle re-renders the header; the roots list itself is read
   // through showsIgnoredFiles so every caller shares one resolver.
@@ -535,7 +546,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     }
 
     void loadRoot(cwd, { connectionKey })
-  }, [connectionKey, cwd])
+  }, [connectionKey, cwd, resetNonce])
 
   // Self-heal: an errored root re-probes every few seconds while the tree is
   // mounted. Each attempt bumps requestId, so a persistent error re-arms the

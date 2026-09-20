@@ -51,6 +51,10 @@ if (winParam === 'hud') {
   document.title = 'Hermes HUD'
 }
 
+if (winParam === 'ide') {
+  document.title = 'Hermes IDE'
+}
+
 // The `?win=` kinds whose Electron window is `transparent: true` and so paints
 // nothing but its own surface over the user's desktop. `secondary` (a session
 // window) and `browser` are ordinary opaque windows and are deliberately not

@@ -76,7 +76,7 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
-import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isBrowserWindow, isHudWindow, isIdeWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
@@ -92,6 +92,7 @@ import {
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
+import { IdeShell } from '../ide/shell/ide-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 
@@ -426,11 +427,11 @@ discoverBundledPlugins()
 watchContributedPanes()
 
 // Session + route (page) tiles: persisted splits register panes docked beside
-// main. A popped-out Browser and the HUD have no layout tree — registering
-// tiles there would still run, and preview-tile watching would try to dock
-// into a tree this window never renders (and, in the HUD, paint a webview
-// into the transparent overlay).
-if (!isBrowserWindow() && !isHudWindow()) {
+// main. A popped-out Browser, the HUD, and the IDE have no layout tree —
+// registering tiles there would still run, and preview-tile watching would try
+// to dock into a tree this window never renders (and, in the HUD, paint a
+// webview into the transparent overlay).
+if (!isBrowserWindow() && !isHudWindow() && !isIdeWindow()) {
   watchSessionTiles()
   startUnrestoredTileTitleBackfill()
   watchRouteTiles()
@@ -792,6 +793,19 @@ export function ContribController() {
     return (
       <ContribWiring>
         <BrowserPopoutShell />
+      </ContribWiring>
+    )
+  }
+
+  // The Hermes IDE is a specialized shell over the same wiring — gateway,
+  // sessions, streams, and submit all mount identically; only the surface
+  // differs (the same reasoning as the HUD branch above).
+  if (isIdeWindow()) {
+    return (
+      <ContribWiring>
+        <AppContextMenu />
+        <SessionTileCloseConfirm />
+        <IdeShell />
       </ContribWiring>
     )
   }

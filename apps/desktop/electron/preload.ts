@@ -181,6 +181,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
     }
   },
+  // Hermes IDE: a dedicated full-size window hosting the IDE surface
+  // (explorer / editor / IDE-scoped chat / shared browser). Opening focuses
+  // the live window; main owns it like every other window kind.
+  ide: {
+    open: request => ipcRenderer.invoke('hermes:ide:open', request)
+  },
   // macOS native screenshot gesture; captures require a main-issued request.
   screenshot: process.platform === 'darwin' ? {
     getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),

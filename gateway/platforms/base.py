@@ -384,7 +384,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+_checkout_root = Path(__file__).resolve().parents[2]
+# Defensive only: append a real checkout root if missing so this file still imports standalone;
+# never prepend: the checkout must not shadow same-named installed packages process-wide.
+if (_checkout_root / "gateway" / "__init__.py").is_file() and str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after

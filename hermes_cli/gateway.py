@@ -5004,7 +5004,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_named_profile_under_multiplexer(force=force)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
-    sys.path.insert(0, str(PROJECT_ROOT))
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
 
     # Detached Windows runs (HERMES_GATEWAY_DETACHED=1, or non-TTY for older wrappers) ignore

@@ -212,7 +212,11 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+_checkout_root = _Path(__file__).resolve().parents[3]
+# Defensive only: append a real checkout root if missing so this file still imports standalone;
+# never prepend: the checkout must not shadow same-named installed packages process-wide.
+if (_checkout_root / "gateway" / "__init__.py").is_file() and str(_checkout_root) not in sys.path:
+    sys.path.append(str(_checkout_root))
 
 
 def _is_discord_transport_error(exc: BaseException) -> bool:

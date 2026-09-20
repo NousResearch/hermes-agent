@@ -435,6 +435,8 @@ describe('secondary reconnect backoff (#83134)', () => {
     await vi.advanceTimersByTimeAsync(12_000)
 
     // Ladder from attempt 0: ≤ ~8 dials in 12 s; a reset-per-failure loop makes ~40+.
+    // Deterministic ladder 150/300/…/4800 ms ⇒ 6–7 redials in 12 s: alive, but climbing.
+    expect(gatewayMocks.connect.mock.calls.length).toBeGreaterThanOrEqual(5)
     expect(gatewayMocks.connect.mock.calls.length).toBeLessThanOrEqual(10)
   })
 
@@ -455,6 +457,8 @@ describe('secondary reconnect backoff (#83134)', () => {
 
     await vi.advanceTimersByTimeAsync(12_000)
 
+    // Deterministic ladder 150/300/…/4800 ms ⇒ 6–7 redials in 12 s: alive, but climbing.
+    expect(gatewayMocks.connect.mock.calls.length).toBeGreaterThanOrEqual(5)
     expect(gatewayMocks.connect.mock.calls.length).toBeLessThanOrEqual(10)
   })
 })

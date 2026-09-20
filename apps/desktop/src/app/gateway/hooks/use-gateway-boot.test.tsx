@@ -1404,6 +1404,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     // Attempt 0 forever redials every 150ms (~80 sockets / 12s — the reporter's
     // 55 opens / 12s). A climbing ladder reaches the 15s cap in ~7 dials.
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(5)
     expect(FakeWebSocket.instances.length).toBeLessThanOrEqual(10)
   })
 

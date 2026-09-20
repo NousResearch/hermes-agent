@@ -43,6 +43,52 @@ def test_grep_r_dollar_home_blocked(tmp_path, monkeypatch):
     _error(blocked)
 
 
+def test_grep_r_quoted_dollar_home_blocked(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    blocked = recursive_search_root_block(
+        'grep -rln x "$HOME"',
+        cwd=str(tmp_path / "proj"),
+        home=home,
+    )
+    _error(blocked)
+
+
+def test_find_quoted_tmp_blocked(tmp_path):
+    blocked = recursive_search_root_block('find "/tmp" -name "*.md"', cwd=str(tmp_path))
+    _error(blocked)
+
+
+def test_rg_quoted_private_tmp_blocked(tmp_path):
+    blocked = recursive_search_root_block('rg llm-access "/private/tmp"', cwd=str(tmp_path))
+    _error(blocked)
+
+
+def test_grep_r_after_other_short_flags_blocked(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    blocked = recursive_search_root_block(
+        "grep -n -r $HOME",
+        cwd=str(tmp_path / "proj"),
+        home=home,
+    )
+    _error(blocked)
+
+
+def test_grep_r_after_long_option_blocked(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    blocked = recursive_search_root_block(
+        "grep --include=*.md -rln x $HOME",
+        cwd=str(tmp_path / "proj"),
+        home=home,
+    )
+    _error(blocked)
+
+
 def test_find_tmp_blocked(tmp_path):
     blocked = recursive_search_root_block("find /tmp -name '*.md'", cwd=str(tmp_path))
     data = _error(blocked)

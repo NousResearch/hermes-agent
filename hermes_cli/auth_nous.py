@@ -35,6 +35,8 @@ logger = logging.getLogger("hermes_cli.auth")
 # Lost-scope override resolutions already warned about, keyed by the override
 # name-set (see _scoped_operator_override). Process-static condition: repeated
 # resolutions of the same name-set log at DEBUG instead of WARNING.
+# Bounded in practice: one entry per distinct static call-site name-set (2 in this
+# file), never per call or per caller.
 _LOST_SCOPE_WARNED: set[tuple[str, ...]] = set()
 
 _UNUSABLE_JWT_RELOGIN = "Re-authenticate with: hermes auth add nous"

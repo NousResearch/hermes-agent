@@ -104,6 +104,7 @@ _LINE_COUNT_MAX_BYTES = 4 * 1024 * 1024
 # Per-command stdout/stderr ceiling for the ``git``/``rg`` helpers; past it the child is
 # killed and the nonzero returncode routes the caller to its fallback path.
 _MAX_QUIET_OUTPUT_BYTES = 4 * 1024 * 1024
+_OUTPUT_CAP_EXCEEDED_RETURNCODE = 137  # 128 + SIGKILL, the code a shell reports for a killed child
 _FENCE_LANGUAGES = {
     ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
     ".json": "json", ".md": "markdown", ".sh": "bash", ".yml": "yaml", ".yaml": "yaml", ".toml": "toml",
@@ -365,13 +366,17 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
 
     ``capture_output=True`` buffers the child's entire stdout — an unbounded ``git diff``
     or ``rg --files`` would materialize a hostile-size stream in memory. Each pipe is
-    drained up to ``_MAX_QUIET_OUTPUT_BYTES``; past it the child is killed and its
-    nonzero returncode routes callers to their existing fallback paths.
+    drained up to ``_MAX_QUIET_OUTPUT_BYTES``; past it the child is killed and the result
+    carries a nonzero returncode that routes callers to their existing fallback paths. Set
+    explicitly: a child that flushed everything and exited 0 before the drain thread crossed
+    the cap is not killable and would otherwise report success with truncated output.
     """
     popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         **popen_kwargs, **({} if env is None else {"env": env}))
+
+    truncated = threading.Event()
 
     def _drain(stream, sink: list[bytes]) -> None:
         total = 0
@@ -383,6 +388,7 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
             if total <= _MAX_QUIET_OUTPUT_BYTES:
                 sink.append(chunk)
             else:
+                truncated.set()
                 proc.kill()
                 return
 
@@ -402,7 +408,10 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
     for thread in threads:
         thread.join()
     stdout, stderr = (b"".join(sink).decode("utf-8", "replace") for sink in sinks)
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    returncode = proc.returncode
+    if truncated.is_set() and returncode == 0:
+        returncode = _OUTPUT_CAP_EXCEEDED_RETURNCODE
+    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:

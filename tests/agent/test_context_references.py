@@ -287,6 +287,20 @@ def test_run_quiet_caps_child_output(tmp_path: Path):
     assert huge.returncode != 0
     assert len(huge.stdout) <= _MAX_QUIET_OUTPUT_BYTES
 
+    # A child that flushes past the cap and exits 0 before the drain thread reads it (the common
+    # case for a fast writer on a loaded runner) must still report failure: the caller's fallback
+    # path keys on the returncode, and a 0 with truncated stdout was a silent success.
+    with patch("agent.context_references.subprocess.Popen") as popen:
+        import io
+        fake = popen.return_value
+        fake.stdout = io.BytesIO(b"x" * (_MAX_QUIET_OUTPUT_BYTES + 1000))
+        fake.stderr = io.BytesIO(b"")
+        fake.returncode = 0
+        fake.wait.return_value = 0
+        exited = _run_quiet([sys.executable, "-c", "pass"], tmp_path, 30)
+    assert exited.returncode != 0
+    assert len(exited.stdout) <= _MAX_QUIET_OUTPUT_BYTES
+
     ok = _run_quiet([sys.executable, "-c", "print('hello')"], tmp_path, 30)
     assert ok.returncode == 0 and "hello" in ok.stdout
 

@@ -1,6 +1,5 @@
 """Regression tests for command discovery during system-package setup."""
 
-import os
 import shutil
 import stat
 import subprocess
@@ -12,7 +11,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+pytestmark = [
+    pytest.mark.linux_only,
+    pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash"),
+]
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -34,7 +36,9 @@ def test_system_package_probe_finds_commands_in_link_dir(tmp_path):
 
     script = (
         f'source "{INSTALL_SH}" --manifest >/dev/null\n'
-        'OS=linux DISTRO=unknown install_system_packages\n'
+        'OS=linux\n'
+        'DISTRO=unknown\n'
+        'install_system_packages\n'
         'printf "ripgrep=%s ffmpeg=%s\\n" "$HAS_RIPGREP" "$HAS_FFMPEG"\n'
     )
     result = subprocess.run(
@@ -42,7 +46,7 @@ def test_system_package_probe_finds_commands_in_link_dir(tmp_path):
         capture_output=True,
         text=True,
         check=True,
-        env={**os.environ, "HOME": str(home), "PATH": str(path_dir)},
+        env={"HOME": str(home), "PATH": str(path_dir)},
     )
 
     assert "ripgrep=true ffmpeg=true" in result.stdout

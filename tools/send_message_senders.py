@@ -236,10 +236,57 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+def _telegram_coerce_extra_bool(extra, key: str, default: bool = False) -> bool:
+    """String-safe bool coercion for ``platforms.telegram.extra`` keys (``"false"`` must stay off)."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter.__new__(TelegramAdapter)
+    adapter.config = PlatformConfig(enabled=True, token="", extra=extra or {})
+    return adapter._coerce_bool_extra(key, default)
+
+
+def _telegram_rich_policy(extra, bot):
+    """Bare adapter shell so standalone sends reuse the gateway rich eligibility gates."""
+    from gateway.config import Platform, PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter.config = PlatformConfig(enabled=True, token="", extra=extra or {})
+    adapter._rich_messages_enabled = adapter._coerce_bool_extra("rich_messages", False)
+    adapter._allow_cjk_rich_messages = adapter._coerce_bool_extra("allow_cjk_rich_messages", False)
+    adapter._disable_link_previews = adapter._coerce_bool_extra("disable_link_previews", False)
+    adapter._rich_send_disabled = False
+    adapter._bot = bot
+    return adapter
+
+
+async def _telegram_try_send_rich(bot, int_chat_id, message, thread_kwargs, policy):
+    """Attempt one ``sendRichMessage``; return ``message_id`` or ``None`` to fall back to legacy."""
+    payload = policy._rich_payload_base(str(int_chat_id), message)
+    payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
     try:
-        formatted, send_parse_mode, _has_html = _telegram_format(message)
+        rich_result = await bot.do_api_request("sendRichMessage", api_kwargs=payload)
+    except Exception as exc:
+        if policy._rich_rejected(exc, "sendRichMessage", "MarkdownV2"):
+            return None
+        raise
+    msg_id = None
+    if isinstance(rich_result, dict):
+        msg_id = rich_result.get("message_id")
+        if msg_id is None:
+            msg_id = (rich_result.get("result") or {}).get("message_id")
+    else:
+        msg_id = getattr(rich_result, "message_id", None)
+    return msg_id
+
+
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, extra=None):
+    """One-shot Telegram Bot API send; rich constructs opt in via ``extra.rich_messages``."""
+    extra = extra or {}
+    bot = None
+    try:
         bot = _telegram_bot(token)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
@@ -248,17 +295,32 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
+        if disable_link_previews:
+            extra = {**extra, "disable_link_previews": True}
+        policy = _telegram_rich_policy(extra, bot)
+        disable_link_previews = policy._disable_link_previews
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
+        formatted, send_parse_mode, _has_html = _telegram_format(message)
         last_msg, warnings, _tg_caption = None, [], None
+        rich_succeeded = False
+        if policy._should_attempt_rich(message) and not _has_html and not media_files:
+            msg_id = await _telegram_try_send_rich(bot, int_chat_id, message, thread_kwargs, policy)
+            if msg_id is not None:
+                from types import SimpleNamespace
+                last_msg = SimpleNamespace(message_id=msg_id)
+                rich_succeeded = True
+                formatted = ""
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
-        # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+        # Legacy path: chunk formatted MarkdownV2 at 4096 UTF-16 units. Rich sends the full raw
+        # markdown first (up to 32,768 chars) so tables are not pre-split at the legacy limit.
+        if not rich_succeeded:
+            for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
+                last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
@@ -286,6 +348,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
+        # Rich transient failures must propagate: the request may have reached Telegram and a
+        # legacy resend would duplicate the message.
+        if bot is not None and not _telegram_rich_policy(extra, bot)._is_rich_fallback_error(e):
+            raise
         return _error(f"Telegram send failed: {e}")
 
 

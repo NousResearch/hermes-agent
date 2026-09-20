@@ -26,6 +26,7 @@ def _reset_signal_scheduler():
     _reset_scheduler()
 
 from gateway.config import Platform
+from tools.send_message_senders import _telegram_coerce_extra_bool
 from tools.send_message_tool import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
@@ -887,6 +888,152 @@ class TestSendTelegramThreadIdMapping:
         # Second call (retry): should NOT include message_thread_id
         call2_kwargs = bot.send_document.await_args_list[1].kwargs
         assert "message_thread_id" not in call2_kwargs
+
+
+def _install_telegram_mock_with_rich(monkeypatch, bot):
+    """Telegram shim whose Bot.do_api_request is async so rich eligibility matches production."""
+    parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
+    constants_mod = SimpleNamespace(ParseMode=parse_mode)
+    _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
+
+    class _BotStub:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def do_api_request(self, *args, **kwargs):
+            return await bot.do_api_request(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(bot, name)
+
+    telegram_mod = SimpleNamespace(
+        Bot=_BotStub,
+        MessageEntity=_MessageEntity,
+        constants=constants_mod,
+    )
+    monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
+    monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
+
+
+class TestTelegramCoerceExtraBool:
+    def test_rich_messages_false_string_is_off(self):
+        assert _telegram_coerce_extra_bool({"rich_messages": "false"}, "rich_messages") is False
+
+    def test_rich_messages_true_string_is_on(self):
+        assert _telegram_coerce_extra_bool({"rich_messages": "true"}, "rich_messages") is True
+
+
+class TestSendTelegramRichMessages:
+    """Standalone ``_send_telegram`` mirrors gateway rich policy: opt-in, construct-gated, no 4096 pre-split."""
+
+    def test_rich_disabled_by_default_skips_rich_path(self, monkeypatch):
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 999})
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "| col | col |\n|---|---|"))
+
+        assert result["success"] is True
+        assert result["message_id"] == "1"
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    def test_rich_messages_false_string_skips_rich_path(self, monkeypatch):
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 999})
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "| col | col |\n|---|---|", extra={"rich_messages": "false"})
+        )
+
+        assert result["success"] is True
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    def test_table_content_uses_send_rich_message(self, monkeypatch):
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 999})
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "| col | col |\n|---|---|", extra={"rich_messages": True})
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "999"
+        call = bot.do_api_request.await_args
+        assert call.args[0] == "sendRichMessage"
+        assert "|" in call.kwargs["api_kwargs"]["rich_message"]["markdown"]
+        bot.send_message.assert_not_awaited()
+
+    def test_plain_markdown_stays_on_legacy_path(self, monkeypatch):
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 999})
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "Hello **there**", extra={"rich_messages": True})
+        )
+
+        assert result["success"] is True
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    def test_rich_table_not_presplit_at_4096(self, monkeypatch):
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 999})
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        rows = "\n".join(f"| row {i} | value {i} |" for i in range(220))
+        message = f"| Case | Status |\n|---|---|\n{rows}"
+        assert len(message) > 4096
+        assert len(message) < 32768
+
+        result = asyncio.run(_send_telegram("tok", "123", message, extra={"rich_messages": True}))
+
+        assert result["success"] is True
+        bot.do_api_request.assert_awaited_once()
+        sent = bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+        assert len(sent) > 4096
+        assert "row 219" in sent
+        bot.send_message.assert_not_awaited()
+
+    def test_rich_falls_back_to_legacy_on_bad_request(self, monkeypatch):
+        from telegram.error import BadRequest
+
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(side_effect=BadRequest("Bad Request: message is too long"))
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=5))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "| a | b |\n|---|---|", extra={"rich_messages": True})
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "5"
+        bot.do_api_request.assert_awaited_once()
+        bot.send_message.assert_awaited_once()
+
+    def test_rich_transient_timeout_propagates(self, monkeypatch):
+        from telegram.error import TimedOut
+
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(side_effect=TimedOut("read timed out"))
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        with pytest.raises(TimedOut):
+            asyncio.run(
+                _send_telegram("tok", "123", "| a | b |\n|---|---|", extra={"rich_messages": True})
+            )
+        bot.send_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

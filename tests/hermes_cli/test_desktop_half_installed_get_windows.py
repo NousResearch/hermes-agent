@@ -65,7 +65,6 @@ def test_install_removes_the_half_installed_dir_before_npm_runs(tmp_path, monkey
 def test_install_is_skipped_while_manifests_and_electron_are_unchanged(tmp_path, monkeypatch):
     """Root `npm ci` re-reifies the whole graph; only manifest changes or a pruned Electron warrant it. See #43837."""
     import hermes_cli.main_web_build as web_build
-    from hermes_constants import get_default_hermes_root
     # Electron under the workspace-local hoist, where electronDist points (_electron_dir).
     electron = _desktop_checkout(tmp_path, monkeypatch, electron_dir=tmp_path / "apps" / "desktop" / "node_modules" / "electron")
     calls: list[Path] = []
@@ -93,7 +92,6 @@ def test_failed_reinstall_drops_the_stamp_so_the_next_update_repairs(tmp_path, m
     import pytest
 
     import hermes_cli.main_web_build as web_build
-    from hermes_constants import get_default_hermes_root
     electron = _desktop_checkout(tmp_path, monkeypatch)
     codes = [0, 1, 0]
     monkeypatch.setattr(web_build, "_run_npm_install_deterministic",

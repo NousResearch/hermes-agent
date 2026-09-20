@@ -98,12 +98,43 @@ def test_scalar_platform_toolsets_fall_back_to_platform_default():
     assert enabled == default_enabled
 
 
+def test_platform_composite_preserves_config_gated_model_selection(tmp_path, monkeypatch):
+    """A full platform bundle must retain config-gated tools through final schema assembly."""
+    config = {
+        "platform_toolsets": {"telegram": ["hermes-telegram"]},
+        "agent": {
+            "model_selection": {
+                "enabled": True,
+                "routes": {
+                    "sol": {
+                        "target": "sol",
+                        "default_reasoning": "high",
+                        "allowed_reasoning": ["high"],
+                    }
+                },
+            }
+        },
+    }
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n"
+        "  model_selection:\n"
+        "    enabled: true\n"
+        "    routes:\n"
+        "      sol:\n"
+        "        target: sol\n"
+        "        default_reasoning: high\n"
+        "        allowed_reasoning: [high]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
+    enabled = sorted(_get_platform_tools(config, "telegram", include_default_mcp_servers=False))
 
+    import model_tools
 
-
-
-
+    schemas = model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=False)
+    names = {schema["function"]["name"] for schema in schemas}
+    assert "select_model" in names
 
 
 def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):

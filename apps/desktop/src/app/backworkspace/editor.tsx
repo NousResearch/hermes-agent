@@ -47,7 +47,9 @@ const PAGE_THEME = EditorView.theme({
   // take app tokens instead, so they follow light and dark with everything
   // else. `.cm-focused` is repeated to match the base rule's specificity —
   // ours is declared later, so equal specificity wins.
-  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--bw-ink)' },
+  // Wider than CodeMirror's 1.2px hairline: beside a hand at this size a hairline
+  // reads as a rendering artefact rather than as the place the next letter goes.
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--bw-ink)', borderLeftWidth: '2px', marginLeft: '-1px' },
   '&.cm-focused.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground': {
     backgroundColor: 'var(--ui-selection-background)'
   },

@@ -13,6 +13,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
+from gateway.status import flush_runtime_status
 
 
 class _FakeAdapter:
@@ -880,6 +881,7 @@ class TestSecondaryProfileConfigHandling:
         runner.config = GatewayConfig(multiplex_profiles=False)
 
         assert await runner._start_secondary_profile_adapters() == 0
+        flush_runtime_status()
         assert read_runtime_status(tmp_path / "gateway_state.json")["served_profiles"] == []
 
     @pytest.mark.asyncio

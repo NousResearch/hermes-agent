@@ -215,10 +215,17 @@ def _cross_process_boot_lock(timeout_s: float = 130.0):
     Two profiles booting in the same second each see no ``server.json`` yet and each spawn a
     router on the stable port (#116682); an OS-held lock makes the second caller wait for the
     first to publish its state file, so it re-checks and adopts instead of spawning a duplicate.
-    Bounded, not indefinite: never hang session start dead if the lock is somehow stuck."""
+    Bounded, not indefinite: never hang session start dead if the lock is somehow stuck, and
+    never raise into session start: an unwritable runtimes dir (or a foreign-owned lock file)
+    proceeds unlocked with a warning, like the contention timeout."""
     path = runtimes_root() / "boot.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as exc:
+        logger.warning("boot lock unavailable (%s); proceeding without it", exc)
+        yield
+        return
     try:
         deadline = time.monotonic() + timeout_s
         while not _try_lock_boot_fd(fd):

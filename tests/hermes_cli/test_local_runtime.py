@@ -10,6 +10,7 @@ exercise detection fingerprinting and supervisor logic without a GPU.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1022,6 +1023,29 @@ def test_ensure_local_runtime_serializes_racing_callers(tmp_path, monkeypatch):
     assert len(spawns) == 1, (
         "both racing callers spawned a router instead of the second adopting the "
         "first's published state (#116682)")
+
+
+def test_ensure_local_runtime_proceeds_when_boot_lock_is_unwritable(tmp_path, monkeypatch, caplog):
+    """The boot lock lives outside the body's ``try/except``: an unwritable runtimes dir must
+    degrade to a warning and an unlocked boot, never an OSError out of session start."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    mdir = bootstrap.models_dir()
+    mdir.mkdir(parents=True, exist_ok=True)
+    (mdir / "stub-Q4_K_M.gguf").touch()
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "runtimes_root", lambda: blocker / "runtimes")  # mkdir -> OSError
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
+
+    with caplog.at_level(logging.WARNING, logger=bootstrap.logger.name):
+        result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
+
+    assert result is None  # no exception escaped
+    assert any("boot lock unavailable" in rec.getMessage() for rec in caplog.records)
 
 
 def test_manifest_verified_tolerates_non_dict_manifest(tmp_path):

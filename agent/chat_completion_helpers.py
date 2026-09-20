@@ -1276,6 +1276,11 @@ def _reasoning_config_for_wire(agent):
         # the route default — as the auxiliary ladder does; resending would 400 identically.
         agent._wire_reasoning_config = None
         return None
+    if cfg is None:
+        # Unset effort: the profile's default (custom/OpenAI-compatible: medium) rather than the
+        # route's own, recorded below as what went out so a rejection of it lands in the branch above.
+        from agent.reasoning_params import unset_reasoning_default
+        cfg = unset_reasoning_default(agent)
     if getattr(agent, "_reasoning_disable_rejected", False):
         # The route rejects disables. Resend exactly what the session has
         # been sending — the user's own config — so the retry lands on the

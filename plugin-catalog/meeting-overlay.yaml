@@ -1,8 +1,7 @@
 name: meeting-overlay
 repo: https://github.com/taxbax/meeting-overlay
-sha: 64a3edfc701f007f66693d93dfdfca43a06b7857
-description: Native Hermes desktop pane showing the live meeting transcript, answer panel, and daemon
-  status for the meeting-mode copilot (BlackHole/mic -> faster-whisper -> rolling transcript).
+sha: 2c7859f1407f516c543d4409abab98d9b2e8928a
+description: "Disclosure — sends meeting transcripts to Nous inference with your Hermes login (fallback OpenRouter key from ~/.hermes/.env; optional OCTOPUS_DESK_URL); installs a launchd agent that records mic/system audio; writes and deletes under your Obsidian vault; macOS + source install only. Native desktop pane showing the live meeting transcript, answer, and daemon status."
 maintainer: taxbax
 tier: community
 category: desktop

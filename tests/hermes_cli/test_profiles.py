@@ -952,6 +952,43 @@ class TestListProfiles:
         assert beta_count == 5    # 1 local + 4 external
         assert alpha_count != beta_count  # per-profile, not process-scoped
 
+    def test_skill_count_relative_external_dirs(self, profile_env, monkeypatch):
+        """Relative ``external_dirs`` entries must resolve against the profile's
+        own Hermes home (``profile_dir.parent.parent``), not the process-active
+        ``get_hermes_home()``. Without this, counting a named profile from
+        ``list_profiles`` / the dashboard (no profile scope bound) resolves
+        relative entries against the wrong home — the same class of misleading
+        count this PR fixes (AI review finding #3)."""
+        import yaml
+
+        root = profile_env / ".hermes" / "profiles"
+        pdir = root / "alpha"
+        pdir.mkdir(parents=True)
+
+        # Profile-local: 1 skill
+        (pdir / "skills" / "cat" / "s0").mkdir(parents=True)
+        (pdir / "skills" / "cat" / "s0" / "SKILL.md").write_text(
+            "---\nname: local\n---\n# s\n", encoding="utf-8")
+
+        # External skills dir placed under the profile's hermes_home
+        # (profile_dir.parent.parent = .hermes/)
+        hermes_home = pdir.parent.parent  # profile_env / ".hermes"
+        ext = hermes_home / "shared-skills"
+        (ext / "cat" / "s0").mkdir(parents=True)
+        (ext / "cat" / "s0" / "SKILL.md").write_text(
+            "---\nname: ext-0\n---\n# s\n", encoding="utf-8")
+
+        # Use a RELATIVE path in external_dirs — must resolve against
+        # the profile's hermes_home, not the process-active one.
+        config = {"skills": {"external_dirs": ["shared-skills"]}}
+        (pdir / "config.yaml").write_text(
+            yaml.safe_dump(config), encoding="utf-8")
+
+        profiles._SKILL_COUNT_CACHE.clear()
+        profiles._PROFILE_CONFIG_CACHE.clear()
+        count = profiles._count_skills(pdir)
+        assert count == 2  # 1 local + 1 external (relative path resolved correctly)
+
 
 # ===================================================================
 # TestActiveProfile

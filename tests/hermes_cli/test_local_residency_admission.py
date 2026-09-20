@@ -39,54 +39,40 @@ def _staged(tmp_path, monkeypatch, weights: dict[str, int]):
     return mdir
 
 
-def test_two_models_that_cannot_share_the_card_cap_residency_at_one(tmp_path, monkeypatch):
-    """The report's exact shape: 6 GiB and 3.9 GiB staged on an 8 GiB card. Admitting both pages
-    the second one; the cap must say one so llama.cpp evicts before the load."""
+NO_DEVICE = HardwareBudget(usable_vram_bytes=0, total_device_bytes=0, ram_available_bytes=8 * GIB)
+
+
+@pytest.mark.parametrize("weights,budget,configured,expected", [
+    # The report's exact shape: 6 GiB and 3.9 GiB staged on an 8 GiB card. Admitting both pages
+    # the second one; the cap must say one so llama.cpp evicts before the load.
+    ({"nine-b": 6 * GIB, "gemma-e4b": int(3.9 * GIB)}, TIGHT, 4, 1),
+    # No regression for big cards: the budget raises nothing, and 4 residents fit.
+    ({"a": 6 * GIB, "b": 6 * GIB}, ROOMY, 4, 4),
+    # ``models_max`` stays a ceiling — the user's knob still means what it said.
+    ({"a": 1 * GIB}, ROOMY, 1, 1),
+    # No usable device memory (no probe) must leave the count exactly as configured.
+    ({"a": 6 * GIB}, NO_DEVICE, 4, 4),
+    # A model the physics check refuses outright never loads, so it must not force evictions
+    # of the models that do (200 GiB against 48 + 64 GiB is refused, not merely spilled).
+    ({"tiny": 2 * GIB, "huge": 200 * GIB}, ROOMY, 4, 4),
+])
+def test_residency_cap_is_priced_against_the_card(tmp_path, monkeypatch, weights, budget, configured, expected):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    mdir = _staged(tmp_path, monkeypatch, {"nine-b": 6 * GIB, "gemma-e4b": int(3.9 * GIB)})
-    assert presets.admitted_residency_count(mdir, TIGHT, 4) == 1
+    mdir = _staged(tmp_path, monkeypatch, weights)
+    assert presets.admitted_residency_count(mdir, budget, configured) == expected
 
 
-def test_a_card_with_room_keeps_the_configured_count(tmp_path, monkeypatch):
-    """No regression for big cards: the budget raises nothing, and 4 residents fit."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    mdir = _staged(tmp_path, monkeypatch, {"a": 6 * GIB, "b": 6 * GIB})
-    assert presets.admitted_residency_count(mdir, ROOMY, 4) == 4
+def _boom(**_kw):
+    raise OSError("nvidia-smi vanished mid-session")
 
 
-def test_a_lower_configured_count_is_never_raised(tmp_path, monkeypatch):
-    """``models_max`` stays a ceiling — the user's knob still means what it said."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    mdir = _staged(tmp_path, monkeypatch, {"a": 1 * GIB})
-    assert presets.admitted_residency_count(mdir, ROOMY, 1) == 1
-
-
-def test_unpriceable_input_keeps_todays_count(tmp_path, monkeypatch):
-    """Backward compatibility: no usable device memory (no probe), or an unreadable model, must
-    leave the count exactly as configured."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    mdir = _staged(tmp_path, monkeypatch, {"a": 6 * GIB})
-    no_device = HardwareBudget(usable_vram_bytes=0, total_device_bytes=0, ram_available_bytes=8 * GIB)
-    assert presets.admitted_residency_count(mdir, no_device, 4) == 4
-
-    def _unreadable(_path):
-        raise ValueError("not a gguf")
-
-    monkeypatch.setattr(presets, "read_gguf_header", _unreadable)
-    assert presets.admitted_residency_count(mdir, TIGHT, 4) == 4
-
-
-def test_a_refused_model_does_not_shrink_the_cap(tmp_path, monkeypatch):
-    """A model the physics check refuses outright never loads, so it must not force evictions of
-    the models that do."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    # 200 GiB against 48 GiB + 64 GiB: refused (it cannot load at any window), not merely spilled.
-    mdir = _staged(tmp_path, monkeypatch, {"tiny": 2 * GIB, "huge": 200 * GIB})
-    assert presets.admitted_residency_count(mdir, ROOMY, 4) == 4
-
-
-@pytest.mark.parametrize("configured,expected", [(4, 1), (1, 1)])
-def test_boot_hands_the_router_the_derived_cap(tmp_path, monkeypatch, configured, expected):
+@pytest.mark.parametrize("configured,probe,expected", [
+    (4, lambda **kw: TIGHT, 1),
+    (1, lambda **kw: TIGHT, 1),
+    # The cap is policy, not a prerequisite: a probe failure must fall back to the config.
+    (4, _boom, 4),
+])
+def test_boot_hands_the_router_the_derived_cap(tmp_path, monkeypatch, configured, probe, expected):
     """The wiring, not just the math: what ``ensure_local_runtime`` passes as ``--models-max``."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     import hermes_cli.local_runtime.bootstrap as bs
@@ -95,7 +81,7 @@ def test_boot_hands_the_router_the_derived_cap(tmp_path, monkeypatch, configured
 
     mdir = _staged(tmp_path, monkeypatch, {"nine-b": 6 * GIB})
     monkeypatch.setattr(bs, "models_dir", lambda: mdir)
-    monkeypatch.setattr(hardware, "probe_budget", lambda **kw: TIGHT)
+    monkeypatch.setattr(hardware, "probe_budget", probe)
     monkeypatch.setattr(bs, "_SUPERVISOR", None)
     monkeypatch.setattr(bs, "_generate_presets", lambda mdir, preset_path: None)
     monkeypatch.setattr(bs, "_detect_gpu_vendor", lambda: None)
@@ -121,16 +107,3 @@ def test_boot_hands_the_router_the_derived_cap(tmp_path, monkeypatch, configured
     config = {"local_runtime": {"enabled": True, "models_max": configured}}
     assert bs.ensure_local_runtime(config) is not None
     assert captured["models_max"] == expected
-
-
-def test_a_broken_probe_does_not_block_the_boot(tmp_path, monkeypatch):
-    """The cap is policy, not a prerequisite: a probe failure must fall back to the config."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    import hermes_cli.local_runtime.bootstrap as bs
-    from hermes_cli.local_runtime import hardware
-
-    def _boom(**_kw):
-        raise OSError("nvidia-smi vanished mid-session")
-
-    monkeypatch.setattr(hardware, "probe_budget", _boom)
-    assert bs._admitted_models_max(tmp_path, 4) == 4

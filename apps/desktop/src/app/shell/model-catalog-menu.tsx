@@ -278,6 +278,31 @@ export function ModelCatalogMenu({
     [pickerProviders, search, current.model, current.provider, shownKeys]
   )
 
+  // Display names that appear in MORE THAN ONE shown group. Vendor prefixes are
+  // stripped for display, so distinct catalog ids can render near-identically
+  // (`zai-org/GLM-5.3-Flash` → "GLM 5.3 Flash", `z-ai/glm-5.3-flash` →
+  // "Glm 5.3 Flash"); compared case-folded, and twins get a quiet provider tag
+  // so a pick can't land on the wrong billing.
+  const ambiguousNames = useMemo(() => {
+    const seen = new Map<string, string>()
+    const dupes = new Set<string>()
+
+    for (const group of groups) {
+      for (const family of group.families) {
+        const name = normalize(modelDisplayParts(family.id).name)
+        const owner = seen.get(name)
+
+        if (owner === undefined) {
+          seen.set(name, group.provider.slug)
+        } else if (owner !== group.provider.slug) {
+          dupes.add(name)
+        }
+      }
+    }
+
+    return dupes
+  }, [groups])
+
   // Presets are searchable rows like everything else — an unfiltered preset
   // sitting under zero model matches would otherwise become the "first match"
   // Enter commits.
@@ -517,6 +542,10 @@ export function ModelCatalogMenu({
                     )
 
                     const meta = [
+                      // Same display name under another provider: name the
+                      // owner on the row itself so identical twins can't be
+                      // committed blind (the group header may be scrolled off).
+                      ambiguousNames.has(normalize(name)) ? group.provider.name : null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                       (caps?.reasoning ?? true)
                         ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
@@ -762,6 +791,26 @@ function groupModels(
   // Stable, logical group order: alphabetical by provider name. (The backend
   // floats the current provider first, which would reshuffle on every switch.)
   groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+
+  // While SEARCHING, groups whose matches include the user's ENABLED models
+  // (or the current provider) rank first. Search deliberately spans hidden
+  // models, but an alphabetically-earlier provider's hidden twin must not
+  // outrank — and auto-select over — the model the user actually curated:
+  // two catalogs can carry the same family under identical display names
+  // (`zai-org/GLM-5.3-Flash` on Hugging Face vs `z-ai/glm-5.3-flash` on Nous),
+  // and committing the wrong twin silently moves the spend to that provider's
+  // billing. Stable sort keeps the alphabetical order within each tier.
+  if (q) {
+    const rank = (group: ProviderGroup): number => {
+      const enabled =
+        visible &&
+        group.families.some(family => visible.has(modelVisibilityKey(group.provider.slug, family.id)))
+
+      return (enabled ? 2 : 0) + (catalogProviderMatches(group.provider, current.provider) ? 1 : 0)
+    }
+
+    groups.sort((a, b) => rank(b) - rank(a))
+  }
 
   return groups
 }

@@ -88,3 +88,30 @@ def test_setup_uses_profile_endpoint_and_headers(tmp_path, monkeypatch):
 
     assert result == ["live-catalog-model"]
     assert requests == [("/catalog", "present")]
+
+
+def test_setup_matches_picker_when_catalog_fetch_fails(monkeypatch):
+    """A profile whose catalog is down offers its ``fallback_models`` at setup, exactly what
+    ``/model`` shows via ``models.provider_model_ids`` for the same profile."""
+    from types import SimpleNamespace
+
+    import providers
+    from providers.base import ProviderProfile
+    from hermes_cli import model_setup_flows as flows, models
+
+    class DownProfile(ProviderProfile):
+        def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0):
+            raise ConnectionError("catalog down")
+
+    profile = DownProfile(
+        name="scout-down-catalog", auth_type="api_key", env_vars=("SCOUT_DOWN_TEST_KEY",),
+        base_url="https://down.example.invalid/v1", fallback_models=("declared-a", "declared-b"),
+    )
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+    monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
+    monkeypatch.setattr(models, "_api_key_credentials", lambda *_: ("synthetic-test-key", ""))
+
+    setup_rows = flows._api_key_provider_model_list(
+        profile.name, SimpleNamespace(name="Down"), "synthetic-test-key", "", profile.base_url)
+
+    assert setup_rows == ["declared-a", "declared-b"] == models.provider_model_ids(profile.name)

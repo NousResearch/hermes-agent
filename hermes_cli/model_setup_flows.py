@@ -867,10 +867,12 @@ _SPECIAL_MODEL_LISTS = {
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
     """Model list for an API-key provider: models.dev registry (cached, agentic/tool-capable filter)
-    → curated static list (offline insurance) → provider-owned catalog (generic /models
-    probe for unregistered providers). Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
+    → curated static list (offline insurance) → provider-owned catalog (``ProviderProfile.fetch_models``
+    merged with ``fallback_models`` exactly like the ``/model`` picker's
+    ``models._profile_live_catalog``; generic /models probe for unregistered providers).
+    Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, merge_profile_catalog
     curated = _PROVIDER_MODELS.get(provider_id, [])
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
@@ -890,11 +892,19 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     from providers import get_provider_profile
     profile = get_provider_profile(provider_id)
     if profile is not None:
-        # Provider catalogs can use a different endpoint, auth, or response shape.
-        curated = curated or list(profile.fallback_models)
-        live_models = profile.fetch_models(api_key=api_key_for_probe, base_url=effective_base)
-    else:
-        live_models = fetch_api_models(api_key_for_probe, effective_base)
+        # The profile owns endpoint (models_url), headers and response shape; a failing catalog
+        # degrades to fallback_models the same way the picker does.
+        try:
+            live_models = profile.fetch_models(api_key=api_key_for_probe, base_url=effective_base)
+        except Exception:
+            live_models = None
+        model_list = merge_profile_catalog(provider_id, profile, live_models) or []
+        if live_models:
+            _report_live_models(model_list, f"{pconfig.name} API")
+        else:
+            _show_curated(model_list)
+        return model_list
+    live_models = fetch_api_models(api_key_for_probe, effective_base)
     if live_models and len(live_models) >= len(curated):
         _report_live_models(live_models, f"{pconfig.name} API")
         return live_models

@@ -1507,7 +1507,20 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     if not (profile and profile.auth_type == "api_key" and profile.base_url):
         return None
     api_key, base_url = _api_key_credentials(normalized)
-    live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
+    live = None
+    if api_key:
+        # A raising catalog override degrades like a None return: fallback_models, not an empty picker.
+        try:
+            live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None)
+        except Exception:
+            live = None
+    return merge_profile_catalog(normalized, profile, live)
+
+
+def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
+    """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
+    first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
+    picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
     if live and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
         # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
         # live-first, so it filters them out here (#111749).

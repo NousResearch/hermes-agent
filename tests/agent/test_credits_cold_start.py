@@ -311,19 +311,24 @@ def test_header_after_ttl_expiry_rewarms_instead_of_flashing_the_banner(monkeypa
 
 
 def test_header_on_a_cold_catalog_still_warns_when_the_warm_fails(monkeypatch):
-    """Fail-open guard rail: a warm that leaves the catalog cold decides against the cold peek — the
-    banner shows — and neither the warm's own re-run nor the next header (still inside the
-    failed-catalog window) starts another warm."""
+    """Fail-open guard rail: a warm whose fetch fails (the cache keeps the empty result for its retry
+    window) decides against the cold peek — the banner shows — and neither the warm's own re-run nor
+    the next header inside that window starts another warm."""
     from agent import credits_tracker
 
-    _cold_pricing_cache(monkeypatch)
+    models_pricing = _cold_pricing_cache(monkeypatch)
     warms: list = []
-    monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache", lambda: warms.append(1))
+
+    def _failed_fetch():
+        warms.append(1)
+        models_pricing._cache_catalog(_NOUS_BASE[:-3] + models_pricing._PRICING_AUTH_KEY_PREFIX + "abc", {})
+
+    monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache", _failed_fetch)
     agent = _mixin_agent()
 
     agent._emit_credits_notices()
     _join_pricing_warm(agent)
     assert agent.shown == ["credits.depleted"]
-    agent._emit_credits_notices()  # next header, catalog still cold
+    agent._emit_credits_notices()  # next header, still inside the failed-fetch window
     _join_pricing_warm(agent)
     assert warms == [1]

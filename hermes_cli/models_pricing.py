@@ -92,6 +92,19 @@ def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
     return _cached_catalog(root) or {}
 
 
+def pricing_fetch_suppressed(base_url: str) -> bool:
+    """A fetch for *base_url* failed recently and its empty result is still cached, so re-fetching now
+    returns that ``{}`` without dialing (see ``_cache_catalog``). Lets a caller that would otherwise
+    start a background refresh on a cold peek skip it for the rest of the failure window."""
+    root = _strip_v1((base_url or "").rstrip("/"))
+    now = time.monotonic()
+    return any(
+        _pricing_cache.get(key) == {} and _pricing_cache_retry_after.get(key, 0.0) > now
+        for key in list(_pricing_cache)
+        if key == root or key.startswith(root + _PRICING_AUTH_KEY_PREFIX)
+    )
+
+
 def _strip_v1(url: str) -> str:
     return url[:-3].rstrip("/") if url.endswith("/v1") else url
 

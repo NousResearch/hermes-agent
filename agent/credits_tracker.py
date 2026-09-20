@@ -417,18 +417,17 @@ def rewarm_pricing_before_depleted_notice(agent) -> bool:
     ``_NOUS_CATALOG_TTL_SECONDS``, and a cold peek would bring the banner back for a
     subscription-billed model. False = decide now: peek warm, not on Nous, a warm in flight (the
     warm's own re-run included — fail-open, a failed fetch leaves the peek cold and the banner
-    shows), or a warm already failed within the failed-catalog window (no per-turn re-spawn)."""
+    shows), or a fetch already failed and the cache is still refusing to dial. May raise; the notice
+    path that calls it catches."""
     base_url = getattr(agent, "base_url", "") or ""
     if getattr(agent, "provider", "") != "nous" or not base_url:
         return False
-    from hermes_cli.models_pricing import _FAILED_CATALOG_TTL_SECONDS, peek_cached_pricing
+    from hermes_cli.models_pricing import peek_cached_pricing, pricing_fetch_suppressed
 
-    if peek_cached_pricing(base_url):
+    if peek_cached_pricing(base_url) or pricing_fetch_suppressed(base_url):
         return False
-    previous = getattr(agent, "_credits_pricing_warm", None)
-    if previous is not None and (
-        previous.is_alive() or time.monotonic() - previous.started_at < _FAILED_CATALOG_TTL_SECONDS
-    ):
+    inflight = getattr(agent, "_credits_pricing_warm", None)
+    if inflight is not None and inflight.is_alive():
         return False
 
     def _warm_then_rerun() -> None:
@@ -437,10 +436,8 @@ def rewarm_pricing_before_depleted_notice(agent) -> bool:
 
     from agent.memory_provider import spawn_context_thread
 
-    thread = spawn_context_thread(_warm_then_rerun, name="credits-pricing-warm")
-    thread.started_at = time.monotonic()
-    agent._credits_pricing_warm = thread
-    thread.start()
+    agent._credits_pricing_warm = spawn_context_thread(_warm_then_rerun, name="credits-pricing-warm")
+    agent._credits_pricing_warm.start()
     return True
 
 

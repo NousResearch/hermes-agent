@@ -126,6 +126,10 @@ _PYTHON_POST_SETUP_HOOKS: dict = {
         "kittentts", "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",
         on_install=("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo",
                     "Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")),
+    "kokoro": _python_hook(
+        "kokoro", "kokoro", "kokoro", "Installing kokoro (82M local TTS; model + voices download on first use)...",
+        on_install=("Default voice: af_heart (change via tts.kokoro.voice)",
+                    "54 voices, 8 languages: full list at github.com/hexgrad/kokoro (kokoro.js/voices)")),
     "piper": _python_hook(
         "piper", "piper", "piper-tts", "Installing piper-tts (~14MB wheel, voices downloaded on first use)...",
         always=("Default voice: en_US-lessac-medium (downloaded on first TTS call)",

@@ -256,6 +256,10 @@ kittentts = [
 piper = [
   "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
 ]
+kokoro = [
+  "kokoro>=0.9.4,<0.11",
+  "soundfile",
+]
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]

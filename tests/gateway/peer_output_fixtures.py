@@ -75,7 +75,7 @@ def inprocess_http(target, monkeypatch):
 
 
 @asynccontextmanager
-async def peer_case(target, monkeypatch, *, defer_publication=True, resolve_queued=False, output_count=1):
+async def peer_case(target, monkeypatch, *, defer_publication=True, resolve_queued=False, output_count=1, settle_target=True):
     from tests.gateway.test_peer_output_product import register_routes
     from tests.gateway.test_canonical_peer_target_setup import invite, invitation
     from gateway.session_peer_output import initialize_peer_output
@@ -202,16 +202,18 @@ async def peer_case(target, monkeypatch, *, defer_publication=True, resolve_queu
         await asyncio.sleep(0)
         assert len(launched) == 1
         owner, ref, row = launched[0]
-        with _profile_runtime_scope(target.home, hydrate_secrets=False):
-            await asyncio.wait_for(owner._drain(ref), timeout=10)
-            assert current_output_binding() is None
-            if contexts:
-                assert json.loads(contexts[0].run(hosted_room_artifact.share_group_file, str(output)))["ok"] is False
-        with _profile_runtime_scope(home, hydrate_secrets=False):
-            history = await asyncio.to_thread(rpc.history, **coords, session_id=session_id)
-            terminal = _find_terminal_receipt(history, task['identity'], attempt.execution_generation)
-            assert terminal is not None and terminal.status == 'settled', history
-            stored = tasks.settle_task(db.db_path, attempt, **asdict(terminal), clock=time.time)
+        stored = None
+        if settle_target:
+            with _profile_runtime_scope(target.home, hydrate_secrets=False):
+                await asyncio.wait_for(owner._drain(ref), timeout=10)
+                assert current_output_binding() is None
+                if contexts:
+                    assert json.loads(contexts[0].run(hosted_room_artifact.share_group_file, str(output)))["ok"] is False
+            with _profile_runtime_scope(home, hydrate_secrets=False):
+                history = await asyncio.to_thread(rpc.history, **coords, session_id=session_id)
+                terminal = _find_terminal_receipt(history, task['identity'], attempt.execution_generation)
+                assert terminal is not None and terminal.status == 'settled', history
+                stored = tasks.settle_task(db.db_path, attempt, **asdict(terminal), clock=time.time)
         case = SimpleNamespace(home=home, db=db, authority=authority, service=service, wire=wire, issued=issued,
             claims=claims, client=client, rpc=rpc, task=task, attempt=attempt, binding=binding, accepted=accepted,
             launched=launched, executions=executions, outputs=outputs, output=output, raw=raw, stored=stored,

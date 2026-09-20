@@ -117,15 +117,14 @@ class CanonicalOutputRetry:
     def _prune_output_retry_metadata(self, room_id):
         if not self._output_retry_ready:
             return  # legacy rows need a separately authorized exact migration
-        from gateway.hosted_room_driver import ARTIFACT_RETRY_RETENTION_SECONDS
-        cutoff = float(self._artifact_clock()) - ARTIFACT_RETRY_RETENTION_SECONDS
+
         def prune(conn):
             self._output_owner(conn)
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_tasks'").fetchone() is None:
                 return
             for table, age, params in (
                 ('hosted_room_artifact_completions', '', (room_id,)),
-                ('hosted_room_artifact_retries', 'AND metadata.created_at<=?', (room_id, cutoff)),
+
             ):
                 conn.execute(f"""DELETE FROM {table} WHERE rowid IN (
                     SELECT metadata.rowid FROM {table} metadata WHERE metadata.room_id=? {age}
@@ -350,6 +349,7 @@ class CanonicalOutputRetry:
                 event_digest=excluded.event_digest,operation=excluded.operation''',
                 (*key, now, metadata['valid_until'], json.dumps(metadata, sort_keys=True), event_digest, operation))
             conn.execute('DELETE FROM hosted_room_artifact_retries WHERE room_id=? AND task_id=? AND execution_generation=?', key)
+            self._complete_stopped_output_from_receipt(conn, task, metadata, operation)
         self.authority.db._execute_write(finish)
 
     def _unblock_authenticated_output_routes(self, room_id):
@@ -400,9 +400,10 @@ class CanonicalOutputRetry:
         if room_id is None:
             return result
         obligations = self.output_retry_status(room_id)
+        cleanup = self.output_cleanup_status(room_id)
         # Informational only: these are retained output operations, never the
         # driver's NEW-execution Retry action.
-        return {**result, 'pending_actions': [*result['pending_actions'], *[
+        return {**result, 'pending_actions': [*result['pending_actions'], *cleanup, *[
             dict(row, kind='output_retry', blocked=bool(row['blocked'])) for row in obligations]]}
 
     def output_retry_status(self, room_id):

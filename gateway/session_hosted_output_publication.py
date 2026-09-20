@@ -10,11 +10,12 @@ from gateway import hosted_room_discussion as discussion, hosted_rooms
 from gateway.hosted_room_artifacts import RoomArtifactError, RoomArtifactOutbox, RoomArtifactScope
 from hermes_state_runtime import RuntimeStoreError
 from gateway.session_hosted_output_retry import CanonicalOutputRetry, retryable
+from gateway.session_hosted_output_lifecycle import CanonicalOutputLifecycle
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_artifact_service import prepare_output, acknowledge_published
 
 
-class CanonicalHostedOutputPublisher(CanonicalOutputRetry):
+class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRetry):
     @property
     def output_attachments(self):
         return self.attachments
@@ -59,10 +60,22 @@ class CanonicalHostedOutputPublisher(CanonicalOutputRetry):
             self._prune_output_retry_metadata(str(room['room_id']))
             self._unblock_authenticated_output_routes(str(room['room_id']))
             changed, errors = False, []
+            for stopping in self._list_tasks(str(room['room_id']), ('stopping',)):
+                self._reconcile_stopped_output(stopping)
+            for unknown in self._list_tasks(str(room['room_id']), ('indeterminate',)):
+                with self.authority.db._read_ctx() as conn:
+                    stopped = conn.execute("SELECT 1 FROM hosted_room_events WHERE room_id=? "
+                        "AND kind='room.stop_requested' AND seq>? LIMIT 1",
+                        (room['room_id'], unknown['payload']['source_event_seq'])).fetchone()
+                if stopped is not None:
+                    self._reconcile_stopped_output(unknown)
             for task in self._list_tasks(str(room["room_id"]), ("deferred", "settled", "failed", "cancelled")):
                 metadata, progress = None, ['publish']
                 has_output = isinstance(task.get('result'), Mapping) and bool(task['result'].get('artifacts'))
                 try:
+                    if task['status'] == 'cancelled' and task['execution_generation'] > 0:
+                        if not self._reconcile_stopped_output(task):
+                            continue
                     if has_output or self._has_output_obligation(task):
                         metadata = self._begin_output_retry(task)
                         if metadata is None:
@@ -136,6 +149,15 @@ class CanonicalHostedOutputPublisher(CanonicalOutputRetry):
         if existing_message:
             task_events = [e for e in task_events if e["kind"] != "message.user"
                            or int(e["seq"]) <= int(task["payload"]["source_event_seq"])]
+        else:
+            # Stop controls presentation, not the settled execution commitment.
+            with self.authority.db._read_ctx() as conn:
+                self._output_owner(conn)
+                stopped = conn.execute("SELECT 1 FROM hosted_room_events WHERE room_id=? "
+                    "AND kind='room.stop_requested' AND seq>? LIMIT 1",
+                    (room_id, task['payload']['source_event_seq'])).fetchone()
+            if stopped is not None and status != 'deferred':
+                status = 'cancelled'
         result, expected_output = task.get("result"), None
         # A superseded peer result has no visible file to import or ACK.
         # Determine that before byte reads so a lost discard reply can replay

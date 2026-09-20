@@ -339,6 +339,11 @@ class RoomArtifactOutbox:
                        WHERE acknowledged_at IS NULL OR cleanup_required_at IS NOT NULL"""
                 ).fetchall()
             }
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='state_meta' AND type='table'").fetchone():
+                referenced.update(r[0] for r in conn.execute(
+                    "SELECT json_extract(blob.value,'$.blob_name') FROM state_meta intent, json_each(intent.value,'$.blobs') blob "
+                    "WHERE intent.key LIKE 'gateway.hosted.output_cleanup.v1:%' "
+                    "AND json_extract(intent.value,'$.state') IS NOT 'completed'"))
         for path in self.blob_root.iterdir():
             try:
                 if (
@@ -349,6 +354,37 @@ class RoomArtifactOutbox:
                     path.unlink(missing_ok=True)
             except OSError:
                 continue
+
+    @classmethod
+    def borrow_existing(cls, db, conn):
+        """Metadata/physical helpers only; no open, mkdir, DDL or constructor prune."""
+        from gateway.hosted_room_output_discard import OutputCleanupUnavailable
+        if conn is not db._conn or not conn.in_transaction:
+            raise OutputCleanupUnavailable('Output owner transaction required')
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {'hosted_room_output_artifacts', 'hosted_room_output_generation_fences'} <= names:
+            raise OutputCleanupUnavailable('Output inventory unavailable')
+        value = cls.__new__(cls)
+        value.db_path = Path(db.db_path)
+        value.root = value.db_path.parent / 'hosted-room-artifact-outbox'
+        value.blob_root = value.root / 'blobs'
+        value.authorize_write = None
+        value.commit_acknowledgement = None
+        value._lock = threading.RLock()
+        # This borrowed handle must not escape into a connection-opening method.
+        def no_open():
+            raise OutputCleanupUnavailable('Borrowed Output cannot open a database')
+        value._connect = no_open
+        return value
+
+    @staticmethod
+    def _lifecycle_pin_sql(conn, field, column):
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='state_meta' AND type='table'").fetchone() is None:
+            return ''
+        return (" AND NOT EXISTS (SELECT 1 FROM state_meta intent "
+                "WHERE intent.key LIKE 'gateway.hosted.output_cleanup.v1:%' "
+                "AND json_extract(intent.value,'$.state') IS NOT 'completed' "
+                f"AND json_extract(intent.value,'$.binding.{field}')={column})")
 
     def _connect(self) -> sqlite3.Connection:
         from hermes_state_wal import apply_wal_with_fallback
@@ -449,9 +485,10 @@ class RoomArtifactOutbox:
             self._initialize(conn)
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
-                """SELECT artifact_id, blob_name, scope_json
+                f"""SELECT artifact_id, blob_name, scope_json
                      FROM hosted_room_output_artifacts
                     WHERE acknowledged_at IS NULL AND cleanup_required_at IS NULL AND created_at<=?
+                    {self._lifecycle_pin_sql(conn, 'scope_key', 'hosted_room_output_artifacts.scope_key')}
                     ORDER BY created_at, artifact_id
                     LIMIT ?""",
                 (cutoff, ACKNOWLEDGED_ARTIFACT_PRUNE_BATCH),
@@ -493,6 +530,7 @@ class RoomArtifactOutbox:
                 f"""SELECT fence.lineage_identity
                        FROM hosted_room_output_generation_fences AS fence
                       WHERE fence.updated_at<=?
+                        {self._lifecycle_pin_sql(conn, 'lineage_identity', 'fence.lineage_identity')}
                         AND NOT EXISTS (
                             SELECT 1 FROM hosted_room_output_artifacts AS artifact
                              WHERE {artifact_identity}=fence.lineage_identity
@@ -1186,9 +1224,10 @@ class RoomArtifactOutbox:
         with self._connect() as conn:
             self._initialize(conn)
             rows = conn.execute(
-                """SELECT DISTINCT scope_json
+                f"""SELECT DISTINCT scope_json
                      FROM hosted_room_output_artifacts
-                    WHERE cleanup_required_at IS NOT NULL"""
+                    WHERE cleanup_required_at IS NOT NULL
+                    {self._lifecycle_pin_sql(conn, 'scope_key', 'hosted_room_output_artifacts.scope_key')}"""
             ).fetchall()
         removed = 0
         for row in rows:

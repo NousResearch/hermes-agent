@@ -124,7 +124,10 @@ describe('pluginSocket authenticated reconnects', () => {
     })
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
-      value: { getConnection, getGatewayWsUrl: vi.fn() }
+      value: {
+        getConnection,
+        getGatewayWsUrl: vi.fn().mockResolvedValue('wss://gateway.example/hermes/api/ws?token=long-lived')
+      }
     })
 
     const dispose = pluginSocket('kanban', '/events', () => {})

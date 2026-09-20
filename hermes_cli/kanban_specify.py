@@ -21,6 +21,7 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_triage_router as router
 
 from utils import env_int
 
@@ -184,10 +185,30 @@ def specify_task(
 ) -> SpecifyOutcome:
     """Specify one triage task and promote it to ``todo``. Expected failures
     (not in triage, no aux client, API error, malformed reply) surface as
-    ``ok=False`` so an ``--all`` sweep continues."""
+    ``ok=False`` so an ``--all`` sweep continues.
+
+    Before the full LLM call, a fast/cheap Jev pre-check (kanban_triage_router)
+    may auto-promote genuinely trivial tasks with a minimal templated spec
+    instead — see docs/superpowers/specs/2026-09-20-triage-jev-router-design.md.
+    Off by default; every non-clean-"trivial" outcome falls through to the
+    unmodified full-specify path below.
+    """
     task, reason = _load_triage_task(task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
+
+    if router.is_trivial(task):
+        new_title, new_body = router.build_minimal_spec(task)
+        with kbc.connect_closing() as conn:
+            ok = kb.specify_triage_task(
+                conn, task_id, title=new_title, body=new_body,
+                author=author or _profile_author(),
+                event_extra={"auto_promoted": True, "router_model": router.configured_model()},
+            )
+        if not ok:
+            # Race: promoted/archived between our read and the write.
+            return SpecifyOutcome(task_id, False, "task moved out of triage before promotion")
+        return SpecifyOutcome(task_id, True, "auto-promoted (trivial)", new_title=new_title)
 
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,

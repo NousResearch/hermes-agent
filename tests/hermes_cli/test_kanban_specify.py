@@ -93,6 +93,77 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+def _patch_router(*, configured=True, trivial=True, model="typesafe/jev-latest"):
+    """Patch kanban_triage_router at its source module — specify_task calls
+    it directly, so patching the source works regardless of import style."""
+    return patch.multiple(
+        "hermes_cli.kanban_triage_router",
+        router_configured=MagicMock(return_value=configured),
+        is_trivial=MagicMock(return_value=trivial),
+        configured_model=MagicMock(return_value=model if configured else None),
+    )
+
+
+def test_specify_task_auto_promotes_on_trivial_verdict_skips_full_llm_call(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="Fix a typo in the README", triage=True)
+
+    mock_llm = MagicMock()  # must never be called — the router path skips it
+    with _patch_router(trivial=True), patch("agent.auxiliary_client.call_llm", mock_llm):
+        outcome = spec.specify_task(tid, author="ace")
+
+    mock_llm.assert_not_called()
+    assert outcome.ok is True
+    assert outcome.task_id == tid
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "specified"]
+    assert task.status == "ready"  # no parents -> recompute_ready promotes past todo
+    assert "**Goal**" in (task.body or "")
+    assert len(events) == 1
+    assert events[0].payload["auto_promoted"] is True
+    assert events[0].payload["router_model"] == "typesafe/jev-latest"
+
+
+def test_specify_task_falls_through_to_full_specify_when_not_trivial(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough idea", triage=True)
+
+    content = jsonlib.dumps({"title": "Refined rough", "body": "**Goal**\nA concrete goal."})
+    p, mock_llm = _patch_aux_client(content)
+    with _patch_router(trivial=False), p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    mock_llm.assert_called_once()  # full specify path ran as before
+    assert outcome.ok is True
+    assert outcome.new_title == "Refined rough"
+
+    with kbc.connect() as conn:
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "specified"]
+    assert "auto_promoted" not in (events[0].payload or {})
+
+
+def test_specify_task_full_path_unaffected_when_router_unconfigured(kanban_home):
+    """Router unconfigured is functionally identical to it never having been
+    added: is_trivial() would itself return False, but this exercises the
+    real (unpatched) is_trivial() short-circuit end to end."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough idea", triage=True)
+
+    content = jsonlib.dumps({"title": "Refined rough", "body": "**Goal**\nA concrete goal."})
+    p, mock_llm = _patch_aux_client(content)
+    with patch(
+        "agent.auxiliary_client._get_auxiliary_task_config",
+        lambda task: {},
+    ), p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    mock_llm.assert_called_once()
+    assert outcome.ok is True
+    assert outcome.new_title == "Refined rough"
+
+
 
 
 

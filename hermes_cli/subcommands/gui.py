@@ -11,7 +11,9 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "desktop", aliases=["gui"], help="Build and launch the native desktop app",
         description="Launch the Hermes Electron desktop app. By default this installs "
             "workspace Node dependencies, builds the current OS's unpacked "
-            "Electron app, then launches that packaged artifact.")
+            "Electron app, then launches that packaged artifact. An optional "
+            "hermes:// URI (passed by the Linux launcher entry when a deep link "
+            "is opened) is forwarded to the app.")
     gui_parser.add_argument(
         "--source", action="store_true",
         help="Launch via `electron .` against apps/desktop/dist instead of the packaged app")
@@ -51,5 +53,10 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
     gui_parser.add_argument(
         "--identity", default="Hermes Local Signing",
         help="Certificate name to create/use for --setup-tcc-identity (default: Hermes Local Signing)",
+    )
+    gui_parser.add_argument(
+        "uri", nargs="?", default=None,
+        help="Optional hermes:// (or hermes-dev://) deep link to open in the app. The Linux "
+            "launcher entry passes the opened URI here; omit it for an ordinary launch",
     )
     gui_parser.set_defaults(func=cmd_gui)

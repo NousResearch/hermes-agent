@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time as _time_mod
+import urllib.parse
 
 from pathlib import Path
 from typing import Optional
@@ -1686,6 +1687,47 @@ def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     return launch_command
 
 
+# Deep-link contract with the Linux launcher entry (linux_desktop_entry.render_desktop_entry
+# appends `%u`) and apps/desktop/electron/main.ts (HERMES_PROTOCOL / DEEPLINK_SCHEMES).
+# Only these schemes are forwarded, verbatim, as ONE argv element.
+_DESKTOP_URI_SCHEMES = ("hermes", "hermes-dev")
+_DESKTOP_URI_MAX_LENGTH = 4096
+
+
+def _approved_desktop_uri(raw) -> Optional[str]:
+    """Validate the optional positional URI the OS handler passes on a link open.
+
+    Returns the URI unchanged (forwarded verbatim, never shell-interpolated or
+    query-decoded) or ``None`` when absent. Raises ``ValueError`` for anything
+    that is not a well-formed hermes:// (or hermes-dev://) URI: other schemes,
+    whitespace/control characters, and overlong input.
+    """
+    if raw is None:
+        return None
+    uri = str(raw)
+    if not uri:
+        return None
+    if len(uri) > _DESKTOP_URI_MAX_LENGTH:
+        raise ValueError(f"overlong input ({len(uri)} characters)")
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in uri):
+        raise ValueError("URI contains whitespace or control characters")
+    parts = urllib.parse.urlsplit(uri)
+    if parts.scheme not in _DESKTOP_URI_SCHEMES or not uri.startswith(f"{parts.scheme}://"):
+        raise ValueError("unsupported scheme (expected hermes:// or hermes-dev://)")
+    if not (parts.netloc or parts.path):
+        raise ValueError("no link target after the scheme")
+    return uri
+
+
+def _loggable_launch_command(launch_command: "list[str]", deep_link: Optional[str]) -> str:
+    """Command line for launch logs. A forwarded URI carries the link's payload,
+    so it is replaced by its scheme — logs never see URI contents."""
+    if not deep_link:
+        return " ".join(launch_command)
+    scheme = deep_link.split("://", 1)[0]
+    return " ".join(a for a in launch_command if a != deep_link) + f" <{scheme}:// link>"
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1694,6 +1736,16 @@ def cmd_gui(args: argparse.Namespace):
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")
         sys.exit(1)
+
+    # The launcher entry forwards the opened deep link as an optional positional
+    # argument. Validate it BEFORE any install/build work: a malformed or
+    # foreign-scheme argument must never reach the build or the app's argv.
+    try:
+        deep_link = _approved_desktop_uri(getattr(args, "uri", None))
+    except ValueError as exc:
+        print(f"✗ Refusing the desktop URI argument: {exc}")
+        print("  Expected a hermes:// deep link, e.g. hermes://blueprint/morning-brief")
+        sys.exit(2)
 
     with contextlib.suppress(Exception):
         from hermes_logging import setup_logging as _setup_logging_gui
@@ -1776,8 +1828,20 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")
+    if deep_link:
+        # Exact URI, one argv element, no shell: the OS handed us the link and
+        # the app parses it — nothing here interpolates or executes its payload.
+        launch_command.append(deep_link)
+        if source_mode:
+            # `npm exec` echoes its expanded command line (URI and all) in
+            # lifecycle notices; quiet just this child so the link's payload
+            # never reaches the console. Packaged launches don't echo argv,
+            # and no-URI source launches keep npm's normal output.
+            env["npm_config_loglevel"] = "error"
     if not source_mode:
-        desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+        desktop_launch_notice(
+            f"→ Launching packaged Hermes Desktop: {_loggable_launch_command(launch_command, deep_link)}"
+        )
     pass_fds: tuple[int, ...] = ()
     if deferred_entry is not None:
         env = deferred_entry.child_env(env)

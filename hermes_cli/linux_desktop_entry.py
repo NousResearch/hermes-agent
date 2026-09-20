@@ -5,6 +5,12 @@ venv (no ``#!/usr/bin/env python3`` escapes, no checkout-internal argv[0]), and 
 themed name backed by a copy in the user's hicolor tree. Cache refresh is best-effort and
 tool-gated (``update-desktop-database``, ``gtk-update-icon-cache``, ``kbuildsycoca6``/``5``); a
 missing tool is not an error.
+
+The entry also claims the ``hermes://`` deep-link scheme (``MimeType`` plus a single ``%u`` Exec
+field code, which expands to nothing on a plain app-grid click), and installation re-points the
+desktop's scheme-handler registry at this exact file with ``xdg-mime``, read back before anything
+is reported as done. A missing ``xdg-mime`` degrades to an actionable warning — never a failed
+launch.
 """
 
 from __future__ import annotations
@@ -22,6 +28,15 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 DESKTOP_ENTRY_NAME = "hermes.desktop"
+
+# Deep-link scheme contract: the entry declares itself the handler and install
+# points the desktop's default-handler registry at this file. Must stay in sync
+# with apps/desktop/electron/main.ts (hermes:// — and hermes-dev:// in dev).
+SCHEME_HANDLER_MIME = "x-scheme-handler/hermes"
+# Exec field code for a single URI. The app-grid passes none (so it expands to
+# nothing and `hermes desktop` still launches); opening a link passes the exact
+# URI as one argv element.
+URI_FIELD_CODE = "%u"
 
 # XDG startup notification: set by an app-grid / menu launch, absent for terminal and detached
 # (updater relaunch) launches. See launched_from_shell().
@@ -413,16 +428,20 @@ def _quote_exec_arg(arg: str) -> str:
 
 
 def render_desktop_entry(exec_command: str, icon: str) -> str:
+    """Render the entry. ``Exec`` carries ``%u`` so opening a ``hermes://`` link
+    forwards the exact URI as one argument; a plain app-grid click supplies no
+    URI, and the field code then expands to nothing."""
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=Hermes\n"
         "GenericName=Hermes Desktop\n"
         "Comment=Launch Hermes Desktop\n"
-        f"Exec={exec_command}\n"
+        f"Exec={exec_command} {URI_FIELD_CODE}\n"
         f"Icon={icon}\n"
         "Terminal=false\n"
         "Categories=Utility;\n"
+        f"MimeType={SCHEME_HANDLER_MIME};\n"
         "StartupNotify=true\n"
         "StartupWMClass=Hermes\n"
     )
@@ -461,6 +480,24 @@ def _run_quiet(cmd: "list[str]", *, timeout: int = 60, on_error: Optional[bool] 
     except (OSError, subprocess.SubprocessError):
         return on_error
     return result.returncode == 0
+
+
+def _run_capture(cmd: "list[str]", *, timeout: int = 20) -> Optional[str]:
+    """Stdout of a successful silenced subprocess, or ``None`` (not run / nonzero / timeout)."""
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout or ""
 
 
 # Sizes a typical hicolor ``index.theme`` lists. ``scalable`` is SVG-only — a raster PNG there is
@@ -595,6 +632,48 @@ def _launcher_entry_management_enabled() -> bool:
         return True
 
 
+def _query_scheme_handler_default(xdg_mime: str) -> Optional[str]:
+    """The configured ``hermes://`` handler (desktop file basename), or ``None`` if unreadable."""
+    output = _run_capture([xdg_mime, "query", "default", SCHEME_HANDLER_MIME])
+    return output.strip() if output is not None else None
+
+
+def ensure_scheme_handler_association(entry_path: Path) -> str:
+    """Point the desktop's ``hermes://`` handler at *entry_path*, verified by readback.
+
+    Returns ``"ok"`` (already the default), ``"repaired"`` (set and confirmed by
+    a query readback), ``"tool-missing"`` (no ``xdg-mime`` on PATH) or
+    ``"failed"`` (the set ran but the readback did not confirm it). Only the
+    first two mean the association is actually in place — never reported on a
+    bare exit status.
+    """
+    xdg_mime = shutil.which("xdg-mime")
+    if not xdg_mime:
+        return "tool-missing"
+    entry_name = entry_path.name
+    if _query_scheme_handler_default(xdg_mime) == entry_name:
+        return "ok"
+    if _run_quiet([xdg_mime, "default", entry_name, SCHEME_HANDLER_MIME], timeout=20) is not True:
+        return "failed"
+    if _query_scheme_handler_default(xdg_mime) == entry_name:
+        return "repaired"
+    return "failed"
+
+
+def _report_scheme_handler_status(status: str) -> None:
+    """Bounded warnings for association results that are not an actual success."""
+    if status == "tool-missing":
+        print(
+            "⚠ Could not register the hermes:// link handler: xdg-mime is not installed "
+            "(install xdg-utils, then re-run: hermes desktop)"
+        )
+    elif status == "failed":
+        print(
+            "⚠ Could not register the hermes:// link handler: xdg-mime did not confirm "
+            "the change; re-run: hermes desktop"
+        )
+
+
 def install_desktop_entry(project_root: Path) -> Optional[Path]:
     """Create or refresh the entry, respecting the opt-out for existing entries.
 
@@ -623,7 +702,11 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     try:
         entry_path.parent.mkdir(parents=True, exist_ok=True)
         # Unchanged → skip the rewrite so a launch doesn't churn the menu caches.
+        # The scheme association is still verified (and healed if missing or
+        # stale) below: that state needs no file rewrite and is exactly what
+        # this entry exists for.
         if entry_path.is_file() and entry_path.read_text(encoding="utf-8") == contents:
+            _report_scheme_handler_status(ensure_scheme_handler_association(entry_path))
             return entry_path
         # Atomic replace: an interrupted plain write leaves a zero-byte entry, which permanently
         # breaks the taskbar pin (nothing later rewrites a file that exists at the right path).
@@ -638,6 +721,7 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
         return None
 
     refresh_desktop_databases(entry_path.parent)
+    _report_scheme_handler_status(ensure_scheme_handler_association(entry_path))
     return entry_path
 
 

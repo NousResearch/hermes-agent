@@ -1,6 +1,7 @@
 {
   "name": "hermes",
   "productName": "Hermes",
+  "desktopName": "hermes.desktop",
   "private": true,
   "version": "0.17.6",
   "description": "Native desktop shell for Hermes Agent.",

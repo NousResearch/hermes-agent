@@ -64,6 +64,7 @@ def _ns(**kw):
         cwd=None,
         setup_tcc_identity=False,
         identity=None,
+        uri=None,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -1649,3 +1650,95 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
     assert live_exe.read_text(encoding="utf-8") == "good build"
     assert not list(desktop_dir.glob(".staging-*"))
     assert "produced no launchable app" in capsys.readouterr().out
+
+
+# --- desktop deep-link URI argument (hermes://) ---------------------------
+
+
+def _desktop_parser():
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    from hermes_cli.subcommands.gui import build_gui_parser
+
+    build_gui_parser(subparsers, cmd_gui=lambda args: None)
+    return parser
+
+
+def test_desktop_parser_uri_is_optional():
+    parser = _desktop_parser()
+
+    assert parser.parse_args(["desktop"]).uri is None
+    assert (
+        parser.parse_args(["desktop", "hermes://blueprint/x?y=1"]).uri
+        == "hermes://blueprint/x?y=1"
+    )
+
+
+def test_gui_rejects_bad_uri_before_build_or_launch(tmp_path, monkeypatch, capsys):
+    """A foreign-scheme URI never reaches the build or the app's argv."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+
+    with patch("hermes_cli.main_web_build._run_npm_install_deterministic") as mock_install, \
+         patch("hermes_cli.main_desktop._desktop_build_needed") as mock_needed, \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(uri="https://evil.example/hermes://x"))
+
+    assert exc.value.code == 2
+    mock_install.assert_not_called()
+    mock_needed.assert_not_called()
+    mock_run.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Refusing the desktop URI argument" in out
+    assert "evil.example" not in out
+
+
+def test_gui_forwards_uri_as_one_argv_element_and_redacts_logs(tmp_path, monkeypatch, capsys):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    uri = "hermes://mcp/install?name=demo&config=QUJD"
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(uri=uri))
+
+    assert exc.value.code == 0
+    launched = mock_run.call_args.args[0]
+    assert launched.count(uri) == 1  # exact URI, one argv element, nothing interpolated
+    assert launched[-1] == uri
+    out = capsys.readouterr().out
+    assert "config=QUJD" not in out and uri not in out
+
+
+def test_gui_forwards_uri_in_source_launch_and_redacts_it(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    uri = "hermes-dev://blueprint/morning-brief"
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(source=True, uri=uri))
+
+    assert mock_run.call_args_list[1].args[0] == [
+        "/usr/bin/npm", "exec", "--", "electron", ".", uri
+    ]
+    assert mock_run.call_args_list[1].kwargs["env"]["npm_config_loglevel"] == "error"
+    # Launch-log redaction keeps the payload out while naming the scheme.
+    assert main_desktop._loggable_launch_command(
+        ["hermes", "--local", uri], uri
+    ) == "hermes --local <hermes-dev:// link>"

@@ -134,19 +134,30 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
 
 
 def _which_with_config_pathext(command: str, path_arg, env: dict):
-    """``shutil.which`` retried under the config env's PATHEXT (Windows only; ``which`` uses the PARENT's)."""
+    """``shutil.which`` retried under the config env's PATHEXT (Windows only; ``which`` uses the PARENT's).
+    Emulated as a direct directory scan: writing ``os.environ["PATHEXT"]`` and restoring it after the
+    call still leaves a window where any other thread's ``shutil.which``/``subprocess``/``os.environ``
+    read sees the per-profile value — this gateway is multi-threaded under multiplex (#117214)."""
     cfg_pathext = next((v for k, v in env.items() if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
     if not cfg_pathext or cfg_pathext == os.environ.get("PATHEXT"):
         return None
-    saved = os.environ.get("PATHEXT")
-    try:
-        os.environ["PATHEXT"] = cfg_pathext
-        return shutil.which(command, path=path_arg)
-    finally:
-        if saved is None:
-            os.environ.pop("PATHEXT", None)
-        else:
-            os.environ["PATHEXT"] = saved
+    # The child env carries Windows-shaped PATH/PATHEXT (";"-separated) regardless of the
+    # host running this lookup, so split on the literal separator, not os.pathsep.
+    exts = [e.rstrip(".") for e in cfg_pathext.split(";") if e.strip()]
+    # Same precedence as shutil.which on Windows: a command already carrying one of the
+    # extensions is looked up as-is; otherwise each extension is appended.
+    if any(command.upper().endswith(e.upper()) for e in exts):
+        candidates = [command]
+    else:
+        candidates = [command + e for e in exts]
+    if not path_arg:
+        return None  # absent/empty child PATH searches nowhere, never the parent's (#117213)
+    for directory in path_arg.split(";"):
+        for cand in candidates:
+            full = os.path.join(directory or os.curdir, cand)
+            if os.access(full, os.F_OK | os.X_OK):
+                return full
+    return None
 
 
 def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
@@ -170,7 +181,11 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
     if os.sep not in resolved_command:
-        path_arg = resolved_env.get("PATH")
+        # Absent child PATH must not resolve against the parent's ambient PATH (#117213):
+        # shutil.which(path=None) reads os.environ["PATH"], but the child spawns without one.
+        # Absent and empty both miss inside which ("if not path: return None"); only the
+        # explicit node-fallback dirs can still rescue bare npx/npm/node.
+        path_arg = resolved_env.get("PATH") or ""
         which_hit = shutil.which(resolved_command, path=path_arg)
         if which_hit is None and sys.platform == "win32" and resolved_env:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)

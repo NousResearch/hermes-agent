@@ -122,6 +122,31 @@ class HermesProviderMixin:
 
         self.context.callback_handler = _fill_iss
 
+    async def _hermes_accept_origin_issued_metadata(self, response):
+        """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
+        it lives under (see ``metadata_issued_by_origin``); the SDK's exact-string check (RFC 8414 §3.3)
+        would reject it and park the connection on an issuer mismatch (Strava, #116233).
+
+        The SDK validates inside its Step 2 loop right after reading the response, so the document is
+        installed on the context here and the SDK is handed an empty 204: ``handle_auth_metadata_response``
+        reads that as "stop trying", leaving the installed document in place. ``auth_server_url`` is left
+        untouched, so the SEP-2352 credential binding still uses the advertised identifier (stable across
+        runs), while the RFC 9207 ``iss`` check and Hermes' refresh-token binding use the document's issuer.
+        Every other response goes back to the SDK unchanged, including its issuer check."""
+        from mcp.shared.auth import OAuthMetadata
+        from pydantic import ValidationError
+        try:
+            metadata = OAuthMetadata.model_validate_json(await response.aread())
+        except ValidationError:
+            return response
+        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+            return response
+        self._hermes_logger.info(
+            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
+            "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
+        self.context.oauth_metadata = metadata
+        return type(response)(204, request=response.request)
+
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""
         ua = getattr(self, "_hermes_token_user_agent", None)  # tests build via __new__
@@ -205,6 +230,8 @@ class HermesProviderMixin:
                         failure = _asm_discovery_failure(sent)
                         if failure:
                             discovery_failures.append(failure)
+                        elif getattr(sent, "status_code", None) == 200:
+                            sent = await self._hermes_accept_origin_issued_metadata(sent)
             finally:
                 await self._hermes_release_refresh_fence()
 
@@ -439,6 +466,35 @@ def _metadata_issuer(context: Any) -> str | None:
     meta = getattr(context, "oauth_metadata", None)
     issuer = getattr(meta, "issuer", None) if meta is not None else None
     return (str(issuer).rstrip("/") or None) if issuer else None
+
+
+def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Whether *metadata* may stand in for the exact-issuer match of RFC 8414 §3.3 because it is the
+    document of the path-scoped authorization server *auth_server_url* and names that server's origin.
+
+    The issuer check stops a party controlling a path or a sibling host from making the client accept
+    endpoints of a different authorization server (RFC 8414 §3.3, RFC 9728 §3.3). This narrow shape keeps
+    that boundary: *response* must be the document fetched directly (no redirect) from the RFC 8414 §3.1
+    well-known URL DERIVED from the advertised identifier, ``<origin>/.well-known/oauth-authorization-server
+    <path>`` — a location only the origin's operator controls — and its ``issuer`` must be exactly that
+    origin, i.e. the advertised server is ``issuer + path``. ``response.url`` is the URL the body was
+    actually read from (the final request after any followed redirect), so a redirected document never
+    matches. Whoever can publish that document already
+    controls the origin's well-known tree, so accepting it grants a path-controlling attacker nothing.
+    Strava's MCP connector publishes exactly this pair (#116233). Anything else (another origin, a
+    different path, the root or OIDC fallback documents, a redirect target) still goes through the
+    exact-string check."""
+    from urllib.parse import urlsplit
+    if not auth_server_url:
+        return False
+    parts = urlsplit(auth_server_url)
+    path = parts.path.rstrip("/")
+    if (not path or ".." in path.split("/") or parts.username is not None or parts.query or parts.fragment
+            or response.status_code != 200):
+        return False
+    origin = f"{parts.scheme}://{parts.netloc}"
+    derived = f"{origin}/.well-known/oauth-authorization-server{path}"
+    return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
 
 
 def bind_issuer_from_context(context: Any) -> None:

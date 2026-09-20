@@ -355,7 +355,9 @@ on denial or expiry. No browser is launched and no callback listener is needed.
 When the server's protected-resource metadata lists several authorization servers, device
 login scans them in order and uses the first one whose metadata issuer matches its advertised
 URL and that offers the `device_code` grant (a browser-only server listed first is skipped);
-issuer validation is never relaxed.
+the only accepted difference is the path-scoped shape described under "OAuth-authenticated HTTP servers"
+in the MCP feature guide (a server advertised as `https://host/path` whose document at
+`/.well-known/oauth-authorization-server/path` names `https://host`).
 
 Set `oauth.flow: device` on the server to make `hermes mcp login` and `hermes mcp reauth`
 (including `reauth --all`) use device authorization. `login --flow browser` overrides that

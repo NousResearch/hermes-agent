@@ -1618,8 +1618,12 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     every profile; it still honors the max_turns bridge."""
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
+        from agent import auxiliary_client
+        credential_fingerprint = auxiliary_client.credential_env_fingerprint()
         load_hermes_dotenv(
             hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+        if auxiliary_client.credential_env_fingerprint() != credential_fingerprint:
+            auxiliary_client.clear_cached_clients()
     _bridge_max_turns_from_config(_hermes_home)
 
 

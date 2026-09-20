@@ -3478,6 +3478,27 @@ def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> boo
     return task in _TIMEOUT_NO_RETRY_TASKS and _is_timeout_error(exc) and "no-progress timeout" not in str(exc)
 
 
+_CREDENTIAL_ENV_FIELDS = (
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENROUTER_API_KEY",
+    "HERMES_CODEX_BASE_URL", "HERMES_XAI_BASE_URL", "XAI_BASE_URL",
+    "NOUS_INFERENCE_BASE_URL",
+)
+
+
+def credential_env_fingerprint() -> bytes:
+    """Return a secret-safe fingerprint of env credentials used by auxiliary clients."""
+    values = tuple(_scoped_key_env(name) for name in _CREDENTIAL_ENV_FIELDS)
+    return hashlib.blake2b(repr(values).encode("utf-8"), digest_size=16).digest()
+
+
+def clear_cached_clients() -> None:
+    """Drop this profile's cached auxiliary clients after credential environment rotation."""
+    home = hermes_home_key()
+    with _client_cache_lock:
+        for key in [key for key in _client_cache if key[0] == home]:
+            _client_cache.pop(key, None)
+
+
 def _evict_cached_clients(provider: str) -> None:
     """Drop this profile's cached auxiliary clients for a provider so fresh creds are used.
 

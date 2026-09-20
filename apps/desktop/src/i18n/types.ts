@@ -185,6 +185,7 @@ export interface Translations {
     deleteBody: string
     pathCopied: string
     revealMissing: string
+    revealUnavailable: string
   }
 
   boot: {

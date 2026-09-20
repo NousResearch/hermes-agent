@@ -130,7 +130,8 @@ export const en: Translations = {
     deleteTitle: name => `Delete ${name}?`,
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
     pathCopied: 'Path copied',
-    revealMissing: 'That folder is not on this computer'
+    revealMissing: 'That folder is not on this computer',
+    revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
   },
 
   boot: {

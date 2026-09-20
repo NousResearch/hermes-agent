@@ -832,6 +832,25 @@ class SessionSessionsMixin:
             (stamp,),
         ) or 0)
 
+    def backfill_acp_session_cwd(self) -> int:
+        """Promote ``model_config.cwd`` into the cwd column for ACP rows lacking one.
+
+        ACP sessions minted before the adapter populated the column still carry
+        their workspace inside ``model_config``, written by the same adapter that
+        knew the real directory — so this is a record being promoted, not a guess.
+        Only fills NULL/empty; an explicit column value always wins. Returns the
+        number of rows changed.
+        """
+        return int(self._write_rowcount(
+            """UPDATE sessions
+                  SET cwd = json_extract(model_config, '$.cwd')
+                WHERE source = 'acp'
+                  AND COALESCE(cwd, '') = ''
+                  AND json_valid(model_config)
+                  AND COALESCE(json_extract(model_config, '$.cwd'), '') != ''""",
+            (),
+        ) or 0)
+
     def _set_lineage_column(self, column: str, session_id: str, value: Any) -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
         forward to their tip, so updating only the tip would let the root resurrect it on refresh."""

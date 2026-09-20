@@ -574,11 +574,17 @@ def _scan_gateway_pids(
     # Strict matcher shared with gateway.status: requires a real ``gateway run`` argv, so
     # ``gateway status``/``dashboard`` siblings and ``python -m tui_gateway`` don't match.
     from gateway.status import (
-        looks_like_gateway_command_line, looks_like_gateway_runtime_command_line, profile_flag_value,
+        looks_like_gateway_command_line,
+        looks_like_gateway_runtime_command_line,
+        profile_flag_value,
+        hermes_home_assignments,
+        command_line_names_hermes_home,
     )
     current_home = str(get_hermes_home().resolve())
-    # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status).
-    current_home_lc = current_home.lower().replace("\\", "/")
+    # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status), and no
+    # trailing separator: the assignments parser strips one, so the systemd ``Environment=``
+    # spelling (``HERMES_HOME=/root/.hermes/``) compares equal to the resolved home.
+    current_home_lc = current_home.lower().replace("\\", "/").rstrip("/")
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
     current_profile_name_lc = current_profile_name.lower()
@@ -587,10 +593,9 @@ def _scan_gateway_pids(
         command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
             # Token equality, not substring: `-p ops` must not claim (or SIGTERM) an `-p ops-2` gateway.
-            return (
-                profile_flag_value(command_lc) == current_profile_name_lc
-                or f"hermes_home={current_home_lc}" in command_lc
-            )
+            if profile_flag_value(command_lc) == current_profile_name_lc:
+                return True
+            return command_line_names_hermes_home(command_lc, current_home_lc)
 
         # Default profile: accept unless argv advertises another profile in any spelling the CLI
         # pre-parser accepts (``--profile=ops`` slipped past a substring test, so a default-profile
@@ -598,7 +603,8 @@ def _scan_gateway_pids(
         # wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
         if profile_flag_value(command_lc) is not None:
             return False
-        return not ("hermes_home=" in command_lc and f"hermes_home={current_home_lc}" not in command_lc)
+        return (not hermes_home_assignments(command_lc)
+                or command_line_names_hermes_home(command_lc, current_home_lc))
 
     def _consider(pid: int, command: str) -> None:
         matches_runtime = looks_like_gateway_command_line(command) or (
@@ -829,7 +835,7 @@ def find_windows_gateway_services(
                 if not owned:
                     try:
                         service_binpath = str(_scm_service_field(service, "binpath") or "")
-                    except psutil_module.AccessDenied:
+                    except (psutil_module.AccessDenied, OSError):
                         continue
                     owned = hermes_owns_windows_service(service_name, service_binpath, hermes_roots)
                 if not owned:
@@ -6024,7 +6030,13 @@ def _wizard_platform_loop() -> None:
 
 
 def _wizard_install_service(backend: str) -> None:
-    """Fresh install from the wizard: ask start-now / start-on-login, install, then start."""
+    """Fresh install from the wizard: ask start-now / start-on-login once, install, then start.
+
+    The Windows installer owns its start decision (Scheduled Task and Startup-folder
+    paths start the gateway themselves when start_now is true, and a UAC hand-off
+    installs and starts in the elevated child), so the wizard forwards the answers
+    and returns without a second start. Each install-intent question is asked exactly
+    once per setup run."""
     wsl_note = " (note: services may not survive WSL restarts)" if is_wsl() else ""
     start_now = prompt_yes_no("  Start the gateway now?", True)
     start_on_login = prompt_yes_no(
@@ -6048,7 +6060,8 @@ def _wizard_install_service(backend: str) -> None:
         elif backend == "launchd":
             launchd_install(force=False)
         else:
-            _gw_windows().install(force=False)
+            _gw_windows().install(force=False, start_now=start_now, start_on_login=start_on_login)
+            return
         print()
         if did_install and start_now:
             _setup_service_action("start", failed_label="Start failed", system=installed_scope == "system")

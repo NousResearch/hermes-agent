@@ -79,6 +79,7 @@ export const zh = defineLocale({
     connect: '连接',
     connecting: '连接中',
     continue: '继续',
+    bots: '机器人',
     copied: '已复制',
     copy: '复制',
     copyFailed: '复制失败',
@@ -122,7 +123,8 @@ export const zh = defineLocale({
     renameLabel: '新名称',
     deleteTitle: name => `删除 ${name}？`,
     deleteBody: '将移至废纸篓，你可以从那里恢复。',
-    pathCopied: '已复制路径'
+    pathCopied: '已复制路径',
+    revealMissing: '该文件夹不在这台电脑上'
   },
 
   boot: {
@@ -2945,6 +2947,10 @@ export const zh = defineLocale({
     results: '结果',
     pinned: '已置顶',
     sessions: '会话',
+    terminal: '终端',
+    files: '文件',
+    review: '审查',
+    logs: '日志',
     cronJobs: '定时任务',
     groupAriaGrouped: '以单一列表显示会话',
     groupAriaUngrouped: '按工作区分组会话',

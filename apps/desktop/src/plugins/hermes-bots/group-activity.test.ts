@@ -28,9 +28,8 @@ const MEMBERS: GroupMember[] = [
   { name: 'ops', title: 'The Ops' }
 ]
 
-/** A failed turn's activity row carries the typed reason the gateway sent.
- *  `recordGroupActivity` spreads it through, so it isn't on the entry type. */
-type ActivityRow = GroupActivityEntry & { reason?: string }
+/** A failed turn's activity row carries the typed reason the gateway sent. */
+type ActivityRow = GroupActivityEntry
 
 interface Room {
   activity: typeof groupActivity
@@ -273,6 +272,9 @@ describe('feed shape', () => {
     expect(label({ kind: 'queued', member: 'You' })).toBe('You sent a message')
     expect(label({ kind: 'replied', member: 'research' })).toBe('research replied')
     expect(label({ kind: 'timed-out', member: 'ops' })).toBe('ops took too long')
+    expect(label({ kind: 'failed', member: 'ops', reason: 'slot wait timed out' })).toBe(
+      'ops hit an error — slot wait timed out'
+    )
     expect(label({ kind: 'cancelled', member: null })).toBe('turn interrupted by a newer message')
     expect(label({ kind: 'settled', member: null })).toBe('turn settled')
   })

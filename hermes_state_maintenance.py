@@ -343,13 +343,15 @@ class SessionMaintenanceMixin:
         VACUUM reads every page and commits the result back, turning contained damage into an
         amplified one (#105670). Same guard ``_execute_write`` applies to every write."""
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         optimized = 0
         try:
             optimized = self.optimize_fts()  # manages its own lock
         except Exception as exc:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         with self._lock:
+            self._raise_if_db_replaced()
+            if self._conn is None:
+                self._reopen_after_close_locked(context="write")
             # PASSIVE, not TRUNCATE: a manual `hermes sessions vacuum` runs in a transient CLI
             # process; a TRUNCATE reset here would race a live gateway writer.
             self._try_checkpoint("PASSIVE", "WAL checkpoint (PASSIVE) before VACUUM failed: %s")

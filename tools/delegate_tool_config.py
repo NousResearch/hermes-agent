@@ -333,8 +333,10 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         provider, api_mode = "anthropic", "anthropic_messages"
     elif "api.kimi.com/coding" in base_lower:
         api_mode = "anthropic_messages"
-    # Explicit delegation.api_mode always wins over the URL heuristic.
-    if v["api_mode"] in _EXPLICIT_API_MODES:
+    # Explicit delegation.api_mode always wins over the URL heuristic; a provider plugin's
+    # registered dialect counts as explicit.
+    from agent.transports import registered_api_modes
+    if v["api_mode"] in _EXPLICIT_API_MODES or (v["api_mode"] and v["api_mode"] in registered_api_modes()):
         api_mode = v["api_mode"]
 
     # Preserve the configured provider's request personality on an explicit endpoint.

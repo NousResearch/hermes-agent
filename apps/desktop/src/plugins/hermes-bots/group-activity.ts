@@ -81,8 +81,9 @@ export function groupActivityLabel(event: GroupActivityEntry, group?: null | str
   }
 
   const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot', group)
+  const reason = kind === 'failed' ? String(event?.reason || '').trim() : ''
 
-  return `${who} ${base}`
+  return `${who} ${base}${reason ? ` — ${reason}` : ''}`
 }
 
 const GROUP_ACTIVITY_LABELS: Record<GroupActivityKind, string> = {

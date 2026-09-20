@@ -548,6 +548,13 @@ export interface SessionInfo {
    *  elsewhere. Undefined against a backend predating the flag; treat that as
    *  "no opinion" and leave the local pin set alone. */
   pinned?: boolean
+  /** Server-side hide flag (`sessions.hidden`). Hidden rows (canonical Bot
+   *  Chats, group-chat plumbing) never reach a sidebar page, so a row
+   *  carrying `hidden: true` only exists in the local list through an
+   *  optimistic insert or a keep-list carry — the merge must not let it
+   *  survive a refresh (#113273). Undefined against older backends; treat
+   *  as visible. */
+  hidden?: boolean
   /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
    *  see `SessionDB.session_unread`). True when the conversation was
    *  explicitly marked unread or a response arrived after it was last read.

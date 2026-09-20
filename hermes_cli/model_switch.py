@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
-    ProviderDef, custom_provider_aliases, determine_api_mode, get_label, host_mandated_api_mode,
-    is_aggregator, resolve_provider_full)
+    LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
+    host_mandated_api_mode, is_aggregator, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -1407,6 +1407,10 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         try:
             st.resolve_runtime(requested=st.target_provider, explicit_base_url=alias_url or None)
         except Exception as e:
+            if st.target_provider.strip().lower() in LLAMACPP_ALIASES:
+                # A local-runtime alias has no credential to add: the seam's own message ("server
+                # isn't running" / "turned off") is the actionable one, the auth hint below is noise.
+                return st.fail_on_target(str(e))
             return st.fail_on_target(
                 f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "
                 f"`hermes auth add {st.target_provider}`, or pick a connected provider in /model.\n"

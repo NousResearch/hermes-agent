@@ -130,9 +130,13 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
 def _parse_api_mode(raw: Any) -> Optional[str]:
     """Validate an api_mode from config (None if invalid). Legacy/alias spellings (``openai``,
     ``anthropic``, ``responses``, …) are canonicalized first so old configs keep their transport
-    instead of silently falling through to hostname-based detection."""
+    instead of silently falling through to hostname-based detection. A mode with a registered
+    transport (a provider plugin's own dialect) is valid too."""
     normalized = _config_mod._canonical_api_mode(raw).lower() if isinstance(raw, str) else ""
-    return normalized if normalized in _VALID_API_MODES else None
+    if not normalized:
+        return None
+    from agent.transports import registered_api_modes
+    return normalized if normalized in _VALID_API_MODES or normalized in registered_api_modes() else None
 
 
 def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
@@ -189,11 +193,20 @@ def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> 
     return configured_mode or detected_mode or "chat_completions"
 
 
+def _same_registered_provider(provider: str, configured_provider: str) -> bool:
+    """Profile aliases share an auth registry ID; unrelated routes must stay distinct."""
+    if provider == configured_provider:
+        return True
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    configured = PROVIDER_REGISTRY.get(configured_provider)
+    return bool(pconfig and configured and pconfig.id == configured.id)
+
+
 def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
     """Whether a persisted api_mode may be honored for ``provider`` — only when the config's
     provider matches (or none is recorded), so a stale mode never leaks across a switch."""
     p, c = (provider or "").strip().lower(), (configured_provider or "").strip().lower()
-    return not c or (c == "custom" or c.startswith("custom:") if p == "custom" else c == p)
+    return not c or (c == "custom" or c.startswith("custom:") if p == "custom" else _same_registered_provider(p, c))
 
 
 def _configured_api_mode(provider: str, model_cfg: Dict[str, Any]) -> Optional[str]:
@@ -301,7 +314,7 @@ def _config_base_url_for_provider(model_cfg: Dict[str, Any], provider: str) -> s
     configured_provider = _cfg_provider(model_cfg)
     if provider == "actual":
         configured_provider = _models.normalize_provider(configured_provider)
-    return str(model_cfg.get("base_url") or "").strip().rstrip("/") if configured_provider == provider else ""
+    return str(model_cfg.get("base_url") or "").strip().rstrip("/") if _same_registered_provider(provider, configured_provider) else ""
 
 
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
@@ -594,6 +607,8 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
     pool_api_key = _pool_entry_api_key(entry)
     if provider == "nous":
         entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, pool_api_key)
+    if not has_usable_secret(pool_api_key):
+        return None
     if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
         return _resolve_runtime_from_pool_entry(provider=provider, entry=entry, requested_provider=requested_provider,
                                                 model_cfg=model_cfg, pool=pool, target_model=target_model)

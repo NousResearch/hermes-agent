@@ -20,7 +20,8 @@ function relabelMemberControlFrames(text: string) {
 /** Viewer identity for a room-log line. A bare string is the local, unsourced
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
-  string | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'remoteSource'>>)
+  | string
+  | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
@@ -71,11 +72,11 @@ function viewerNameOf(viewer: GroupChatLineViewer): string {
   return typeof viewer === 'string' ? viewer : viewer?.name || ''
 }
 
-/** Remote members stamp `from.source` as `connectionLabel || connectionId`.
- *  Only a remoteSource viewer exposes those tokens; a string or local member
- *  is unsourced so same-name remote lines fail open (no `(you)`). */
+/** Members stamp `from.source` as `connectionLabel || connectionId` (local
+ *  ones too, once they know their connection). A string viewer or a member
+ *  without a connection exposes no tokens. */
 function viewerConnectionSources(viewer: GroupChatLineViewer): string[] {
-  if (typeof viewer === 'string' || !viewer?.remoteSource) {
+  if (typeof viewer === 'string') {
     return []
   }
 
@@ -87,14 +88,23 @@ function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer):
     return false
   }
 
-  const speakerSource = from.source || ''
-  const viewerSources = viewerConnectionSources(viewer)
-
-  if (!speakerSource && viewerSources.length === 0) {
-    return true
+  // Gateway identity first: the install_id is the same token on every
+  // Desktop, while `source` is whatever THIS Desktop labelled the connection
+  // (two Desktops calling one gateway "Central" / "Studio" agree here and
+  // disagree below). Only decisive when both sides carry it.
+  if (from.gateway && typeof viewer !== 'string' && viewer?.installId) {
+    return from.gateway === viewer.installId
   }
 
-  return Boolean(speakerSource) && viewerSources.includes(speakerSource)
+  const speakerSource = from.source || ''
+
+  // An unsourced same-name line is local by the room's resolution rule
+  // (routing.ts: no source ⇒ `!remoteSource`), so only a local viewer owns it.
+  if (!speakerSource) {
+    return typeof viewer === 'string' || !viewer?.remoteSource
+  }
+
+  return viewerConnectionSources(viewer).includes(speakerSource)
 }
 
 interface GroupChatTurnPromptInput {

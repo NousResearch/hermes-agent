@@ -1543,7 +1543,7 @@ def check_respawn_guard(
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
-    err = row["last_failure_error"]
+    err = _kb._lossy_text(row["last_failure_error"])
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
@@ -1587,7 +1587,8 @@ def check_respawn_guard(
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
+        body = _kb._lossy_text(c["body"])
+        if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
             continue
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).

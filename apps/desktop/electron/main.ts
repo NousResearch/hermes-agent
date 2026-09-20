@@ -4314,11 +4314,13 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
-      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
-      // script gets its own minimized console and survives our exit. The
-      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
-      // pid — the script claims the update marker itself with its own $PID
-      // as its first action, and a relaunched Desktop parks on that.
+      // wrapHandoffForDetachedConsole). Route through a NON-detached, hidden
+      // `cmd start /b` wrapper: cmd.exe owns one hidden console, the script
+      // runs inside it (no window is ever created, #116161) and outlives
+      // both cmd.exe and this process. The wrapper cmd.exe exits
+      // immediately, so child.pid is NOT the script's pid — the script
+      // claims the update marker itself with its own $PID as its first
+      // action, and a relaunched Desktop parks on that.
       const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
         '-InstallRoot',
         updateRoot,
@@ -4338,7 +4340,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
           PATH: pathWithHermesManagedNode(venvBin)
         },
-        detached: true,
+        detached: wrapped.detached,
         stdio: 'ignore'
       })
 

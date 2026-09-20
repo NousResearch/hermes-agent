@@ -85,6 +85,7 @@ export const en: Translations = {
     connect: 'Connect',
     connecting: 'Connecting',
     continue: 'Continue',
+    bots: 'Bots',
     copied: 'Copied',
     copy: 'Copy',
     copyFailed: 'Copy failed',
@@ -128,7 +129,8 @@ export const en: Translations = {
     renameLabel: 'New name',
     deleteTitle: name => `Delete ${name}?`,
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
-    pathCopied: 'Path copied'
+    pathCopied: 'Path copied',
+    revealMissing: 'That folder is not on this computer'
   },
 
   boot: {
@@ -2797,6 +2799,10 @@ export const en: Translations = {
     results: 'Results',
     pinned: 'Pinned',
     sessions: 'Sessions',
+    terminal: 'Terminal',
+    files: 'Files',
+    review: 'Review',
+    logs: 'Logs',
     cronJobs: 'Cron jobs',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',

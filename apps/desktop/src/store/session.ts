@@ -655,6 +655,10 @@ export function mergeSessionPage(
 
   const survivors = previous.filter(
     session =>
+      // The keep-list answers "live, not listed yet" — a hidden row (canonical
+      // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
+      // open tab must not resurrect it into the sidebar (#113273).
+      !session.hidden &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
@@ -729,7 +733,13 @@ export function carryForwardFailedProfileSessions(
   const carried: SessionInfo[] = []
 
   for (const session of previous) {
-    if (!failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
+    // A hidden row (canonical Bot Chat) is LISTED-NEVER by design: the
+    // failed-slice carry must not ride it back into the sidebar (#113273).
+    if (
+      session.hidden ||
+      !failed.has(sidebarProfileKey(session)) ||
+      incomingIds.has(sessionListIdentity(session))
+    ) {
       continue
     }
 

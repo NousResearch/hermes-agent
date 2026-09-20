@@ -98,6 +98,10 @@ export interface RosterRow {
   ghost?: boolean
   handle?: string
   has_avatar?: boolean
+  /** The connection's backend identity (/api/status `install_id`) when the
+   *  roster source has seen it — stable across Desktops, unlike `connectionId`
+   *  / `connectionLabel`, which are THIS Desktop's names for the connection. */
+  installId?: string
   last_session?: SessionPreview | null
   remoteSource?: boolean
   route?: ProfileRoute
@@ -109,6 +113,11 @@ export interface RosterRow {
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string
+  /** Canonical ids this profile was previously known by (`hermes profile
+   *  rename` records them in profile.yaml; the gateway surfaces them on
+   *  profiles.list). Lets group chats re-link persisted member descriptors
+   *  after a rename (#110200). */
+  previous_names?: string[]
   ui_meta?: Record<string, unknown> & { 'hermes-bots'?: BotMeta }
   /** Compare-and-swap revisions, per ui_meta key. */
   ui_meta_revisions?: Record<string, number>
@@ -124,7 +133,9 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'installId'
   | 'name'
+  | 'previous_names'
   | 'remoteSource'
   | 'route'
   | 'sourceMissing'
@@ -146,8 +157,14 @@ export interface Attachment {
 export interface GroupMessageAuthor {
   kind: 'member' | 'user'
   name: string
-  /** Connection label, present when the speaker lives on another machine. */
+  /** Connection label (`connectionLabel || connectionId`) — this Desktop's
+   *  name for the speaker's connection; display-only. */
   source?: string
+  /** The speaker's gateway identity (/api/status `install_id`): the same
+   *  token on every Desktop, so a mirrored entry passes the self test whatever
+   *  the reader labelled that connection. Absent when the source never
+   *  reported one. */
+  gateway?: string
 }
 
 export interface GroupMessage {
@@ -259,6 +276,7 @@ export interface GroupActivityEvent {
   kind: GroupActivityKind
   member?: string
   preview?: string
+  reason?: string
 }
 
 /**
@@ -299,6 +317,8 @@ export interface GatewaySource {
   connectionId: string
   count?: number
   error?: null | string
+  /** Backend identity (/api/status `install_id`) when the enumeration saw it. */
+  installId?: string
   kind?: string
   label?: string
   reachable?: boolean

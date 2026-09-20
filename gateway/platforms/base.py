@@ -1119,9 +1119,12 @@ def _log_safe_path(path: str) -> str:
     return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
-def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional[str]:
+def _validated_delivery_path(raw_path, session_key: str, label: str,
+                             dropped: Optional[List[dict]] = None) -> Optional[str]:
     """``validate_media_delivery_path`` plus the shared "Skipping unsafe ..." warning. A path the
-    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466)."""
+    host cannot see is retried against the active remote sandbox (ssh/modal/...; #466). When
+    ``dropped`` is a list, a rejected path is appended as ``{"path", "reason"}`` so the caller can
+    report the drop instead of booking a delivery that never happened (#115908)."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
@@ -1132,6 +1135,8 @@ def _validated_delivery_path(raw_path, session_key: str, label: str) -> Optional
         # a sandbox path failed to translate) and is not a security rejection.
         reason = "not found on this host" if not _existing_regular_file(raw) else "denied by the delivery policy"
         logger.warning("Skipping %s (%s): %s", label, reason, _log_safe_path(raw))
+        if dropped is not None:
+            dropped.append({"path": raw, "reason": reason})
     return safe_path
 
 
@@ -3102,11 +3107,12 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path, session_key=session_key)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(media_files, session_key: str = "",
+                                    dropped: Optional[List[dict]] = None) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths; ``dropped`` collects the rejects."""
         return [
             (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
-            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path"))]
+            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped))]
 
     @staticmethod
     def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:

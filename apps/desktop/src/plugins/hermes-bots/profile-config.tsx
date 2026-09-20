@@ -376,7 +376,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
             <CheckList columns={2} items={visibleSkills} onToggle={toggleSkill} />
           </div>
           <HubSkillsSection
-            forProfile={backendScope}
+            bot={bot}
             onInstalled={name =>
               setState(prev =>
                 prev.skills.some(s => s.name === name)

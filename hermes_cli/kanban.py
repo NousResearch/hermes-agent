@@ -1616,10 +1616,15 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+        # Gateway sessions that run `hermes kanban create` (rather than the kanban_create
+        # tool) get the same completion/block notifications; no-op for plain CLI/cron.
+        subscribed = kb.auto_subscribe_session(conn, task_id)
     if getattr(args, "json", False):
-        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+        print(json.dumps({**_task_to_dict(task), "subscribed": subscribed},
+                         indent=2, ensure_ascii=False))
     else:
-        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'}, "
+              f"subscribed={'true' if subscribed else 'false'})")
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are

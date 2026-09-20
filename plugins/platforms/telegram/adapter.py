@@ -700,10 +700,20 @@ class TelegramAdapter(BasePlatformAdapter):
         return not bool(getattr(self, "_fatal_error_retryable", True))
 
     def _replacement_telegram_adapter(self) -> Optional["TelegramAdapter"]:
-        """Live adapter if the reconnect watcher replaced us in ``runner.adapters`` (an in-flight
-        ``send()`` still holds the old instance whose ``_bot`` stays None)."""
+        """Live replacement for this adapter's owning profile after a reconnect.
+
+        ``runner.adapters`` belongs only to the primary profile.  A secondary adapter
+        must resolve from its own map in ``runner._profile_adapters``; falling back to
+        the primary map would send an in-flight delivery through the wrong bot.
+        """
         runner = getattr(self, "gateway_runner", None)
-        adapters = getattr(runner, "adapters", None) or {}
+        if runner is None:
+            return None
+        owner = getattr(self, "_owner_profile", None) or getattr(self, "_hermes_profile_name", None)
+        if owner and owner != "default":
+            adapters = (getattr(runner, "_profile_adapters", None) or {}).get(owner) or {}
+        else:
+            adapters = getattr(runner, "adapters", None) or {}
         live = adapters.get(self.platform)
         if live is not None and live is not self and getattr(live, "_bot", None):
             return live
@@ -3786,6 +3796,11 @@ class TelegramAdapter(BasePlatformAdapter):
         silently nor fail (the consumer would re-send a duplicate): edit with the first chunk, send the rest as
         continuations, and return the final chunk's id as the next edit target."""
         if not self._bot:
+            live = self._replacement_telegram_adapter()
+            if live is not None:
+                return await live.edit_message(
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata
+                )
             return SendResult(success=False, error="Not connected")
         # Shared per-chat budget (#116312): an interim (preview) edit is SKIPPED when the slot is busy —
         # the text it would show is shown by the next edit anyway, so a burst of edits can't trip flood
@@ -5144,6 +5159,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send images as Telegram albums (``send_media_group``, 10 per chunk). Animated GIFs can't join a
         media group (need ``send_animation``) so they go via the base per-image path, as does a failed chunk."""
         if not self._bot:
+            live = self._replacement_telegram_adapter()
+            if live is not None:
+                return await live.send_multiple_images(
+                    chat_id, images, metadata=metadata, human_delay=human_delay
+                )
             return SendResult(success=False, error="Not connected")
         if not images:
             return SendResult(success=False, error="no images to send")
@@ -5261,6 +5281,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Shared shell for native local-file sends: existence check, open, send with routing, then
         ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs."""
         if not self._bot:
+            live = self._replacement_telegram_adapter()
+            if live is not None:
+                return await live._send_local_file(
+                    label, path, chat_id, reply_to, metadata, media_key, build_kwargs, on_error
+                )
             return SendResult(success=False, error="Not connected")
         try:
             if not os.path.exists(path):
@@ -5328,6 +5353,11 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a URL image as a Telegram photo: URL send (<5MB) → download+upload (≤10MB) → base text."""
         if not self._bot:
+            live = self._replacement_telegram_adapter()
+            if live is not None:
+                return await live.send_image(
+                    chat_id, image_url, caption=caption, reply_to=reply_to, metadata=metadata
+                )
             return SendResult(success=False, error="Not connected")
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):

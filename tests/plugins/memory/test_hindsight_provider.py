@@ -561,7 +561,7 @@ class TestToolHandlers:
 
         provider._mode = "local_embedded"
         provider._client = first_client
-        monkeypatch.setattr(provider, "_get_client", lambda: next(clients))
+        monkeypatch.setattr(provider, "_get_client", lambda **_: next(clients))
 
         result = json.loads(provider.handle_tool_call(
             "hindsight_recall", {"query": "test"}
@@ -1395,6 +1395,105 @@ class TestPrefetchGenerationFence:
         result = provider.prefetch("test")
         assert "Memory 1" in result
         assert "Memory 2" in result
+
+
+# ---------------------------------------------------------------------------
+# Client lifecycle lock (#11923: concurrent construction must not orphan a client)
+# ---------------------------------------------------------------------------
+
+
+class TestClientLifecycleLock:
+    def test_client_created_once_under_concurrent_first_access(self, provider, monkeypatch):
+        """N threads hitting a cold client cache must construct exactly one: the
+        slow embedded constructor (runtime check, daemon spawn) used to let N-1
+        duplicates through a check-then-act window, each leaked client owning an
+        aiohttp session nothing ever closes."""
+        provider._client = None
+
+        built = []
+
+        def _slow_build():
+            time.sleep(0.2)  # force the check-then-act window open
+            client = SimpleNamespace(name=f"client-{len(built)}")
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(provider, "_new_cloud_client", _slow_build)
+
+        results = []
+
+        def _fetch():
+            results.append(provider._get_client())
+
+        threads = [threading.Thread(target=_fetch, daemon=True) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+
+        assert len(built) == 1
+        assert len(results) == 8
+        assert all(client is built[0] for client in results)
+
+    def test_retry_does_not_orphan_a_sibling_client(self, provider, monkeypatch):
+        """The stale-daemon retry retires _client while sibling threads may sit in
+        _get_client(); without the lock both build and the overwritten client is an
+        orphan nobody closes. Exactly one replacement must ever be constructed."""
+        provider._mode = "local_embedded"
+
+        built = []
+
+        def _build():
+            time.sleep(0.2)  # widen the null-and-rebuild window
+            client = SimpleNamespace()
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(provider, "_new_embedded_client", _build)
+
+        broken = _build()
+        provider._client = broken
+
+        def op(client):
+            async def _attempt():
+                if client is broken:
+                    raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+                return "ok"
+            return _attempt()
+
+        stop = threading.Event()
+
+        def _reader():
+            while not stop.is_set():
+                provider._get_client()
+
+        readers = [threading.Thread(target=_reader, daemon=True) for _ in range(4)]
+        for t in readers:
+            t.start()
+        try:
+            assert provider._run_hindsight_operation(op) == "ok"
+        finally:
+            stop.set()
+            for t in readers:
+                t.join(timeout=5.0)
+
+        assert provider._client is not broken
+        orphans = [c for c in built if c is not broken and c is not provider._client]
+        assert orphans == []
+        assert sum(c is not broken for c in built) == 1
+
+    def test_shutdown_closes_retired_client_and_allows_rebuild(self, provider, monkeypatch):
+        """shutdown() retires the client before closing it, so a later
+        _get_client() must rebuild rather than hand back the closed object."""
+        retired = provider._client
+        rebuilt = _make_mock_client()
+        monkeypatch.setattr(provider, "_new_cloud_client", lambda: rebuilt)
+
+        provider.shutdown()
+
+        assert retired.aclose.await_count == 1
+        assert provider._client is None
+        assert provider._get_client() is rebuilt
 
 
 # ---------------------------------------------------------------------------

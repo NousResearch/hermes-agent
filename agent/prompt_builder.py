@@ -606,7 +606,7 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
          "ago, and a single message can span both."),
         ("computer_use" in names,
          "Prefer carrying the work out in that same app — computer_use "
-         "takes its name in `app` — over pulling the task into a surface of your own."),
+         "takes its name in `app` (observe once, act once, verify with accessibility-first targeting) — over pulling the task into a surface of your own."),
         ("computer_use" in names and "browser_navigate" in names,
          "When the app underneath is a browser, that means driving the "
          "user's browser rather than opening yours with browser_navigate."),

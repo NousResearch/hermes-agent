@@ -280,4 +280,36 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     expect(rolledBack?.some(m => m.hidden)).toBe(false)
     expect($sessionStates.get()[RUNTIME_SESSION_ID]?.busy).toBe(false)
   })
+
+  it('cleans up computer-use state when canceling tile run', async () => {
+    const { $computerUseBySession, setComputerUseRunning } = await import('@/store/computer-use')
+    requestGatewayMock.mockResolvedValue({})
+
+    setComputerUseRunning(RUNTIME_SESSION_ID, { action: 'click', app: 'Chrome' })
+    expect($computerUseBySession.get()[RUNTIME_SESSION_ID]?.phase).toBe('running')
+
+    const { result } = renderTileActions()
+
+    await act(async () => {
+      await result.current.cancelRun()
+    })
+
+    expect($computerUseBySession.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+  })
+
+  it('cleans up computer-use state when reloading from message in tile', async () => {
+    const { $computerUseBySession, setComputerUseRunning } = await import('@/store/computer-use')
+    requestGatewayMock.mockResolvedValue({})
+
+    setComputerUseRunning(RUNTIME_SESSION_ID, { action: 'click', app: 'Firefox' })
+    expect($computerUseBySession.get()[RUNTIME_SESSION_ID]?.phase).toBe('running')
+
+    const { result } = renderTileActions()
+
+    await act(async () => {
+      await result.current.reloadFromMessage('u2')
+    })
+
+    expect($computerUseBySession.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+  })
 })

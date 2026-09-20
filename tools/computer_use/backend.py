@@ -164,6 +164,9 @@ class ComputerUseBackend(ABC):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult: ...  # route input to `app` (name / bundle ID)
 
     @abstractmethod
+    def launch_app(self, app: str, **kwargs) -> ActionResult: ...
+
+    @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
 
     def wait(self, seconds: float) -> ActionResult:  # default implementation

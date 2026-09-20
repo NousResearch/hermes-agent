@@ -98,6 +98,31 @@ class TestDispatch:
         parsed = json.loads(out)
         assert "error" in parsed
 
+    def test_launch_action_routes_to_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "launch", "app": "Calculator"})
+        parsed = json.loads(out)
+        assert parsed.get("ok") is True
+        assert parsed.get("action") == "launch_app"
+        call_names = [c[0] for c in noop_backend.calls]
+        assert "launch_app" in call_names
+        launch_kw = next(c[1] for c in noop_backend.calls if c[0] == "launch_app")
+        assert launch_kw["app"] == "Calculator"
+
+    def test_launch_action_requires_app(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "launch"})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "launch requires `app`" in parsed["error"]
+
+    def test_launch_action_suggestions(self):
+        from tools.computer_use.tool import handle_computer_use
+        for bad_action in ("open_app", "start_app", "run_app"):
+            out = handle_computer_use({"action": bad_action, "app": "Calculator"})
+            parsed = json.loads(out)
+            assert "error" in parsed
+            assert "launch" in parsed["error"]
 
     def test_type_action_routes_to_type_text_backend(self, noop_backend):
         """type action must call backend.type_text, not type_text_chars (issue #24170, bug 3)."""
@@ -1554,7 +1579,7 @@ class TestCuaDriverSessionReconnect:
             stderr = ""
             # Daemon returns a path, not inline base64.
             stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+                      ' "screenshot_file_path": "%s"}' % shot.as_posix())
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -2513,6 +2538,88 @@ class TestCuaToolCoverageExpansion:
         import pytest
         with pytest.raises(ValueError, match="bundle_id or name"):
             backend.launch_app()
+
+    def test_launch_app_by_name(self):
+        backend = self._backend(structured={"pid": 1234, "name": "Calculator", "windows": [{"window_id": 42}]})
+        res = backend.launch_app("Calculator")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "launch_app"
+        assert args["name"] == "Calculator"
+        assert res.ok is True
+        assert res.action == "launch"
+        assert "Calculator" in res.message
+        assert backend._active_pid == 1234
+        assert backend._active_window_id == 42
+
+    def test_launch_app_aumid_resolution(self):
+        backend = self._backend(structured={"pid": 5678, "name": "Calculator"})
+        res = backend.launch_app("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "launch_app"
+        assert args["aumid"] == "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+        assert res.ok is True
+
+    def test_launch_app_shell_apps_folder(self):
+        backend = self._backend(structured={"pid": 9999})
+        res = backend.launch_app("shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "launch_app"
+        assert args["launch_path"] == "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+        assert res.ok is True
+
+    def test_launch_app_path_resolution(self):
+        import sys
+        backend = self._backend(structured={"pid": 1111})
+        if sys.platform == "win32":
+            res = backend.launch_app("C:\\Windows\\System32\\calc.exe")
+            name, args = backend._session.call_tool.call_args.args
+            assert name == "launch_app"
+            assert args["path"] == "C:\\Windows\\System32\\calc.exe"
+            assert res.ok is True
+
+    def test_windows_key_combo_parsing(self):
+        from tools.computer_use.cua_backend_parse import _parse_key_combo
+        for combo, expected_mod, expected_key in (
+            ("win+r", "win", "r"),
+            ("windows+r", "win", "r"),
+            ("super+r", "win", "r"),
+            ("meta+r", "win", "r"),
+        ):
+            k, mods = _parse_key_combo(combo)
+            assert k == expected_key
+            assert mods == [expected_mod]
+
+    def test_key_desktop_scope_fallback_when_no_active_window(self):
+        backend = self._backend()
+        backend._active_pid = None
+        backend._active_window_id = None
+        backend.key("win+r")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "hotkey"
+        assert args.get("scope") == "desktop"
+        assert args.get("keys") == ["win", "r"]
+
+    def test_key_targets_active_pid_without_window_id(self):
+        backend = self._backend()
+        backend._active_pid = 4321
+        backend._active_window_id = None
+        backend.key("return")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "press_key"
+        assert args.get("pid") == 4321
+        assert "scope" not in args
+        assert args.get("key") == "return"
+
+    def test_key_targets_both_pid_and_window_id_when_available(self):
+        backend = self._backend()
+        backend._active_pid = 4321
+        backend._active_window_id = 99
+        backend.key("ctrl+c")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "hotkey"
+        assert args.get("pid") == 4321
+        assert args.get("window_id") == 99
+        assert args.get("keys") == ["ctrl", "c"]
 
     # ── Pointer + display introspection ─────────────────────────
 

@@ -4,6 +4,7 @@ import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useSta
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
+import { ComputerUseStatusPill } from '@/components/computer-use-pill'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -285,6 +286,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
           <Slot area="titleBar.left" />
         </div>
         <div
+          className="fixed top-0 left-1/2 -translate-x-1/2 z-70 flex h-(--titlebar-height) items-center pointer-events-none select-none"
+          data-titlebar-cluster="center-hud"
+        >
+          <ComputerUseStatusPill className="pointer-events-auto" />
+        </div>
+        <div
           className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
           data-titlebar-cluster="right"
         >
@@ -309,6 +316,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         ))}
         <Slot area="titleBar.left" />
         <Slot area="titleBar.center" />
+      </div>
+
+      <div
+        className="fixed top-0 left-1/2 -translate-x-1/2 z-70 flex h-(--titlebar-height) items-center pointer-events-none select-none"
+        data-titlebar-cluster="center-hud"
+      >
+        <ComputerUseStatusPill className="pointer-events-auto" />
       </div>
 
       {visiblePaneTools.length > 0 && (

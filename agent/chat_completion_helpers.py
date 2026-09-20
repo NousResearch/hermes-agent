@@ -3362,6 +3362,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
         def _anthropic_stream_created(raw_stream: Any) -> None:
             _stream_context["stream"] = raw_stream
+            self._attempt_stream_response = getattr(raw_stream, "response", None)
             # Snapshot response diagnostics now so they survive a stream dying before the first event.
             self._quiet(
                 lambda: self.agent._stream_diag_capture_response(_diag, getattr(raw_stream, "response", None)))

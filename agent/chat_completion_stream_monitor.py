@@ -7,7 +7,71 @@ from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
 
 
+class _CancellationState(dict):
+    """Keep the monitor's flag transition coupled to shutdown of its checked-out response."""
+
+    def __init__(self, initial, on_cancel):
+        super().__init__(initial)
+        self._on_cancel = on_cancel
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key == "value" and value:
+            self._on_cancel()
+
+
 class StreamingWaitMonitor:
+    @property
+    def _request_cancelled(self):
+        return self.__dict__.get("_request_cancelled")
+
+    @_request_cancelled.setter
+    def _request_cancelled(self, state):
+        self.__dict__["_request_cancelled"] = _CancellationState(
+            state,
+            lambda: self._shutdown_stale_attempt_socket(
+                getattr(self, "_attempt_stream_response", None)),
+        )
+
+    @property
+    def _attempt_stream_response(self):
+        return self.__dict__.get("_attempt_stream_response")
+
+    @_attempt_stream_response.setter
+    def _attempt_stream_response(self, response):
+        self.__dict__["_attempt_stream_response"] = response
+        if response is None:
+            return
+        cancelled = getattr(self, "_request_cancelled", {})
+        attempt_state = getattr(self, "stream_attempt_state", {})
+        current = attempt_state.get("current")
+        late = (
+            (isinstance(cancelled, dict) and cancelled.get("value"))
+            or bool(getattr(getattr(self, "agent", None), "_interrupt_requested", False))
+            or current in attempt_state.get("cancelled", set())
+        )
+        if late:
+            self._shutdown_stale_attempt_socket(response)
+
+    def _shutdown_stale_attempt_socket(self, response) -> int:
+        """Unblock a checked-out HTTP response without closing its owner-thread FD."""
+        if response is None:
+            return 0
+        from agent.agent_runtime_helpers import (
+            _connection_candidates,
+            _shutdown_socket,
+            _socket_from_candidate,
+        )
+
+        seen: set[int] = set()
+        for root in (getattr(response, "stream", None), response):
+            for candidate in _connection_candidates(root):
+                sock = _socket_from_candidate(candidate)
+                if sock is not None and id(sock) not in seen:
+                    seen.add(id(sock))
+                    _shutdown_socket(sock)
+        return len(seen)
+
     def _poll_local_load_notice(self, now: float) -> bool:
         """Managed local server: surface a cold model's weight-load progress
         instead of the 60s neutral "waiting on <model>" notice. Polled ~1s only while no
@@ -83,8 +147,9 @@ class StreamingWaitMonitor:
             if _stale_elapsed > self._stream_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()
+                self._shutdown_stale_attempt_socket(getattr(self, "_attempt_stream_response", None))
                 self._kill_stale_stream(_stale_elapsed)
             if self.agent._interrupt_requested:
+                self._shutdown_stale_attempt_socket(getattr(self, "_attempt_stream_response", None))
                 self._abort_for_interrupt(_stale_elapsed)
                 return
-

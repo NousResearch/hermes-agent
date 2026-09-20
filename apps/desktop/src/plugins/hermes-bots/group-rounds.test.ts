@@ -1420,6 +1420,27 @@ describe('stopGroupThread (#91868/#94569)', () => {
     expect(room.chat.$groupChats.get().Room.running).toBe(false)
   })
 
+  it('cancels an in-flight completion after Stop when sticky holds are disabled', async () => {
+    let finish!: (reply: string) => void
+    const pendingReply = new Promise<string>(resolve => {
+      finish = resolve
+    })
+    const room = await loadRoom({ turn: () => pendingReply })
+    const member = [{ name: 'helper', title: '' }]
+
+    room.chat.updateGroupChat('Room', state => ({ ...state, holdDetection: false }))
+    room.rounds.sendToGroupChat('Room', member, 'long task')
+    await drain(() => room.gateway.calls.length < 1)
+
+    await room.rounds.stopGroupThread('Room', null, member)
+    finish('must not be committed')
+    await drain(() => room.gateway.refcount() > 0)
+
+    const state = room.chat.$groupChats.get().Room
+    expect(state.holds).toEqual({})
+    expect(state.log.filter(entry => entry.from.kind === 'member')).toHaveLength(0)
+  })
+
   it('keeps polling through an ordinary newer-send epoch bump so late work still lands', async () => {
     let live: Room | null = null
 

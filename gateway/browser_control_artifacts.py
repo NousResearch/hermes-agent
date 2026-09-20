@@ -75,13 +75,14 @@ class ArtifactReceipt:
     expires_at: float
     ttl_seconds: float
     scope_key: str
+    one_shot: bool = True
 
     def to_dict(self, *, download_path: str = "") -> dict[str, Any]:
         """Serialize to the wire receipt (never contains file paths)."""
         return {
             "artifact_id": self.artifact_id, "sha256": self.sha256, "size_bytes": self.size_bytes,
             "content_type": self.content_type, "filename": self.filename, "created_at": self.created_at,
-            "expires_at": self.expires_at, "ttl_seconds": self.ttl_seconds, "one_shot": True,
+            "expires_at": self.expires_at, "ttl_seconds": self.ttl_seconds, "one_shot": self.one_shot,
             **({"download_path": download_path} if download_path else {}),
         }
 
@@ -114,13 +115,15 @@ class _ArtifactEntry:
 class ArtifactStore:
     """Thread-safe, TTL-bounded, scope-bound one-shot artifact store."""
     def __init__(self, root: Path, *, ttl_seconds: float = DEFAULT_ARTIFACT_TTL_SECONDS, max_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
-                 allowed_mime_types: frozenset = DEFAULT_ALLOWED_MIME_TYPES, clock: Optional[Callable[[], float]] = None) -> None:
+                 allowed_mime_types: frozenset = DEFAULT_ALLOWED_MIME_TYPES, clock: Optional[Callable[[], float]] = None,
+                 one_shot: bool = True) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
         self._ttl_seconds = max(1.0, float(ttl_seconds))
         self._max_bytes = max(1, int(max_bytes))
         self._allowed_mime_types = frozenset(allowed_mime_types)
         self._clock = clock if clock is not None else time.time
+        self._one_shot = bool(one_shot)
         self._lock = threading.RLock()
         self._entries: dict[str, _ArtifactEntry] = {}
         # Receipts live only in memory, so files left by a previous process
@@ -178,6 +181,7 @@ class ArtifactStore:
                         artifact_id=artifact_id, sha256=hashlib.sha256(data).hexdigest(), size_bytes=size,
                         content_type=normalized_type, filename=_bounded_filename(filename), created_at=now,
                         expires_at=now + self._ttl_seconds, ttl_seconds=self._ttl_seconds, scope_key=scope_key,
+                        one_shot=self._one_shot,
                     )
                     self._entries[artifact_id] = _ArtifactEntry(receipt=receipt, path=target)
                     break
@@ -202,7 +206,7 @@ class ArtifactStore:
         return self._entry_for(artifact_id, scope=scope).receipt
 
     def load(self, artifact_id: str, *, scope: Any) -> tuple[bytes, ArtifactReceipt]:
-        """One-shot download: verify, read, checksum, then consume (a checksum mismatch does not consume)."""
+        """Verify and read bytes; one-shot stores consume only after checksum validation."""
         with self._lock:
             entry = self._entry_for(artifact_id, scope=scope)
             if not entry.path.exists():
@@ -214,12 +218,14 @@ class ArtifactStore:
                 raise ArtifactError(f"artifact read failed: {exc}") from exc
             if hashlib.sha256(data).hexdigest() != entry.receipt.sha256:
                 raise ArtifactChecksumMismatch(f"artifact {artifact_id!r} failed SHA-256 validation")
-            # Drop the index entry first so a concurrent load fails closed.
-            self._entries.pop(artifact_id, None)
-        try:
-            entry.path.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("artifact %s: file removal failed; TTL sweep will retry", artifact_id)
+            if self._one_shot:
+                # Drop the index entry first so a concurrent load fails closed.
+                self._entries.pop(artifact_id, None)
+        if self._one_shot:
+            try:
+                entry.path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("artifact %s: file removal failed; TTL sweep will retry", artifact_id)
         return data, entry.receipt
 
     def prune_expired(self, now: Optional[float] = None) -> int:

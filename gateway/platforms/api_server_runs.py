@@ -9,6 +9,8 @@ import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
@@ -24,6 +26,9 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.browser_control_artifacts import ArtifactError, ArtifactStore
+from gateway.platforms.base import validate_media_delivery_path
+from hermes_constants import get_hermes_home
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -50,6 +55,14 @@ _FIXED_EVENT_FIELDS = {
         "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False)},
     "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
 _TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
+_RUN_ARTIFACT_MIME_TYPES = {
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+_RUN_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024
 
 
 # Per-argument cap for ``tool.started`` args: a whole command survives, a pasted file does not flood the stream.
@@ -145,6 +158,13 @@ def _uses_room_run_auth(self, request: "web.Request") -> bool:
 def _initialize_run_state(self, *, store_factory) -> None:
     """Initialize adapter-owned durable and live ``/v1/runs`` state."""
     self._run_idempotency_store = store_factory()
+    self._run_artifact_store = ArtifactStore(
+        Path(get_hermes_home()) / "artifacts" / "runs",
+        ttl_seconds=float(self._RUN_STATUS_TTL),
+        max_bytes=_RUN_ARTIFACT_MAX_BYTES,
+        allowed_mime_types=frozenset(_RUN_ARTIFACT_MIME_TYPES.values()),
+        one_shot=False,
+    )
     self._run_owner_pid = os.getpid()
     try:
         from gateway.status import get_process_start_time
@@ -169,6 +189,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
     return [
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
+        ("GET", "/v1/runs/{run_id}/artifacts/{artifact_id}", self._handle_run_artifact),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
@@ -723,6 +744,43 @@ def _run_usage(agent) -> Dict[str, int]:
     return usage
 
 
+def _run_artifact_scope(owner: str) -> SimpleNamespace:
+    """Adapt the opaque run-owner namespace to the shared artifact scope contract."""
+    return SimpleNamespace(principal_id=owner, transport_family="runs")
+
+
+def _publish_run_artifacts(self, run: _RunLaunch, output: str) -> tuple[str, list[dict[str, Any]]]:
+    """Register safe image directives and return display text plus path-free receipts."""
+    if not isinstance(output, str) or "MEDIA:" not in output:
+        return output if isinstance(output, str) else "", []
+    media, cleaned = self.extract_media(output)
+    owner = self._run_owners.get(run.run_id)
+    if not owner:
+        return output, []
+    artifacts: list[dict[str, Any]] = []
+    for raw_path, _is_voice in media:
+        safe_path = validate_media_delivery_path(raw_path, session_key=run.session_id or "")
+        path = Path(safe_path) if safe_path else None
+        content_type = _RUN_ARTIFACT_MIME_TYPES.get(path.suffix.lower()) if path else None
+        if path is None or content_type is None:
+            continue
+        try:
+            if path.stat().st_size > self._run_artifact_store.max_bytes:
+                continue
+            receipt = self._run_artifact_store.store(
+                path.read_bytes(),
+                filename=path.name,
+                content_type=content_type,
+                scope=_run_artifact_scope(owner),
+            )
+        except (ArtifactError, OSError):
+            logger.warning("[api_server] could not publish run artifact %s", path.name, exc_info=True)
+            continue
+        download_path = f"/v1/runs/{run.run_id}/artifacts/{receipt.artifact_id}"
+        artifacts.append(receipt.to_dict(download_path=download_path))
+    return (cleaned if artifacts else output), artifacts
+
+
 def _served_runtime(agent) -> Dict[str, str]:
     """The ``{provider, model}`` pair that actually served the turn. After a ``fallback_providers``
     switch the agent keeps the fallback runtime until the NEXT turn restores the primary, so when
@@ -944,7 +1002,18 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
-            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
+            output, artifacts = await asyncio.to_thread(
+                _publish_run_artifacts, self, run, result.get("final_response", ""))
+            for artifact in artifacts:
+                run.put_event(_run_event(run_id, "artifact.available", artifact=artifact))
+            _finish(
+                status,
+                fields,
+                output=output,
+                artifacts=artifacts,
+                usage=usage,
+                runtime=served_runtime,
+            )
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
@@ -1020,6 +1089,44 @@ async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.
     _, status, _, _, err = _load_owned_run(
         self, request, _api_server=_api_server, permission="status", active_fallback=True)
     return err or web.json_response(status)
+
+
+async def _handle_run_artifact(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """GET a run-owned artifact without disclosing its source filesystem path."""
+    run_id, status, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="status", active_fallback=True)
+    if err is not None:
+        return err
+    artifact_id = request.match_info["artifact_id"]
+    known = {
+        item.get("artifact_id")
+        for item in status.get("artifacts", [])
+        if isinstance(item, dict)
+    }
+    if artifact_id not in known:
+        return _json_error(
+            _api_server._openai_error,
+            "Artifact not found",
+            code="artifact_not_found",
+            status=404,
+        )
+    try:
+        data, receipt = self._run_artifact_store.load(
+            artifact_id,
+            scope=_run_artifact_scope(self._run_idempotency_scope(request)),
+        )
+    except ArtifactError:
+        return _json_error(
+            _api_server._openai_error,
+            "Artifact not found",
+            code="artifact_not_found",
+            status=404,
+        )
+    return web.Response(
+        body=data,
+        content_type=receipt.content_type,
+        headers={"Cache-Control": "private, max-age=300"},
+    )
 
 
 async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "web.StreamResponse":

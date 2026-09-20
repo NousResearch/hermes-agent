@@ -11,6 +11,7 @@ Covers:
 
 import asyncio
 import hashlib
+import json
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,6 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from gateway.browser_control_artifacts import ArtifactStore
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
@@ -101,6 +103,10 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     )
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    app.router.add_get(
+        "/v1/runs/{run_id}/artifacts/{artifact_id}",
+        adapter._handle_run_artifact,
+    )
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/steer", adapter._handle_steer_run)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
@@ -154,6 +160,62 @@ def auth_adapter():
 
 
 class TestStartRun:
+    @pytest.mark.asyncio
+    async def test_media_image_is_published_as_reusable_run_artifact(self, adapter, tmp_path):
+        image = tmp_path / "diagram.png"
+        image_bytes = b"\x89PNG\r\n\x1a\nartifact-test"
+        image.write_bytes(image_bytes)
+        adapter._run_artifact_store = ArtifactStore(
+            tmp_path / "artifacts",
+            ttl_seconds=300,
+            max_bytes=1024,
+            allowed_mime_types=frozenset({"image/png"}),
+            one_shot=False,
+        )
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": f"Rendered below.\n\nMEDIA:{image}",
+                }
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                started = await cli.post("/v1/runs", json={"input": "render it"})
+                run_id = (await started.json())["run_id"]
+                event_body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+                events = [
+                    json.loads(line.removeprefix("data: "))
+                    for line in event_body.splitlines()
+                    if line.startswith("data: ")
+                ]
+                for _ in range(100):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert status["output"] == "Rendered below."
+                assert len(status["artifacts"]) == 1
+                artifact = status["artifacts"][0]
+                assert artifact["content_type"] == "image/png"
+                assert artifact["filename"] == "diagram.png"
+                assert artifact["download_path"] == (
+                    f"/v1/runs/{run_id}/artifacts/{artifact['artifact_id']}"
+                )
+                assert str(image) not in str(artifact)
+                available = next(event for event in events if event["event"] == "artifact.available")
+                assert available["artifact"] == artifact
+
+                first = await cli.get(artifact["download_path"])
+                second = await cli.get(artifact["download_path"])
+                assert first.status == second.status == 200
+                assert await first.read() == await second.read() == image_bytes
+
     @pytest.mark.asyncio
     async def test_room_auth_is_validated_before_body_parse_or_work_reservation(
         self, auth_adapter

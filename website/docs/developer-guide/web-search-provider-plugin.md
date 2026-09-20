@@ -30,6 +30,51 @@ Each plugin's `register(ctx)` function calls `ctx.register_web_search_provider(.
 
 When neither key is set, Hermes auto-detects the backend from whichever API key/URL is present in the environment. `hermes tools` walks users through selection.
 
+## Mandatory request mediation (offline candidate)
+
+A trusted installation may require one profile-local provider to mediate every
+native `web_search` and `web_extract` dispatch:
+
+```yaml
+web:
+  required_provider: "quota-coordinator"
+```
+
+The plugin must register through `ctx.register_web_search_provider()` in that
+profile and set `request_policy_version = 1`. Version `0` (the default), an
+unknown version, or a boolean is refused. The version is a protocol claim, **not
+authentication or proof that the provider implements its promises**.
+
+With this setting:
+
+- A missing, unloaded, unavailable, incompatible, or replaced provider fails
+  closed. Hermes does not select a global registration or another provider.
+- Native search memoization and limit bucketing, extract-cache reads/writes, and
+  keyless fallback/rescue cannot bypass the mediator. The provider owns request
+  authentication, admission/accounting, cache policy, permitted retries, stable
+  request identity, bounded transport, and unknown-outcome recovery.
+- Existing URL-secret, SSRF, and website-policy checks remain. Required-provider
+  resolution occurs before extract DNS checks, and locally rejected URLs are not
+  dispatched.
+- Non-empty `backend`, `search_backend`, and `extract_backend` settings must name
+  the required provider. Changing the required name or registered instance needs
+  a new process; removing policy after it has bound fails closed.
+- Current user and managed policy bytes are read strictly for every guard. Parse,
+  access, discovery, overlay, or non-mapping-root errors do not recover from a
+  backup or stale cache. A genuinely absent optional managed config is still an
+  empty layer.
+- Extract timeout returns `outcome_unknown` and causes no native retry. An async
+  provider is cancelled normally, but a synchronous provider thread can continue
+  after timeout; it must enforce its own transport deadline.
+
+This mode does **not** provide a ledger, authenticate the profile namespace, or
+form a whole-process sandbox. Trusted configuration must exist before first
+access. MCP tools, browser/terminal tools, direct vendor imports, and hostile
+in-process code are outside this boundary. Do not claim machine-wide quota
+enforcement without separately qualifying deployment identity and every effect
+path. The offline synthetic contract is in
+`tests/tools/test_web_required_provider.py`.
+
 ## Directory structure
 
 ```
@@ -151,6 +196,7 @@ Full contract in `agent/web_search_provider.py`. Methods you may override:
 |---|---|---|---|
 | `name` | ✅ | — | Stable id used in `web.*_backend` config |
 | `display_name` | — | `name` | Label shown in `hermes tools` |
+| `request_policy_version` | opt-in | `0` | Version `1` is required for mandatory request mediation; not authentication |
 | `is_available()` | ✅ | — | Cheap availability gate — env vars, optional deps |
 | `supports_search()` | — | `True` | Capability flag for `web_search` routing |
 | `supports_extract()` | — | `False` | Capability flag for `web_extract` routing |
@@ -226,7 +272,7 @@ The `web_search` and `web_extract` tools live in `tools/web_tools.py`. At call t
 1. Read the relevant config key (`web.search_backend` for `web_search`, `web.extract_backend` for `web_extract`)
 2. Ask the registry for the provider with that `name`
 3. Check `is_available()` and the matching `supports_*()` flag
-4. Dispatch to `search()` / `extract()` (deep crawl runs as a mode inside `extract()`), awaiting if the method is a coroutine
+4. Dispatch to `search()` / `extract()` (deep crawl runs as a mode inside `extract()`), awaiting if the method is a coroutine; mandatory mediation disables native cache/rescue around that call
 5. JSON-serialize the response envelope and hand it back to the LLM
 
 Errors surface as the tool result; the LLM decides how to explain them. If no provider is registered (or every available one fails the capability gate), the tool returns a helpful error pointing at `hermes tools`.

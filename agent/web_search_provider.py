@@ -44,6 +44,12 @@ class WebSearchProvider(ProviderBase):
     """Abstract base class for a web search/extract backend: implement :meth:`is_available`
     and at least one of :meth:`search` / :meth:`extract`; the ``supports_*`` flags route each capability."""
 
+    # Opt-in protocol for web.required_provider. Version 1 owns authorization,
+    # cache, accounting, retries and recovery on EVERY request. The wrapper must
+    # not cache/bucket/rescue around it. A version claim is not authentication:
+    # the configured plugin and its service still need a trusted deployment.
+    request_policy_version: int = 0
+
     @abc.abstractmethod
     def is_available(self) -> bool:
         """True when this provider can service calls. Cheap check only (env var, importable

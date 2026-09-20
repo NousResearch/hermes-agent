@@ -29,10 +29,17 @@ _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
 _EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 
-def _effective(raw: Dict[str, Any]) -> Dict[str, Any]:
+def _effective(
+    raw: Dict[str, Any], *, fail_closed: bool = False
+) -> Dict[str, Any]:
     expanded = _config._expand_env_vars(raw)
-    merged = managed_scope.apply_managed_overlay(expanded if isinstance(expanded, dict) else {})
-    return _config._normalize_root_model_keys(merged if isinstance(merged, dict) else {})
+    merged = managed_scope.apply_managed_overlay(
+        expanded if isinstance(expanded, dict) else {},
+        fail_closed=fail_closed,
+    )
+    return _config._normalize_root_model_keys(
+        merged if isinstance(merged, dict) else {}
+    )
 
 
 def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> Dict[str, Any]:
@@ -54,13 +61,36 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     here, so ``{}`` sentinels and presence-sensitive bridges keep working. An absent file is an
     empty user layer (the managed layer still applies). Returns a fresh deepcopy.
 
-    Broken YAML: ``fail_closed=True`` raises the parse error (for callers that keep their own
-    last-good state); otherwise the last successfully parsed user file — in-process first, then
-    the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
-    mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
-    Cached on the user + managed file signatures and the values of every referenced env var."""
+    ``fail_closed=True`` re-reads both user and managed bytes without cache or
+    backup recovery, raises on parse/access/overlay errors or a non-mapping
+    root, and writes no backup. An explicit managed directory must remain
+    accessible. Otherwise the last successfully parsed user file — in-process
+    first, then the newest ``backups/config/*.good.*`` copy — is served through
+    the same pipeline, so a mid-edit torn write never silently drops user
+    overrides (same contract as ``load_config``). Cached on the user + managed
+    file signatures and values of every referenced env var."""
     if config_path is None:
         config_path = _config.get_config_path()
+
+    # A strict security reader must not accept a lossy entry produced by a
+    # permissive cache (for example a scalar YAML root cached as {}). Re-read
+    # the bytes, distinguish absence from access errors, and never recover from
+    # a backup or write a new one.
+    if fail_closed:
+        with _config._CONFIG_LOCK:
+            try:
+                with open(config_path, encoding="utf-8") as file:
+                    loaded = fast_safe_load(file)
+            except FileNotFoundError:
+                loaded = None
+            if loaded is not None and not isinstance(loaded, dict):
+                raise _config.InvalidUserConfigError(
+                    "config.yaml must contain a mapping"
+                )
+            return _effective(
+                loaded if loaded is not None else {}, fail_closed=True
+            )
+
     path_key = str(config_path)
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)

@@ -3,7 +3,9 @@
 Order of controls (each is a gate, never skipped by a cache hit): secret-URL
 refusal -> SSRF filter (in web_tools.web_extract_tool) -> provider resolution
 (strict selection) -> per-URL website policy -> disk cache -> vendor call with
-one-shot keyless rescue. Logs under the origin (tools.web_tools) logger.
+one-shot keyless rescue. Mandatory mediation resolves before DNS and never uses
+native cache/rescue; local URL and website checks remain. Logs under the origin
+(tools.web_tools) logger.
 """
 
 import asyncio
@@ -115,6 +117,12 @@ def _resolve_extract_provider(backend: str):
     A registered search-only backend is a typed error (never a silent switch). An unregistered name with
     a stored web selection is a strict-selection error; with no selection, fall through to the walk.
     """
+    from agent.web_required_provider import get_required_provider
+
+    required = get_required_provider("extract")
+    if required is not None:
+        return required, None
+
     from agent.web_search_registry import get_active_extract_provider, get_provider as _wsp_get_provider
     provider = _wsp_get_provider(backend) if backend else None
     if provider is not None and provider.supports_extract():
@@ -147,13 +155,17 @@ def _extract_timeout_seconds() -> float:
 
 
 async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
-    """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
+    """Call ``provider.extract`` with mandatory or legacy recovery semantics.
 
-    Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
-    failed (backend outage, not per-page problems). Rescued batches are never cached.
+    Without mandatory mediation, rescue fires on a raised exception (including
+    a timeout) or a wholly failed batch. Mandatory calls never rescue or cache;
+    a timeout is outcome-unknown, not proof that a synchronous thread stopped.
     """
     import inspect
+    from agent.web_required_provider import requires_direct_dispatch
     from tools.web_result_cache import extract_cache_put
+
+    required = requires_direct_dispatch(provider, "extract")
     timeout = _extract_timeout_seconds()
     try:
         if inspect.iscoroutinefunction(provider.extract):
@@ -167,8 +179,20 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     except asyncio.TimeoutError as exc:  # hanging backend — bounded, never a stalled tool call
         logger.warning("web_extract provider '%s' timed out after %.0fs for %d URL(s)",
                        provider.name, timeout, len(fetch_urls))
-        failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
-                  for u in fetch_urls]
+        failed = [
+            _result_entry(
+                url, f"Extract timed out after {timeout:.0f}s via {provider.name}"
+            )
+            for url in fetch_urls
+        ]
+        if required:
+            return [
+                _result_entry(
+                    url,
+                    "outcome_unknown: required provider timed out; do not retry",
+                )
+                for url in fetch_urls
+            ]
         if not _rescue_eligible(provider):
             return failed
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
@@ -179,6 +203,9 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+
+    if required:
+        return results
 
     # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
     # position: providers omit failed URLs or return successes out of request order, and a positional
@@ -197,21 +224,43 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
 
 
 async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[str]) -> List[dict]:
-    """Serve cache hits, fetch the rest, and merge back in ``safe_urls`` order.
+    """Apply policy, optional legacy cache, dispatch, and order restoration.
 
-    The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
-    resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
-    control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
-    within the TTL never serves the other's content."""
+    Cache sits after secret, SSRF, provider and website-policy gates. Mandatory
+    mediation keeps those gates but bypasses native cache and fails closed on a
+    policy reader error; the required provider receives every permitted request.
+    """
+    from agent.web_required_provider import requires_direct_dispatch
     from tools.web_result_cache import extract_cache_get
     from tools.website_policy import check_website_access as _check_site
+
+    required = requires_direct_dispatch(provider, "extract")
     cached_results, fetch_urls, fetch_positions = {}, [], []
     for position, url in enumerate(safe_urls):
         try:
-            _policy_block = _check_site(url)
-        except Exception:  # noqa: BLE001 — policy errors fail open like dispatch
-            _policy_block = None
-        hit = extract_cache_get(url, format=format, provider=provider.name) if _policy_block is None else None
+            if required:
+                from hermes_cli.config import get_config_path
+
+                policy_block = _check_site(url, config_path=get_config_path())
+            else:
+                policy_block = _check_site(url)
+        except Exception:  # noqa: BLE001 — legacy only remains fail-open
+            if required:
+                raise
+            policy_block = None
+        if required and policy_block is not None:
+            cached_results[position] = {
+                **_result_entry(url, policy_block["message"]),
+                "blocked_by_policy": True,
+            }
+            continue
+        hit = (
+            extract_cache_get(
+                url, format=format, provider=provider.name
+            )
+            if not required and policy_block is None
+            else None
+        )
         if hit is not None:
             cached_results[position] = hit
         else:

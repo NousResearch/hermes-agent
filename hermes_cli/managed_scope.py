@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import stat
 import threading
 from pathlib import Path
 from typing import Dict, Optional
@@ -43,21 +44,33 @@ def _under_pytest() -> bool:
     return "PYTEST_CURRENT_TEST" in os.environ
 
 
-def get_managed_dir() -> Optional[Path]:
+def get_managed_dir(*, fail_closed: bool = False) -> Optional[Path]:
     """Resolve the managed-scope directory, or None when no scope is present.
 
-    Priority: ``$HERMES_MANAGED_DIR`` (IT-only bootstrap override; never persisted to any .env;
-    honored only when non-empty AND the directory exists), then ``/etc/hermes`` when it exists.
-    A missing directory resolves to None — the common case, so it must be cheap + side-effect-free.
+    Priority: ``$HERMES_MANAGED_DIR`` (IT-only bootstrap override; never
+    persisted to any .env; honored only when non-empty AND the directory
+    exists), then ``/etc/hermes`` when it exists. A missing directory normally
+    resolves to None. Strict readers reject discovery errors and a missing or
+    non-directory explicit override instead of silently dropping policy.
     """
     override = os.environ.get("HERMES_MANAGED_DIR", "").strip()
     if override:
-        p = Path(override)
+        path = Path(override)
     elif _under_pytest():
         return None
     else:
-        p = _DEFAULT_MANAGED_DIR
-    return p if p.is_dir() else None
+        path = _DEFAULT_MANAGED_DIR
+    if not fail_closed:
+        return path if path.is_dir() else None
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        if override:
+            raise
+        return None
+    if not stat.S_ISDIR(mode):
+        raise NotADirectoryError("managed scope must be a directory")
+    return path
 
 
 def invalidate_managed_cache() -> None:
@@ -105,9 +118,40 @@ def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: yaml.safe_load(p.read_text(encoding="utf-8")) or {})
+def load_managed_config(*, fail_closed: bool = False) -> dict:
+    """Read managed config; strict policy readers never accept stale data.
+
+    An absent config file or empty YAML is an empty optional layer. Strict reads
+    propagate all other I/O and parse failures and reject non-mapping roots.
+    Non-strict callers retain cached, fail-open behavior.
+    """
+    if not fail_closed:
+        return _load_managed_file(
+            "config.yaml",
+            _CONFIG_CACHE,
+            lambda path: yaml.safe_load(path.read_text(encoding="utf-8")) or {},
+        )
+    managed_dir = get_managed_dir(fail_closed=True)
+    if managed_dir is None:
+        return {}
+    path = managed_dir / "config.yaml"
+    try:
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # Only a genuinely absent leaf is optional, not a vanished directory or
+        # a dangling link/read failure on a still-present configured file.
+        if not stat.S_ISDIR(managed_dir.stat().st_mode):
+            raise NotADirectoryError("managed scope must be a directory")
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return {}
+        raise
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError("managed config.yaml must contain a mapping")
+    return parsed
 
 
 def load_managed_env() -> Dict[str, str]:
@@ -122,30 +166,38 @@ def _parse_managed_env(path: Path) -> Dict[str, str]:
     return load_env_file(path)
 
 
-def apply_managed_overlay(config: dict) -> dict:
-    """Overlay administrator-pinned config values on top of an already-built dict.
+def apply_managed_overlay(
+    config: dict, *, fail_closed: bool = False
+) -> dict:
+    """Overlay administrator-pinned values on an already-built config.
 
-    ``${VAR}`` refs in the managed config expand against the PROCESS env only, so a user cannot
-    shadow a managed literal via a ref they control; a bare root ``model: x/y`` string is promoted
-    to ``model.default`` so it can't clobber the dict shape callers expect; managed values
-    deep-merge ON TOP per leaf while sibling keys stay user-controlled. Fail-open: returns
-    ``config`` unchanged when no scope is present or on any error. Mutates and returns ``config``.
+    ``${VAR}`` refs in managed config expand against the PROCESS env only, so
+    a user cannot shadow a managed literal via a ref they control; a bare root
+    ``model: x/y`` string is promoted to ``model.default``. Managed values
+    deep-merge on top per leaf. Permissive callers fail open; strict callers
+    bypass managed caches and propagate every policy error.
     """
     try:
-        managed = load_managed_config()
+        managed = load_managed_config(fail_closed=fail_closed)
         if not managed:
             return config
         # Imported lazily to avoid an import cycle (config imports managed_scope).
-        from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
+        from hermes_cli.config import (
+            _deep_merge,
+            _expand_env_vars,
+            _normalize_root_model_keys,
+        )
+
         managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed))
-        # _normalize_root_model_keys only promotes the string when root provider/base_url
-        # keys exist to migrate; handle the bare case here (matches cli.py) so _deep_merge
-        # never replaces the caller's ``model`` dict with a string.
+        # _normalize_root_model_keys only promotes the string when root
+        # provider/base_url keys exist to migrate; handle the bare case here.
         if isinstance(managed_expanded.get("model"), str):
             managed_expanded = dict(managed_expanded)
             managed_expanded["model"] = {"default": managed_expanded["model"]}
         return _deep_merge(config, managed_expanded)
-    except Exception:  # noqa: BLE001 — overlay must never break a caller
+    except Exception:  # noqa: BLE001 — permissive startup retains recovery
+        if fail_closed:
+            raise
         logger.warning("managed scope: failed to apply config overlay", exc_info=True)
         return config
 

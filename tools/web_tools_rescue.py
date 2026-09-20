@@ -54,6 +54,10 @@ def _rescue_eligible(provider) -> bool:
     in keyed mode, or a ring vendor routed through the managed gateway / a self-hosted instance. A
     ring vendor that walked the ring is NOT eligible: its failure means the ring already failed.
     """
+    from agent.web_required_provider import required_provider_name
+
+    if required_provider_name() is not None:
+        return False
     if not _keyless_rescue_enabled() or provider is None:
         return False
     try:

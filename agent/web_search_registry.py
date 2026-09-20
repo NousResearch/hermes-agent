@@ -89,6 +89,19 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     available capable provider; then the availability-filtered legacy walk;
     then the keyless free-tier walk; else None.
     """
+    from agent.web_required_provider import (
+        RequiredWebProviderError,
+        get_required_provider,
+    )
+
+    try:
+        required = get_required_provider(capability)
+    except RequiredWebProviderError as exc:
+        logger.debug("Mandatory web provider unavailable: %s", exc)
+        return None
+    if required is not None:
+        return required
+
     snapshot = _registry.merged()
 
     def _capable(p: WebSearchProvider) -> bool:

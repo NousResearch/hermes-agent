@@ -364,6 +364,9 @@ DEFAULT_CONFIG = {
     },
 
     "web": {
+        # Mandatory per-request mediation; null preserves legacy provider/cache/rescue behavior.
+        # Requires a profile-local WebSearchProvider with request_policy_version=1.
+        "required_provider": None,
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")

@@ -1440,6 +1440,17 @@ function dynamicTitle(
   return fallback
 }
 
+/** Status + detected preview target only — for feeds that never render the
+ *  row (the live completion handler) and must not pay for titles/details. */
+export function toolPreviewOutcome(part: ToolPart): { previewTarget: string; status: ToolStatus } {
+  const resultRecord = toolResultRecord(part)
+
+  return {
+    previewTarget: toolPreviewTarget(part.toolName, parseMaybeObject(part.args), resultRecord),
+    status: toolStatus(part, resultRecord)
+  }
+}
+
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const argsRecord = parseMaybeObject(part.args)
   const resultRecord = toolResultRecord(part)

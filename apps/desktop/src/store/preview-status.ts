@@ -3,9 +3,10 @@ import { atom } from 'nanostores'
 import { previewArtifactKey, previewName } from '@/lib/preview-targets'
 import { readJson, writeJson } from '@/lib/storage'
 
+import { normalizeProfileKey } from './profile'
 import { ownerLookupSessionRows, resolveComposerSessionKey } from './session'
-import type { SessionOwnerRoute } from './session-request-router'
-import { knownOwnerForSession, runtimeSessionOwner, storedSessionIdForRuntimeId } from './session-states'
+import { isSessionOwnerRoute, type SessionOwnerRoute } from './session-request-router'
+import { knownOwnerForSession, storedSessionIdForRuntimeId } from './session-states'
 
 /**
  * Session-scoped feed of previewable artifacts (HTML files, localhost dev URLs)
@@ -34,56 +35,120 @@ const MAX_DISMISSED_TARGETS = 64
 
 export const $previewStatusBySession = atom<Record<string, PreviewArtifact[]>>({})
 
-interface DismissedPreviewIds {
-  [session: string]: string[]
+/** Durable owner of a dismissal. `connectionId: null` is the legacy bare-profile
+ *  pool (a profile name without a connection tag), not the foreground connection. */
+interface DismissalScope {
+  connectionId: string | null
+  profile: string
+  targetProfile: string
+  sessionId: string
 }
+
+interface DismissedPreviewIds {
+  [scope: string]: string[]
+}
+
+/** Dismissals that could not (yet) be persisted: runtime-only scopes and
+ *  storage-write failures. Keeps a close effective for this renderer. */
 const volatileDismissals = new Map<string, string[]>()
 const scopeByRuntime = new Map<string, string>()
 
-function dismissalKey(runtimeId: string, storedId: string): string {
+const RUNTIME_SCOPE_PREFIX = '["runtime",'
+
+function runtimeScopeKey(runtimeId: string): string {
+  return JSON.stringify(['runtime', runtimeId])
+}
+
+function isRuntimeScopeKey(key: string): boolean {
+  return key.startsWith(RUNTIME_SCOPE_PREFIX)
+}
+
+function encodeScope(scope: DismissalScope): string {
+  return JSON.stringify([scope.connectionId, scope.profile, scope.targetProfile, scope.sessionId])
+}
+
+function decodeScope(key: string): DismissalScope | null {
+  try {
+    const value: unknown = JSON.parse(key)
+
+    if (
+      !Array.isArray(value) ||
+      value.length !== 4 ||
+      (value[0] !== null && typeof value[0] !== 'string') ||
+      !value.slice(1).every(item => typeof item === 'string')
+    ) {
+      return null
+    }
+
+    const [connectionId, profile, targetProfile, sessionId] = value as [string | null, string, string, string]
+
+    return { connectionId, profile, sessionId, targetProfile }
+  } catch {
+    return null
+  }
+}
+
+function capMap<V>(map: Map<string, V>): void {
+  while (map.size > MAX_DISMISSED_SESSIONS) {
+    map.delete(map.keys().next().value!)
+  }
+}
+
+/** Pure: the scope key a dismissal for `runtimeId` belongs to right now. */
+function resolveDismissalScope(runtimeId: string, storedId: string): string {
   // The route's stored selection can advance before the old runtime unmounts.
   storedId = storedSessionIdForRuntimeId(runtimeId) ?? storedId
   // Historical rows in background tiles do not belong to the active connection.
-  const owner = knownOwnerForSession(runtimeId) ?? runtimeSessionOwner(runtimeId) ?? knownOwnerForSession(storedId)
-  const profile = typeof owner === 'string' ? owner : owner?.targetProfile || owner?.profile
+  const owner = knownOwnerForSession(runtimeId) ?? knownOwnerForSession(storedId)
+
+  if (!owner) {
+    return runtimeScopeKey(runtimeId)
+  }
+
+  const route = isSessionOwnerRoute(owner) ? owner : null
+  const profile = normalizeProfileKey(route ? route.profile : String(owner))
+  const targetProfile = normalizeProfileKey(route?.targetProfile || profile)
+  const connectionId = route ? route.connectionId : 'local'
 
   const rows = ownerLookupSessionRows().filter(
-    row =>
-      row.profile === profile &&
-      (row.connection_id || 'local') === (typeof owner === 'object' && owner ? owner.connectionId : 'local')
+    row => normalizeProfileKey(row.profile) === targetProfile && (row.connection_id || 'local') === connectionId
   )
 
-  const stableId = resolveComposerSessionKey(storedId, rows) ?? storedId
+  return encodeScope({
+    connectionId: route ? route.connectionId : null,
+    profile,
+    sessionId: resolveComposerSessionKey(storedId, rows) ?? storedId,
+    targetProfile
+  })
+}
 
-  // Bare profiles name the legacy profile pool, not the foreground connection.
-  const scope =
-    owner && typeof owner === 'object'
-      ? JSON.stringify([owner.connectionId, owner.profile, owner.targetProfile || owner.profile, stableId])
-      : typeof owner === 'string'
-        ? JSON.stringify([null, owner, owner, stableId])
-        : JSON.stringify(['runtime', runtimeId])
-
+/** A runtime's owner can be learnt after its rows mounted (unknown → bare
+ *  profile → exact route). Dismissals recorded under the coarser key follow
+ *  the refinement — only for THIS runtime; another profile or connection with
+ *  a coincidentally equal stored id must not inherit them. */
+function reconcileDismissalScope(runtimeId: string, storedId: string): string {
+  const scope = resolveDismissalScope(runtimeId, storedId)
   const previous = scopeByRuntime.get(runtimeId)
-  const before = previous ? storedOwner(previous) : null
-  const after = storedOwner(scope)
 
-  if (
-    previous &&
-    previous !== scope &&
-    after &&
-    (previous === JSON.stringify(['runtime', runtimeId]) ||
-      (before && before[0] === null && before[1] === after[1] && before[2] === after[2] && before[3] === after[3]))
-  ) {
-    // Only refinement observed on THIS runtime joins keys. Another profile or
-    // connection with a coincidentally equal stored id must not inherit it.
-    rewriteDismissalScopes(key => (key === previous ? scope : key))
+  if (previous && previous !== scope) {
+    const before = decodeScope(previous)
+    const after = decodeScope(scope)
+
+    const refined =
+      after &&
+      (previous === runtimeScopeKey(runtimeId) ||
+        (before?.connectionId === null &&
+          before.profile === after.profile &&
+          before.targetProfile === after.targetProfile &&
+          before.sessionId === after.sessionId))
+
+    if (refined) {
+      rewriteDismissalScopes(key => (key === previous ? scope : key))
+    }
   }
 
   scopeByRuntime.set(runtimeId, scope)
-
-  while (scopeByRuntime.size > MAX_DISMISSED_SESSIONS) {
-    scopeByRuntime.delete(scopeByRuntime.keys().next().value!)
-  }
+  capMap(scopeByRuntime)
 
   return scope
 }
@@ -98,12 +163,8 @@ function readDismissedPreviewIds(): DismissedPreviewIds {
   return Object.fromEntries(
     Object.entries(value)
       .slice(-MAX_DISMISSED_SESSIONS)
-      .flatMap(([sid, ids]) => {
-        if (!Array.isArray(ids)) {
-          return []
-        }
-
-        if (sid.length > 4096 || !storedOwner(sid)) {
+      .flatMap(([scope, ids]) => {
+        if (!Array.isArray(ids) || scope.length > 4096 || !decodeScope(scope)) {
           return []
         }
 
@@ -111,39 +172,54 @@ function readDismissedPreviewIds(): DismissedPreviewIds {
           .filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 8192)
           .slice(-MAX_DISMISSED_TARGETS)
 
-        return strings.length > 0 ? [[sid, strings]] : []
+        return strings.length > 0 ? [[scope, strings]] : []
       })
   )
 }
 
-function rememberDismissedPreview(sid: string, id: string): void {
+function isDismissed(scope: string, id: string): boolean {
+  return Boolean(readDismissedPreviewIds()[scope]?.includes(id) || volatileDismissals.get(scope)?.includes(id))
+}
+
+function rememberDismissedPreview(scope: string, id: string): void {
   const dismissed = readDismissedPreviewIds()
-  const ids = [...new Set([...(dismissed[sid] ?? []), ...(volatileDismissals.get(sid) ?? [])])]
+  const ids = [...new Set([...(dismissed[scope] ?? []), ...(volatileDismissals.get(scope) ?? [])])]
 
   if (ids.includes(id)) {
     return
   }
 
-  const { [sid]: _previous, ...rest } = dismissed
+  const { [scope]: _previous, ...rest } = dismissed
 
   const next = Object.fromEntries(
-    [...Object.entries(rest), [sid, [...ids, id].slice(-MAX_DISMISSED_TARGETS)]].slice(-MAX_DISMISSED_SESSIONS)
+    [...Object.entries(rest), [scope, [...ids, id].slice(-MAX_DISMISSED_TARGETS)]].slice(-MAX_DISMISSED_SESSIONS)
   )
 
-  // Keep the close effective for this renderer even when storage is unavailable.
-  volatileDismissals.set(sid, next[sid])
+  volatileDismissals.set(scope, next[scope])
+  capMap(volatileDismissals)
 
-  while (volatileDismissals.size > MAX_DISMISSED_SESSIONS) {
-    volatileDismissals.delete(volatileDismissals.keys().next().value!)
-  }
-
-  if (!sid.startsWith('["runtime",')) {
+  if (!isRuntimeScopeKey(scope)) {
     writeJson(DISMISSED_PREVIEWS_KEY, next)
 
-    if (readDismissedPreviewIds()[sid]?.includes(id)) {
-      volatileDismissals.delete(sid)
+    if (readDismissedPreviewIds()[scope]?.includes(id)) {
+      volatileDismissals.delete(scope)
     }
   }
+}
+
+function forgetDismissedPreview(scope: string, id: string): void {
+  const dismissed = readDismissedPreviewIds()
+
+  if (!dismissed[scope]?.includes(id) && !volatileDismissals.get(scope)?.includes(id)) {
+    return
+  }
+
+  dismissed[scope] = (dismissed[scope] ?? []).filter(value => value !== id)
+  volatileDismissals.set(
+    scope,
+    (volatileDismissals.get(scope) ?? []).filter(value => value !== id)
+  )
+  writeJson(DISMISSED_PREVIEWS_KEY, dismissed)
 }
 
 function rewriteDismissalScopes(rewrite: (scope: string) => string | null): void {
@@ -164,10 +240,7 @@ function rewriteDismissalScopes(rewrite: (scope: string) => string | null): void
     volatileDismissals.set(scope, ids)
   }
 
-  writeJson(
-    DISMISSED_PREVIEWS_KEY,
-    Object.fromEntries(Object.entries(next).filter(([key]) => !key.startsWith('["runtime",')))
-  )
+  writeJson(DISMISSED_PREVIEWS_KEY, Object.fromEntries(Object.entries(next).filter(([key]) => !isRuntimeScopeKey(key))))
 
   for (const [sid, items] of Object.entries($previewStatusBySession.get())) {
     writePreviews(
@@ -181,48 +254,42 @@ function rewriteDismissalScopes(rewrite: (scope: string) => string | null): void
   }
 }
 
-function storedOwner(scope: string): [string | null, string, string, string] | null {
-  try {
-    const value: unknown = JSON.parse(scope)
-
-    return Array.isArray(value) &&
-      value.length === 4 &&
-      (value[0] === null || typeof value[0] === 'string') &&
-      value.slice(1).every(item => typeof item === 'string')
-      ? (value as [string | null, string, string, string])
-      : null
-  } catch {
-    return null
-  }
-}
-
 export function migratePreviewArtifactsForProfile(from: string, to: string): void {
-  rewriteDismissalScopes(scope => {
-    const owner = storedOwner(scope)
+  rewriteDismissalScopes(key => {
+    const scope = decodeScope(key)
 
-    if (!owner || (owner[0] && owner[0] !== 'local')) {
-      return scope
+    if (!scope || (scope.connectionId && scope.connectionId !== 'local')) {
+      return key
     }
 
-    return JSON.stringify([owner[0], owner[1] === from ? to : owner[1], owner[2] === from ? to : owner[2], owner[3]])
+    return encodeScope({
+      ...scope,
+      profile: scope.profile === from ? to : scope.profile,
+      targetProfile: scope.targetProfile === from ? to : scope.targetProfile
+    })
   })
 }
 
 export function dropPreviewArtifactsForProfile(profile: string, route?: Partial<SessionOwnerRoute>): void {
-  rewriteDismissalScopes(scope => {
-    const owner = storedOwner(scope)
+  const routeProfile = route?.profile ? normalizeProfileKey(route.profile) : ''
+  const routeTarget = route?.targetProfile ? normalizeProfileKey(route.targetProfile) : ''
+  const routeConnection = String(route?.connectionId ?? '').trim()
 
-    if (!owner) {
-      return scope
+  rewriteDismissalScopes(key => {
+    const scope = decodeScope(key)
+
+    if (!scope) {
+      return key
     }
 
     const matches = route
-      ? owner[1] === route.profile?.trim() &&
-        (!route.connectionId || owner[0] === route.connectionId.trim()) &&
-        (!route.targetProfile || owner[2] === route.targetProfile.trim())
-      : (!owner[0] || owner[0] === 'local') && (owner[1] === profile || owner[2] === profile)
+      ? scope.profile === routeProfile &&
+        (!routeConnection || scope.connectionId === routeConnection) &&
+        (!routeTarget || scope.targetProfile === routeTarget)
+      : (!scope.connectionId || scope.connectionId === 'local') &&
+        (scope.profile === profile || scope.targetProfile === profile)
 
-    return matches ? null : scope
+    return matches ? null : key
   })
 }
 
@@ -266,48 +333,31 @@ const writePreviews = (sid: string, items: PreviewArtifact[]) => {
 
 /**
  * Record a detected artifact, newest last, capped. Idempotent: a target already
- * in the list keeps its slot (the tool row re-registers on every render, so this
- * must not churn the atom or reorder rows).
+ * in the list keeps its slot (the tool row re-registers on every mount, so this
+ * must not churn the atom or reorder rows). A dismissed target stays hidden —
+ * historical mounts and reconnect replay never re-offer it.
  */
-export function recordPreviewArtifact(
-  sid: string,
-  target: string,
-  cwd: string,
-  dismissalSid = sid,
-  newProduction = false
-) {
+export function recordPreviewArtifact(sid: string, target: string, cwd: string, dismissalSid = sid) {
   const raw = target.trim()
-  const id = previewArtifactKey(raw, cwd)
 
   if (!sid || !raw) {
     return
   }
 
-  const scope = dismissalKey(sid, dismissalSid)
+  const id = previewArtifactKey(raw, cwd)
+
+  if ($previewStatusBySession.get()[sid]?.some(item => item.id === id)) {
+    return
+  }
+
+  const scope = reconcileDismissalScope(sid, dismissalSid)
+
+  if (isDismissed(scope, id)) {
+    return
+  }
+
+  // Re-read: reconciling may have rewritten the listed items' scopes.
   const list = $previewStatusBySession.get()[sid] ?? []
-
-  // Only the live completion handler may re-offer a newly produced file.
-  // Historical mounts and reconnect replay never grant this intent.
-  if (newProduction) {
-    const dismissed = readDismissedPreviewIds()
-
-    if (dismissed[scope]?.includes(id) || volatileDismissals.get(scope)?.includes(id)) {
-      dismissed[scope] = (dismissed[scope] ?? []).filter(value => value !== id)
-      volatileDismissals.set(
-        scope,
-        (volatileDismissals.get(scope) ?? []).filter(value => value !== id)
-      )
-      writeJson(DISMISSED_PREVIEWS_KEY, dismissed)
-    }
-  }
-
-  if (list.some(item => item.id === id)) {
-    return
-  }
-
-  if (readDismissedPreviewIds()[scope]?.includes(id) || volatileDismissals.get(scope)?.includes(id)) {
-    return
-  }
 
   writePreviews(
     sid,
@@ -315,10 +365,24 @@ export function recordPreviewArtifact(
   )
 }
 
+/** A genuinely new successful production of a target the user dismissed
+ *  earlier may offer it again. Only the live completion handler has that
+ *  intent; see `recordPreviewArtifact` for every other feed. */
+export function reofferPreviewArtifact(sid: string, target: string, cwd: string, dismissalSid = sid) {
+  const raw = target.trim()
+
+  if (!sid || !raw) {
+    return
+  }
+
+  forgetDismissedPreview(reconcileDismissalScope(sid, dismissalSid), previewArtifactKey(raw, cwd))
+  recordPreviewArtifact(sid, target, cwd, dismissalSid)
+}
+
 export function dismissPreviewArtifact(sid: string, id: string, dismissalSid = sid) {
-  dismissalKey(sid, dismissalSid) // reconcile an owner refined since the row mounted
+  const current = reconcileDismissalScope(sid, dismissalSid)
   const list = $previewStatusBySession.get()[sid]
-  const scope = list?.find(item => item.id === id)?.dismissalScope ?? dismissalKey(sid, dismissalSid)
+  const scope = list?.find(item => item.id === id)?.dismissalScope ?? current
 
   if (list) {
     writePreviews(
@@ -327,9 +391,7 @@ export function dismissPreviewArtifact(sid: string, id: string, dismissalSid = s
     )
   }
 
-  if (dismissalSid && id) {
-    rememberDismissedPreview(scope, id)
-  }
+  rememberDismissedPreview(scope, id)
 }
 
 export function clearPreviewArtifacts(sid: string) {

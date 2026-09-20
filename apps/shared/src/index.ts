@@ -105,7 +105,7 @@ export {
   type ReasoningEffort,
   type ReasoningEffortValue
 } from './reasoning-effort'
-export { reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
+export { reconnectAttemptAfterClose, reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

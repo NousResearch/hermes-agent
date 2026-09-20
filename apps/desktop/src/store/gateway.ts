@@ -2,6 +2,7 @@ import {
   type ConnectionState,
   type GatewayEvent,
   isGatewayReauthRequired,
+  reconnectAttemptAfterClose,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
   resolveGatewayWsUrl,
@@ -860,7 +861,10 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
 
   try {
     await openSecondary(entry)
-    entry.reconnectAttempt = 0
+    // No attempt reset here: the counter only resets at close time when the
+    // socket generation actually SERVED a frame (reconnectAttemptAfterClose).
+    // Resetting on every successful dial let a backend that
+    // accepts-then-starves flap the counter back to 0 each cycle.
   } catch (error) {
     if (isGatewayReauthRequired(error)) {
       notifyError(error, translateNow('boot.errors.gatewaySignInRequired'), { action: RECOVERY_ACTIONS.openGateways() })
@@ -975,10 +979,23 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reportGatewayState(scope, state)
 
     if (state === 'open') {
-      entry.reconnectAttempt = 0
       entry.stalledDials = 0
+      // Do NOT reset the attempt counter here: an open only proves the
+      // backend accepted the socket, not that it can serve it. The reset is
+      // decided at close time by reconnectAttemptAfterClose on real service
+      // proof — a socket whose generation delivered at least one frame earns
+      // the reset; an unserved flap keeps the escalation, so a grinding
+      // backend is redialed at the backoff cap instead of sub-second (the
+      // "dial failed" storms).
       clearTimer(entry)
     } else if (state === 'closed' || state === 'error') {
+      // `typeof === 'number'` (not `!== null`) so a partial gateway double in
+      // tests/HMR — where the getter is absent (undefined) — reads as
+      // "never served" and keeps the ladder, the conservative direction.
+      entry.reconnectAttempt = reconnectAttemptAfterClose(
+        entry.reconnectAttempt,
+        typeof entry.gateway.lastServedAtMs === 'number'
+      )
       // A dead socket cannot emit the terminal event that normally releases
       // its turn lease. Drop the orphaned lease before deciding whether this
       // route is still retained/active enough to reconnect.
@@ -2055,8 +2072,27 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
       entry.gateway.close()
     }
 
-    entry.reconnectAttempt = 0
-    clearTimer(entry)
+    if (forceOpenSockets) {
+      // Genuine new-connectivity signal (power resume, network online,
+      // manual reconnect): the world changed, so the ladder's history is
+      // stale — reset it and dial now.
+      entry.reconnectAttempt = 0
+      clearTimer(entry)
+      void reconnectSecondary(entry)
+
+      continue
+    }
+
+    // Ambient nudge (window focus/visibility). While the backoff loop is
+    // already armed or mid-dial, let it work: clearing the timer and dialing
+    // immediately here turned every focus event into a fresh dial against a
+    // cold-booting backend — the observed 24-sockets-in-one-second storms,
+    // where clicking made recovery WORSE (#94769). Only a stalled loop (no
+    // timer, no dial in flight) gets nudged, and at its CURRENT rung.
+    if (entry.reconnectTimer !== null || entry.reconnecting) {
+      continue
+    }
+
     void reconnectSecondary(entry)
   }
 }

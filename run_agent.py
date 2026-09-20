@@ -1334,7 +1334,8 @@ class AIAgent(
                     execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
-        if self._trim_after_tool_batch:
+        # getattr: test stubs built without _set_defaults drive this method too
+        if getattr(self, "_trim_after_tool_batch", False):
             # Only on normal completion: every executor frame that held a >=1 MB raw result has
             # unwound and just the spilled preview lives in ``messages``. An in-flight exception
             # would pin those frames via its traceback, so that path leaves the flag for the

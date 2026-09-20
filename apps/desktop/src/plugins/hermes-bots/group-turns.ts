@@ -1108,7 +1108,8 @@ async function runGroupChatMemberTurnLeased(
 
     runtimeIds.add(liveRuntime)
 
-    const turn = `${liveRuntime}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+    // A UUID, not a clock+random suffix: a marker persisted by a previous process must never equal a token this one mints.
+    const turn = `${liveRuntime}:${crypto.randomUUID()}`
     liveGroupTurns.add(turn)
     markGroupTurnInFlight(group, member, {
       before,

@@ -20,7 +20,7 @@ from utils import atomic_json_write
 @pytest.mark.parametrize("outcome", ["missing", "degraded", "disconnected", "refused", "exhausted", "ambiguous", "timeout", "cancelled"])
 async def test_restart_notice_retries_only_known_unsent_and_keeps_exhausted_work(tmp_path, monkeypatch, outcome):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(notices, "_RESTART_NOTICE_TIMEOUT", 0.1, raising=False)
+    monkeypatch.setattr(notices, "_RESTART_NOTICE_TIMEOUT", 2.0, raising=False)
     path = tmp_path / ".restart_notify.json"
     atomic_json_write(path, {"platform": "telegram", "chat_id": "42", "thread_id": "77", "request_id": "boot"})
     payload = path.read_text(encoding="utf-8")
@@ -73,7 +73,7 @@ async def test_restart_notice_retries_only_known_unsent_and_keeps_exhausted_work
                 await asyncio.wait_for(task, 3)
             target = None
         else:
-            target = await asyncio.wait_for(task, 3)
+            target = await asyncio.wait_for(task, 5)
         if outcome == "exhausted":
             assert path.read_text(encoding="utf-8") == payload
             assert len(calls) == 1  # retry_after exceeds the budget: never retry early

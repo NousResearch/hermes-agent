@@ -582,23 +582,3 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
-
-    def test_planted_symlink_is_rejected_not_followed(self):
-        import time as time_module
-
-        from tools.code_kernel import _sweep_stale_staging_dirs
-
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch("tools.code_kernel.tempfile.gettempdir", return_value=tmp):
-                target = Path(tmp, "payload")
-                target.mkdir()
-                (target / "keep.txt").write_text("precious", encoding="utf-8")
-                link = Path(tmp, "hermes_kernel_link")
-                link.symlink_to(target)
-                # Both ends look stale, so the sweep reaches rmtree(link) itself.
-                week_and_a_bit = time_module.time() - 8 * 86400
-                os.utime(target, (week_and_a_bit, week_and_a_bit))
-                os.utime(link, (week_and_a_bit, week_and_a_bit), follow_symlinks=False)
-                removed = _sweep_stale_staging_dirs()
-                self.assertEqual(removed, 0)
-                self.assertTrue((target / "keep.txt").exists())

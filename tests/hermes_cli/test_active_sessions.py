@@ -726,3 +726,18 @@ def test_liveness_guard_keeps_a_just_acquired_own_lease_it_cannot_vouch_for(
     ) as active:
         assert active is False
     assert active_sessions.active_session_registry_snapshot(home) == []
+
+
+def test_pid_liveness_self_pid_skips_exists_probe(monkeypatch):
+    """The probing process is trivially live: no psutil sweep for os.getpid() (#108005)."""
+    exists_calls: list = []
+
+    def _count_exists(pid):
+        exists_calls.append(pid)
+        return True
+
+    monkeypatch.setattr("gateway.status._pid_exists", _count_exists)
+    assert active_sessions._pid_liveness(os.getpid()) is True
+    # Identity is still (pid, start time): our pid with a start we never had is a recycled pid.
+    assert active_sessions._pid_liveness(os.getpid(), 1.0) is False
+    assert exists_calls == []

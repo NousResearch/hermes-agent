@@ -30,7 +30,23 @@ const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 const ARCHIVED_FETCH_LIMIT = 200
 
-export function SessionsSettings() {
+interface SessionsSettingsProps {
+  subpage?: string
+}
+
+export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+  if (subpage === 'default-directory') {
+    return (
+      <SettingsContent>
+        <DefaultProjectDirSetting />
+      </SettingsContent>
+    )
+  }
+
+  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+}
+
+function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
@@ -118,7 +134,7 @@ export function SessionsSettings() {
 
   return (
     <SettingsContent>
-      <DefaultProjectDirSetting />
+      {includeDefaultDirectory && <DefaultProjectDirSetting />}
 
       <AutoArchiveSetting />
 
@@ -379,7 +395,7 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title={s.defaultDirTitle} />
+      <SectionHeading icon={FolderOpen} page title={s.defaultDirTitle} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.defaultDirDesc}
       </p>

@@ -747,6 +747,8 @@ from hermes_cli.model_setup_flows import (
     _model_flow_anthropic,
     _model_flow_moa,
     _model_flow_ai_gateway,
+    _model_flow_plugin_provider,
+    _is_profile_plugin_flow_provider,
 )
 logger = logging.getLogger(__name__)
 from hermes_cli.main_agent_cmds import (
@@ -2102,6 +2104,9 @@ def select_provider_and_model(args=None):
     # _model_flow_* names at call time so test monkeypatches on
     # hermes_cli.main keep intercepting.
     flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
+    if flow is None and _is_profile_plugin_flow_provider(selected_provider):
+        # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
+        flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)  # noqa: E731
     if flow is not None:
         flow(config, current_model, args)
     elif (

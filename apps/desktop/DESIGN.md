@@ -247,6 +247,17 @@ blurred backdrop.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
   `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
   shell.
+- **Settings subpages:** `OverlayNav` keeps navigation and disclosure separate:
+  labels navigate; the shared `DisclosureCaret` button opens a branch without
+  changing the page. Active paths reveal automatically, inactive paths stay
+  folded unless manually opened. General comes first wherever present; parent
+  labels and parent URLs open the first ordered subpage, never an overview or
+  the last visited child. Explicit child links retain their destination;
+  every parent and child uses the same Settings breadcrumb, without a duplicate
+  icon-and-title heading. Page-level `SectionHeading page` retains actions and
+  counts under breadcrumb-owned chrome; embedded callers keep their headings.
+  Narrow windows keep every destination available in the shared navigation dropdown.
+  Search and saved field links resolve to the owning child before highlighting.
 - **Rows:** `ListRow` (settings `primitives.tsx`) for label/description/action
   rows. Flat, flush-left; no per-row indentation that fights flush headers.
 - **No dividers between rows** unless the list genuinely needs them; prefer
@@ -357,7 +368,8 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - `status-stack.css` owns the shared columns and `0.25rem` nesting step. Rows
   own their padding and full-width hover fill. `StatusControlRow` uses the same
   columns for goal/loop/heartbeat details; `StatusPendingIcon` supplies the
-  dashed marker for tasks and criteria. The first row has `0.5rem` top inset.
+  dashed marker for tasks and criteria. The first row keeps its normal padding;
+  the stack adds no extra top inset.
 - Keep the rounded status card stationary, with the bounded scroll viewport
   inside it. The outer scroll boundary uses `overscroll-behavior-y: contain`;
   nested rosters and transcripts use `auto` so wheel input can hand off at an

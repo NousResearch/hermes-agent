@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import type { ChangeEvent } from 'react'
+import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
@@ -33,6 +33,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
+import { configSubpageForField } from './config-subpages'
 import {
   clearsEnabledToolsets,
   diffConfig,
@@ -53,6 +54,7 @@ import { QuickEntrySettings } from './quick-entry-settings'
 
 export function ConfigSettings({
   activeSectionId,
+  subpage,
   onConfigSaved,
   onMainModelChanged,
   importInputRef
@@ -71,12 +73,15 @@ export function ConfigSettings({
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
       scopeProfile={scopeProfile}
+      subpage={subpage}
     />
   )
 }
 
 interface ConfigSettingsProps {
   activeSectionId: string
+  /** Undefined preserves the full section for existing embedded consumers. */
+  subpage?: string
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
   importInputRef: React.RefObject<HTMLInputElement | null>
@@ -84,6 +89,7 @@ interface ConfigSettingsProps {
 
 function ConfigSettingsInner({
   activeSectionId,
+  subpage,
   onConfigSaved,
   onMainModelChanged,
   importInputRef,
@@ -274,7 +280,15 @@ function ConfigSettingsInner({
     return sectionFieldEntries(schema, config)
   }, [schema, config])
 
-  const fields = sectionFields.get(activeSectionId) ?? []
+  const fields = (sectionFields.get(activeSectionId) ?? []).filter(
+    ([key]) => subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
+  )
+
+  const showModelSettings =
+    activeSectionId === 'model' && (subpage === undefined || ['main', 'auxiliary', 'moa'].includes(subpage))
+
+  const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
+  const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -314,7 +328,7 @@ function ConfigSettingsInner({
     )
 
     return () => window.clearTimeout(timeout)
-  }, [config, schema, setSearchParams, targetField])
+  }, [activeSectionId, config, schema, setSearchParams, subpage, targetField])
 
   function handleImport(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -337,6 +351,31 @@ function ConfigSettingsInner({
     reader.readAsText(file)
     e.target.value = ''
   }
+
+  // Keep the model controller and pending MoA saves at a stable position when
+  // selecting siblings or returning to the first page through the parent.
+  const renderPage = (children: ReactNode) => (
+    <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
+      {activeSectionId === 'model' && (
+        <div className={showModelSettings ? 'mb-6' : undefined}>
+          <ModelSettings
+            onMainModelChanged={onMainModelChanged}
+            scopeProfile={scopeProfile}
+            subpage={subpage}
+          />
+        </div>
+      )}
+      {children}
+      <input
+        accept=".json,application/json"
+        className="hidden"
+        onChange={handleImport}
+        ref={importInputRef}
+        type="file"
+      />
+    </SettingsContent>
+  )
 
   if (!config || !schema) {
     // A failed config/schema fetch must surface a retry, not spin forever.
@@ -364,12 +403,12 @@ function ConfigSettingsInner({
 
     // Every section keeps its shape via a skeleton; model gets its bespoke one
     // (its catalog fetch is the slow part), the rest the shared field rhythm.
-    if (activeSectionId === 'model') {
+    if (showModelSettings) {
       return (
         <SettingsContent>
           <SettingsProfileScope className="mb-5" />
           <div className="mb-6">
-            <ModelSettingsSkeleton />
+            <ModelSettingsSkeleton subpage={subpage} />
           </div>
         </SettingsContent>
       )
@@ -380,20 +419,16 @@ function ConfigSettingsInner({
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
 
-  return (
-    <SettingsContent>
-      {/* Which profile's config.yaml this page edits — shared across every
-          config-backed settings page (and hidden for single-profile users). */}
-      <SettingsProfileScope className="mb-5" />
-      {activeSectionId === 'model' && (
-        <div className="mb-6">
-          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />
-        </div>
-      )}
+  const showEmptyState =
+    visibleFields.length === 0 &&
+    (subpage === undefined ? activeSectionId !== 'chat' : !showModelSettings && !showDesktopSettings && !showAttachments)
+
+  return renderPage(
+    <>
       {/* Device-local desktop prefs (not config.yaml) — they live here since
           keeping the machine awake and the global Quick Entry chord are both
           power-user, this-computer-only knobs. */}
-      {activeSectionId === 'advanced' && (
+      {showDesktopSettings && (
         <>
           <ToggleRow
             checked={keepAwake}
@@ -414,8 +449,8 @@ function ConfigSettingsInner({
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
-      {activeSectionId === 'chat' ? <AttachmentSizeSetting /> : null}
-      {visibleFields.length === 0 && activeSectionId !== 'chat' ? (
+      {showAttachments ? <AttachmentSizeSetting /> : null}
+      {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (
         <div className="grid gap-1">
@@ -449,14 +484,7 @@ function ConfigSettingsInner({
           ))}
         </div>
       )}
-      <input
-        accept=".json,application/json"
-        className="hidden"
-        onChange={handleImport}
-        ref={importInputRef}
-        type="file"
-      />
-    </SettingsContent>
+    </>
   )
 }
 

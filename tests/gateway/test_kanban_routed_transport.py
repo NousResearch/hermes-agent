@@ -234,3 +234,41 @@ def test_anchorless_thread_subscription_warns_once_instead_of_silent_skip(tmp_pa
     assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
     assert "--parent-chat-id" in warnings[0].getMessage()
     assert unseen(task)
+
+
+def test_credential_gate_denials_warn_once_instead_of_silent_rewind(tmp_path, monkeypatch, caplog):
+    """A pinned profile that runs other-platform adapters but none for the subscription's
+    platform, and a sub stamped with a profile other than the route's, are permanent dead-ends:
+    the notifier rewinds the claim every tick at DEBUG only. Both skips must surface ONCE per
+    row at WARNING with the re-subscribe escape hatch (#115460)."""
+    import logging
+    from gateway import kanban_watchers_notifier as notifier
+
+    runner = setup_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(notifier, "_UNROUTABLE_WARNED", set())
+    # The pinned profile holds a credential on another platform, so it is an independent
+    # credential boundary without a Discord adapter of its own.
+    runner._profile_adapters["yuki"] = {Platform.TELEGRAM: RecordingAdapter()}
+    task = completion()
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        assert not collect(runner)
+        assert not collect(runner)
+    warnings = [r for r in caplog.records if "none for discord" in r.getMessage() and task in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
+    assert "--notifier-profile" in warnings[0].getMessage()
+    assert unseen(task)
+
+    # An owner stamped with the invoking shell's profile (#76483) instead of the route's
+    # is the same silent dead-end. (Fresh DB: resetting the credential boundary above
+    # re-enables the first sub, which is the documented workaround, and its backlog must
+    # not pollute this claim.)
+    runner._profile_adapters["yuki"] = {}
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "stamped-owner.db"))
+    stamped = completion(profile="default")
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        assert not collect(runner)
+    warnings = [r for r in caplog.records if "pins that chat to profile yuki" in r.getMessage()
+                and stamped in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
+    assert "--notifier-profile yuki" in warnings[0].getMessage()
+    assert unseen(stamped)

@@ -282,3 +282,24 @@ def test_removing_codex_native_threshold_restores_default(monkeypatch):
     session["agent"].codex_responses_compact_threshold = 120_000
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert session["agent"].codex_responses_compact_threshold == 200_000
+
+
+def test_apply_live_compression_config_is_self_contained():
+    # Regression for #115572: _apply_live_compression_config referenced
+    # is_truthy_value without importing it, so a direct (non-rebound) call
+    # raised NameError. The module must not depend on server.py injecting the
+    # name via method_ctx.bind_module.
+    from tui_gateway.session_compression import _apply_live_compression_config
+
+    agent = SimpleNamespace(
+        model="unset-test-model",
+        provider="",
+        context_compressor=None,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    _apply_live_compression_config(agent, {"compression": {"enabled": True}})
+    assert agent.compression_enabled is True
+    assert agent.codex_responses_native_compaction is False

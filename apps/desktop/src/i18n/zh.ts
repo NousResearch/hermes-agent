@@ -682,6 +682,8 @@ export const zh = defineLocale({
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       hideCodeDiffsTitle: '隐藏代码差异',
       hideCodeDiffsDesc: '将文件编辑显示为带有新增和删除行数的内联工具行，不显示代码。',
+      hideThreadTimelineTitle: '隐藏对话时间线条',
+      hideThreadTimelineDesc: '隐藏每个对话右侧边缘的导航条。',
       reasoningCollapsedTitle: '默认折叠推理过程',
       reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
       uiScaleTitle: '界面缩放',

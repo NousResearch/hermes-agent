@@ -556,6 +556,8 @@ export const ar = defineLocale({
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
       hideCodeDiffsTitle: 'إخفاء فروق الكود',
       hideCodeDiffsDesc: 'عرض تعديلات الملفات كسطور أدوات مضمّنة مع عدد الأسطر المضافة والمحذوفة، دون عرض الكود.',
+      hideThreadTimelineTitle: 'إخفاء أشرطة المخطط الزمني للمحادثة',
+      hideThreadTimelineDesc: 'إخفاء أشرطة التنقل على الحافة اليمنى لكل محادثة.',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
       translucencyTitle: 'شفافية النافذة',

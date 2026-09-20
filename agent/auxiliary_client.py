@@ -6223,12 +6223,15 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
 
 
 def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
-    """Explicit ``timeout`` wins, else config; compression gets a floor so a reasoning model
-    summarising a large context isn't cut off."""
+    """Explicit ``timeout`` wins, else config; only reasoning compression routes get the slow floor."""
     if timeout is not None:
         return timeout
     effective = _get_task_timeout(task)
-    return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS) if task == "compression" else effective
+    if task != "compression":
+        return effective
+    if _compression_config_claims_fast_lane(_get_auxiliary_task_config(task)):
+        return effective
+    return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:

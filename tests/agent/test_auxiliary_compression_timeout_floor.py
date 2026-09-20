@@ -112,6 +112,33 @@ class TestCompressionTimeoutFloorSync:
 
 
 
+    def test_certified_non_reasoning_compression_timeout_keeps_configured_budget(self):
+        """An explicit fast route must not inherit the 300s reasoning-model floor."""
+        from agent.auxiliary_client import _effective_aux_timeout
+
+        config = {
+            "provider": "cliproxyapi",
+            "model": "light-latest",
+            "reasoning_effort": "none",
+            "timeout": 30,
+        }
+        with (
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+            patch("agent.auxiliary_client._get_task_timeout", return_value=30.0),
+        ):
+            assert _effective_aux_timeout("compression", None) == 30.0
+
+    def test_uncertified_compression_timeout_still_gets_reasoning_floor(self):
+        from agent.auxiliary_client import _effective_aux_timeout
+
+        config = {"provider": "cliproxyapi", "model": "medium-latest", "timeout": 30}
+        with (
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+            patch("agent.auxiliary_client._get_task_timeout", return_value=30.0),
+        ):
+            assert _effective_aux_timeout("compression", None) >= 300.0
+
+
 class TestCompressionTimeoutFloorAsync:
     """Async ``async_call_llm`` mirrors the sync floor (Layer 2)."""
 

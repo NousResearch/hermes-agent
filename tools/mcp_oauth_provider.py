@@ -9,6 +9,7 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -349,10 +350,16 @@ class HermesProviderMixin:
         await self.context.storage.set_tokens(token_response)
 
     async def _handle_token_response(self, response):
-        """Accept any 2xx token response; never echo the body into errors."""
+        """Accept any 2xx token response; a 2xx body (it carries the tokens) never reaches an error.
+
+        A non-2xx body carries no tokens and is the only clue to WHY the exchange failed — a WAF's
+        HTML "Request blocked" page vs the issuer's ``invalid_grant`` JSON (#115329) — so a short,
+        tag-stripped, redacted excerpt rides along with the status."""
         from mcp.client.auth.oauth2 import OAuthTokenError
         if not (200 <= response.status_code < 300):
-            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+            from tools.mcp_tool_common import _sanitize_error
+            excerpt = " ".join(re.sub(r"<[^>]+>", " ", response.text).split())[:200]
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code}): {_sanitize_error(excerpt)}".rstrip(": "))
         from httpx import HTTPError
         from mcp.client.auth.utils import handle_token_response_scopes
         try:

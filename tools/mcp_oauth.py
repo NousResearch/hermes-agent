@@ -584,11 +584,14 @@ class HermesTokenStorage:
         """True when this server has refused our metadata document before."""
         return self._cimd_rejected_path().exists()
 
-    def remove(self) -> None:
-        """Delete all stored OAuth state for this server."""
+    def remove(self, *, keep_metadata: bool = False) -> None:
+        """Delete all stored OAuth state for this server; ``keep_metadata`` spares ``.meta.json`` so a
+        re-login can still announce the discovered ``authorization_endpoint`` when the authorization
+        server's metadata document cannot be re-fetched (#115329)."""
         # The ``.refresh.lock`` sidecar is deliberately kept: flock is inode-bound, so unlinking it
         # while a peer holds the fence would let the next acquirer lock a fresh inode (two holders).
-        for p in (*self._state_paths(), self._cimd_rejected_path()):
+        for p in (self._tokens_path(), self._client_info_path(), self._cimd_rejected_path(),
+                  *(() if keep_metadata else (self._meta_path(),))):
             p.unlink(missing_ok=True)
 
     def snapshot(self) -> dict[str, bytes]:

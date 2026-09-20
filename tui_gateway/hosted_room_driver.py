@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
-from gateway.hosted_room_artifacts import RoomArtifactError, validate_terminal_artifact_manifest
+
 from gateway.hosted_rooms_common import identifier
 
 _CANCEL_ROUTE_RETRIES = 8
@@ -1017,6 +1017,7 @@ def _legacy_artifact_receipt_is_held(message: Mapping[str, Any]) -> bool:
         or not isinstance(artifacts, Mapping)
     ):
         return False
+    from gateway.hosted_room_artifacts import RoomArtifactError, validate_terminal_artifact_manifest
     try:
         checked_run_id = identifier(
             run_id, label="run_id", error=RoomArtifactError, max_chars=256

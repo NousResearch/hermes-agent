@@ -294,7 +294,10 @@ def _probe_candidate(
             except Exception:
                 cleanup_safe = False
             try:
-                shutdown_mcp_servers(scope=hermes_home_key(candidate))
+                cleanup_safe = (
+                    shutdown_mcp_servers(scope=hermes_home_key(candidate))
+                    and cleanup_safe
+                )
             except Exception:
                 cleanup_safe = False
             try:

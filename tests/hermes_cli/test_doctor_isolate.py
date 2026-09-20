@@ -65,7 +65,7 @@ def test_isolate_preserves_source_excludes_secrets_and_discovers_each_fresh_slic
 
     def shutdown(*, scope=None, names=None):
         shutdown_scopes.append(scope)
-        real_shutdown(scope=scope, names=names)
+        return real_shutdown(scope=scope, names=names)
 
     monkeypatch.setattr(
         "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
@@ -157,11 +157,13 @@ def test_isolate_snapshots_sqlite_and_ignores_concurrent_runtime_writers(tmp_pat
     def probe(candidate, config, runtime):
         nonlocal committed_after_session
         if (candidate / "state.db").exists():
-            with sqlite3.connect(candidate / "state.db") as conn:
-                seen_values.extend(row[0] for row in conn.execute("select value from evidence"))
+            with closing(sqlite3.connect(candidate / "state.db")) as conn:
+                with conn:
+                    seen_values.extend(row[0] for row in conn.execute("select value from evidence"))
             if candidate.name.endswith("session_state") and not committed_after_session:
-                with sqlite3.connect(source / "state.db") as concurrent:
-                    concurrent.execute("insert into evidence values ('later')")
+                with closing(sqlite3.connect(source / "state.db")) as concurrent:
+                    with concurrent:
+                        concurrent.execute("insert into evidence values ('later')")
                 committed_after_session = True
         logs = source / "logs"
         logs.mkdir(exist_ok=True)
@@ -203,7 +205,7 @@ def test_isolate_discovery_timeout_keeps_candidate_and_reports_needs_quiescence(
     monkeypatch.setattr("hermes_cli.mcp_startup.join_mcp_discovery", lambda timeout=None: False)
     monkeypatch.setattr(
         "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
-        lambda **kwargs: teardown.append("mcp"),
+        lambda **kwargs: teardown.append("mcp") or True,
     )
     monkeypatch.setattr(
         "hermes_cli.mcp_startup.clear_mcp_discovery_for_current_home",
@@ -224,6 +226,24 @@ def test_isolate_discovery_timeout_keeps_candidate_and_reports_needs_quiescence(
     assert report.cleanup_status == "failed"
     assert Path(report.candidate_location).is_dir()
     assert teardown[:3] == ["mcp", "discovery", "plugins"]
+
+
+def test_isolate_incomplete_mcp_shutdown_keeps_candidate(tmp_path, monkeypatch):
+    source = _source_profile(tmp_path)
+    monkeypatch.setattr(
+        "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
+        lambda **kwargs: False,
+    )
+
+    report = run_isolation_diagnostic(
+        source=source,
+        probe=lambda *_args: {"status": "ok", "timings": {"hermes_first_chunk_ms": 10.0}},
+        runtime_override={"provider": "custom", "api_key": "secret"},
+    )
+
+    assert report.classification == "needs_quiescence"
+    assert report.cleanup_status == "failed"
+    assert Path(report.candidate_location).is_dir()
 
 
 def test_isolate_stops_after_failed_sterile_control_and_parser_modes_are_exclusive(tmp_path):

@@ -127,7 +127,7 @@ def _reregister_orphaned_adopters() -> None:
             reset_hermes_home_override(home_token)
 
 
-def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None):
+def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None) -> bool:
     """Close MCP server connections (in parallel) and stop the background loop. Each server
     Task is signalled to exit its own ``async with`` so the anyio cancel-scope cleanup runs in
     the Task that opened it. ``scope`` restricts teardown to one multiplexed profile's servers
@@ -136,7 +136,9 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     (dropped-from-config pruning); other servers' bookkeeping is untouched. Only the bare call
     (no ``scope``, no ``names``) is the process-wide wildcard: the launch profile's registry
     scope IS ``None``, so ``scope=None, names={...}`` prunes that unscoped owner's servers and
-    must leave a served profile's same-named ``(B, name)`` connection alone."""
+    must leave a served profile's same-named ``(B, name)`` connection alone. Returns ``True``
+    only when every selected live server finished shutdown and every selected lazy registration
+    was forgotten. Callers that delete profile storage use this result as a safety boundary."""
     from tools.mcp_tool_scope import _key_name, _key_scope
     wildcard = scope is None and names is None
 
@@ -214,11 +216,12 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),
     # so "no live servers" is the MOST likely state in which stale backoff entries exist. Clear them so a
     # post-shutdown restart re-attempts every configured server immediately.
+    shutdown_complete = not servers_snapshot
     if servers_snapshot:
         async def _shutdown():
             results = await asyncio.gather(*(server.shutdown() for server in servers_snapshot), return_exceptions=True)
             for server, result in zip(servers_snapshot, results):
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     logger.debug("Error closing MCP server '%s': %s", server.name, result)
             with _core._lock:
                 for key in selected:
@@ -226,6 +229,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
                     _core._server_scope_keys.pop(key, None)
                 clear_selected_status()
                 _clear_connect_cooldowns(None if wildcard else selected_status)
+            return not any(isinstance(result, BaseException) for result in results)
 
         with _core._lock:
             loop = _core._mcp_loop
@@ -234,7 +238,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
             future = safe_schedule_threadsafe(_shutdown(), loop, logger=logger, log_message="MCP shutdown: failed to schedule")
             if future is not None:
                 try:
-                    future.result(timeout=15)
+                    shutdown_complete = bool(future.result(timeout=15))
                 except BaseException as exc:
                     logger.debug("Error during MCP shutdown: %s", exc)
 
@@ -248,13 +252,18 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     if lazy_selected:
         from tools.mcp_tool_discovery import _forget_lazy_server
         for key in lazy_selected:
-            _forget_lazy_server(key)
+            try:
+                _forget_lazy_server(key)
+            except Exception:
+                shutdown_complete = False
+                logger.debug("Error forgetting lazy MCP server %r", key, exc_info=True)
     _loop._stop_mcp_loop(only_if_idle=not wildcard)
     # A removed subset still shares its profile's log with the remaining servers.
     # Full/profile shutdown must also release handles left by completed CLI/UI probes.
     if names is None:
         from tools.mcp_tool_config import _close_mcp_stderr_logs
         _close_mcp_stderr_logs(scope=scope)
+    return shutdown_complete
 
 
 def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[Dict[int, str], Dict[int, int]]:

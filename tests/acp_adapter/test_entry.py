@@ -37,13 +37,23 @@ def test_main_reasoning_flag_reaches_session_manager(monkeypatch):
         "hermes_cli.mcp_startup.start_background_mcp_discovery", lambda **_kwargs: None
     )
 
+    built = {}
+
+    from acp_adapter.server import HermesACPAgent as _RealAgent
+
+    class _SpyAgent(_RealAgent):
+        def __init__(self, session_manager=None, **kwargs):
+            built["session_manager"] = session_manager
+            super().__init__(session_manager=session_manager, **kwargs)
+
+    monkeypatch.setattr("acp_adapter.server.HermesACPAgent", _SpyAgent)
     entry.main(["--reasoning", "max"])
-    sm = entry._make_session_manager({"enabled": True, "effort": "max"})
-    assert sm._reasoning_override == {"enabled": True, "effort": "max"}
+    sm = built["session_manager"]
+    assert sm is not None and sm._reasoning_override == {"enabled": True, "effort": "max"}
 
     # Unknown level: parse_reasoning_effort → None → default SessionManager (config resolution).
     entry.main(["--reasoning", "bogus"])
-    assert entry._make_session_manager(None) is None
+    assert built["session_manager"] is None
 
 
 def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):

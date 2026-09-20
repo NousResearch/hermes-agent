@@ -67,7 +67,11 @@ def _tc_name(tool_call: Any) -> str:
 def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -> None:
     """Record the spillover file path so a later result-reference stub can't dangle (best-effort)."""
     try:
-        path = extract_persisted_path(function_result) if isinstance(function_result, str) else None
+        candidates = [function_result] if isinstance(function_result, str) else [
+            function_result.get("text_summary"),
+            *(p.get("text") for p in function_result.get("content") or [] if isinstance(p, dict)),
+        ] if _is_multimodal_tool_result(function_result) else []
+        path = next((p for p in map(extract_persisted_path, candidates) if p), None)
         if path:
             agent._tool_guardrails.record_persisted_result(tool_call_id, path)
     except Exception as exc:
@@ -1057,7 +1061,11 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
-    if not _is_multimodal_tool_result(persisted_result):
+    if _is_multimodal_tool_result(persisted_result):
+        persisted_result = _persist_multimodal_text_parts(
+            persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,
+        )
+    else:
         persisted_result = maybe_persist_tool_result(
             content=persisted_result,
             tool_name=function_name,
@@ -1091,6 +1099,34 @@ def _commit_tool_result(
             "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
         )
     return persisted_result, function_result, tool_message.get("_tool_output_risk")
+
+
+def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: str, env, budget: BudgetConfig) -> dict:
+    """Spill oversized TEXT parts of a multimodal envelope through the same persistence policy as
+    string results (#95429). A ``browser_exec`` call that captured a screenshot bakes its full
+    stdout into the envelope's text part, which used to bypass ``maybe_persist_tool_result``
+    entirely and ride every later request inline. Image parts are left untouched (their size is
+    governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
+    parts = result.get("content") or []
+    bounded_parts, first_replacement = [], None
+    for part in parts:
+        text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
+        if isinstance(text, str):
+            replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=tool_call_id,
+                                                 env=env, config=budget)
+            if replaced != text:
+                part = {**part, "text": replaced}
+                first_replacement = first_replacement or replaced
+        bounded_parts.append(part)
+    if first_replacement is None:
+        return result
+    bounded = {**result, "content": bounded_parts}
+    summary = bounded.get("text_summary")
+    # The summary is a subset of the (already spilled) part text: reuse that bounded reference instead
+    # of a second persist under the same id, which would overwrite the spill file with the summary.
+    if isinstance(summary, str) and len(summary) > budget.resolve_threshold(tool_name):
+        bounded["text_summary"] = first_replacement
+    return bounded
 
 
 def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tools: int, budget: BudgetConfig) -> None:

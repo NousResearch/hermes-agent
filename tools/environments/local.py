@@ -375,11 +375,12 @@ def served_profile_child_env(
     ``hermes_subprocess_env`` snapshot."""
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
-    from hermes_constants import get_hermes_home_override
+    from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
     target = str(target_home or get_hermes_home_override() or "")
     if target:
         env["HERMES_HOME"] = target
+        apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
         if _is_routed_home(target):
             strip_launch_profile_env(env, target)
             _scrub_credentials(env, inherit_credentials=False)
@@ -825,8 +826,8 @@ class LocalEnvironment(BaseEnvironment):
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
-        (Termux has no /tmp), ``HERMES_HOME/cache/terminal`` (real storage: tmpfs /tmp
-        fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``), /tmp,
+        (Termux has no system temp dir), ``HERMES_HOME/cache/terminal`` (real storage: a
+        tmpfs system temp dir fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``),
         ``tempfile.gettempdir()``; backend env before process env so terminal.env
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
         so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
@@ -852,10 +853,9 @@ class LocalEnvironment(BaseEnvironment):
                 return _posix(resolved)
         except Exception:
             pass
-        if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
-            return "/tmp"
+        # tempfile's own candidate walk already covers the system temp dir.
         fallback = tempfile.gettempdir()
-        return _posix(fallback) if fallback.startswith("/") else "/tmp"
+        return _posix(fallback if fallback.startswith("/") else os.path.abspath(fallback))
 
     @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:

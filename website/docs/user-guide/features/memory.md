@@ -369,6 +369,26 @@ auxiliary:
 With `enabled: false`, automatic post-turn forks do not spawn; manual
 `/refine` still works.
 
+### Capping review cost (`max_input_tokens`)
+
+The review loop replays the conversation on every provider request it makes,
+so a single review can multiply input tokens across its tool iterations.
+`max_input_tokens` caps the SUM of replayed input tokens for one review; the
+loop stops before crossing it. `<= 0` means unlimited.
+
+```yaml
+auxiliary:
+  background_review:
+    max_input_tokens: 48000  # <= 0 = unlimited
+```
+
+When the key is unset, the budget is derived from the review model's resolved
+context window: 75% of the window, capped at 600,000 tokens — so it also binds
+on small local models (a 65,536-token model gets 49,152), where a fixed
+cloud-scale default would never bite. If the window cannot be resolved, a
+conservative 120,000-token fallback applies. Note the key lives under
+`auxiliary:`; a top-level `background_review:` block is not read.
+
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`
 (`Background review complete: thread=bg-review calls=… in=… out=… result=…`).

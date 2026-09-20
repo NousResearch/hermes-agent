@@ -4,9 +4,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import {
+  $restoredDraftNotice,
+  announceGoneSessionDraft,
   announceNewSessionDraftKey,
   clearSessionDraft,
   type ComposerAttachment,
+  dismissRestoredDraftNotice,
   mainComposerScope,
   stashSessionDraft,
   takeSessionDraft
@@ -120,6 +123,42 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     expect(takeSessionDraft('session-created')).toEqual({ attachments: [preSessionAttachment], text: 'do not lose this draft' })
     expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
     clearSessionDraft('session-created')
+  })
+
+  it('carries the unsent draft of a GONE session into the fresh chat once, with an undoable notice (#111868)', () => {
+    stashSessionDraft('session-gone', 'typed into a session that no longer exists', [])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey="session-gone" onLayoutSnapshot={() => undefined} sessionId="session-gone" />
+    )
+
+    // The resume's gone verdict announces the dead key, then drops the window
+    // to a fresh draft (route → /new, scope → the pre-session bucket).
+    announceGoneSessionDraft('session-gone')
+    act(() => {
+      rerender(<ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />)
+    })
+
+    expect(takeSessionDraft(null).text).toBe('typed into a session that no longer exists')
+    expect(takeSessionDraft('session-gone').text).toBe('')
+    expect($restoredDraftNotice.get()).toEqual({
+      fromKey: 'session-gone',
+      text: 'typed into a session that no longer exists'
+    })
+
+    // Fires once: a later trip through the fresh draft finds nothing to move
+    // and does not re-publish the notice the user already dismissed.
+    dismissRestoredDraftNotice()
+    act(() => {
+      rerender(<ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />)
+    })
+    act(() => {
+      rerender(<ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />)
+    })
+
+    expect($restoredDraftNotice.get()).toBeNull()
+    expect(takeSessionDraft(null).text).toBe('typed into a session that no longer exists')
+    clearSessionDraft(null)
   })
 
   it('leaves the pre-session draft in its bucket when the user opens another session from a fresh chat', () => {

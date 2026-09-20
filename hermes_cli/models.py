@@ -929,6 +929,17 @@ def detect_static_provider_for_model(
     if _model_in_provider_catalog(name_lower, current_keys):
         return None
 
+    return next(_static_catalog_matches(name, current_provider), None)
+
+
+def _static_catalog_matches(name: str, current_provider: str):
+    """Yield every ``(provider_id, name)`` whose static catalog lists *name*, in ladder order.
+
+    Several first-party providers list the same slug (``gpt-5.6-luna`` on ``openai-api`` AND
+    ``openai-codex``); the first is only a guess, so callers that gate on credentials need the
+    siblings too (#102775)."""
+    name_lower = name.lower()
+    current_keys = _provider_keys(current_provider)
     # Step 1: direct static-catalog match. Aggregators list other vendors' models — never
     # auto-switch TO them. A custom endpoint (custom / custom:*) is never auto-switched away
     # from: the user configured it deliberately and may serve the same model name there.
@@ -937,15 +948,13 @@ def detect_static_provider_for_model(
             if pid in current_keys or pid in _AGGREGATOR_PROVIDERS or pid in _BORROWED_MODEL_PROVIDERS:
                 continue
             if _model_in_provider_catalog(name_lower, {pid}):
-                return (pid, name)
+                yield (pid, name)
 
     # Borrow-list providers (re-expose other vendors' models) only after every native-vendor
     # catalog, and only when one is the current provider.
     for pid in _BORROWED_MODEL_PROVIDERS:
         if pid not in current_keys and _model_in_provider_catalog(name_lower, {pid}):
-            return (pid, name)
-
-    return None
+            yield (pid, name)
 
 
 def _configured_provider_ids() -> set[str]:
@@ -1013,14 +1022,18 @@ def detect_provider_for_model(
         return None
 
     no_selection = (current_provider or "").strip().lower() in {"", "auto"}
+    first_guess = None
     for candidate in _detection_candidates(name, current_provider):
         if candidate is None:
             return None  # the current catalog owns this name
-        if no_selection or candidate[0] == current_provider or provider_has_credentials(candidate[0]):
+        if candidate[0] == current_provider or provider_has_credentials(candidate[0]):
             return candidate
         if _PROVIDER_ALIASES.get(name.lower(), name.lower()) == candidate[0]:
             return candidate  # explicitly named provider: let the credential step report it
+        first_guess = first_guess or candidate
         logger.debug("Skipping auto-switch of '%s' to %s: no credentials configured", name, candidate[0])
+    if no_selection and first_guess:
+        return first_guess  # nothing usable anywhere: fail loudly on the first guess
     # A ``vendor/model`` prefix naming a provider the user DECLARED in ``providers:`` is a selection,
     # not a guess — hand it back even before its key is wired up.
     return _resolve_provider_prefix(name)
@@ -1032,6 +1045,11 @@ def _detection_candidates(name: str, current_provider: str):
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         yield static_match
+        # Sibling catalogs listing the same slug (openai-api / openai-codex share the gpt-5.6
+        # family): the credential gate downstream takes the first one the user can actually use.
+        for sibling in _static_catalog_matches(name, current_provider):
+            if sibling != static_match:
+                yield sibling
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
         yield None
         return
@@ -1252,11 +1270,15 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     from hermes_cli.codex_models import get_codex_model_ids
 
     # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
-    # catalog without a token / when unreachable.
+    # catalog without a token / when unreachable. Read-only (#68004): a picker never imports,
+    # refreshes or persists a credential, so an expired stored token means the hardcoded catalog
+    # until the runtime lease refreshes it.
     try:
-        from hermes_cli.auth import resolve_codex_runtime_credentials
+        from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
 
-        access_token = resolve_codex_runtime_credentials(refresh_if_expiring=True).get("api_key")
+        access_token = resolve_codex_runtime_credentials(read_only=True).get("api_key")
+        if _codex_access_token_is_expiring(access_token, 0):
+            access_token = None
     except Exception:
         access_token = None
     return get_codex_model_ids(access_token=access_token)
@@ -1415,6 +1437,31 @@ def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
         return None
 
 
+def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    """Live ``GET <base>/models`` of the configured Azure Foundry resource (#27989).
+
+    Deployments are per-resource, so the static catalog is intentionally empty and the plugin
+    profile ships ``base_url=""`` — which is why the generic profile fetch never fires. Resolve
+    through the runtime resolver so the picker targets the same resource inference hits
+    (``model.base_url`` / ``AZURE_FOUNDRY_BASE_URL``) with the same credential: an API key string,
+    or the Entra ID token-provider callable that ``azure_detect`` already accepts. Anthropic-style
+    ``/anthropic`` routes serve no ``/models``; the probe never raises, so any miss keeps ``[]``.
+    """
+    try:
+        from hermes_cli.azure_detect import _probe_openai_models
+        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+
+        runtime = _resolve_azure_foundry_runtime(requested_provider=normalized, model_cfg=_get_model_config_dict())
+        base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+        credential = runtime.get("api_key")
+        if not (base_url and credential):
+            return None
+        ok, ids = _probe_openai_models(base_url, credential)
+        return ids if ok and ids else None
+    except Exception:
+        return None
+
+
 # Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None
 # falls through to the profile/curated path; a list is returned as-is (even empty).
 _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
@@ -1434,7 +1481,8 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openai": _openai_catalog,
     "openai-api": _openai_catalog,
     "custom": _custom_catalog,
-    "bedrock": _bedrock_catalog}
+    "bedrock": _bedrock_catalog,
+    "azure-foundry": _azure_foundry_catalog}
 
 
 # ``-free`` slugs the relay still LISTS but no longer serves: the Go-only twin (``ox-alpha-free``)
@@ -1610,6 +1658,15 @@ def _credential_fingerprint(provider: str) -> str:
     if provider in ("openai", "openai-api"):
         try:
             parts.append(f"effective_base={_openai_discovery_base_url(provider)}")
+        except Exception:
+            pass
+
+    # Azure Foundry deployments are per-resource and the wizard writes only model.base_url, so a
+    # resource switch under the same key must not serve the previous resource's catalog (#27989).
+    if provider == "azure-foundry":
+        try:
+            from hermes_cli.runtime_provider import _config_base_url_for_provider
+            parts.append(f"effective_base={_config_base_url_for_provider(_get_model_config_dict(), 'azure-foundry')}")
         except Exception:
             pass
 

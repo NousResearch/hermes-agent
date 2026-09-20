@@ -283,6 +283,41 @@ _STATIC_FAMILY_PREFIXES = {
 _STATIC_LABELS = {"openai-codex": "OpenAI Codex", "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)"}
 
 
+def _family_head(model_id: str) -> str:
+    """Vendor family token of a model id: ``gpt-5.5`` → ``gpt``, ``claude-opus-5`` → ``claude``."""
+    return re.split(r"[-./:]", model_id.strip().lower(), maxsplit=1)[0]
+
+
+def static_model_provider_conflict(model_name: str, provider: Optional[str], *, limit: int = 5) -> Optional[dict[str, Any]]:
+    """Offline model×provider coherence from the curated catalogs only (no network: this runs on
+    ``session.create``). ``None`` = coherent or undecidable — custom / aggregator / catalog-less
+    providers, names in the provider's own family (a newer ``gpt-*`` the curated list lacks) and
+    names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
+    the provider's family that another native vendor's catalog lists — or any foreign-family name
+    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817)."""
+    from hermes_cli import models as _m
+
+    requested = (model_name or "").strip()
+    normalized = _m.normalize_provider(provider)
+    catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
+    if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
+        return None
+    if _m._model_in_provider_catalog(requested.lower(), _m._provider_keys(normalized)):
+        return None
+    if _family_head(requested) in {_family_head(m) for m in catalog}:
+        return None
+    strict = normalized in _STATIC_FAMILY_PREFIXES
+    if not strict and next(_m._static_catalog_matches(requested, normalized), None) is None:
+        return None
+    suggestions = get_close_matches(requested, catalog, n=limit, cutoff=0.4) or catalog[:limit]
+    label = _m._PROVIDER_LABELS.get(normalized, normalized)
+    return {
+        "model": requested, "provider": normalized, "suggestions": suggestions,
+        "message": (f"Model `{requested}` is not served by provider `{normalized}` ({label}). "
+                    f"Closest {label} models: " + ", ".join(f"`{s}`" for s in suggestions) + "."),
+    }
+
+
 def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     """openai-codex / xai-oauth: no /v1/models probing — validate against the curated catalog.
     Returns None (fall through) when the catalog is empty."""

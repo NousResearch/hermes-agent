@@ -69,3 +69,54 @@ class TestGatewayConnectionErrorReply:
         for reply in replies:
             assert any(cmd in reply for cmd in ("/login", "/retry", "/model")), reply
             assert "provider" not in reply.lower(), reply
+
+
+class TestQuotaExhaustedIsNotAnAuthFailure:
+    """A 429/quota envelope must never send the user to re-authenticate valid credentials, and a
+    long reset window must be named instead of "wait a moment" (#89401)."""
+
+    def test_quota_envelope_with_auth_preamble_names_reset_window(self):
+        reply = _gateway_provider_error_reply(
+            "⚠️ Provider authentication failed: Codex provider quota exhausted (429); "
+            "retry after 116168s. Credentials are still valid.")
+        assert "/login" not in reply and "resets in ~33h" in reply
+        body_reply = _gateway_provider_error_reply(
+            "API call failed after 3 retries: Error code: 429 - "
+            "{'error': {'type': 'usage_limit_reached', 'resets_in_seconds': 30995}}")
+        assert "resets in ~9h" in body_reply
+        assert "resets in ~5h" in _gateway_provider_error_reply("429 weekly limit reached. Resets in 4hr 5min")
+        # A bare 401 inside a timestamp is not a sign-in failure; every real 401 envelope still is,
+        # including the ``HTTP 401: Unauthorized`` shape _summarize_api_error emits (control).
+        assert "rate-limiting" in _gateway_provider_error_reply("API call failed at 05:14:15,401 status 429")
+        assert "/login" not in _gateway_provider_error_reply("request 05:14:15,401 failed")
+        for text in ("HTTP 401: Unauthorized", "returned 401.", "HTTP 401, re-authenticate", "Error code: 401 - token rejected"):
+            assert "/login" in _gateway_provider_error_reply(text), text
+
+    def test_turn_runner_resolution_quota_failure_names_reset_window_not_login(self, monkeypatch):
+        """Production entry: TurnRunner.run_sync with credential resolution raising the quota
+        RuntimeError the gateway wraps around a ``codex_rate_limited`` AuthError."""
+        from types import SimpleNamespace
+        import gateway.run as gateway_run
+        from gateway.config import Platform
+        from gateway.run_turn_runner import TurnRunner
+        from gateway.session import SessionSource
+        from gateway.turn_context import TurnContext
+        from hermes_cli.auth import AuthError
+        from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+
+        def _resolve(**_kwargs):
+            try:
+                raise AuthError("Codex provider quota exhausted (429); retry after 116168s. Credentials are still valid.",
+                                code=CODEX_RATE_LIMITED_CODE, relogin_required=False)
+            except AuthError as exc:
+                raise RuntimeError(str(exc)) from exc
+
+        monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 30)
+        runner = SimpleNamespace(_resolve_session_agent_runtime=_resolve,
+                                 _get_system_prompt_for_channel=lambda *a, **k: "",
+                                 _ephemeral_system_prompt="")
+        ctx = TurnContext(source=SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="dm"),
+                          session_key="slack:C1", user_config={}, message="Hi")
+        result = TurnRunner(runner, ctx).run_sync()
+        reply = result["final_response"]
+        assert "/login" not in reply and "resets in ~33h" in reply and result["api_calls"] == 0

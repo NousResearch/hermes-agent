@@ -32,7 +32,7 @@
       "P24: 62 hits on main",
       "P26: 252 hits on main"
     ],
-    "usage": "scripts/check_profile_scope_patterns.py --base origin/main [--head HEAD] | --files <paths>"
+    "usage": "scripts/check_profile_scope_patterns.py --base origin/main [--head HEAD] | --files <paths>; optional path_regex restricts a pattern to matching repo-relative paths"
   },
   "patterns": [
     {
@@ -158,8 +158,16 @@
       "id": "P31",
       "class": "C6",
       "pattern_regex": "f\"agent:\\{|[\"']agent:[\"']\\s*\\+|session_key\\s*=\\s*f\"[a-z]+:",
-      "scope_hint": "Every adapter-built session key carries the agent:<profile>: namespace (profile 'main' is 'agent:main~'); yuanbao still builds keys with no profile component per the MindDragon probe.",
+      "scope_hint": "Every adapter-built session key carries the agent:<profile>: namespace (profile 'main' is 'agent:main~'); adapters derive keys through _source_session_key / _event_session_key (P32), never a hand-built prefix.",
       "why": "Rows for a served profile land in the root store; browser/computer_use caches never saw the namespace because turns pass the bare session id."
+    },
+    {
+      "id": "P32",
+      "class": "C4",
+      "path_regex": "^(gateway|plugins)/platforms/(?!base\\.py$).+\\.py$",
+      "pattern_regex": "\\bbuild_session_key\\(|\\bSessionSource\\(",
+      "scope_hint": "Inside an adapter derive every key through self._source_session_key(source) / self._event_session_key(event) (owner-profile namespace, runner-seeded isolation flags) and build sources with self.build_source(...) so the transport provenance is kept; only platforms/base.py owns the free calls.",
+      "why": "Yuanbao keyed its per-group queue and RecallGuard with the free build_session_key() (no profile) while handle_message keyed under agent:<owner>: - two derivations of one identity, one lane shared across bots (#88715)."
     }
   ]
 }

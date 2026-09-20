@@ -1589,6 +1589,12 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 logger.info(
                     "Job '%s': fallback resolved to %s model %s",
                     job_id, runtime.get("provider"), fb_model)
+                # Delivered with the job output (#74349): a cron agent has no status rail, so the
+                # switch would otherwise stay in the scheduler log only. run_job pops it.
+                from hermes_cli.fallback_config import pre_agent_fallback_notice
+                runtime["_fallback_notice"] = pre_agent_fallback_notice(
+                    requested or (jc.model_cfg.get("provider") if isinstance(jc.model_cfg, dict) else ""),
+                    model, runtime.get("provider"), fb_model)
                 return runtime, fb_model
             except Exception as fb_exc:
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
@@ -2170,6 +2176,7 @@ class _CronAgentSetup:
     reasoning_config: Any = None
     fallback_model: Any = None
     credential_pool: Any = None
+    fallback_notice: Optional[str] = None
 
 
 def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _CronAgentSetup:
@@ -2195,6 +2202,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
         return setup
 
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
+    setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
@@ -2334,6 +2342,11 @@ def run_job(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
+                and _cron_failure_marker_error(final_response) is None):
+            # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
+            # agent-declared failure marker keep their first-line/whole-response contract.
+            final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
@@ -2351,6 +2364,12 @@ def run_job(
             from cron.unreachable_retry import is_model_unreachable_failure
             if is_model_unreachable_failure(e, agent):
                 job["_model_unreachable"] = True
+            # Provider usage window closed for a known duration (cron/quota_hold.py): flag it so the
+            # bookkeeping tail parks the job past the window instead of re-firing into it (#89376).
+            from cron.quota_hold import hold_seconds_from_failure
+            _hold_s = hold_seconds_from_failure(e)
+            if _hold_s:
+                job["_quota_hold_seconds"] = _hold_s
         except Exception:  # classification must never mask the real failure
             logger.debug("Job '%s': unreachable-failure classification failed", job_id)
         # No audit row when we failed before the agent existed; the audit write must never raise.
@@ -2648,8 +2667,11 @@ def _compose_run_delivery(
                 job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
             ) + _failure_streak_nudge(job)
         else:
+            from cron.quota_hold import hold_notice
             deliver_content = (
                 _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
+                # The one alert on entering a provider-window hold says so (#89376).
+                + hold_notice(job, job.get("_quota_hold_seconds"))
             )
     return deliver_content, blocked_config, blocked_config_silent, incident_acked, failure_incident_id
 
@@ -2846,6 +2868,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Never-reached-the-model failure: schedule the Cowork-style bounded re-run
         # (cron/unreachable_retry.py) inside the same fenced store write.
         mark_kwargs["model_unreachable"] = True
+    _hold_s = job.pop("_quota_hold_seconds", None)
+    if not d.success and _hold_s:
+        # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
+        mark_kwargs["quota_hold_seconds"] = _hold_s
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:

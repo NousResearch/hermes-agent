@@ -761,12 +761,27 @@ def _builtin_model_metadata(provider: str, model: str) -> Optional[Dict[str, Any
     return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
 
 
+def _relay_vision_marker_metadata(provider: str, model: str) -> Optional[Dict[str, Any]]:
+    """Fill-gap base for an OpenCode Zen/Go ``*-vision*`` model id the catalog does not know. The relays
+    resell vendor previews (``deepseek-v4-flash-vision-exp``) before models.dev indexes them, and the id's
+    ``-vision`` token is the vendor's own capability marker; without it ``image_input_mode: auto`` treats
+    the model as text-only and detours images through the lossy describe path (#96066). Every other field
+    keeps the unknown-model defaults, so only vision is claimed."""
+    from hermes_cli.models import opencode_provider_family
+
+    if "-vision" not in (model or "").strip().lower() or opencode_provider_family(provider) is None:
+        return None
+    return {**_UNKNOWN_MODEL_BASE, "modalities": {"input": ["text", "image"], "output": ["text"]}}
+
+
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """*entry* patched by its override; ``_UNKNOWN_MODEL_BASE`` patched by a fill-gap override on a
     catalog miss (selected AFTER lookup: _default only fills misses); None when neither exists."""
     builtin = _builtin_model_metadata(provider, model)
     base = entry if entry is not None else builtin
     override = _override_for(provider, model, catalog_hit=base is not None)
+    if base is None:
+        base = _relay_vision_marker_metadata(provider, model)
     return base if override is None else _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, override)
 
 

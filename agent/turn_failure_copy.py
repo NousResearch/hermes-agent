@@ -9,6 +9,7 @@ trailing "Provider said:" / "Details:" line.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
@@ -154,6 +155,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "{label} rejected this request as malformed, so the model didn't answer. Start a clean "
         "session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
     ),
+    FailoverReason.role_alternation.value: (
+        "{label} requires user and assistant turns to strictly alternate and rejected this "
+        "conversation's shape. Start a clean session with /new or switch models with /model."
+    ),
     FailoverReason.ssl_cert_verification.value: (
         "Hermes couldn't verify {label}'s security certificate, so the connection was refused. "
         "This is usually a corporate proxy or an outdated certificate store on this computer — "
@@ -163,6 +168,11 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
     FailoverReason.provider_policy_blocked.value: (
         "{label}'s account settings don't allow this model for your request, so it didn't "
         "answer. Check the provider's data/privacy settings, or switch models with /model."
+    ),
+    FailoverReason.upstream_blocked.value: (
+        "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
+        "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
+        "the proxy/WAF rules, or switch providers with /model."
     ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
@@ -198,6 +208,7 @@ FAILURE_CAUSE_GLOSS: Dict[str, str] = {
     "billing_unverified": "the AI model service says the account's usage or credit limit is reached",
     FailoverReason.auth.value: "the AI model service rejected the sign-in",
     FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
+    FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     "context_overflow": "{possessive} request grew too large for the model",
@@ -253,6 +264,17 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
         "fresh, or pick a model with a bigger context window."
     ),
+    # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
+    # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
+    # message must stay in the transcript and the session must not be auto-reset.
+    "server_context_rejection": (
+        "The model server rejected this request as too large, but this conversation is only "
+        "about {tokens:,} tokens — well under the {window:,}-token window Hermes knows for "
+        "{model} — so shrinking it would not help. Another request on the same server (for "
+        "example a background memory review from an earlier session) was probably holding its "
+        "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
+        "moment and send /retry; if it keeps happening, check the server's context setting."
+    ),
     "stream_dropped_tool_call": (
         "The connection to {label} kept dropping while the model was writing a large action, "
         "so nothing was run. Check your network and send /retry; asking for the file in smaller "
@@ -286,13 +308,33 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str) -> str:
-    """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``)."""
+def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+    """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
+    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
     lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    if reset_seconds is not None and reset_seconds >= 120:
+        from agent.retry_utils import format_reset_window
+        situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
+                     "Send /retry after that, or switch models with /model.")
+    else:
+        situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
     return (
-        f"{lead} — it looks temporarily unavailable. {_NEXT_STEPS_RETRY} To avoid this in future, "
+        f"{lead} — {situation} To avoid this in future, "
         f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
     )
+
+
+def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
+    """One chat/CLI line naming when the provider says the limit lifts (#98852): the Retry-After
+    / ``resets_at`` the loop already honours for backoff, shown to the user instead of a bare
+    "wait a minute". Local wall-clock time plus the remaining wait; empty once it has passed."""
+    now = time.time() if now is None else now
+    remaining = int(resets_at - now)
+    if remaining <= 0:
+        return ""
+    hours, minutes = divmod((remaining + 59) // 60, 60)
+    wait = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+    return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
 
 
 def oauth_relogin_command(provider: Any) -> str:

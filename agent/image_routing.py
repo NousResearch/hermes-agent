@@ -286,6 +286,13 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[Dict[str, Any]]) 
     # "unknown" would fall back to attempting the call and reintroduce the bug. This preserves the
     # historical network-on-cold-cache behavior for this one path; the fetch is cached (4h TTL) and
     # backoff-limited after failures.
+    if (provider or "").strip().lower() == "openai-codex":
+        # A VALID Codex ``-900k`` picker variant is a Hermes-side alias of its base slug; the catalog
+        # only knows the base, so look that up. The runtime model id stays untouched (the transport
+        # owns wire normalization) and ineligible ``-900k`` strings pass through unchanged (#102189).
+        from agent.model_metadata import strip_codex_context_variant_suffix
+
+        model = strip_codex_context_variant_suffix(model)
     caps = get_model_capabilities(provider, model, allow_network=True)
     return None if caps is None else caps.supports_vision
 

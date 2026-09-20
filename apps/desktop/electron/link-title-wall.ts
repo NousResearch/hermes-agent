@@ -52,8 +52,33 @@ function hostOf(rawUrl: string): string {
   }
 }
 
-export function isAuthWallBody(body: string): boolean {
-  return AUTH_WALL_BODY_RE.test(body || '')
+/** Arrival URL or title of a sign-in page — the shapes that carry no markup id. */
+const AUTH_WALL_URL_RE = /^accounts\.google\.com$|\/ServiceLogin\b|\/signin\b|\/o\/oauth2\//i
+const AUTH_WALL_TITLE_RE = /\bsign[ -]?in\b/i
+
+/**
+ * Curl's proof that the page it landed on is a sign-in wall, decided on the
+ * arrival URL → the title → the markup, in that order of reliability: an Apps
+ * Script `/a/<domain>/ServiceLogin` wall carries none of the markup ids.
+ */
+export function isAuthWall(input: { body: string; effectiveUrl: string; title: string }): boolean {
+  let arrival: URL | null = null
+
+  try {
+    arrival = input.effectiveUrl ? new URL(input.effectiveUrl) : null
+  } catch {
+    arrival = null
+  }
+
+  if (arrival && (AUTH_WALL_URL_RE.test(arrival.hostname) || AUTH_WALL_URL_RE.test(arrival.pathname))) {
+    return true
+  }
+
+  if (AUTH_WALL_TITLE_RE.test(input.title || '')) {
+    return true
+  }
+
+  return AUTH_WALL_BODY_RE.test(input.body || '')
 }
 
 /**
@@ -90,7 +115,8 @@ export async function resolveLinkTitle(input: {
   url: string
 }): Promise<string> {
   const tier1 = await input.curl().catch(() => ({ authWall: false, title: '' }))
-  const title = usableTitle((tier1.title || '').slice(0, TITLE_MAX_CHARS))
+  // A wall's own title ("Sign in - Google Accounts") is not the document's.
+  const title = tier1.authWall ? '' : usableTitle((tier1.title || '').slice(0, TITLE_MAX_CHARS))
 
   if (!needsRendererFallback({ authWall: tier1.authWall, title, url: input.url })) {
     return title

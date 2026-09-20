@@ -265,7 +265,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
-import { isAuthWallBody, resolveLinkTitle } from './link-title-wall'
+import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
@@ -3392,6 +3392,7 @@ async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
   // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
   // "update available, count unknown" — never a fabricated number.
   let compareError = null
+
   const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
     .then(parseCompare)
     .catch(error => {
@@ -5999,6 +6000,23 @@ function parseHtmlTitle(html) {
   return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
 }
 
+// `--write-out` trailer: `\n<mark><url_effective>` after the body.
+const URL_EFFECTIVE_MARK = 'hermes-url-effective:'
+const URL_EFFECTIVE_TAIL_BYTES = 4096
+
+function splitUrlEffective(stdout: string): { effectiveUrl: string; html: string } {
+  const at = stdout.lastIndexOf(`\n${URL_EFFECTIVE_MARK}`)
+
+  if (at < 0) {
+    return { effectiveUrl: '', html: stdout }
+  }
+
+  return {
+    effectiveUrl: stdout.slice(at + 1 + URL_EFFECTIVE_MARK.length).trim(),
+    html: stdout.slice(0, at)
+  }
+}
+
 function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
   return new Promise(resolve => {
     const url = String(rawUrl || '').trim()
@@ -6026,19 +6044,28 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
       '--header',
       'Accept-Encoding: identity',
       '--raw',
+      // Arrival URL after redirects, on its own line after the body: a sign-in
+      // wall is proven from where curl landed even when the page has no markup id.
+      '--write-out',
+      `\n${URL_EFFECTIVE_MARK}%{url_effective}`,
       url
     ]
 
     const child = spawn('curl', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'ignore'] }))
     const chunks: Buffer[] = []
+    // The last bytes of stdout, kept past the body budget so the `--write-out`
+    // arrival URL survives a body larger than TITLE_BYTE_BUDGET.
+    let tail = Buffer.alloc(0)
     let bytes = 0
 
     child.stdout.on('data', chunk => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      tail = Buffer.concat([tail, buffer]).subarray(-URL_EFFECTIVE_TAIL_BYTES)
+
       if (bytes >= TITLE_BYTE_BUDGET) {
         return
       }
 
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       const remaining = TITLE_BYTE_BUDGET - bytes
       const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
       chunks.push(next)
@@ -6051,11 +6078,18 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
         return resolve({ authWall: false, title: '' })
       }
 
-      const html = Buffer.concat(chunks).toString('utf8')
+      const body = Buffer.concat(chunks)
+
+      // The trailer is inside `body` unless the budget cut it off; then it is in `tail`.
+      const { effectiveUrl, html } = splitUrlEffective(
+        (bytes >= TITLE_BYTE_BUDGET ? Buffer.concat([body, tail]) : body).toString('utf8')
+      )
+
+      const title = parseHtmlTitle(html)
 
       // A sign-in wall answers the cookieless title partition, and tier 2 must
       // never load it: the wall asks the OS for a passkey.
-      resolve({ authWall: isAuthWallBody(html), title: parseHtmlTitle(html) })
+      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), title })
     })
   })
 }
@@ -6517,6 +6551,7 @@ async function previewFileTarget(rawTarget, baseDir) {
     for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
       if (fileExists(candidate)) {
         resolved = candidate
+
         break
       }
     }
@@ -10048,9 +10083,11 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -12336,6 +12373,7 @@ function startPoolIdleReaper() {
         const retiring = entry.process
           ? poolRetirer.retireIdle(profile, poolIdleMs())
           : stopPoolBackend(profile)
+
         void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }
     }
@@ -12623,6 +12661,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   const startFailed = new Promise((_resolve, reject) => {
     rejectStart = reject
   })
+
   // Exit/error can now arrive while the ownership claim is still pending.
   startFailed.catch(() => {})
 
@@ -12658,6 +12697,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     describeOutputTail: () => outputTail.describe(),
     readyFile
   })
+
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
@@ -12740,10 +12780,12 @@ const poolStopper = createPoolStopper({
 
 function stopPoolBackend(profile: string): Promise<void> {
   const entry = backendPool.get(profile)
+
   const stopping = releaseLocalBackendSlotAfterExit(
     () => releaseLocalBackendSlot(entry),
     () => poolStopper.stop(profile)
   )
+
   // Fire-and-forget callers still need diagnostics; awaiters receive the
   // rejection, while physical ownership and the exit finalizer remain live.
   void stopping.catch(error => {
@@ -12774,6 +12816,7 @@ const poolRetirer = createPoolRetirer({
   onRetiring: broadcastPoolBackendRetiring,
   log: rememberLog
 })
+
 localBackendLifecycle.signal.addEventListener('abort', poolRetirer.dispose, { once: true })
 
 async function teardownPoolBackendAndWait(profile) {
@@ -12802,6 +12845,7 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
 })
 
 const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
+
 const quitFinalization = createQuitFinalization({
   isWindows: IS_WINDOWS,
   hardExit: code => {
@@ -12913,6 +12957,7 @@ function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error =
     if (primaryExitRecovery.isCrashLooping()) {
       const message =
         'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
       rememberLog(`[supervisor] ${message}`)
       sendBackendExit({ code, signal, error: message })
 
@@ -13760,6 +13805,7 @@ function createInstanceWindow(
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
     { connectionId: null, profile: primaryProfileKey() }
   )
+
   validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
@@ -16809,6 +16855,7 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
+
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
@@ -18424,6 +18471,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   }
 
   const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
+
   // A hidden aux window must never parent the quit prompt: the dialog would
   // be invisible and the held quit unanswerable (#116376 §E).
   const parent =

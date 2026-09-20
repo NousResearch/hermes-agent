@@ -1333,6 +1333,12 @@ class AIAgent(
             return execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
+            if getattr(self, "_trim_after_tool_batch", False):
+                # Every executor frame that held a >=1 MB raw result has unwound; only the
+                # spilled preview lives in ``messages`` now (agent/tool_executor.py, #70684).
+                self._trim_after_tool_batch = False
+                from hermes_cli.mem_trim import trim_memory
+                trim_memory(reason="large tool result")
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""

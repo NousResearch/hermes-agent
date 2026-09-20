@@ -1,8 +1,10 @@
-"""Publishing a >=1 MB tool result hands allocator pages back via ``trim_memory`` (#70684).
+"""A >=1 MB tool result hands allocator pages back via ``trim_memory`` — after the batch (#70684).
 
-Compaction already trims after it frees the compressed-away messages; a huge tool
-result (raw stdout, file dumps) is the other allocation a turn drops, and both publish
-paths (sequential and concurrent) commit through the same point.
+Compaction already trims after it frees the compressed-away messages; a huge tool result
+(raw stdout, file dumps) is the other allocation a turn drops. The commit point only flags
+it, because the string is still referenced by the publish frames there; the trim runs once
+``AIAgent._execute_tool_calls`` has unwound every executor frame, so ``gc.collect`` +
+``malloc_trim`` actually see the allocation as garbage.
 """
 
 from unittest.mock import MagicMock
@@ -24,33 +26,43 @@ def _agent_returning(monkeypatch, payload):
     return agent
 
 
-def test_large_sequential_result_trims_memory_once(monkeypatch):
-    import agent.tool_executor as te
+def _trim_recorder(monkeypatch, agent):
+    seen = []
 
-    trim = MagicMock(return_value=True)
-    monkeypatch.setattr(te, "trim_memory", trim)
+    def trim(*, reason):
+        seen.append((reason, agent._executing_tools))
+        return True
+
+    monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", trim)
+    return seen
+
+
+def test_large_result_flags_the_batch_and_small_does_not(monkeypatch):
+    big = _agent_returning(monkeypatch, "x" * 1_000_000)
+    small = _agent_returning(monkeypatch, "x" * 999_999)
+    for agent in (big, small):
+        seen = _trim_recorder(monkeypatch, agent)
+        messages: list = []
+        agent._execute_tool_calls_concurrent(_FakeAssistantMsg([_FakeToolCall("terminal", "tc")]), messages, "task")
+        assert [m["role"] for m in messages] == ["tool"]
+        assert seen == []  # the commit never trims in-frame: the raw result is still referenced here
+    assert big._trim_after_tool_batch is True
+    assert getattr(small, "_trim_after_tool_batch", False) is False
+
+
+def test_execute_tool_calls_trims_once_after_every_executor_frame_unwound(monkeypatch):
+    import run_agent as _ra
+
     agent = _agent_returning(monkeypatch, "x" * 1_000_000)
+    agent._execute_tool_calls = _ra.AIAgent._execute_tool_calls.__get__(agent)
+    # stand-in for the sequential executor: publishes through the real concurrent commit path
+    agent._execute_tool_calls_sequential = agent._execute_tool_calls_concurrent
+    seen = _trim_recorder(monkeypatch, agent)
 
     messages: list = []
-    ref = te._ToolCallRef("terminal", {"command": "cat big.log"}, "task", "tc_big", [])
-    managed = te._ManagedToolResult("x" * 1_000_000, ref.args, [], blocked=False, dispatched=True)
-    assert te._publish_sequential_result(
-        agent, messages, ref, managed, tool_duration=0.1, index=1, budget=te.DEFAULT_BUDGET,
-    )
+    agent._execute_tool_calls(_FakeAssistantMsg([_FakeToolCall("terminal", "tc_big")]), messages, "task")
 
     assert [m["role"] for m in messages] == ["tool"]
-    trim.assert_called_once_with(reason="large tool result")
-
-
-def test_small_concurrent_result_does_not_trim(monkeypatch):
-    import agent.tool_executor as te
-
-    trim = MagicMock(return_value=True)
-    monkeypatch.setattr(te, "trim_memory", trim)
-    agent = _agent_returning(monkeypatch, "x" * 999_999)
-
-    messages: list = []
-    agent._execute_tool_calls_concurrent(_FakeAssistantMsg([_FakeToolCall("terminal", "tc_small")]), messages, "task")
-
-    assert [m["role"] for m in messages] == ["tool"]
-    trim.assert_not_called()
+    # one trim per batch, issued only after the tool-execution scope closed (frames holding the 1 MB str are gone)
+    assert seen == [("large tool result", False)]
+    assert agent._trim_after_tool_batch is False

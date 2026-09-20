@@ -131,10 +131,13 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
 
+    from hermes_cli.update_receipt import row_is_external
+
     fleet = receipt.get("fleet")
     if isinstance(fleet, list) and fleet:
         return any(
             isinstance(entry, dict)
+            and not row_is_external(entry)
             and (entry.get("state") == "stale" or _sha_mismatch(entry.get("code_sha")))
             for entry in fleet
         )
@@ -205,7 +208,7 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
     """Require a successor at the expected SHA for every owed gateway identity."""
     if not expected_sha:
         return False
-    from hermes_cli.update_receipt import collect_fleet_versions
+    from hermes_cli.update_receipt import collect_fleet_versions, row_is_external
 
     try:
         if owed is None:
@@ -216,7 +219,7 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
         # State labels are checkout-relative; completed restarts may accept stale rows at the pulled SHA.
         if not fleet or any(
             row.get("state") not in accept_states or row.get("code_sha") != expected_sha
-            for row in fleet
+            for row in fleet if not row_is_external(row)
         ):
             return False
         covered = _fleet_covered_gateways(fleet)
@@ -285,7 +288,7 @@ def _marker_only_restart_obsolete() -> bool:
     if not target_sha:
         return False
     try:
-        from hermes_cli.update_receipt import collect_fleet_versions
+        from hermes_cli.update_receipt import collect_fleet_versions, row_is_external
         fleet = collect_fleet_versions()
     except Exception as exc:
         logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
@@ -296,6 +299,8 @@ def _marker_only_restart_obsolete() -> bool:
     if covered is None:
         return False  # unidentified runtime: the matrix cannot vouch for it
     for row in fleet:
+        if row_is_external(row):
+            continue
         if row.get("state") != "current" or str(row.get("code_sha")) != target_sha:
             return False  # stale / down / unknown-identity row still owes the restart
     if owed is not None and not owed <= covered:

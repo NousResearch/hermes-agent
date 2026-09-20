@@ -6,7 +6,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { botFriendlyNames, botHandle, botMentionTag, mentionNameForms } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   $groupNeedsYou,
@@ -890,9 +890,10 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
         updateGroupChat(group, room => ({ ...room, running: true }))
         await runGroupChatRounds(group, nextMembers, nextThread, drive.failedMembers)
       }
-    } catch {
+    } catch (error) {
       if (binding.isLive()) {
-        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread })
+        const reason = groupFailureReason(error)
+        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread, ...(reason ? { reason } : {}) })
         updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
       }
     } finally {

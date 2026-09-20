@@ -130,6 +130,28 @@ class TestNearHorizonSlackThreadKept:
         assert origin is not None
         assert origin["thread_id"] is None
 
+    def test_expired_oneshot_keeps_drop(self):
+        """An already-expired run_at is a negative delta that a bare upper bound would
+        accept — the conversation is over, so the synthetic thread must not survive it."""
+        with _session_env(_TOP_LEVEL_SLACK):
+            origin = _origin_from_env({"kind": "once", "run_at": _run_at_in(-10)})
+        assert origin is not None
+        assert origin["thread_id"] is None
+
+    def test_oneshot_firing_now_keeps_thread(self):
+        """A fire at this instant still happens inside the live conversation: the lower
+        bound is inclusive on purpose. The clock is frozen so the boundary itself is
+        tested, not the microseconds between two now() calls."""
+        frozen = hermes_time.now()
+        with (
+            _session_env(_TOP_LEVEL_SLACK),
+            patch("tools.cronjob_job_args.hermes_time") as frozen_clock,
+        ):
+            frozen_clock.now.return_value = frozen
+            origin = _origin_from_env({"kind": "once", "run_at": frozen.isoformat()})
+        assert origin is not None
+        assert origin["thread_id"] == "1755043010.123456"
+
     def test_recurring_schedule_keeps_drop(self):
         """A recurring job outlives any conversation; the per-message key stays synthetic."""
         with _session_env(_TOP_LEVEL_SLACK):

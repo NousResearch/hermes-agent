@@ -15,13 +15,13 @@ Operate the Antigravity CLI (agy): plugins, auth, sandbox.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/antigravity-cli` |
-| Path | `optional-skills/autonomous-ai-agents\antigravity-cli` |
+| Path | `optional-skills/autonomous-ai-agents/antigravity-cli` |
 | Version | `0.2.0` |
 | Author | Tony Simons (asimons81), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Antigravity`, `CLI`, `Auth`, `Plugins`, `Sandbox` |
-| Related skills | [`grok`](./autonomous-ai-agents-grok.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
+| Related skills | [`grok`](../../optional/autonomous-ai-agents/autonomous-ai-agents-grok.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 
@@ -90,7 +90,7 @@ fixes, reviews, second opinions) to Antigravity rather than just smoke-testing.
 ### One-shot (preferred for scripted prompts and second opinions)
 
 ```
-terminal(command="agy -p 'Review this diff for bugs and security issues' --model 'Gemini 3.1 Pro (High)'", workdir="/path/to/repo", timeout=300)
+terminal(command="agy --model 'Gemini 3.1 Pro (High)' -p 'Review this diff for bugs and security issues'", workdir="/path/to/repo", timeout=300)
 ```
 
 `-p` is non-interactive: it runs the prompt and exits. Pick the engine with
@@ -103,7 +103,7 @@ roots with repeatable `--add-dir`.
 Background it and get notified on completion, the same as the `codex` skill:
 
 ```
-terminal(command="agy -p 'Implement the change described in TASK.md and run the tests' --dangerously-skip-permissions", workdir="/path/to/repo", background=true, notify_on_complete=true)
+terminal(command="agy --dangerously-skip-permissions -p 'Implement the change described in TASK.md and run the tests'", workdir="/path/to/repo", background=true, notify_on_complete=true)
 # then: process(action="poll"/"log"/"wait", session_id=<id>)
 ```
 
@@ -121,14 +121,29 @@ Create one git worktree per task and launch an independent `agy -p` in each
 uses for batch issue fixing. Bound concurrency to what the machine and your
 review capacity can absorb.
 
-### Output + bounding caveat (differs from Claude Code)
+### Output + bounding caveats
 
-- `agy -p` returns **plain text** — there is **no `--output-format json`** and
-  no result envelope with `session_id` / cost / turn count. Parse stdout
-  directly; don't expect a JSON object.
-- There is **no `--max-turns`**. A print run is bounded by **`--print-timeout`**
-  (default `5m`). Raise it for long tasks: `--print-timeout 20m`. Pair with the
-  `terminal` `timeout=` so the outer call doesn't cut the run short.
+- `agy -p` supports structured output: `--output-format json` prints one JSON
+  envelope on stdout (`conversation_id`, `status`, `response`, `num_turns`,
+  `duration_seconds`, `usage`), and `--json-schema <file>` adds a validated
+  `structured_output` object. The default (`text`) is plain stdout — parse it
+  directly only when you didn't request JSON.
+- The prompt is `-p`'s **value** (`-p "…"`) and flags may follow it; a bare
+  positional prompt is rejected (`unexpected argument … would have been
+  ignored`) and `-p` with no value fails with `flag needs an argument`. Piping
+  the prompt into stdin works only when `-p` is omitted.
+- There is **no `--max-turns`**. A print run is bounded by **`--print-timeout`**,
+  whose default is `0` — wait until the turn completes, i.e. **no timeout** — so
+  set it explicitly for unattended runs. The value needs a unit
+  (`--print-timeout 20m`); a bare number is rejected and `agy` prints its help
+  text instead of running. Pair with the `terminal` `timeout=` so the outer call
+  doesn't cut the run short.
+- A print run that writes files needs an explicit target: an absolute path is
+  honoured, but a bare relative filename can land in the app's artefact scratch
+  dir (`~/.gemini/antigravity-cli/scratch/`) instead of the launch directory.
+  Without `--add-dir <dir>`, an allow-rule or `--dangerously-skip-permissions`,
+  a headless write is **auto-denied** (nothing is written at all) — the
+  launching tool's working directory is not enough on its own.
 
 ### Orchestration boundary
 
@@ -152,14 +167,23 @@ another agent's plan or diff.
 - Brain artifacts: `~/.gemini/antigravity-cli/brain/`
 - History: `~/.gemini/antigravity-cli/history.jsonl`
 - Plugin staging: `~/.gemini/antigravity-cli/plugins/<plugin_name>/`
+- Print-mode scratch dir (where writes land without `--add-dir`):
+  `~/.gemini/antigravity-cli/scratch/`
+- OAuth token when the keyring is unavailable (mode `0600`):
+  `~/.gemini/antigravity-cli/antigravity-oauth-token`
+- Onboarding/UI state: `~/.gemini/antigravity-cli/jetski_state.pbtxt`
 
 ## Quick Reference
 
 ### Wrapper commands
+- `agy agent` / `agy agents`
 - `agy changelog`
 - `agy help`
 - `agy install`
+- `agy mcp`
+- `agy models`
 - `agy plugin` / `agy plugins`
+- `agy remote-control`
 - `agy update`
 
 ### Useful flags
@@ -167,6 +191,11 @@ another agent's plan or diff.
 - `--continue` / `-c`
 - `--conversation`
 - `--dangerously-skip-permissions`
+- `--effort`
+- `--input-format`
+- `--json-schema`
+- `--model`
+- `--output-format`
 - `--print` / `-p`
 - `--print-timeout`
 - `--prompt`
@@ -210,10 +239,27 @@ another agent's plan or diff.
 
 ## Authentication behavior
 
-- The CLI tries the OS secure keyring first.
-- With no saved session, it falls back to browser-based Google sign-in.
-- Locally it opens the default browser; over SSH it prints an authorization URL
-  and expects the auth code pasted back.
+- The CLI tries the OS secure keyring first. On a host with no keyring
+  (`org.freedesktop.secrets`) it silently falls back to a file token at
+  `~/.gemini/antigravity-cli/antigravity-oauth-token` (mode `0600`), so
+  "keyring unavailable" in the log is normal, not a failure.
+- With no saved session it prints an authorization URL and waits for the code
+  shown on `https://antigravity.google/oauth-callback` to be pasted back;
+  locally it can open the default browser instead.
+- Sign-in is one-shot: **each new authorization request is a fresh Google
+  sign-in**, so restarting the flow (or killing the waiting process) triggers
+  another 2-Step challenge. Start it once and let it wait — an abandoned
+  attempt does not resume.
+- Keep the pasted code out of the transcript by running the TUI under `tmux`
+  (`tmux new-session -d -s agy-auth 'agy'`) and pasting from a file the agent
+  wrote: `tmux load-buffer -b agycode code.txt`, then
+  `tmux paste-buffer -b agycode -t agy-auth` and
+  `tmux send-keys -t agy-auth Enter` — the code reaches the TTY without
+  entering the agent's context.
+- After the first sign-in, the interactive run also walks theme →
+  **interaction-data consent (checkbox defaults to ON)** → folder trust for the
+  launch directory. `Tab` moves focus to the Previous/Done buttons — arrow keys
+  alone do not.
 - `/logout` removes saved credentials.
 
 ## Plugins
@@ -235,10 +281,20 @@ another agent's plan or diff.
   session-state problems, not browser-only problems.
 - Workspace identity can depend on launch directory and the `.antigravitycli`
   project marker.
-- `agy -p` prints plain text only — no `--output-format json`, no result
-  envelope. Don't try to parse a JSON object out of it (unlike `claude-code`).
-- Bound print runs with `--print-timeout` (default `5m`), not `--max-turns`
-  (which does not exist on `agy`).
+- `agy -p` takes the prompt as its **value** (`-p "…"`); a bare positional
+  prompt is rejected, and `-p` with no value fails with `flag needs an
+  argument`. Flags may follow `-p` — the prompt does not have to come last.
+- stdin is a prompt source only when `-p` is omitted: piping a prompt into
+  `agy --print-timeout 1m` runs it, while `echo … | agy -p` errors.
+- A print run's file writes need an explicit target: an absolute path is
+  honoured, while a bare relative filename can land under
+  `~/.gemini/antigravity-cli/scratch/` instead of the launch directory. Without
+  `--add-dir <repo>`, an allow-rule or `--dangerously-skip-permissions`, a
+  headless write is auto-denied — `workdir=` on the `terminal` tool is not
+  enough on its own.
+- Bound print runs with `--print-timeout`, not `--max-turns` (which does not
+  exist on `agy`). The default is `0`, i.e. unbounded, and the value needs a
+  unit — a bare `--print-timeout 20` is rejected and prints help instead.
 
 ## Verification
 
@@ -249,9 +305,11 @@ files with `read_file`):
 2. `terminal(command="agy --version")`
 3. `terminal(command="agy help")`
 4. `terminal(command="agy plugin list")`
-5. `read_file` on `~/.gemini/antigravity-cli/settings.json`
-6. `read_file` on the latest `~/.gemini/antigravity-cli/log/cli-*.log`
-7. If needed, `read_file` on `~/.gemini/antigravity-cli/keybindings.json`
+5. `terminal(command="agy models")` — needs an authenticated session; the list
+   doubles as a check that sign-in is live
+6. `read_file` on `~/.gemini/antigravity-cli/settings.json`
+7. `read_file` on the latest `~/.gemini/antigravity-cli/log/cli-*.log`
+8. If needed, `read_file` on `~/.gemini/antigravity-cli/keybindings.json`
 
 ## Support files
 

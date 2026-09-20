@@ -99,10 +99,10 @@ def _binding(authority, ref, row):
     home = Path(authority.profile_id)
     if not home.is_absolute() or Path(authority.db.db_path).resolve().parent != home.resolve():
         return None
-    # The existing outbox shares a gateway root. Do not let a served named
-    # profile write another authority's state.db; its owner-RPC bridge is later.
     if home.parent.name == "profiles":
-        return None
+        from gateway.session_hosted_output_rpc import OWNER_OUTPUT_LIFECYCLE_READY
+        if not OWNER_OUTPUT_LIFECYCLE_READY:
+            return None
     from gateway.session_managed_worker import managed_policy
     if managed_policy(authority, ref) is not None:
         return None
@@ -113,6 +113,20 @@ def _binding(authority, ref, row):
     # Retained owner transports have their own preclaim authorizer. Classify
     # that namespace before consulting a colliding local coordinator room.
     if _is_owner_transport_admission(authority, ref, row):
+        if home.parent.name == "profiles":
+            from gateway.session_hosted_transport import _BINDING
+            with authority.db._read_ctx() as conn:
+                retained = conn.execute(
+                    "SELECT value FROM state_meta WHERE key=?", (_BINDING + ref.session_id,)
+                ).fetchone()
+            if retained is None:
+                return None
+            from gateway.session_hosted_output_rpc import owner_output_binding
+            return owner_output_binding(authority, ref, row, json.loads(retained[0]))
+        return None
+    # Named targets require the separate owner-transport consent above.  A local
+    # coordinator must never fall through to the collapsing root outbox.
+    if home.parent.name == "profiles":
         return None
     # Remote hosted bindings live on the target and lack the coordinator task.
     # They must not infer local authority merely from a hosted request-id prefix.
@@ -167,6 +181,10 @@ def capture_output_result(authority, row, binding):
     if saved is None:
         raise RuntimeStoreError("storage_unavailable")
     saved["result"].update(artifacts=manifest, artifact_scope=binding.scope.as_mapping())
+    if hasattr(binding, "consent_json"):
+        from gateway.session_hosted_output_rpc import capture_owner_output_receipt
+        saved["result"]["owner_output_receipt"] = capture_owner_output_receipt(
+            authority, row, binding, saved["result"])
     if row.get("principal_id") == "api":
         from gateway.session_peer_output import output_run_binding
         saved["result"]["peer_output_binding"] = output_run_binding(row, saved["result"])
@@ -209,6 +227,10 @@ def output_receipt_fields(value):
     validate_terminal_artifact_manifest(value["artifacts"])
     scope = RoomArtifactScope.from_mapping(value.get("artifact_scope") or {})
     fields = {"artifacts": value["artifacts"], "artifact_scope": scope.as_mapping()}
+    if value.get("owner_output_receipt") is not None:
+        from gateway.session_hosted_output_rpc import validate_owner_output_receipt
+        fields["owner_output_receipt"] = validate_owner_output_receipt(
+            value["owner_output_receipt"])
     peer_keys = ("peer_run_id", "peer_admission_id", "peer_execution_generation", "peer_result_digest")
     if any(value.get(key) is not None for key in peer_keys):
         from gateway.hosted_rooms_common import identifier

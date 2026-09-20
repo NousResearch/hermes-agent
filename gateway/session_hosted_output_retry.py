@@ -202,7 +202,25 @@ class CanonicalOutputRetry:
                     cancel_generation=task['cancel_generation'], status=task['status'], owner=owner[0],
                     roster=json.loads(room['members_json']), epoch=self._output_epoch, instance=self._output_instance)
         route_hash, lineage, until = '', '', float(self._artifact_clock()) + 86400
-        if scope.target_install_id != scope.home_install_id:
+        if scope.target_install_id == scope.home_install_id and result.get('owner_output_receipt') is not None:
+            from pathlib import Path
+            from gateway.session_hosted_output_rpc import validate_owner_output_receipt
+            from gateway.session_authorities import authority_for_home
+            from hermes_constants import hermes_home_key
+            receipt = validate_owner_output_receipt(result['owner_output_receipt'])
+            target_home = Path(self.profile_homes().get(scope.target_profile, ''))
+            target = authority_for_home(self.authority.runner, target_home)
+            if (not target_home.is_absolute() or target_home == Path(self.authority.profile_id)
+                    or target is None or target.profile_id != str(target_home)
+                    or getattr(target, 'hosted_room_service', None) is None):
+                raise RoomArtifactError('Group Chat output owner route unavailable')
+            route_hash = digest(dict(
+                source_home_key=hermes_home_key(self.authority.profile_id),
+                target_home_key=hermes_home_key(target_home), room_id=scope.room_id,
+                member_id=scope.member_id, target_profile=scope.target_profile,
+                consent_digest=receipt['consent_digest'], receipt_id=receipt['receipt_id']))
+            until = receipt['expires_at']
+        elif scope.target_install_id != scope.home_install_id:
             from gateway.session_authorities import authority_for_home
             from gateway.runtime_ownership import process_ownership
             from gateway import hosted_rooms

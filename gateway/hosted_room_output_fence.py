@@ -77,6 +77,12 @@ def require_output_publication(conn, room_id, expected, *, kind, actor, payload)
             raise RoomArtifactError("Group Chat output custody is unavailable")
         custody.check_current(conn, scope)
         require_peer_output_receipt(conn, scope, result)
+    elif expected.get("owner_custody") is not None:
+        from gateway.session_hosted_output_rpc import ServedNamedOutputCustody
+        custody = expected.get("owner_custody")
+        if type(custody) is not ServedNamedOutputCustody:
+            raise RoomArtifactError("Group Chat output custody is unavailable")
+        custody.check_current(conn, scope)
     if result.get("artifact_scope") != scope.as_mapping() or result.get("artifacts") != expected["manifest"]:
         raise RoomArtifactError("Group Chat output receipt changed")
     if kind == "message.member":

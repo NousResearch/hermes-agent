@@ -31,9 +31,17 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
             source = PeerOutputCustody(self, scope, result["artifacts"], result, task["cancel_generation"])
             source._route(scope)
             return scope, result["artifacts"], source
+        target_home = self.profile_homes().get(scope.target_profile)
+        if (result.get("owner_output_receipt") is not None
+                and target_home is not None
+                and target_home != self.root):
+            from gateway.session_hosted_output_rpc import ServedNamedOutputCustody
+            source = ServedNamedOutputCustody(
+                self, scope, result["artifacts"], result, task["cancel_generation"])
+            return scope, result["artifacts"], source
         if (scope.home_install_id != room["authority_gateway_id"]
                 or scope.target_install_id != scope.home_install_id
-                or self.profile_homes().get(scope.target_profile) != self.root):
+                or target_home != self.root):
             raise RuntimeStoreError("unsupported_output_route")
         outbox = RoomArtifactOutbox(self.db_path)
         return scope, result["artifacts"], outbox
@@ -193,6 +201,10 @@ class CanonicalHostedOutputPublisher(CanonicalOutputLifecycle, CanonicalOutputRe
                                    cancel_generation=task["cancel_generation"])
             if scope.target_install_id != scope.home_install_id:
                 expected_output["peer_custody"] = outbox
+            else:
+                from gateway.session_hosted_output_rpc import ServedNamedOutputCustody
+                if type(outbox) is ServedNamedOutputCustody:
+                    expected_output["owner_custody"] = outbox
             if peer_discard:
                 self.output_attachments.abort_unpublished_event(room_id=room_id, event_id=message_id)
                 self._record_output_disposition(task, 'discard')

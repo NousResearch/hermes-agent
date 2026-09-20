@@ -9,6 +9,7 @@ from hermes_cli import process_identity
 from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves, warn_pending_manual_serves
 from hermes_constants import get_hermes_home
 
 
@@ -190,3 +191,35 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
     fleet._warn_pending_fleet_restart_on_startup()
     assert "900" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["serve", "dashboard"])
+@pytest.mark.parametrize("alive", [True, None, False])
+def test_unreadable_create_time_discharges_only_a_proven_dead_pid(monkeypatch, kind, alive):
+    """#116507: a row without a readable create_time is discharged once its pid is provably dead,
+    stays pending while it is live or unknowable, and never counts as a live handoff."""
+    runtime = asdict(RuntimeRecord(kind=kind, profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: alive)
+    pending = retain_receipt_manual_serves({"plan": {"runtimes": [runtime]}})
+    assert pending == ([] if alive is False else [runtime])
+    assert defer_manual_serve(runtime, require_alive=True) is False
+
+
+def test_unreadable_create_time_warning_names_identity_not_storage(monkeypatch, capsys):
+    runtime = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": None}))
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
+    warn_pending_manual_serves(pending_manual=[runtime])
+    out = capsys.readouterr().out
+    assert "could not read the process creation time" in out
+    assert "storage permissions" not in out
+    assert "relaunch" in out
+
+
+def test_launchd_serve_row_never_pessimize_gateway_coverage():
+    """#116503: a launchd-owned serve/dashboard row is the post-update dashboard cleanup pass's
+    to kickstart, so it must not make the receipt's gateway coverage unverified (owed=None keeps
+    ``fleet_restart_pending`` armed with nothing gateway-side left to restart)."""
+    launchd = asdict(RuntimeRecord(
+        kind="serve", profile="work", pid=900, supervisor="launchd", restart_via="launchd", detail={}))
+    receipt = {"plan": {"runtimes": [{"kind": "gateway", "profile": "default"}, launchd]}, "fleet": []}
+    assert fleet._receipt_owed_gateways(receipt, []) == {("gateway", "default")}

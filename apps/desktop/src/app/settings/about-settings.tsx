@@ -46,7 +46,23 @@ function relativeTime(ms: number | undefined, a: Translations['settings']['about
   return a.daysAgo(Math.round(diff / 86_400_000))
 }
 
-export function AboutSettings() {
+interface AboutSettingsProps {
+  subpage?: string
+}
+
+export function AboutSettings({ subpage }: AboutSettingsProps = {}) {
+  if (subpage === 'uninstall') {
+    return (
+      <SettingsContent>
+        <UninstallSection />
+      </SettingsContent>
+    )
+  }
+
+  return <AppUpdatesSettings includeUninstall={subpage === undefined} />
+}
+
+function AppUpdatesSettings({ includeUninstall }: { includeUninstall: boolean }) {
   const { t } = useI18n()
   const a = t.settings.about
   const version = useStore($desktopVersion)
@@ -230,7 +246,7 @@ export function AboutSettings() {
           title={a.automaticUpdates}
         />
 
-        <UninstallSection />
+        {includeUninstall && <UninstallSection />}
       </div>
     </SettingsContent>
   )

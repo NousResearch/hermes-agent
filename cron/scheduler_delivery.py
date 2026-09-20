@@ -742,9 +742,25 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
     """
     from hermes_cli.quiet_single_query import read_turn_report
 
+    # Lossy decode everywhere; on Windows also decode as the UTF-8 the child writes.
+    # A stray non-UTF-8 byte (e.g. a grandchild sharing the pipe interleaving a
+    # partial multi-byte write) must not raise UnicodeDecodeError in the drain
+    # thread and take both the reply and the failure tail with it (#105582; same
+    # errors= hardening as _run_job_script). On win32 the child is guaranteed
+    # UTF-8 — hermes_cli reconfigures its own streams via hermes_bootstrap even
+    # under PYTHONIOENCODING=cp1252 — while the gateway parent is NOT started in
+    # UTF-8 mode (its env overlay sets only PYTHONIOENCODING), so text=True alone
+    # decodes the pipes with the ANSI code page: accented replies come back
+    # mojibake'd, or the reader thread dies on bytes undefined in cp1252 and the
+    # captured reply is silently lost while the delivery still books as delivered
+    # (#115894). On POSIX the child keeps the locale codec, so the locale default
+    # stays correct there (#66566).
+    popen_kwargs: dict = {"errors": "replace"}
+    if sys.platform == "win32":
+        popen_kwargs["encoding"] = "utf-8"
     proc = subprocess.Popen(
         argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=env, creationflags=windows_hide_flags())
+        env=env, creationflags=windows_hide_flags(), **popen_kwargs)
     streams: dict = {}
 
     def _drain() -> None:

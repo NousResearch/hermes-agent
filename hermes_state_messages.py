@@ -866,6 +866,12 @@ class SessionMessagesMixin:
                 msg["tool_calls"], [], f"Failed to deserialize tool_calls in {warn_context}, falling back to []")
         if msg.get("display_metadata") is not None:
             msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+        # A `SELECT *` picks up every column, including any BLOB added to the schema later; the
+        # JSON encoder that serves these dicts over HTTP fails outright on raw bytes. Drop them
+        # here, once, rather than needing a new named pop for each future binary column.
+        for key, value in list(msg.items()):
+            if isinstance(value, (bytes, bytearray)):
+                msg.pop(key)
         return msg
 
     @staticmethod

@@ -171,13 +171,15 @@ def _openrouter_catalog_disk_path() -> Path:
     return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
 
 
-def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
-    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty)."""
+def _read_openrouter_catalog_disk(*, allow_stale: bool = False) -> list[tuple[str, str]] | None:
+    """Fresh curated catalog from disk, or None (missing, corrupt, expired, or empty).
+
+    ``allow_stale`` ignores the TTL — the cache-only read path prefers a stale copy over a live GET."""
     obj = _read_json_cache(_openrouter_catalog_disk_path())
     if obj is None:
         return None
     try:
-        if time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
+        if not allow_stale and time.time() - float(obj.get("fetched_at", 0)) > _openrouter_catalog_disk_ttl():
             return None
     except (TypeError, ValueError):
         return None
@@ -214,9 +216,16 @@ def _zero_priced(pricing: Any, keys: tuple[str, str], default: str) -> bool:
         return False
 
 
+def _is_subscription_billed(entry: Any) -> bool:
+    """The gateway bills this catalog row to a subscription the account holds, not to credits."""
+    return isinstance(entry, dict) and entry.get("billing_mode") == "subscription"
+
+
 def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
-    """Return True if *model_id* has zero-cost prompt AND completion pricing."""
-    return bool(pricing.get(model_id)) and _zero_priced(pricing.get(model_id), ("prompt", "completion"), "1")
+    """Return True if *model_id* costs no credits: zero-cost prompt AND completion pricing, or a row
+    the gateway bills to a subscription."""
+    entry = pricing.get(model_id)
+    return bool(entry) and (_is_subscription_billed(entry) or _zero_priced(entry, ("prompt", "completion"), "1"))
 
 
 def partition_nous_models_by_tier(
@@ -484,6 +493,8 @@ def recommended_nous_default_model() -> dict[str, Any]:
     model_ids = mp.restrict_to_nous_policy(model_ids, policy_allowed, rescue_empty=True)
     if free_tier:
         model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
+        # Never default onto a subscription-billed row: spending that plan is the user's call.
+        model_ids = [mid for mid in model_ids if not _is_subscription_billed(pricing.get(mid))] or model_ids
     return {"provider": "nous", "model": pick_silent_default_model(model_ids, provider="nous"),
             "free_tier": bool(free_tier)}
 
@@ -558,8 +569,10 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 
 
 def fetch_openrouter_models(
-    timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
+    timeout: float = 8.0, *, force_refresh: bool = False, cache_only: bool = False) -> list[tuple[str, str]]:
+    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible.
+
+    ``cache_only`` never opens a socket: memory, then disk (stale accepted), then the in-repo snapshot."""
     # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
     # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
     from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
@@ -572,10 +585,13 @@ def fetch_openrouter_models(
     # Cold process: serve from the persisted disk cache when fresh so the
     # picker doesn't re-download the full ~686KB catalog on every open.
     if not force_refresh:
-        disk = _read_openrouter_catalog_disk()
+        disk = _read_openrouter_catalog_disk(allow_stale=cache_only)
         if disk:
-            profile_slot_set(_me, "_openrouter_catalog_cache", disk)
+            if not cache_only:  # a stale copy is served, never memoized as fresh
+                profile_slot_set(_me, "_openrouter_catalog_cache", disk)
             return list(disk)
+    if cache_only:
+        return list(OPENROUTER_MODELS)
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.

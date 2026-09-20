@@ -266,8 +266,8 @@ async def search_sessions(
         return {"results": []}
     with http_failure("GET /api/sessions/search failed", 500, detail="Search failed"):
         row_profile = _serving_profile(profile)
-        db = _open_session_db_for_profile(profile, read_only=True)
-        try:
+
+        def _search(db):
             safe_limit = max(1, min(int(limit or 20), 100))
             source_filter = source or None
             source_list = _csv(sources)
@@ -388,8 +388,9 @@ async def search_sessions(
                     m["session_id"],
                     hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
             return {"results": list(seen.values())}
-        finally:
-            db.close()
+
+        # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
+        return await asyncio.to_thread(_with_db, profile, _search, read_only=True)
 
 
 @manage_router.post("/api/sessions/bulk-delete")
@@ -473,7 +474,7 @@ async def get_session_stats(profile: Optional[str] = None):
             pass
         return out
 
-    return _with_db(profile, _stats, read_only=True)
+    return await asyncio.to_thread(_with_db, profile, _stats, read_only=True)
 
 
 @manage_router.get("/api/sessions/{session_id}")
@@ -489,7 +490,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         session["is_default_profile"] = session["profile"] == "default"
         return session
 
-    return _with_db(profile, _detail, read_only=True)
+    return await asyncio.to_thread(_with_db, profile, _detail, read_only=True)
 
 
 @manage_router.get("/api/sessions/{session_id}/latest-descendant")

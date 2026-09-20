@@ -2090,7 +2090,9 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     # 0c. custom_providers per-model override — check before any probe. This closes the gap where /model
     # switch and display paths used to fall back to 128K despite the user having a per-model context_length
     # set. See #15779.
-    if custom_providers and base_url and model:
+    # Not gated on custom_providers: callers that never load the route list pass None and the
+    # helper self-resolves it from config (#69807).
+    if base_url and model:
         with contextlib.suppress(Exception):  # fall through to probing
             from hermes_cli.config import get_custom_provider_context_length
             cp_ctx = get_custom_provider_context_length(model=model, base_url=base_url, custom_providers=custom_providers)

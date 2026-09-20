@@ -288,7 +288,8 @@ def _ensure_session_db_row(session: dict) -> bool:
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
-                    db.set_session_hidden(key, True)
+                    if db.set_session_hidden(key, True):
+                        session.pop("pending_hidden", None)
                 except Exception:
                     logger.debug("failed to apply pending hidden flag", exc_info=True)
         except Exception as exc:

@@ -342,3 +342,124 @@ def test_drain_transcript_spool_skips_parseable_non_dict_payload(tmp_path, monke
     replayed = []
     assert drain_transcript_spool("sess-1", replayed.append) == (1, 0)
     assert replayed == [{"role": "user", "content": "hi"}]
+
+
+def test_recover_cap_drop_uses_resolver_routing_key_db(tmp_path, monkeypatch):
+    """A cap-dropped transcript payload that carries its owner routing key must replay into
+    the store owning the session (resolver's db), not the ambient root store. Across a
+    multiplexed (multi-profile) gateway the root store is the default profile's partition,
+    so replaying a foreign-profile session's message there would land in the wrong database.
+    """
+    from gateway.shutdown_flush import (
+        TRANSCRIPT_CAP_DROP_REASON,
+        recover_pending_to_db,
+    )
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    ts = int(time.time())
+    payload = {
+        "session_key": "sess-abc",
+        "reason": TRANSCRIPT_CAP_DROP_REASON,
+        "ts": ts,
+        "seq": 0,
+        "data": {
+            "session_id": "sess-abc",
+            "routing_key": "agent:main:telegram:dm:5140768830",
+            "message": {"role": "assistant", "content": "cap-dropped reply"},
+        },
+    }
+    flush_file = flush_dir / "cap_drop.json"
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    root_db = MagicMock()
+    routed_db = MagicMock()  # the store owning the session's routing key
+    resolver = MagicMock(return_value=("sess-abc", routed_db))
+    count = recover_pending_to_db(root_db, session_resolver=resolver)
+
+    assert count == 1
+    resolver.assert_called_once_with(
+        "agent:main:telegram:dm:5140768830", not_after=ts
+    )
+    # The owning store must receive the transcript message, not the ambient root store.
+    routed_db.append_message.assert_called_once_with(
+        session_id="sess-abc",
+        role="assistant",
+        content="cap-dropped reply",
+        timestamp=ts,
+    )
+    root_db.append_message.assert_not_called()
+    assert not flush_file.exists()
+
+
+def test_recover_cap_drop_without_routing_key_falls_back_to_root(tmp_path, monkeypatch):
+    """A legacy cap-drop payload that predates routing-key capture has no way to route; it
+    falls back to the ambient root store exactly as before (backward compatibility)."""
+    from gateway.shutdown_flush import (
+        TRANSCRIPT_CAP_DROP_REASON,
+        recover_pending_to_db,
+    )
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    ts = int(time.time())
+    payload = {
+        "session_key": "sess-abc",
+        "reason": TRANSCRIPT_CAP_DROP_REASON,
+        "ts": ts,
+        "seq": 0,
+        "data": {"session_id": "sess-abc",
+                 "message": {"role": "user", "content": "legacy drop"}},
+    }
+    flush_file = flush_dir / "cap_drop_legacy.json"
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    root_db = MagicMock()
+    resolver = MagicMock()  # resolver present but no key to feed it
+    count = recover_pending_to_db(root_db, session_resolver=resolver)
+
+    assert count == 1
+    resolver.assert_not_called()
+    root_db.append_message.assert_called_once_with(
+        session_id="sess-abc",
+        role="user",
+        content="legacy drop",
+        timestamp=ts,
+    )
+    assert not flush_file.exists()
+
+
+def test_spool_dropped_records_owner_routing_key(tmp_path, monkeypatch):
+    """A cap-dropped transcript message spooled with an owner routing key must persist that key in
+    the payload so a later recovery can resolve the owning store (not the ambient root)."""
+    from gateway.shutdown_flush import (
+        TRANSCRIPT_CAP_DROP_REASON,
+        spool_dropped_transcript_message,
+    )
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    path = spool_dropped_transcript_message(
+        "sess-abc",
+        {"role": "assistant", "content": "reply"},
+        session_key="agent:main:telegram:dm:5140768830",
+    )
+    assert path is not None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["reason"] == TRANSCRIPT_CAP_DROP_REASON
+    assert payload["data"]["session_id"] == "sess-abc"
+    assert payload["data"]["routing_key"] == "agent:main:telegram:dm:5140768830"
+    assert payload["data"]["message"] == {"role": "assistant", "content": "reply"}
+
+
+def test_spool_dropped_without_routing_key_omits_it(tmp_path, monkeypatch):
+    """Spooling without an owner routing key must not write an empty/None routing key; matching the
+    legacy payload shape keeps the backward-compatible fallback path intact."""
+    from gateway.shutdown_flush import spool_dropped_transcript_message
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    path = spool_dropped_transcript_message("sess-abc", {"role": "user", "content": "hi"})
+    assert path is not None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "routing_key" not in payload["data"]

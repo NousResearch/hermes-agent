@@ -114,18 +114,23 @@ def flush_overflow_to_file(overflow_by_session: Dict[str, Any], *, reason: str =
     return flushed
 
 
-def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -> Optional[Path]:
+def spool_dropped_transcript_message(
+    session_id: str, message: Dict[str, Any], *, session_key: Optional[str] = None,
+) -> Optional[Path]:
     """Spool a cap-evicted transcript message; ``None`` on failure (callers degrade to drop+log).
 
     Uses the same on-disk pending spool as :func:`flush_pending_to_file` (one atomic JSON payload per
     message under ``<hermes_home>/pending_messages/``), so a runtime cap rotation no longer silently
-    discards user data while the process stays up (#78182).
+    discards user data while the process stays up (#78182). ``session_key`` (the owner routing key) is
+    recorded so ``recover_pending_to_db`` can replay a multiplexed profile's cap-drop into the store
+    that actually owns the session instead of the ambient root partition.
     """
     try:
         return _write_payload(_get_flush_dir(), {
             "session_key": session_id, "reason": TRANSCRIPT_CAP_DROP_REASON, "ts": int(time.time()),
             "seq": next(_TRANSCRIPT_SPOOL_SEQ),
-            "data": {"session_id": session_id, "message": message},
+            "data": {"session_id": session_id, "message": message,
+                     **({"routing_key": session_key} if session_key else {})},
         })
     except Exception as exc:
         logger.debug("Failed to spool cap-dropped transcript message for %s: %s", session_id, exc)
@@ -263,9 +268,24 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
             logger.warning("Cannot recover structurally invalid transcript spool "
                            "file %s; preserved for manual inspection", path)
             return False
-        session_db.append_message(session_id=spooled_sid, role=message.get("role", "unknown"),
-                                  content=message.get("content") or "",
-                                  timestamp=message.get("timestamp") or payload.get("ts"))
+        # A cap-drop records the session_id but not the owning store. Newer payloads also carry
+        # the owner routing key so a multiplexed gateway can replay into the correct profile
+        # partition instead of the ambient root store (which is only the default profile's db).
+        # Without a routing key (legacy payloads, or an unresolvable profile) fall back to the
+        # ambient root store exactly as before.
+        target_db = session_db
+        routing_key = data.get("routing_key") if isinstance(data, dict) else None
+        if routing_key and session_resolver is not None:
+            try:
+                resolved = session_resolver(routing_key, not_after=payload.get("ts"))
+            except Exception as exc:
+                logger.debug("Session key->id resolution failed for %s: %s", routing_key, exc)
+                resolved = None
+            if resolved and resolved[1] is not None:
+                target_db = resolved[1]
+        target_db.append_message(session_id=spooled_sid, role=message.get("role", "unknown"),
+                                 content=message.get("content") or "",
+                                 timestamp=message.get("timestamp") or payload.get("ts"))
         return True
     session_key, data = payload.get("session_key", ""), payload.get("data", {})
     text = data.get("text", "")

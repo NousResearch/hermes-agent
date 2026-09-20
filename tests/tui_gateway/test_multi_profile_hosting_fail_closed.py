@@ -135,6 +135,56 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     assert seen["options"] == (b, B_VAL, None)
 
 
+def test_live_review_binds_the_sessions_full_runtime_scope(two_homes, monkeypatch):
+    """Live /review must resolve the reviewer's provider credentials from its session's profile
+    (``start_review`` → ``delegate_task`` → profile-scoped ``get_secret``); unscoped it fails
+    closed with UnscopedSecretError on a multiplexed gateway (#117544)."""
+    from agent.secret_scope import get_secret
+    from hermes_constants import get_hermes_home
+
+    root, b = two_homes
+    seen = []
+
+    def fake_start_review(agent, snapshot, arg):
+        seen.append((Path(get_hermes_home()), get_secret("A_ONLY_TOKEN"), get_secret("B_ONLY_TOKEN")))
+        return object()
+
+    monkeypatch.setattr("agent.review_engine.start_review", fake_start_review)
+    monkeypatch.setattr("agent.review_engine.format_dispatch_note", lambda result, arg: "dispatched")
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda value: False)
+
+    def invoke(profile_home):
+        sid = f"review-{len(seen)}"
+        agent = SimpleNamespace(_cached_system_prompt="", tools=None)
+        session = {
+            "agent": agent,
+            "profile_home": str(profile_home) if profile_home else None,
+            "history": [{"role": "user", "content": "hello"}],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "session_key": sid,
+        }
+        server._sessions[sid] = session
+        try:
+            assert server._format_live_review_output(sid, session, "") == "dispatched"
+        finally:
+            server._sessions.pop(sid, None)
+
+    invoke(None)
+    _probe("b")  # activate multiplexing and freeze the launch profile's own secret scope
+    invoke(b)
+    invoke(None)
+
+    assert seen == [
+        (root, A_VAL, None),
+        (b, None, B_VAL),
+        (root, A_VAL, None),
+    ]
+    assert os.environ["A_ONLY_TOKEN"] == A_VAL
+    assert "B_ONLY_TOKEN" not in os.environ
+
+
 @pytest.mark.parametrize("route", ["session.compress", "slash.compress"])
 def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, monkeypatch, route):
     """Manual compression must resolve secrets from its session across an A→B→A sequence."""

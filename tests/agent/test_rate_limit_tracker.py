@@ -106,6 +106,8 @@ class TestParseHeaders:
         assert "Plan: plus (limit: premium)" in result
         assert "5h window" in result and "7d window" in result
         assert "40.0% used" in result and "resets in 1h 40m" in result
+        assert "\n" in result
+        assert "\\n" not in result
 
 
 

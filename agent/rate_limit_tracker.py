@@ -19,6 +19,15 @@ class CodexWindow:
     reset_after_seconds: float = 0.0
 
 
+CODEX_PROVIDER = "openai-codex"
+CODEX_STATE_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def is_codex_provider(provider: Any) -> bool:
+    """Return whether a provider label identifies the Codex backend."""
+    return str(provider or "").strip().lower() == CODEX_PROVIDER
+
+
 @dataclass
 class CodexRateLimitState:
     primary: CodexWindow = field(default_factory=CodexWindow)
@@ -239,7 +248,7 @@ def format_codex_rate_limit_display(state: CodexRateLimitState) -> str:
     elif state.credits_has_credits is not None:
         lines.append(f"Credits: {'available' if state.credits_has_credits else 'unavailable'}")
     lines.extend([window("5h window", state.primary), window("7d window", state.secondary)])
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def format_rate_limit_compact(state: RateLimitState) -> str:

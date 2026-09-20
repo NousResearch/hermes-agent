@@ -38,8 +38,8 @@ class RateLimitCreditsMixin:
         if not headers:
             return
         try:
-            from agent.rate_limit_tracker import parse_rate_limit_headers, parse_codex_headers
-            if str(getattr(self, "provider", "") or "").strip().lower() == "openai-codex":
+            from agent.rate_limit_tracker import is_codex_provider, parse_rate_limit_headers, parse_codex_headers
+            if is_codex_provider(getattr(self, "provider", "")):
                 state = parse_codex_headers(headers)
                 if state is not None:
                     self._codex_rate_limit_state = state

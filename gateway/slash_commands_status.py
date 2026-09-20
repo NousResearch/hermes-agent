@@ -197,9 +197,10 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     context window and compression count."""
     lines: list[str] = []
     codex_state = None
-    if str(getattr(agent, "provider", "") or "").strip().lower() == "openai-codex":
+    from agent.rate_limit_tracker import CODEX_STATE_MAX_AGE_SECONDS, is_codex_provider
+    if is_codex_provider(getattr(agent, "provider", "")):
         codex_state = getattr(agent, "get_codex_rate_limit_state", lambda: None)()
-    if codex_state and codex_state.has_data:
+    if codex_state and codex_state.has_data and codex_state.age_seconds <= CODEX_STATE_MAX_AGE_SECONDS:
         from agent.rate_limit_tracker import format_codex_rate_limit_display
         lines += [format_codex_rate_limit_display(codex_state), ""]
     rl_state = agent.get_rate_limit_state()

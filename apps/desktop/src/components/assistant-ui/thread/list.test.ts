@@ -102,6 +102,12 @@ describe('transcriptPaneBudget', () => {
     expect(transcriptPaneBudget(4, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
     expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
   })
+
+  it('keeps sharing one page budget past four mounted panes (no quarter floor)', () => {
+    const page = transcriptPaneBudget(1, false)
+    expect(transcriptPaneBudget(5, false)).toBeLessThan(transcriptPaneBudget(4, false))
+    expect(transcriptPaneBudget(6, false)).toBe(Math.ceil(page / 6))
+  })
 })
 
 describe('shouldClampTranscriptBudget', () => {

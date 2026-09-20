@@ -16,7 +16,7 @@ import time
 
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname
+from utils import base_url_hostname, file_signature
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -97,6 +97,8 @@ class CLIInfoMixin:
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
+        from agent.context_pin import is_context_pinned
+        ctx_pinned = is_context_pinned(ctx_len, getattr(getattr(self, "agent", None), "_config_context_length", None))
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
         if self.compact or shutil.get_terminal_size().columns < 80:
@@ -117,7 +119,7 @@ class CLIInfoMixin:
             banner_kw = dict(
                 console=self.console, model=self.model, cwd=cwd,
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider)
+                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
             if snapshot is not None:
                 self._defer_tool_warnings = True
@@ -170,7 +172,7 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
         self._show_plugin_compat_notice()
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
@@ -190,6 +192,10 @@ class CLIInfoMixin:
                 fix = f"Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve"
             elif _port == 1234:
                 fix = "LM Studio fix: Set context length in model settings → reload model"
+            elif is_local_endpoint(base_url):  # llama.cpp / vLLM / any local server — not Ollama
+                fix = (f"Fix: start your server with at least {MINIMUM_CONTEXT_LENGTH // 1000}K context "
+                       f"(llama.cpp: -c {MINIMUM_CONTEXT_LENGTH}), or set model.ollama_num_ctx in config.yaml "
+                       "to the window it really serves")
             else:
                 fix = "Fix: Set model.context_length in config.yaml, or increase your server's context setting"
             self._console_print(f"[dim]   {fix}[/]")
@@ -258,12 +264,17 @@ class CLIInfoMixin:
         # /help skills — the full list, kept out of the default view so core commands don't
         # scroll off screen.
         if arg.lower() in ("skills", "skill"):
-            if not skill_commands:
-                _cprint("\n  No skill commands installed.\n")
-                return
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
-            for cmd, info in sorted(skill_commands.items()):
-                _row(cmd, info['description'], 22)
+            from agent.skill_commands import skill_command_collision_note
+            from tools.skills_tool import _find_all_skills
+            if skill_commands:
+                _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
+                for cmd, info in sorted(skill_commands.items()):
+                    _row(cmd, info['description'], 22)
+            else:
+                _cprint("\n  No skill commands installed.")
+            # Skills whose name is a built-in command never get a /<name> (agent.skill_commands guard).
+            for note in filter(None, (skill_command_collision_note(s["name"]) for s in _find_all_skills())):
+                _cprint(f"    {_DIM}⚠ {note}{_RST}")
             _cprint("")
             return
 
@@ -654,10 +665,16 @@ class CLIInfoMixin:
             except Exception:
                 details = {"skills": [], "toolsets": []}
 
+        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        try:
+            file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
+        except Exception:
+            file_lines = []
+
         print()
         print(f"  🧠 Context Usage — {payload.get('model') or self.model}")
         print()
-        for line in render_context_breakdown_lines(payload, details=details, grid=True):
+        for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
             print(f"  {line}")
         print()
 
@@ -670,9 +687,12 @@ class CLIInfoMixin:
         from cli import datetime, format_duration_compact
 
         def _credits_or(fallback: str) -> None:
+            # Account limits (e.g. Codex subscription windows) need only the configured provider
+            # plus on-disk credentials, so they render without a live agent too (#42904).
+            shown = self._print_account_limits()
             if self._print_nous_credits_block():
                 self._print_usage_cta()
-            else:
+            elif not shown:
                 print(fallback)
 
         if not self.agent:
@@ -715,29 +735,13 @@ class CLIInfoMixin:
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)")
+        from agent.context_pin import context_pin_suffix
+        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)"
+              f"{context_pin_suffix(ctx_len, getattr(agent, '_config_context_length', None))}")
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 
-        # Account limits — fetched off-thread with a hard timeout so slow provider APIs don't
-        # hang the prompt. Lazy import: pulls the OpenAI SDK chain.
-        provider = self._agent_or_self("provider")
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
-                        api_key=self._agent_or_self("api_key"),
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if account_lines:
-            print()
-            for line in account_lines:
-                print(line)
+        self._print_account_limits()
 
         if self._print_nous_credits_block():
             self._print_usage_cta()
@@ -748,6 +752,35 @@ class CLIInfoMixin:
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
             logging.getLogger().setLevel(logging.INFO)
+
+    def _print_account_limits(self) -> bool:
+        """Provider account limits block for `/usage`; True if anything printed.
+
+        Uses the live agent's route when present, else the CLI's own configured provider (the
+        TUI/Desktop slash-worker runs without an agent). Fetched off-thread with a hard timeout so
+        slow provider APIs don't hang the prompt; failures are non-fatal. Lazy import: pulls the
+        OpenAI SDK chain.
+        """
+        provider = self._agent_or_self("provider")
+        if not provider:
+            return False
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+        account_snapshot = None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
+                    api_key=self._agent_or_self("api_key"),
+                ).result(timeout=10.0)
+            except (concurrent.futures.TimeoutError, Exception):
+                account_snapshot = None
+        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+        if not account_lines:
+            return False
+        print()
+        for line in account_lines:
+            print(line)
+        return True
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history (`--days N` / `N`, `--source`)."""
@@ -812,13 +845,13 @@ class CLIInfoMixin:
         if not cfg_path.exists():
             return
         try:
-            mtime = cfg_path.stat().st_mtime
+            sig = file_signature(cfg_path.stat())
         except OSError:
             return
-        if mtime == self._config_mtime:
+        if sig == self._config_sig:
             return  # unchanged — fast path
 
-        self._config_mtime = mtime
+        self._config_sig = sig
         try:
             with open(cfg_path, encoding="utf-8") as f:
                 new_cfg = _yaml.safe_load(f) or {}

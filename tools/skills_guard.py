@@ -110,6 +110,10 @@ _NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|doesn\'?t|didn\'?t|won\'?t|isn
 # Real directives are short; unbounded filler let prose (output never enters your own context)
 # and feature descriptions match.
 _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
+# Delegation guard: the recipient named right after the verb is the agent's own subagent/worker
+# ("Send subagents the minimum context they need") — an in-process handoff, not a transfer off
+# the machine. A URL or external service as the destination is still `send_to_url`.
+_NOT_DELEGATE = r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?|workers?|delegates?|children|child)\b)'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -164,8 +168,8 @@ THREAT_PATTERNS = [
     # `${SKILL_DIR}/x`") and on flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`.
     (r'(?<![-/])\b(dig|nslookup|host)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$]*\$',
      "dns_exfil", "critical", "exfiltration", "DNS lookup with variable interpolation (possible DNS exfiltration)"),
-    (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',
-     "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),
+    (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',  # no-tmp: ok — malicious-pattern regex
+     "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),  # no-tmp: ok — malicious-pattern label
     # ── Exfiltration: markdown/link based ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration", "markdown image URL with variable interpolation (image-based exfil)"),
@@ -197,8 +201,11 @@ THREAT_PATTERNS = [
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
     # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
-    # test/smoke scripts and CI; anything else rooted at "/" stays critical.
-    (r'rm\s+-rf\s+/(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))',
+    # test/smoke scripts and CI. A parent segment inside an exempted root can escape it,
+    # so it remains destructive along with every other path rooted at "/".
+    (r'rm\s+-rf\s+/(?:'
+     r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
+     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory"),
@@ -378,9 +385,10 @@ THREAT_PATTERNS = [
     # your own context", "**Include context:** cwd, env vars", "save tokens (no need to include code
     # in context)") describes the OPPOSITE of exfiltration and must not match: the verb→target gap is
     # bounded, a negation right after the verb voids the match, and a bare ``context`` target counts
-    # only under transfer verbs (print/send/share) — "include context" is window/information talk.
+    # only under transfer verbs (print/send/share) — "include context" is window/information talk —
+    # and not when the recipient is the agent's own subagent (delegation prose).
     (rf'\b(?:include|output|print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}(?:conversation|chat\s+history|previous\s+messages)\b'
-     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}context\b',
+     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_NOT_DELEGATE}{_SHORT_FILLER}context\b',
      "context_exfil", "high", "exfiltration", "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration", "instructs agent to send data to a URL"),
@@ -515,14 +523,36 @@ def _mask_markdown_link_destinations(line: str) -> str:
     return "".join(masked)
 
 
+# A fenced code block opens with 3+ backticks or 3+ tildes indented at most 3 spaces (CommonMark
+# §4.5); a backtick fence's info string may not contain a backtick. It closes only on a line whose
+# fence uses the same marker, is at least as long, and carries nothing else — so a ``~~~`` line
+# inside a backtick fence, a shorter fence, or a fence line with an info string is all content.
+_FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+# A fence may open (and close) inside a container: a bullet ``- ```sh``, an ordered item ``1. ```sh``,
+# a blockquote ``> ```sh``, or a nest of them (§5.1/§5.2). Strip those prefixes before fence matching.
+_CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
+
+
 def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
-    """Mask link destinations only in Markdown prose. Inside a fenced code block a ``[x](../..)`` is
-    an argument to whatever command surrounds it, not a hyperlink, so those lines scan verbatim."""
-    out, in_fence = [], False
+    """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
+    ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
+    scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
+    mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
+    code to EOF (fail-safe)."""
+    out: List[str] = []
+    fence = None  # (marker char, opener length) while a fenced block is open
     for line in lines:
-        if line.lstrip().startswith(("```", "~~~")):
-            in_fence = not in_fence
-        out.append(line if in_fence else _mask_markdown_link_destinations(line))
+        match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
+        if fence is not None:
+            if (match and match["marker"][0] == fence[0] and len(match["marker"]) >= fence[1]
+                    and not match["info"].strip()):
+                fence = None
+            code = True
+        else:
+            if match and not (match["marker"][0] == "`" and "`" in match["info"]):
+                fence = (match["marker"][0], len(match["marker"]))
+            code = fence is not None or line.startswith(("\t", "    "))  # indented code block (§4.4)
+        out.append(line if code else _mask_markdown_link_destinations(line))
     return out
 
 

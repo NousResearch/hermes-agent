@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shlex
+import tempfile
 import threading
 import time
 
@@ -18,7 +19,7 @@ from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAUL
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
-STORAGE_DIR = "/tmp/hermes-results"
+STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
@@ -84,14 +85,32 @@ def _is_host_side_env(env) -> bool:
 
 
 def _write_to_spillover(content: str, filename: str):
-    """Write host-side to $HERMES_HOME/cache/spillover; returns path str or None."""
+    """Write host-side to $HERMES_HOME/cache/spillover; returns path str or None.
+
+    The write is size-verified before the caller tells the model "Full output saved":
+    a partially-flushed file (quota, ENOSPC race) fails closed to the bounded inline
+    truncation instead of referencing an archive that silently lost bytes.
+    """
+    data = content.encode("utf-8", errors="replace")
     try:
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         path = spill_dir / filename
-        path.write_text(content, encoding="utf-8", errors="replace")
+        path.write_bytes(data)
+        persisted_size = os.stat(path).st_size
     except OSError as exc:
         logger.warning("Spillover write failed for %s: %s", filename, exc)
+        return None
+    if persisted_size != len(data):
+        logger.warning(
+            "Spillover write for %s is not lossless (%d bytes on disk, "
+            "expected %d) — discarding archive",
+            filename, persisted_size, len(data),
+        )
+        try:
+            path.unlink()
+        except OSError:
+            pass
         return None
     _prune_spillover_once()
     return str(path)
@@ -157,10 +176,44 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(); True on success. Content goes through
     stdin, not the command string: Linux ``MAX_ARG_STRLEN`` caps one argv element at 128 KB,
-    so a heredoc-in-command silently failed for exactly the oversized results this handles."""
+    so a heredoc-in-command silently failed for exactly the oversized results this handles.
+
+    The write is round-trip verified with ``wc -c`` (one extra exec RTT per oversized result):
+    a zero exit from ``cat`` does not prove the bytes landed (quota/ENOSPC races, API-body
+    truncation on payload backends). A measured mismatch removes the archive and fails closed;
+    an unprobeable backend (no ``wc``, exec error, unparseable output) stays best-effort success.
+    Heredoc-mode backends append exactly one trailing newline by construction
+    (``BaseEnvironment._embed_stdin_heredoc``), so one extra byte is accepted there."""
     storage_dir = os.path.dirname(remote_path)
     cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
-    return env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) == 0
+    if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
+        return False
+
+    expected = len(content.encode("utf-8", errors="replace"))
+    try:
+        probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15)
+    except Exception as exc:
+        logger.debug("Sandbox size probe failed for %s: %s", remote_path, exc)
+        return True
+    if probe.get("returncode", 1) != 0:
+        return True
+    raw = str(probe.get("output", "") or "").strip().split()
+    if not raw or not raw[-1].isdigit():
+        return True
+    persisted_size = int(raw[-1])
+    if persisted_size == expected:
+        return True
+    # Only heredoc mode may be +1; the payload backend (managed_modal) delivers stdin verbatim, so
+    # it is expected byte-exact and any drift there is a real loss.
+    if persisted_size == expected + 1 and getattr(env, "_stdin_mode", None) == "heredoc":
+        return True
+    logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",
+                   remote_path, persisted_size, expected)
+    try:
+        env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15)
+    except Exception:
+        pass
+    return False
 
 
 def _build_persisted_message(preview: str, has_more: bool, original_size: int,

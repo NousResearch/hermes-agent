@@ -6,6 +6,53 @@ sessions. This replaces the earlier per-session JSONL file approach.
 
 Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
+## Hermes home and profile isolation
+
+`get_hermes_home()` is the authoritative filesystem resolver for state and
+configuration. It uses a context-local override first, then the `HERMES_HOME`
+environment variable, and finally the platform default (`~/.hermes` on macOS
+and Linux; `%LOCALAPPDATA%/hermes` on Windows). Consequently, the default
+database is always `get_hermes_home() / "state.db"`, not a path that callers
+should hard-code as `~/.hermes/state.db`.
+
+Named profiles are isolated directories: a profile named `coder`, for example,
+uses `<default Hermes root>/profiles/coder/` and therefore has its own
+`state.db`, configuration, logs, and other profile-scoped state. A process that
+creates a database, reads configuration, or starts a child process for a
+profile must retain or pass that profile's `HERMES_HOME`; falling back to the
+default root mixes the wrong profile's state into the operation.
+
+The CLI bootstrap calls `_apply_profile_override()` before importing the rest
+of Hermes. An explicit `--profile`/`-p` resolves that profile and writes the
+resolved directory to `HERMES_HOME`. Without an explicit selector, a
+profile-specific `HERMES_HOME` is preserved; otherwise the bootstrap can use
+the default root's active-profile selection. `HOME` only determines the
+platform default used when no context override or `HERMES_HOME` is available.
+Changing `HOME` is not a safe way to select a named profile. In particular, a
+subprocess that drops `HERMES_HOME` can fall back to the default profile even
+when another profile is active, so subprocess spawners should pass
+`HERMES_HOME` explicitly.
+
+Use `display_hermes_home()` only for user-facing text. It formats the resolved
+home relative to the user's home directory when possible (for example,
+`~/.hermes/profiles/coder`); it does not provide a separate resolution rule.
+
+### Test isolation guard
+
+Tests must use a temporary `HERMES_HOME` or an explicit temporary database
+path. The live-system guard raises before a test-context process opens a
+production `state.db` under the real default Hermes root or a real named
+profile, preventing fixture data or SQLite side effects from reaching a live
+installation.
+
+`HERMES_STATE_DB_GUARD_BYPASS=1` is a test-only escape hatch for a spawned
+child process that genuinely must access the live database. The equivalent
+in-process escape hatch is `@pytest.mark.live_system_guard_bypass`. Do not set
+either bypass in normal Hermes commands, development shells, or application
+configuration: it disables the guard (a hard `RuntimeError`) that protects live
+session history, and a shell that exports it hands the bypass to every later
+pytest run.
+
 ### Desktop profile isolation and compaction generations
 
 Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
@@ -104,7 +151,8 @@ Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_st
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
-compression-failure fields, `profile_name`, `rewind_count`, `archived`, and
+compression-failure fields, `profile_name`, `transport_profile` (the multiplex
+bot that received the lane, nullable), `rewind_count`, `archived`, and
 `pinned`):
 
 ```sql
@@ -147,6 +195,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
     ON sessions(title) WHERE title IS NOT NULL;
 ```
 
+`user_id` is the principal on the other end of the session: messaging adapters
+store the platform sender id, and `desktop` / dashboard sessions opened through
+an authenticated `hermes serve` (OAuth or the basic username/password provider)
+store the login as `<provider>:<user id>` (for example `basic:alice`). Sessions
+with nobody behind them — anonymous loopback use, `subagent`, `cron`, `kanban`
+— keep it empty. The value is set when the row is created and never inferred
+later.
+
 ### Messages Table
 
 Abridged — the full schema also includes `effect_disposition`,
@@ -180,8 +236,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
+- `reasoning_details` is always kept in history; on the chat-completions wire it is replayed only to OpenRouter and the Nous Portal (every other chat-completions route gets a copy without it, since strict schemas reject the field)
 - Desktop history hydration retains assistant sidecars in both REST and JSON-RPC (`session.resume`, `session.activate`, `session.history`) projections, including rows with reasoning and tool calls. REST may return the SQLite JSON string while RPC returns decoded items; Desktop accepts both. A final Responses reply may live only in `codex_message_items` while `content` is empty. Canonical content still takes precedence, and analysis/commentary items are not promoted to reply text.
 - `reasoning` stores the raw reasoning text for providers that expose it
+- A reasoning-only clean stop (empty `content`, `finish_reason=stop`, reasoning present) is answered with the reasoning text, but the assistant row is never written with that text as `content`: `content` stays empty, the text lives in `reasoning`/`reasoning_content`, and `api_content` carries it so the next request replays the answer byte-identically. History surfaces therefore show it as reasoning, not as a reply.
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)
 
@@ -265,7 +323,7 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 from hermes_state import SessionDB
 
 db = SessionDB()                           # Default: ~/.hermes/state.db
-db = SessionDB(db_path=Path("/tmp/test.db"))  # Custom path
+db = SessionDB(db_path=Path("~/.hermes/cache/scratch/test.db").expanduser())  # Custom path
 ```
 
 ### Create and Manage Sessions
@@ -468,10 +526,9 @@ db.delete_session("sess_abc123")
 
 ## Database Location
 
-Default path: `~/.hermes/state.db`
-
-This is derived from `hermes_constants.get_hermes_home()` which resolves to
-`~/.hermes/` by default, or the value of `HERMES_HOME` environment variable.
+Default path: `get_hermes_home() / "state.db"` — `~/.hermes/state.db` for the
+default profile, `~/.hermes/profiles/<name>/state.db` for a named profile, or
+wherever `HERMES_HOME` points (see [Hermes home and profile isolation](#hermes-home-and-profile-isolation)).
 
 The database file, WAL file (`state.db-wal`), and shared-memory file
 (`state.db-shm`) are all created in the same directory.

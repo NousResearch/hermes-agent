@@ -61,6 +61,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -225,6 +226,26 @@ def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
         return True
     status = getattr(exc, "http_status", None)
     return isinstance(status, int) and status in (401, 403)
+
+
+def _split_reply_fallback(body: str) -> tuple[str, str]:
+    """Split ``> quote\\n\\nreply`` into ``(quote_block, reply_text)``; ``("", body)`` when absent.
+
+    The two halves always concatenate back to *body* verbatim (``quote + reply == body``), so
+    callers can transform one half and rebuild the body without disturbing the other. The blank
+    separator line belongs to the quote block. Used to keep the ``> <@user:srv>`` reply pill —
+    the only mention text in a reply-to-the-bot — out of whole-body rewrites.
+    """
+    if not body or not body.startswith("> "):
+        return "", body
+    lines = body.split("\n")
+    idx = 0
+    while idx < len(lines) and (lines[idx].startswith("> ") or lines[idx] == ">"):
+        idx += 1
+    if idx < len(lines) and lines[idx] == "":
+        idx += 1  # the blank line separating the quote from the reply belongs to the quote
+    head = "\n".join(lines[:idx])
+    return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
@@ -1392,6 +1413,23 @@ class MatrixAdapter(BasePlatformAdapter):
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
         return str(event_id)
 
+    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+        """Post a seed message and return its ``event_id`` as the handoff ``thread_id``. Matrix has
+        no create-thread API: a thread is the events whose ``m.relates_to``/``rel_type: m.thread``
+        point at a root event (Slack-style), and ``_apply_relation_metadata`` already threads later
+        sends off a supplied ``thread_id``. ``None`` when disconnected or the seed send failed.
+
+        In-thread replies keep the ROOM's chat_type (``dm``/``group``) in the session key — the
+        handoff watcher and the cron seeder mirror that shape rather than the shared ``thread`` slot."""
+        if self._client is None:
+            return None
+        result = await self.send(parent_chat_id, (name or "").strip() or "Hermes session")
+        root = result.message_id if result.success else None
+        if not root:
+            return None
+        self._threads.mark(str(root))  # replies in this thread bypass require_mention, like inbound roots
+        return str(root)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         identity = await self._resolve_room_identity(chat_id)
         return {"name": identity.display_name, "type": "dm" if identity.chat_type == "dm" else "group"}
@@ -1458,7 +1496,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), exc)
             fallback = ("I couldn't download and upload the image to Matrix. "
                         "The source URL was not shown because it may contain private tokens.")
-            return await self.send(chat_id, f"{caption}\n{fallback}" if caption else fallback, reply_to)
+            return await self.emit_media_warning(chat_id, fallback, caption=caption, reply_to=reply_to, metadata=metadata)
         return await self._upload_and_send(chat_id, data, fname, ct, "m.image", caption, reply_to, metadata)
 
     async def _download_external_media_with_cap(self, url: str) -> tuple[bytes, str, str]:
@@ -1582,7 +1620,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = "⚠️ **Dangerous command requires approval**\n"
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
     _EA_CMD_BUDGET = 2000
 
     async def _send_reaction_prompt(
@@ -1771,7 +1809,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
             text = "⚠️ Couldn't deliver the attachment."
-            return await self.send(room_id, f"{caption}\n{text}" if caption else text, reply_to)
+            return await self.emit_media_warning(room_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
         try:
             file_size = p.stat().st_size
         except OSError:
@@ -2001,7 +2039,16 @@ class MatrixAdapter(BasePlatformAdapter):
                     event_id, thread_id)
                 return None
         if is_mentioned and self._require_mention:
-            body = self._strip_mention(body)
+            # Strip the mention from the reply text only: the quote block carries the
+            # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
+            # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
+            # and silently dropped the replied-to author (#111233). Only a real reply carries a
+            # pill; a hand-typed blockquote in a plain message is stripped whole as before.
+            if relates_to.get("m.in_reply_to"):
+                quote_block, reply_text = _split_reply_fallback(body)
+                body = quote_block + self._strip_mention(reply_text)
+            else:
+                body = self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
         if not thread_id:
@@ -2040,10 +2087,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
-        still change (reply-fallback strip); ``extra`` carries media fields / message_type."""
-        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        still change (reply-fallback strip); ``extra`` carries media fields / message_type.
+        ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
+        downloading); resolving it twice would double the read receipt / thread mark."""
+        if ctx is None:
+            ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
@@ -2107,6 +2157,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 return
         is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
+        # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
+        # non-allowlisted room must not pull media onto the host only to drop it.
+        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        if ctx is None:
+            return
         # Cache locally so downstream tools get a real file path.
         cached_path = None
         if url:
@@ -2120,7 +2175,7 @@ class MatrixAdapter(BasePlatformAdapter):
         http_url = self._mxc_to_http(url) if url and not is_encrypted_media else ""
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, body, source_content, relates_to, message_type=msg_type,
+            room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
             await self.handle_message(msg_event)

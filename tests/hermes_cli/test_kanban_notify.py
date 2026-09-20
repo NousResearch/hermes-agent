@@ -182,6 +182,27 @@ def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
         conn.close()
 
 
+def test_notify_sub_user_id_backfills_legacy_senderless_rows(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy sub", assignee="worker1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        assert kbn.list_notify_subs(conn, tid)[0]["user_id"] is None
+
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", user_id="640466638",
+        )
+        subs = kbn.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert subs[0]["user_id"] == "640466638"
+
+
 def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
     """user_id_alt is persisted with the notify subscription routing tuple and
     can backfill a pre-existing row created before the alt id was known."""
@@ -590,7 +611,11 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    sent = fake_adapter.send.call_args[0][1]
+    assert tid in sent
+    # Plain-language outcome per event kind (no internal event names).
+    expected = {"crashed": "stopped unexpectedly", "gave_up": "blocked", "timed_out": "time limit"}[kind]
+    assert expected in sent
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside

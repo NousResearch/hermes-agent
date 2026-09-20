@@ -480,6 +480,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Stream updated content to an AI Card; ``message_id`` is the creating ``send()``'s out_track_id (callers track their own ids so parallel flows on one chat don't interfere)."""
+        if not self.SUPPORTS_MESSAGE_EDITING:
+            return SendResult(success=False, error="AI Cards are not configured for message editing")
         token = await self._get_access_token() if message_id else None
         if not token:
             return SendResult(success=False, error="message_id required" if not message_id else "No access token")

@@ -22,6 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
+from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ def _tool_defs_cache_key(
     """Memo key for get_tool_definitions, or None when caching must be bypassed.
 
     Covers every argument plus everything that changes the result without one:
-    registry generation, config.yaml mtime/size (dynamic schemas), kanban
+    registry generation, config.yaml stat signature (dynamic schemas), kanban
     context, profile scope. check_fn results are TTL-cached in the registry.
     """
     profile_scope = check_fn_cache_scope()
@@ -266,7 +267,7 @@ def _tool_defs_cache_key(
     try:
         from hermes_cli.config import get_config_path
         cfg_stat = get_config_path().stat()
-        cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+        cfg_fp = file_signature(cfg_stat)
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
     return (
@@ -339,9 +340,6 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
 # and returns the (possibly replaced) definition, or None to drop the tool.
 # Cross-references must use that set so the model never hears of an absent tool.
 
-_BROWSER_NAVIGATE_WEB_HINT = " For simple information retrieval, prefer web_search or web_extract (faster, cheaper)."
-
-
 def _fn_def(schema: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": "function", "function": schema}
 
@@ -367,11 +365,22 @@ def _discord_rewriter(schema_fn_name: str):
 
 
 def _rewrite_browser_navigate(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
-    """Drop the "prefer web_search or web_extract" hint when neither web tool is present (else the model hallucinates them)."""
-    if {"web_search", "web_extract"} & available:
+    """Static schema is toolset-neutral; name the lightweight retrieval tools only when they are present
+    (#39797: a hard "prefer web_search" overrode the user's SOUL.md and was hallucinated when web was off)."""
+    web_tools = [name for name in ("web_search", "web_extract") if name in available]
+    if not web_tools:
         return td
-    desc = td["function"].get("description", "").replace(_BROWSER_NAVIGATE_WEB_HINT, "")
-    return _fn_def({**td["function"], "description": desc})
+    noun = "tool" if len(web_tools) == 1 else "tools"
+    hint = f" Available lightweight retrieval {noun}: {' and '.join(web_tools)}."
+    return _fn_def({**td["function"], "description": td["function"].get("description", "") + hint})
+
+
+def _rewrite_browser_cdp(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """Same rule for the CDP docs pointer: mention web_extract only when the session has it."""
+    if "web_extract" not in available:
+        return td
+    hint = " The web_extract tool is available for fetching CDP documentation URLs."
+    return _fn_def({**td["function"], "description": td["function"].get("description", "") + hint})
 
 
 def _rewrite_browser_exec(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
@@ -456,6 +465,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
     "browser_navigate": _rewrite_browser_navigate,
+    "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
     "browser_type": _rewrite_input_tool_for_vault,
     "browser_vault_list": _rewrite_browser_vault,

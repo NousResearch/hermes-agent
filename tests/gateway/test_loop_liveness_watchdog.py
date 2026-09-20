@@ -278,6 +278,38 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     assert cfg.loop_watchdog_max_strikes == 12
 
 
+def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
+    """The terminal watchdog observation must be visible before ``os._exit``."""
+    from gateway.status import read_runtime_status, write_runtime_status
+
+    write_runtime_status(gateway_state="running", exit_reason=None)
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    fired = threading.Event()
+    exit_codes = []
+
+    def fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        fired.set()
+
+    with (
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=2
+        )
+        assert handle is not None
+        assert fired.wait(timeout=2.0), "watchdog did not reach its restart exit"
+        handle.stop()
+        handle.join(timeout=1.0)
+
+    record = read_runtime_status()
+    assert exit_codes == [75]
+    assert record["gateway_state"] == "degraded"
+    assert record["exit_reason"] == "loop_liveness_watchdog"
+    assert record["restart_requested"] is True
+
+
 def test_gateway_runner_liveness_guards_start_and_stop():
     from gateway.run import GatewayRunner
 
@@ -316,6 +348,8 @@ def test_gateway_runner_liveness_guards_start_and_stop():
     floor_timer.cancel.assert_called_once_with()
     assert runner._loop_liveness_watchdog is None
     assert runner._loop_floor_timer_handle is None
+
+
 def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     """The heartbeat write must not freeze the loop the watchdog is watching.
 

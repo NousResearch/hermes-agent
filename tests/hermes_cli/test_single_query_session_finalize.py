@@ -108,6 +108,7 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
 
         def chat(self, query, images=None):
             calls.append(("chat", query, images))
+            self._last_turn_result = {"final_response": "done", "completed": True}
             return "done"
 
         def _print_exit_summary(self, clear_screen=True):
@@ -121,8 +122,11 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
     )
 
-    cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+    # The non-quiet one-shot path exits with the turn's outcome (0 here), like ``-Q``.
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
+    assert exc_info.value.code == 0
     assert calls == [
         ("claim", "cli", False),
         "query-label",

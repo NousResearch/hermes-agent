@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { resolveModelReasoningEffort } from '@/lib/reasoning-effort'
+import { reasoningEffortClamp, resolveModelReasoningEffort } from '@/lib/reasoning-effort'
 import { ReasoningBudgetInput } from './reasoning-budget-input'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
@@ -76,6 +76,9 @@ interface ModelEditSubmenuProps {
   /** This row's effective reasoning effort (live for the active model, else its
    *  preset) — the submenu shows and edits from this, never the raw session. */
   effort: string
+  /** Gateway-reported level the route actually sends for `effort` (active row
+   *  only; '' = unknown). A clamped pick is spelled out on its radio row. */
+  effortWire?: string
   /** How fast mode is offered for this model (param toggle vs. variant swap). */
   fastControl: FastControl
   /** Whether this row's model is the active one. */
@@ -116,6 +119,7 @@ export function ModelOptionsContent({
   reasoningBudget,
   defaultEffort,
   effort,
+  effortWire,
   fastControl,
   isActive,
   onSelectModel,
@@ -134,6 +138,7 @@ export function ModelOptionsContent({
 
   const resolved = resolveModelReasoningEffort(effort, defaultEffort, capabilities)
   const effortValue = resolved === 'auto' || (resolved === 'none' && !reasoningBudget) ? '' : resolved
+  const clamp = reasoningEffortClamp(effortValue, effortWire)
   const thinkingOn = reasoningControl === 'unsupported' ? false : resolved !== 'none'
   const levels = reasoning ? (reasoningEfforts ?? REASONING_EFFORTS).filter(isReasoningEffort) : []
 
@@ -233,7 +238,7 @@ export function ModelOptionsContent({
                 onSelect={event => event.preventDefault()}
                 value={value}
               >
-                {copy[value]}
+                {clamp?.effort === value ? `${copy[value]} (${copy.sendsOnRoute(copy[clamp.wire])})` : copy[value]}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>

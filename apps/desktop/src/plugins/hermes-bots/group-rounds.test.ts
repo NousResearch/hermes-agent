@@ -116,6 +116,24 @@ describe('routing', () => {
     expect(parsed.mentioned.size).toBe(1)
   })
 
+  it('Reply-to tags route a same-named local + Connections twin each to itself', async () => {
+    const { rounds } = await loadRoom()
+
+    const local: GroupMember = { name: 'reviewer' }
+    const remote: GroupMember = { connectionId: 'mini', handle: 'reviewer-mini', name: 'reviewer', remoteSource: true, sourceScoped: true }
+    const members = [local, remote]
+
+    for (const member of members) {
+      const tag = rounds.groupReplyMentionTag(member, members)
+      const parsed = rounds.parseGroupChatMentions(`@${tag} `, members)
+
+      expect([tag, [...parsed.mentioned]]).toEqual([member.remoteSource ? 'reviewer-mini' : 'reviewer-local', [member.remoteSource ? 'mini::reviewer' : 'reviewer']])
+    }
+
+    // Unambiguous members keep the friendly tag the autocomplete inserts.
+    expect(rounds.groupReplyMentionTag({ name: 'ops', title: 'The Ops' }, MEMBERS)).toBe('the-ops')
+  })
+
   it('rotates the lead speaker each round', async () => {
     const { rounds } = await loadRoom()
 
@@ -375,6 +393,51 @@ describe('per-member delta', () => {
     expect(room.gateway.calls.at(-1)?.prompt).toContain('unseen-99')
   })
 
+  // #114341: the turn renders only the last GROUP_CHAT_HISTORY_LIMIT entries
+  // of the delta while the watermark advances past the whole tail, so the
+  // head is never delivered later either. The cut must be visible to the
+  // member (naming how many entries it did not see); a delta that fits
+  // carries no marker.
+  it('names the omitted head of an over-long delta in the turn prompt', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Head', members, 'seen-0')!
+    await settle(room, 'Head')
+    const limit = room.chat.GROUP_CHAT_HISTORY_LIMIT
+
+    for (let i = 1; i <= limit + 5; i++) {
+      room.chat.appendGroupChatEntry('Head', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    }
+
+    const seen = room.chat.$groupChats.get().Head.watermarks[`${thread}::research`] || 0
+    const omitted = log(room, 'Head').slice(seen).length - limit
+    expect(omitted).toBeGreaterThan(0)
+
+    await room.rounds.runGroupChatRounds('Head', members, thread)
+    const prompt = room.gateway.calls.at(-1)?.prompt || ''
+
+    expect(prompt).toMatch(new RegExp(`${omitted} earlier room messages omitted`))
+    expect(prompt).toContain(`unseen-${limit + 5}`)
+    expect(prompt).not.toContain(`unseen-${omitted}\n`)
+  })
+
+  it('adds no omission marker when the delta fits the window', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Fits', members, 'seen-0')!
+    await settle(room, 'Fits')
+
+    for (let i = 1; i < room.chat.GROUP_CHAT_HISTORY_LIMIT; i++) {
+      room.chat.appendGroupChatEntry('Fits', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    }
+
+    await room.rounds.runGroupChatRounds('Fits', members, thread)
+    const prompt = room.gateway.calls.at(-1)?.prompt || ''
+
+    expect(prompt).toContain('unseen-1')
+    expect(prompt).not.toMatch(/omitted/)
+  })
+
   it('feeds a second send only the NEW messages', async () => {
     const room = await loadRoom()
     const member: GroupMember[] = [{ name: 'research', title: '' }]
@@ -514,6 +577,19 @@ describe('threads', () => {
     expect(alphaMessages.some(message => message.content.includes('BETA_TOPIC'))).toBe(false)
     expect(betaMessages.some(message => message.content.includes('ALPHA_TOPIC'))).toBe(false)
   })
+
+  it('surfaces an empty member seat instead of swallowing the send; empty text stays silent', async () => {
+    const room = await loadRoom()
+    const notify = room.gateway.host.notify as ReturnType<typeof vi.fn>
+
+    expect(room.rounds.sendToGroupChat('Seating', [], 'anyone there?')).toBeNull()
+    expect(log(room, 'Seating')).toHaveLength(0)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'error', message: expect.stringContaining('Seating') })
+
+    expect(room.rounds.sendToGroupChat('Seating', MEMBERS, '   ')).toBeNull()
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('turn prompt', () => {
@@ -544,6 +620,37 @@ describe('turn prompt', () => {
     })
 
     expect(peer).toMatch(/group chat with @hermes/)
+  })
+
+  // #89720: a renamed primary is @bobby to the roster, autocomplete and the
+  // mention resolver; introducing it to itself as @hermes made it treat
+  // `@bobby …` as someone else's message and pass.
+  it('introduces a renamed primary by the same @tag the room resolves', async () => {
+    const { rounds } = await loadRoom()
+    const { buildGroupChatTurnPrompt } = await import('./group-round-prompt')
+
+    const members: GroupMember[] = [
+      { name: 'default', title: 'Bobby' },
+      { name: 'builder', title: '' }
+    ]
+
+    const own = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      viewer: members[0]
+    })
+
+    expect(own).toMatch(/You are @bobby,/)
+
+    const peer = buildGroupChatTurnPrompt({
+      deltaLines: [],
+      groupName: 'Core',
+      members,
+      viewer: members[1]
+    })
+
+    expect(peer).toMatch(/group chat with Bobby \(@bobby\)/)
   })
 
   it('asks for full-quality results and short chatter, not short results', async () => {
@@ -822,6 +929,51 @@ describe('member holds (#93129)', () => {
     expect([...action.hold]).toEqual([])
     // A plain non-stop mention releases instead (direct address overrides hold).
     expect([...action.release]).toEqual(['impl'])
+  })
+
+  // #103893: a German room said "@impl go, das ist halt ein Test" and the
+  // filler "halt" four words away from the mention held the bot every time
+  // the text was resent. Only a stop word next to a mention is a directive.
+  it('treats a stop word far from every mention as prose, not a directive', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['@impl go, das ist halt ein Test', '@impl mach mal Pause', 'stop the presses, @impl what do you think?']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['conn::impl'], false)
+
+      expect([...action.hold]).toEqual([])
+      // Ambiguous, so neutral: the prose reading must not wake a held member either.
+      expect([...action.release]).toEqual([])
+    }
+
+    // Keys are roster keys, not handles: proximity must still hold on the raw @token.
+    expect([...rounds.classifyGroupHoldDirective('@impl please halt', ['conn::impl'], false).hold]).toEqual(['conn::impl'])
+  })
+
+  // A genuine stop whose stop word sits 3+ tokens from the mention may miss the
+  // hold, but it must never RELEASE (re-dispatch) the member it tells to stop.
+  it('never releases the addressed member on a distant genuine stop', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['@impl please just stop now', 'hey @impl could you stop', '@impl, I need you to stop', '@impl you can stop']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['c1::impl'], false)
+
+      expect([...action.release]).toEqual([])
+    }
+
+    expect(rounds.classifyGroupHoldDirective('@all please just stop now', [], true).releaseAll).toBe(false)
+  })
+
+  // #97740: a room stopped by the user went permanently silent because only
+  // the literal "@all resume" released the holds; "@all <task>" addresses
+  // every member and must re-engage them like a direct mention does.
+  it('releases every hold when the whole room is addressed without a stop word', async () => {
+    const { rounds } = await loadRoom()
+    const held = { docs: { at: 2 }, impl: { at: 1 } }
+
+    expect(rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all tell me a joke each', {})).toEqual({})
+    expect(rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all stop', { at: 5 }, ['impl', 'docs'])).not.toEqual({})
+    // An unaddressed message still leaves the holds alone.
+    expect(rounds.applyGroupHoldDirective(held, { everyone: false, mentioned: [] }, 'anyone there?', {})).toBe(held)
   })
 
   it('sets a hold on stop and clears it on resume for the same member', async () => {

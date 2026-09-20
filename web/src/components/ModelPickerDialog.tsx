@@ -10,9 +10,11 @@ import type { ModelOptionProvider, ModelOptionsResult } from "@hermes/shared";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router";
 import { cn, themedBody } from "@/lib/utils";
 import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
 import { fuzzyRank, modelSearchText } from "@hermes/shared";
+import { errorMessage } from "@/lib/api-error";
 
 /**
  * Two-stage model picker modal.
@@ -143,7 +145,7 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       })
       .finally(() => {
         if (closedRef.current) return;
@@ -162,7 +164,7 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       })
       .finally(() => {
         if (closedRef.current) return;
@@ -283,7 +285,7 @@ export function ModelPickerDialog(props: Props) {
         }
         onClose();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       } finally {
         setApplying(false);
       }
@@ -311,7 +313,7 @@ export function ModelPickerDialog(props: Props) {
         }
         onClose();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorMessage(e));
       } finally {
         setApplying(false);
       }
@@ -383,6 +385,7 @@ export function ModelPickerDialog(props: Props) {
           <ProviderColumn
             loading={loading}
             error={error}
+            onClose={onClose}
             providers={filteredProviders}
             total={providers.length}
             selectedSlug={selectedSlug}
@@ -480,6 +483,10 @@ export function ModelPickerDialog(props: Props) {
 /*  Provider column                                                    */
 /* ------------------------------------------------------------------ */
 
+/** Empty picker: no key and no OAuth login anywhere. Points at the two in-app fixes. */
+export const NO_PROVIDERS_MESSAGE =
+  "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models to see models here.";
+
 function ProviderColumn({
   loading,
   error,
@@ -488,6 +495,7 @@ function ProviderColumn({
   selectedSlug,
   query,
   onSelect,
+  onClose,
 }: {
   loading: boolean;
   error: string | null;
@@ -496,6 +504,8 @@ function ProviderColumn({
   selectedSlug: string;
   query: string;
   onSelect(slug: string): void;
+  /** The links below navigate away; the full-screen dialog must close or it keeps covering the target page. */
+  onClose(): void;
 }) {
   return (
     <div className="border-r border-border overflow-y-auto">
@@ -508,12 +518,22 @@ function ProviderColumn({
       {error && <div className="p-4 text-xs text-destructive">{error}</div>}
 
       {!loading && !error && providers.length === 0 && (
-        <div className="p-4 text-xs text-muted-foreground italic">
-          {query
-            ? "no matches"
-            : total === 0
-              ? "no authenticated providers"
-              : "no matches"}
+        <div className="p-4 text-xs text-muted-foreground">
+          {query || total > 0 ? (
+            <span className="italic">No providers match your search.</span>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <span>{NO_PROVIDERS_MESSAGE}</span>
+              <div className="flex flex-wrap gap-2">
+                <Link to="/env" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
+                  Open Keys
+                </Link>
+                <Link to="/models" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
+                  Sign in to a provider
+                </Link>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

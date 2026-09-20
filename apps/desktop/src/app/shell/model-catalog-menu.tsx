@@ -57,6 +57,8 @@ export const ModelMenuCloseContext = createContext<() => void>(() => {})
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
 export interface ModelChoice {
   effort: string
+  /** Level the route actually sends for `effort` (`session.info.reasoning_effort_wire`); '' = unknown. */
+  effortWire?: string
   fast: boolean
   model: string
   provider: string
@@ -528,7 +530,7 @@ export function ModelCatalogMenu({
                       (caps?.reasoning ?? true)
                         ? caps?.reasoning_efforts != null && !effEffort
                           ? t.shell.modelOptions.unverified
-                          : reasoningEffortLabel(effEffort || defaultEffort)
+                          : reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
                         : null
                     ]
                       .filter(Boolean)
@@ -592,6 +594,7 @@ export function ModelCatalogMenu({
                           reasoningBudget={caps?.reasoning_budget ?? undefined}
                           defaultEffort={defaultEffort}
                           effort={effEffort}
+                          effortWire={isCurrent ? current.effortWire : undefined}
                           fastControl={fastControl}
                           isActive={isCurrent}
                           model={family.id}

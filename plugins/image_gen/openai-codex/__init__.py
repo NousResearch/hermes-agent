@@ -43,7 +43,7 @@ _ACCEPTED_INPUT_MIME = frozenset({"image/png", "image/jpeg", "image/gif", "image
 
 _NO_AUTH = (
     "No Codex/ChatGPT OAuth credentials available. Run "
-    "`hermes auth codex` (or `hermes setup` → Codex) to sign in.")
+    "`hermes auth add openai-codex` (or `hermes setup` → Codex) to sign in.")
 
 
 def _summarize_error_body(body: str) -> str:
@@ -117,9 +117,12 @@ def _data_url_to_input_image_url(value: str) -> str:
 
 def _remote_image_to_data_url(value: str) -> str:
     """The edit endpoint takes inline data URLs only (as the official client sends), so fetch."""
-    import httpx
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
-    response = httpx.get(value, timeout=60.0, follow_redirects=True)
+    if not is_safe_url(value):
+        raise ValueError(f"Image URL failed the SSRF safety check: {value}")
+    with create_ssrf_safe_client(timeout=60.0, follow_redirects=True) as client:
+        response = client.get(value)
     response.raise_for_status()
     return _encode_input_image(
         response.content,
@@ -239,8 +242,11 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             "badge": "free",
             "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required; supports text and image inputs",
             "env_vars": [],
+            # Empty env_vars means the picker writes the selection without a credential prompt; the shared
+            # Codex OAuth bootstrap hook (hermes_cli/tools_config_post_setup.py) starts the sign-in (#102144).
+            "post_setup": "openai_codex",
             "post_setup_hint": (
-                "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
+                "Sign in with `hermes auth add openai-codex` (or `hermes setup` → Codex) "
                 "if you haven't already. No API key needed."),
         }
 

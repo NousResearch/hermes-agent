@@ -50,6 +50,8 @@ def profile_dir(tmp_path, monkeypatch) -> Path:
 
     d = profiles_mod.get_profile_dir("demo")
     d.mkdir(parents=True, exist_ok=True)
+    # Identity marker (SOUL.md is one too, but these tests own SOUL.md; config.yaml is neutral).
+    (d / "config.yaml").write_text("{}\n")
     return d
 
 

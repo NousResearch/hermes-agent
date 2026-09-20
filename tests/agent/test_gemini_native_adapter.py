@@ -330,6 +330,34 @@ def test_native_client_accepts_injected_http_client():
     assert client._http is injected
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, "https://generativelanguage.googleapis.com/v1beta"),
+        ("https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta"),
+        ("http://localhost:4000/gemini///", "http://localhost:4000/gemini/v1beta"),
+        ("https://proxy.example/gemini/v1alpha/", "https://proxy.example/gemini/v1alpha"),
+        ("https://proxy.example/v1", "https://proxy.example/v1"),
+        ("https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta"),
+    ],
+)
+def test_normalize_gemini_base_url_guarantees_version_segment(configured, expected):
+    """Host roots (how Google's own client is configured) gain ``/v1beta``; versioned URLs and the
+    ``/openai`` strip are unchanged, so ``{base}/models/{model}:generateContent`` never 404s."""
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+
+    assert normalize_gemini_base_url(configured) == expected
+
+
+def test_native_client_appends_v1beta_to_host_root_base_url():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(
+        api_key="AIza-test", base_url="https://generativelanguage.googleapis.com", http_client=SimpleNamespace(close=lambda: None)
+    )
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+
 def test_native_client_rejects_empty_api_key_with_actionable_message():
     """Empty/whitespace api_key must raise at construction, not produce a cryptic
     Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
@@ -759,3 +787,46 @@ def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
 
     resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
     assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+
+@pytest.mark.parametrize(
+    "api_key, configured, expected_prefix",
+    [
+        # Express key + default Studio host: the only place it can never work → aiplatform express surface.
+        ("AQ.express-key", None, "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # Control: Studio key keeps the Studio host.
+        ("AIza-test", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # An explicit aiplatform base (host root or versioned) is completed to the publishers form.
+        ("AQ.express-key", "https://aiplatform.googleapis.com", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        ("AIza-test", "https://aiplatform.googleapis.com/v1beta1", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # An explicit proxy is never overridden by the key shape.
+        ("AQ.express-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
+    ],
+)
+def test_native_client_routes_vertex_express_keys_to_aiplatform(api_key, configured, expected_prefix):
+    """Vertex express keys (``AQ.``) 403 on generativelanguage; the request must hit
+    ``aiplatform.googleapis.com/v1beta1/publishers/google/models/…`` unless the user pointed elsewhere."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    seen = []
+
+    class _HTTP:
+        def post(self, url, **_):
+            seen.append(url)
+            return SimpleNamespace(status_code=200, json=lambda: {"candidates": [
+                {"content": {"role": "model", "parts": [{"text": "ok"}]}, "finishReason": "STOP"}]})
+
+    client = GeminiNativeClient(api_key=api_key, base_url=configured, http_client=_HTTP())
+    client.chat.completions.create(model="gemini-3.7-flash", messages=[{"role": "user", "content": "hi"}])
+    assert seen == [f"{expected_prefix}gemini-3.7-flash:generateContent"]
+
+
+def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
+    """The express base is native Gemini; the OAuth Vertex provider's OpenAI-compatible
+    ``…/endpoints/openapi`` base must NOT be captured by the native adapter."""
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1beta1/publishers/google")
+    assert not is_native_gemini_base_url(
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    )

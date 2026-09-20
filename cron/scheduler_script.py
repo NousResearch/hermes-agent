@@ -288,7 +288,13 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
             f"({scripts_dir_resolved}): {script_path!r}"
         )
     if not path.exists():
-        return None, f"Script not found: {path}"
+        # Scripts resolve against THIS profile's scripts/ dir by design (profiles never share files),
+        # which is the usual reason a copied job cannot find a script that exists elsewhere (#94821).
+        return None, (
+            f"Script not found: {path}. Cron scripts are looked up only in this profile's folder "
+            f"({scripts_dir_resolved}); if the job was copied from another profile, copy the script "
+            f"there too, or edit the job with `hermes cron edit`."
+        )
     if not path.is_file():
         return None, f"Script path is not a file: {path}"
     return path, None
@@ -349,24 +355,12 @@ def _run_job_script(
                 # reader threads on non-UTF-8 Windows (#45099).
                 "encoding": "utf-8",
                 "errors": "replace"}
-        # A routed profile's script (desktop multi-profile ticker, multiplex gateway) must see ITS
-        # profile's .env + vault values — the process env holds the launch profile's. Drop the
-        # launch profile's dotenv-owned residue first (a name only the launch .env defines must
-        # come through UNSET, not with the launch value — the scrub only knows classified secrets),
-        # then overlay the installed scope, then sanitize, so routed values pass the same scrub /
-        # passthrough rules as any other. No-op outside multiplex or for the launch profile's own
-        # fires; the parent process is never mutated.
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-        from tools.environments.local import restore_managed_env, strip_launch_profile_env
-        base = strip_launch_profile_env(dict(os.environ))
-        if is_multiplex_active():
-            # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
-            # values the child already inherits byte-identical.
-            base.update(current_secret_scope() or {})
-            # Administrator-managed values keep their precedence over the routed profile's own .env,
-            # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
-            restore_managed_env(base)
-        env = build_subprocess_env(base=base)
+        # The process env is the LAUNCH profile's. For a job owned by a routed profile, drop that
+        # profile's .env residue from the base first (no-op for the launch profile's own jobs);
+        # the sanitizer then overlays the names the owning profile declares in
+        # terminal.env_passthrough from its own secret scope (#114209). The factory snapshots the
+        # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
+        env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

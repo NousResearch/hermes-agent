@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatErrorDiagnostics, parseErrorSurface } from './error-surface'
+import { en } from '@/i18n/en'
+
+import {
+  ERROR_CODE_KEYS,
+  errorRecoveryPlan,
+  type ErrorSurface,
+  formatErrorDiagnostics,
+  formatLimitReset,
+  parseErrorSurface
+} from './error-surface'
+import { errorCardText } from './error-surface-copy'
 
 describe('parseErrorSurface', () => {
   it('accepts a valid descriptor', () => {
@@ -82,5 +92,134 @@ describe('formatErrorDiagnostics', () => {
     expect(text).not.toContain('layer:')
     expect(text).not.toContain('model:')
     expect(text.split('\n').every(line => line.trim().length > 0)).toBe(true)
+  })
+})
+
+// The card body and the buttons under it must agree: a body that says "retry"
+// while the plan hides the Retry button leaves the user with an instruction
+// they cannot follow. Walks every code the backend can send (plus the layer
+// fallbacks) with the non-retryable verdict the classifier stamps for it.
+describe('error copy never names a hidden Retry', () => {
+  const thread = en.assistant.thread
+  const RETRY_WORDS = /\bretry\b|\btry again\b/i
+
+  // Verdicts the classifier stamps as deterministic (agent/error_surface.py
+  // `_NON_RETRYABLE_REASONS`); everything else arrives retryable.
+  const NON_RETRYABLE = new Set([
+    'auth',
+    'auth_permanent',
+    'billing',
+    'content_policy_blocked',
+    'provider_policy_blocked',
+    'model_not_found',
+    'format_error',
+    'ssl_cert_verification',
+    'context_overflow',
+    'interpreter_shutdown',
+    'upstream_blocked'
+  ])
+
+  const surfaces: ErrorSurface[] = [
+    ...ERROR_CODE_KEYS.map(code => ({ code, layer: 'provider' as const, retryable: !NON_RETRYABLE.has(code) })),
+    { code: 'auth', layer: 'auth', retryable: false },
+    { code: 'auth_permanent', layer: 'auth', retryable: false },
+    { code: 'ssl_cert_verification', layer: 'endpoint', retryable: false },
+    { code: 'interpreter_shutdown', layer: 'gateway', retryable: false },
+    { code: 'interpreter_shutdown', layer: 'runtime', retryable: false },
+    { code: 'unknown', layer: 'endpoint', retryable: false }
+  ]
+
+  it.each(surfaces.map(surface => [surface.code, surface.layer, surface] as const))(
+    '%s on %s',
+    (_code, _layer, surface) => {
+      const plan = errorRecoveryPlan(surface)
+      const { body } = errorCardText(thread, surface)
+
+      if (!plan.retry) {
+        expect(body).not.toMatch(RETRY_WORDS)
+      }
+    }
+  )
+
+  it('a credential rejection keeps Retry, so its body may still say retry', () => {
+    const surface: ErrorSurface = { authKind: 'api_key', code: 'auth', layer: 'auth', provider: 'openai', retryable: false }
+    expect(errorRecoveryPlan(surface).retry).toBe(true)
+  })
+
+  it('a WAF block names the firewall and the User-Agent fix, not the key and not a retry', () => {
+    const surface = parseErrorSurface({ code: 'upstream_blocked', layer: 'provider', provider: 'custom', retryable: false })!
+    const { body, title } = errorCardText(thread, surface)
+    expect(title).toBe(en.assistant.thread.errorCodes.upstream_blocked.title)
+    expect(body).toMatch(/firewall/i)
+    expect(body).toMatch(/User-Agent/)
+    expect(body).not.toBe(thread.errorLayerBodies.provider)
+    expect(errorRecoveryPlan(surface).retry).toBe(false)
+  })
+})
+
+describe('free-tier refusals', () => {
+  const surface = parseErrorSurface({
+    code: 'free_tier_disabled',
+    layer: 'provider',
+    message: '  Using Hermes without signing in is switched off right now. To sign in: /login. ',
+    provider: 'nous',
+    retryable: false
+  })!
+
+  it('carries the backend sentence and offers the free sign-in, never an OAuth re-login', () => {
+    expect(surface.message).toBe('Using Hermes without signing in is switched off right now. To sign in: /login.')
+    const plan = errorRecoveryPlan(surface)
+    expect(plan.signInFreeTier).toBe(true)
+    expect(plan.signInAgain).toBe(false)
+    expect(plan.retry).toBe(false)
+    expect(plan.switchProvider).toBe(true)
+  })
+
+  it('renders the backend sentence as the body under its own title', () => {
+    const { body, title } = errorCardText(en.assistant.thread, surface)
+    expect(title).toBe(en.assistant.thread.errorCodes.free_tier_disabled.title)
+    expect(body).toBe(surface.message)
+  })
+
+  it('falls back to the table body when an older backend sent no sentence', () => {
+    const bare = parseErrorSurface({ code: 'free_tier_rate_limited', layer: 'provider', retryable: true })!
+    expect(errorCardText(en.assistant.thread, bare).body).toBe(en.assistant.thread.errorCodes.free_tier_rate_limited.body)
+    expect(errorRecoveryPlan(bare).retry).toBe(true)
+  })
+
+  it('every free-tier code has copy and the copy never blames the free model', () => {
+    for (const code of ERROR_CODE_KEYS.filter(key => key.startsWith('free_tier_'))) {
+      const copy = en.assistant.thread.errorCodes[code]
+      const text = `${typeof copy.title === 'string' ? copy.title : ''} ${typeof copy.body === 'string' ? copy.body : ''}`.toLowerCase()
+      expect(text).not.toMatch(/free (service|model|tier) is (off|switched off|unavailable|down)/)
+      expect(text).not.toMatch(/anonymous|guest|credential|token|rate limit/)
+    }
+  })
+})
+
+describe('limit reset (#98852)', () => {
+  it('parses resets_at and renders "HH:mm (in Nh MMm)" while the reset is ahead', () => {
+    const now = Date.UTC(2026, 0, 1, 12, 0, 0)
+    const resetsAt = now / 1000 + 3600 + 5 * 60
+
+    const surface = parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true, resets_at: resetsAt })
+
+    expect(surface?.resetsAt).toBe(resetsAt)
+
+    const at = new Date(resetsAt * 1000)
+    const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+
+    expect(formatLimitReset(surface?.resetsAt, now)).toBe(`${clock} (in 1h 05m)`)
+    expect(en.assistant.thread.errorLimitResets(`${clock} (in 1h 05m)`)).toContain(clock)
+    expect(formatErrorDiagnostics({ errorText: 'x', surface })).toContain('resets_at: ')
+  })
+
+  it('shows nothing once the reset has passed or when the backend sent none', () => {
+    const now = Date.now()
+
+    expect(formatLimitReset(now / 1000 - 60, now)).toBeNull()
+    expect(formatLimitReset(undefined, now)).toBeNull()
+    expect(parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true })?.resetsAt).toBeUndefined()
+    expect(parseErrorSurface({ layer: 'provider', code: 'rate_limit', retryable: true, resets_at: 'soon' })?.resetsAt).toBeUndefined()
   })
 })

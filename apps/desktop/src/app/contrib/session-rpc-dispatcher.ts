@@ -39,7 +39,12 @@ import { isSessionGoneForBackgroundPolling } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
+import {
+  $focusedStoredSessionId,
+  runtimeSessionOwner,
+  sessionTileOwnerRoute,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 
 import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
@@ -75,6 +80,14 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
     })
 
     let owner: SessionOwnerScope = resolveSessionRpcOwner({
+      // An owner an inbound runtime event already proved for THIS session (#97511):
+      // the exact (connectionId, profile) of the socket that delivered its
+      // events. It outranks the connection-blind row/rung profile — the rung
+      // that makes two connections sharing a profile name collapse onto the
+      // primary socket (another machine) instead of the session's own.
+      eventOwner: storedSessionId =>
+        runtimeSessionOwner(storedSessionId) ??
+        (paramSessionId && paramSessionId !== storedSessionId ? runtimeSessionOwner(paramSessionId) : undefined),
       routingSessionId,
       sessionOwnerHint: storedSessionId => getSessionOwnerHint(storedSessionId),
       sessionRowOwner: storedSessionId => knownSessionOwner(ownerLookupSessionRows(), storedSessionId),

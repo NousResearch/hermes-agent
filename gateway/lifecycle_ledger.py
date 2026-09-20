@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, get_process_hermes_home
 
-    val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else get_hermes_home()
+    # get_process_hermes_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
+    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
 
 
 def _home_path(home: Optional[Path], *relative: str) -> Path:
@@ -87,7 +87,9 @@ def _write_sentinel(payload: Dict[str, Any], home: Optional[Path]) -> None:
         from utils import atomic_json_write
 
         path = get_lifecycle_sentinel_path(home)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, payload, indent=None)
     except Exception:
         logger.debug("Failed to write lifecycle sentinel", exc_info=True)
@@ -97,7 +99,9 @@ def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
     """Append a JSON line to gateway-exit-diag.log (same format as the CLI's ``_exit_diag``)."""
     try:
         path = _home_path(home, "logs", "gateway-exit-diag.log")
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(path.parent)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
     except OSError:
@@ -209,7 +213,8 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
-        "VM death). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
+        "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
+        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
     )

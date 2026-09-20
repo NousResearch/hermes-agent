@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   isThinkingEnabled,
+  reasoningEffortClamp,
   reasoningEffortLabel,
   resolveModelReasoningEffort,
   resolveReasoningEffort
@@ -39,6 +40,17 @@ describe('reasoning-effort', () => {
     expect(isReasoningEffort('HIGH')).toBe(true)
     expect(isReasoningEffort('none')).toBe(false)
     expect(isReasoningEffort('bogus')).toBe(false)
+  })
+
+  it('labels a route clamp from the gateway wire level only, never by inference', () => {
+    expect(reasoningEffortLabel('ultra', 'max')).toBe('Ultra→Max')
+    expect(reasoningEffortClamp('ultra', 'max')).toEqual({ effort: 'ultra', wire: 'max' })
+    // Unknown ('' — not stamped yet / optimistic pick) or verbatim: plain label, no claim.
+    expect(reasoningEffortLabel('ultra', '')).toBe('Ultra')
+    expect(reasoningEffortLabel('ultra')).toBe('Ultra')
+    expect(reasoningEffortLabel('high', 'high')).toBe('High')
+    expect(reasoningEffortClamp('high', 'high')).toBeNull()
+    expect(reasoningEffortClamp('none', '')).toBeNull()
   })
 
   it('treats empty as inherit and only `none` as off', () => {

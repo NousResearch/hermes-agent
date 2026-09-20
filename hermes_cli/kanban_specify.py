@@ -155,6 +155,13 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     except Exception as exc:  # pragma: no cover — import smoke test
         log.debug("%s: auxiliary client import failed: %s", verb, exc)
         return None, "auxiliary client unavailable"
+    # Specify/decompose run outside any agent turn (CLI, dashboard route, gateway watcher), so no
+    # conversation affinity scope is bound and the relay-affinity headers (x-opencode-session, the
+    # OpenRouter/Portal sticky key) are omitted — the OpenCode Go relay rejects that with 400
+    # MissingSessionID (#112043). Declare a per-task scope, but only when none is already bound so an
+    # in-turn caller keeps its conversation's key.
+    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+    affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
     try:
         # Route through call_llm so auxiliary.triage_specifier.* config (provider/model/base_url,
         # extra_body, reasoning_effort, retries) all apply — the direct-create path dropped extra_body
@@ -170,6 +177,9 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
         suffix = " — skipping" if verb == "specify" else ""
         log.info("%s: API call failed for %s (%s)%s", verb, task_id, exc, suffix)
         return None, f"LLM error: {type(exc).__name__}"
+    finally:
+        if affinity_token is not None:
+            reset_affinity_scope(affinity_token)
     try:
         return resp.choices[0].message.content or "", ""
     except Exception:

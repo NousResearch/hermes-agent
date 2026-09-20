@@ -201,10 +201,9 @@ export function ComposerTriggerPopover({
             <Fragment key={item.id}>
               {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
               <Tip
-                className="max-w-[calc(100vw-2rem)] wrap-anywhere"
-                collisionPadding={16}
                 delayDuration={400}
                 label={kind === '/' ? description : undefined}
+                placement="row"
                 sideOffset={4}
               >
                 <button

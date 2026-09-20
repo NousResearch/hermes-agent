@@ -44,10 +44,15 @@ def materialize_probe_api_key(api_key: object) -> str:
 
 
 def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
-    """Run *command*, returning ``(token, ttl_seconds_or_None)``."""
+    """Run *command*, returning ``(token, ttl_seconds_or_None)``. The helper runs FOR the profile whose
+    provider is being minted: it gets that profile's own env (secrets + HERMES_HOME), never the multiplexer's
+    launch environ — an ``op read`` / ``vault kv get`` helper must sign in as the served profile."""
+    from tools.environments.local import served_profile_child_env
+
     try:
         completed = subprocess.run(
             command, shell=True, capture_output=True, text=True, timeout=_MINT_TIMEOUT_SECONDS,
+            env=served_profile_child_env(inherit_credentials=True),
         )
     except subprocess.TimeoutExpired as exc:
         raise CommandTokenError(

@@ -230,6 +230,17 @@ class FakeAgent:
         }
 
 
+class SilentHeartbeatAgent(FakeAgent):
+    """Heartbeat work can call tools yet intentionally deliver no final text."""
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "date", {})
+            time.sleep(0.35)
+        return {"final_response": "[SILENT]", "messages": [], "api_calls": 1}
+
+
 class NativeTaskCardAdapter(ProgressCaptureAdapter):
     def __init__(self, platform=Platform.SLACK):
         super().__init__(platform=platform)
@@ -533,6 +544,42 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     }
     assert adapter.sent[0]["metadata"] == expected_metadata
     assert all(call["metadata"] == expected_metadata for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkeypatch, tmp_path):
+    """A silent scheduled heartbeat must not create a visible progress surface."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = SilentHeartbeatAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id="topic-7",
+        message_id="stale-user-message",
+    )
+    result = await runner._run_agent(
+        message="scheduled heartbeat",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="heartbeat-session",
+        session_key="agent:main:telegram:dm:123:topic-7",
+        scheduled_heartbeat=True,
+    )
+
+    assert result["final_response"] == "[SILENT]"
+    assert adapter.sent == []
+    assert adapter.typing == []
 
 
 @pytest.mark.asyncio
@@ -1538,7 +1585,9 @@ async def test_run_agent_sends_normalized_failure_before_queued_followup(
     sent_texts = [call["content"] for call in adapter.sent]
     assert QueuedFailedEmptyAgent.calls == 2
     assert result["final_response"] == "follow-up processed"
-    assert any("The request failed: provider exploded" in text for text in sent_texts)
+    # Sanitized failure copy (raw "provider exploded" stays in the log), then the queued follow-up.
+    assert any("couldn't finish this reply" in text and "/retry" in text for text in sent_texts)
+    assert not any("provider exploded" in text for text in sent_texts)
 
 
 @pytest.mark.asyncio

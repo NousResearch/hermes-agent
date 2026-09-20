@@ -182,6 +182,27 @@ class TestPartitionNousModelsByTier:
         assert unav == []
 
 
+    def test_subscription_billed_model_is_selectable_on_free_tier(self):
+        """A row the gateway bills to a subscription costs no credits, whatever price it lists."""
+        models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]
+        pricing = {"anthropic/claude-opus-4.6": self._PAID, "openai/gpt-5.4": {**self._PAID, "billing_mode": "subscription"}}
+        sel, unav = partition_nous_models_by_tier(models, pricing, free_tier=True)
+        assert (sel, unav) == (["openai/gpt-5.4"], ["anthropic/claude-opus-4.6"])
+
+    def test_free_tier_default_prefers_a_free_model_over_a_subscription_billed_one(self, monkeypatch):
+        import hermes_cli.models as m
+        from hermes_cli import models_pricing as mp
+        pricing = {"openai/gpt-5.4": {**self._PAID, "billing_mode": "subscription"}, "free/model": self._FREE}
+        monkeypatch.setattr(m, "get_curated_nous_model_ids", lambda: list(pricing))
+        monkeypatch.setattr(m, "check_nous_free_tier", lambda **kw: True)
+        monkeypatch.setattr(m, "union_with_portal_free_recommendations", lambda ids, pr, url="", **kw: (ids, pr))
+        monkeypatch.setattr(m, "get_preferred_silent_default_model", lambda provider="": "not/listed")
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: pricing)
+        monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: None)
+        assert m.recommended_nous_default_model()["model"] == "free/model"
+        del pricing["free/model"]
+        assert m.recommended_nous_default_model()["model"] == "openai/gpt-5.4"
+
     def test_all_paid_models(self):
         """When all models are paid, free-tier users have none selectable."""
         models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]

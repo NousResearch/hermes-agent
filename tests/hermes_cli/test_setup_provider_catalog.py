@@ -24,7 +24,13 @@ def test_setup_offers_registered_provider_catalog(monkeypatch, live):
     )
     monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
     monkeypatch.setattr(auth, "PROVIDER_REGISTRY", dict(auth.PROVIDER_REGISTRY))
-    auth._register_plugin_provider(profile)
+    # Mirror into the auth registry the way plugin discovery does; built from public types so the
+    # helper is independent of the auth module's private mirroring function.
+    pconfig = auth.ProviderConfig(
+        profile.name, profile.display_name or profile.name, profile.auth_type, inference_base_url=profile.base_url)
+    if profile.auth_type == "api_key" and profile.env_vars:
+        pconfig = auth._api_key_provider(profile.name, profile.display_name or profile.name, profile.base_url, tuple(profile.env_vars), "")
+    auth.PROVIDER_REGISTRY[profile.name] = pconfig
     monkeypatch.setattr(flows, "_ensure_flow_api_key", lambda *_: (None, "synthetic-test-key", False))
     monkeypatch.setattr(flows, "_env_base_url", lambda *_: "")
     monkeypatch.setattr(flows, "_prompt_base_url_override", lambda value, *_args, **_kwargs: value)

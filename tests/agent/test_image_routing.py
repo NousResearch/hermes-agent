@@ -693,25 +693,3 @@ class TestCodexContextVariantVisionLookup:
         # Ineligible alias: looked up verbatim, no capability gained.
         assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
         assert seen[-1] == "gpt-5.5-900k"
-
-
-# ─── registered ProviderProfile.supports_vision ──────────────────────────────
-
-
-class TestProviderProfileDeclaration:
-
-    def test_profile_declared_vision_routes_native_only_when_declared(self, monkeypatch):
-        """The routing probe honours the same ``supports_vision`` the tool-result media path reads:
-        a plugin that declares it goes native; an undeclared plugin stays text (#116408)."""
-        import providers
-        from providers.base import ProviderProfile
-
-        for name, declared in (("scout-vision", True), ("scout-novision", False)):
-            monkeypatch.setitem(
-                providers._REGISTRY, name,
-                ProviderProfile(name=name, auth_type="api_key", base_url="https://x.invalid/v1",
-                                supports_vision=declared))
-        with patch("agent.image_routing._probe_models_dev", return_value=None), \
-             patch("agent.image_routing._probe_managed_runtime", return_value=None):
-            assert decide_image_input_mode("scout-vision", "any-model", {}) == "native"
-            assert decide_image_input_mode("scout-novision", "any-model", {}) == "text"

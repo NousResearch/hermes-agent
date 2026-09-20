@@ -310,25 +310,12 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> O
     return query_ollama_supports_vision(model, base_url, api_key=api_key)
 
 
-def _probe_provider_profile(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
-    """Registered ``ProviderProfile.supports_vision`` — the same declaration the tool-result media
-    path (``tools.vision_tools._supports_media_in_tool_results``) already trusts, so a plugin is not
-    vision-capable on one surface and text-only on another. Provider-wide and opt-in: only an
-    explicit ``True`` is a verdict (the field defaults to False, which means "not declared").
-    Runs after the per-model catalogs so a catalog that knows the exact model still wins."""
-    from providers import get_provider_profile
-
-    profile = get_provider_profile(provider)
-    return True if profile is not None and profile.supports_vision is True else None
-
-
 # Capability probes after the config override, in priority order; each returns
 # True/False or None (unknown → next probe). Exceptions are logged and treated as None.
 _VISION_PROBES: Tuple[Tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
     ("caps lookup", _probe_models_dev),
     ("ollama vision probe", _probe_ollama),
-    ("provider profile declaration", _probe_provider_profile),
 )
 
 

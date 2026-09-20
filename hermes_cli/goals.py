@@ -29,6 +29,23 @@ logger = logging.getLogger(__name__)
 # ── Constants & defaults ──────────────────────────────────────────────
 
 DEFAULT_MAX_TURNS = 20
+
+
+def normalize_goal_turns(raw: Any, default: int = DEFAULT_MAX_TURNS) -> int:
+    """Turn budget for a goal loop: positive int, or no cap.
+
+    ``0``/``"unlimited"``/``"infinite"``/``"∞"`` (see ``resolve_turn_limit``)
+    disable the budget — the loop runs until the judge declares done.
+    ``None``/garbage → ``default``. Lazy import: config never imports goals.
+    """
+    from hermes_cli.config import resolve_turn_limit
+    return resolve_turn_limit(raw, default=default)
+
+
+def format_turn_budget(max_turns: int) -> str:
+    """``"20"`` normally, ``"∞"`` when the budget is disabled."""
+    import sys
+    return "∞" if max_turns >= sys.maxsize else str(max_turns)
 DEFAULT_JUDGE_TIMEOUT = 30.0
 # Judge output budget. Reasoning models burn hidden-reasoning tokens before the visible one-line
 # JSON verdict; 200 (the original) reliably truncated it and tripped the auto-pause. 4096 covers
@@ -440,7 +457,7 @@ class GoalState:
         return cls(
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
-            max_turns=int(data.get("max_turns") or DEFAULT_MAX_TURNS),
+            max_turns=normalize_goal_turns(data.get("max_turns"), DEFAULT_MAX_TURNS),
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
@@ -1072,7 +1089,7 @@ class GoalManager:
 
     def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
         self.session_id = session_id
-        self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        self.default_max_turns = normalize_goal_turns(default_max_turns, DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
 
     # --- introspection ------------------------------------------------
@@ -1094,7 +1111,7 @@ class GoalManager:
         s = self._state
         if s is None or s.status == "cleared":
             return "No active goal. Set one with /goal <text>."
-        turns = f"{s.turns_used}/{s.max_turns} turns"
+        turns = f"{s.turns_used}/{format_turn_budget(s.max_turns)} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         con = ", contract" if self.has_contract() else ""
         gat = f", {len(s.gates)} gate{'s' if len(s.gates) != 1 else ''}" if s.gates else ""
@@ -1147,7 +1164,7 @@ class GoalManager:
             raise ValueError("goal text is empty")
         self._state = GoalState(
             goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            max_turns=normalize_goal_turns(max_turns, self.default_max_turns),
             contract=contract if contract is not None else GoalContract(),
         )
         return self._save()
@@ -1627,9 +1644,7 @@ def run_kanban_goal_loop(
     def _result(outcome: str, reason: str) -> Dict[str, Any]:
         return {"outcome": outcome, "turns_used": turns_used, "reason": reason}
 
-    max_turns = int(max_turns or DEFAULT_MAX_TURNS)
-    if max_turns < 1:
-        max_turns = DEFAULT_MAX_TURNS
+    max_turns = normalize_goal_turns(max_turns, DEFAULT_MAX_TURNS)
 
     last_response = first_response or ""
     turns_used = 1   # the first turn already consumed one unit of budget
@@ -1711,6 +1726,6 @@ __all__ = [
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE", "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE", "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
     "DRAFT_CONTRACT_SYSTEM_PROMPT", "KANBAN_GOAL_CONTINUATION_TEMPLATE", "KANBAN_GOAL_FINALIZE_TEMPLATE",
-    "DEFAULT_MAX_TURNS", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
+    "DEFAULT_MAX_TURNS", "normalize_goal_turns", "format_turn_budget", "load_goal", "save_goal", "clear_goal", "migrate_goal_to_session", "judge_goal",
     "run_kanban_goal_loop",
 ]

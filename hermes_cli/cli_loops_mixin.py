@@ -462,8 +462,9 @@ class CLILoopsMixin:
 
             def make(sid):
                 try:
+                    from hermes_cli.goals import normalize_goal_turns
                     goals_cfg = (load_config() or {}).get("goals") or {}
-                    max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+                    max_turns = normalize_goal_turns(goals_cfg.get("max_turns", 20))
                 except Exception:
                     max_turns = 20
                 return GoalManager(session_id=sid, default_max_turns=max_turns)

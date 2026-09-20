@@ -41,7 +41,8 @@ class GatewayGoalsMixin:
                 from hermes_cli.config import load_config
 
                 goals_cfg = (load_config() or {}).get("goals") or {}
-            return int(goals_cfg.get("max_turns", 20) or 20)
+            from hermes_cli.goals import normalize_goal_turns
+            return normalize_goal_turns(goals_cfg.get("max_turns", 20))
         except Exception:
             return 20
 

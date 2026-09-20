@@ -2633,21 +2633,27 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # ~350ms `mcp` SDK import, which holds the GIL against the web_server
     # import and delays the READY sentinel; _make_agent's bounded
     # wait_for_mcp_discovery covers a server still connecting at first turn.
-    mcp_discovery_after_bind = headless_backend and os.environ.get("HERMES_DESKTOP") == "1"
-    if not mcp_discovery_after_bind:
-        try:
-            from hermes_cli.mcp_startup import start_background_mcp_discovery
+    # A standalone (non-Desktop) dashboard may sit idle and unvisited for days
+    # (#58733): it arms discovery instead and the first /api/ws client fires it.
+    desktop = os.environ.get("HERMES_DESKTOP") == "1"
+    if headless_backend and desktop:
+        return True
+    try:
+        from hermes_cli.mcp_startup import (
+            defer_background_mcp_discovery,
+            start_background_mcp_discovery,
+        )
 
-            start_background_mcp_discovery(
-                logger=logger,
-                thread_name="dashboard-mcp-discovery",
-            )
-        except Exception:
-            logger.debug(
-                "Background MCP tool discovery failed at dashboard startup",
-                exc_info=True,
-            )
-    return mcp_discovery_after_bind
+        if desktop:
+            start_background_mcp_discovery(logger=logger, thread_name="dashboard-mcp-discovery")
+        else:
+            defer_background_mcp_discovery(logger=logger, thread_name="dashboard-mcp-discovery", delay=None)
+    except Exception:
+        logger.debug(
+            "Background MCP tool discovery failed at dashboard startup",
+            exc_info=True,
+        )
+    return False
 
 
 def cmd_dashboard(args):

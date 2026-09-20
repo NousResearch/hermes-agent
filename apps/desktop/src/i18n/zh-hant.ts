@@ -1398,6 +1398,8 @@ export const zhHant = defineLocale({
       collapse: '收合',
       connectAnother: '連結其他提供方',
       otherProviders: '其他提供方',
+      perBotLogins: '每個機器人需個別登入：OAuth 登入僅限一次性使用，複製機器人時不會一併複製。',
+      perBotLoginsDocs: '了解機器人如何擁有各自的憑證',
       removeConfirm: provider => `移除 ${provider}？`,
       removeKeyManaged: provider => `${provider} 由 API 金鑰設定。請從 API Keys 中移除。`,
       removedTitle: '帳號已移除',

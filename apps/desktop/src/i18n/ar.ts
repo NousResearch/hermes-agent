@@ -1136,6 +1136,8 @@ export const ar = defineLocale({
       collapse: 'طي',
       connectAnother: 'ربط مزود آخر',
       otherProviders: 'مزودون آخرون',
+      perBotLogins: 'كل بوت يسجّل الدخول بشكل منفصل: تسجيل الدخول عبر OAuth يُستخدم مرة واحدة، لذلك لا يُنسخ عند تكرار البوت.',
+      perBotLoginsDocs: 'كيف يملك كل بوت بيانات اعتماده',
       disconnect: 'قطع الاتصال',
       disconnectInTerminal: 'قطع الاتصال (يشغّل أمر الإزالة في الطرفية)',
       removeConfirm: provider => `إزالة ${provider}؟`,

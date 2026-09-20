@@ -1767,6 +1767,8 @@ export const zh = defineLocale({
       collapse: '收起',
       connectAnother: '连接其他提供方',
       otherProviders: '其他提供方',
+      perBotLogins: '每个机器人需单独登录：OAuth 登录仅限一次性使用，复制机器人时不会一并复制。',
+      perBotLoginsDocs: '了解机器人如何拥有各自的凭据',
       disconnect: '断开连接',
       disconnectInTerminal: '断开连接（在终端中运行移除命令）',
       removeConfirm: provider => `移除 ${provider}？`,

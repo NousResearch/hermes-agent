@@ -1483,6 +1483,8 @@ export const ru = defineLocale({
       collapse: 'Свернуть',
       connectAnother: 'Подключить другой провайдер',
       otherProviders: 'Другие провайдеры',
+      perBotLogins: 'Каждый бот входит отдельно: вход через OAuth одноразовый, поэтому он не копируется при дублировании бота.',
+      perBotLoginsDocs: 'Как боты владеют своими учётными данными',
       disconnect: 'Отключить',
       disconnectInTerminal: 'Отключить (выполнит команду удаления в терминале)',
       removeConfirm: provider => `Удалить ${provider}?`,

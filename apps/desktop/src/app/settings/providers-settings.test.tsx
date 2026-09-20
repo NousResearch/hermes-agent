@@ -303,4 +303,52 @@ describe('ProvidersSettings', () => {
 
     await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null))
   })
+
+  // Regression (#117325): OAuth logins are single-use and are not copied when a bot is
+  // duplicated, so a freshly switched-to bot has none of its own. Collapsing the sign-in rows
+  // behind "Other providers" made users read that as the update wiping their accounts
+  // ("I'm gonna stop updating Hermes"); the empty case now explains itself instead.
+  it('keeps sign-in rows open and explains per-bot logins when a bot has no account of its own', async () => {
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    $settingsScopeOverride.set('beta')
+    listOAuthProviders.mockResolvedValue({ providers: [provider('minimax-oauth', false)] })
+
+    try {
+      await renderProvidersSettings()
+
+      expect(await screen.findByText(/OAuth logins are single-use/)).toBeTruthy()
+      expect(screen.getByText('How bots own their credentials')).toBeTruthy()
+      // The row itself is visible without expanding anything.
+      expect(screen.getByText('MiniMax')).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /Other providers/ })).toBeNull()
+    } finally {
+      $settingsScopeOverride.set(null)
+    }
+  })
+
+  it('leaves the launch profile collapsed as before', async () => {
+    listOAuthProviders.mockResolvedValue({ providers: [provider('minimax-oauth', false)] })
+
+    await renderProvidersSettings()
+
+    expect(screen.queryByText(/OAuth logins are single-use/)).toBeNull()
+    expect(screen.getByRole('button', { name: /Other providers/ })).toBeTruthy()
+  })
+
+  it('says nothing extra when the bot already has a connected account', async () => {
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    $settingsScopeOverride.set('beta')
+    listOAuthProviders.mockResolvedValue({
+      providers: [provider('nous', true), provider('minimax-oauth', false)]
+    })
+
+    try {
+      await renderProvidersSettings()
+
+      expect((await screen.findAllByText('Connected')).length).toBeGreaterThan(0)
+      expect(screen.queryByText(/OAuth logins are single-use/)).toBeNull()
+    } finally {
+      $settingsScopeOverride.set(null)
+    }
+  })
 })

@@ -1339,6 +1339,8 @@ export interface Translations {
       collapse: string
       connectAnother: string
       otherProviders: string
+      perBotLogins: string
+      perBotLoginsDocs: string
       disconnect: string
       disconnectInTerminal: string
       removeConfirm: (provider: string) => string

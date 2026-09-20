@@ -1576,6 +1576,8 @@ export const en: Translations = {
       collapse: 'Collapse',
       connectAnother: 'Connect another provider',
       otherProviders: 'Other providers',
+      perBotLogins: 'Each bot signs in separately: OAuth logins are single-use, so they are not copied when a bot is duplicated.',
+      perBotLoginsDocs: 'How bots own their credentials',
       disconnect: 'Disconnect',
       disconnectInTerminal: 'Disconnect (runs the removal command in the terminal)',
       removeConfirm: provider => `Remove ${provider}?`,

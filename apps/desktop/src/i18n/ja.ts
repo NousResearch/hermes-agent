@@ -1377,6 +1377,8 @@ export const ja = defineLocale({
       collapse: '折りたたむ',
       connectAnother: '別のプロバイダーを接続',
       otherProviders: 'その他のプロバイダー',
+      perBotLogins: 'ボットごとに個別のサインインが必要です。OAuth ログインは一度きりのため、ボットを複製してもコピーされません。',
+      perBotLoginsDocs: 'ボットごとの認証情報について',
       removeConfirm: provider => `${provider} を削除しますか？`,
       removeKeyManaged: provider => `${provider} は API キーで設定されています。API Keys から削除してください。`,
       removedTitle: 'アカウントを削除しました',

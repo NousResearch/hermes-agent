@@ -19,6 +19,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { ExternalLink } from '@/lib/external-link'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -130,6 +131,11 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 // the two surfaces stay visually identical. Selecting a provider hands
 // off to the shared onboarding overlay, which runs that provider's real
 // sign-in flow; the key affordances open the API-key catalog below.
+// Docs anchor for the per-profile credential model, cited by the note below.
+const PROFILE_CREDENTIALS_DOCS =
+  'https://hermes-agent.nousresearch.com/docs/user-guide/profiles#every-profile-owns-its-credentials'
+
+
 function OAuthPicker({
   disconnecting,
   onDisconnect,
@@ -169,7 +175,13 @@ function OAuthPicker({
   const connected = rest.filter(isConnected)
   const others = rest.filter(p => !isConnected(p))
   const collapsible = others.length > 0
-  const showOthers = !collapsible || showAll
+  // A bot owns its own logins: OAuth sign-ins are single-use and are not copied when a bot is
+  // duplicated, so a freshly switched-to bot legitimately has none. Leading that case with a
+  // collapsed disclosure reads as "the update wiped my sign-ins" (#117325) — the sign-in rows
+  // stay open and say why they are empty instead. The launch profile (no `profile` scope) and
+  // any bot with a connected account keep the existing collapsed-by-default page.
+  const explainPerBotLogins = Boolean(profile) && connected.length === 0 && collapsible
+  const showOthers = !collapsible || showAll || explainPerBotLogins
 
   return (
     <section className="mb-5 grid gap-2">
@@ -188,6 +200,14 @@ function OAuthPicker({
       <p className="-mt-2 mb-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {p.intro}
       </p>
+      {explainPerBotLogins && (
+        <p className="-mt-1 mb-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {p.perBotLogins}{' '}
+          <ExternalLink className="underline" href={PROFILE_CREDENTIALS_DOCS} showExternalIcon>
+            {p.perBotLoginsDocs}
+          </ExternalLink>
+        </p>
+      )}
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
       {/* Slot #2 — the no-account path, matching onboarding. Behind the
           --local launch flag like every local-models surface. */}
@@ -217,7 +237,7 @@ function OAuthPicker({
           <OpenRouterProviderRow onClick={onWantApiKey} />
         </>
       )}
-      {collapsible && (
+      {collapsible && !explainPerBotLogins && (
         <Button
           className="py-1 text-[length:var(--conversation-caption-font-size)]"
           onClick={() => setShowAll(v => !v)}

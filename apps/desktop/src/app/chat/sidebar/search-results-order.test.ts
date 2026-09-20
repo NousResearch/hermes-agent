@@ -70,6 +70,22 @@ describe('mergeSearchResults', () => {
     expect(merged.map(session => session.id)).toEqual([quotingSession.id, TARGET_ID])
   })
 
+  it("drops the previous query's server hits while the next request is in flight", () => {
+    // The previous query landed a server-only row for the target; the user
+    // then kept typing. Until the new response arrives, only the new query's
+    // client matches may render — a fast typist could otherwise click a
+    // result the search box no longer matches.
+    const merged = mergeSearchResults(
+      [quotingSession, targetSession],
+      'Handoff',
+      [idHit],
+      indexByAnyId([quotingSession, targetSession]),
+      true
+    )
+
+    expect(merged.map(session => session.id)).toEqual([quotingSession.id])
+  })
+
   it('keeps a loaded conversation at its server rank, not its recency slot', () => {
     const merged = mergeSearchResults(
       [quotingSession, targetSession],

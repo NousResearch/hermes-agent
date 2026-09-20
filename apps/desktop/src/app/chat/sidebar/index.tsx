@@ -315,18 +315,21 @@ export function mergeSearchResults(
   }
 
   // While the request is in flight the client's own recency-ordered matches
-  // are all there is — instant feedback while typing. Once the ranked server
+  // are all there is — instant feedback while typing, and no leftovers from
+  // whatever the previous query's request returned. Once the ranked server
   // response lands, it decides the order: the backend runs direct id matches
   // before FTS content hits, so pasting a session's exact id must keep that
   // hit on top instead of letting newer quoting sessions bury it.
   const out = new Map<string, SessionInfo>()
 
-  if (searchPending || serverMatches.length === 0) {
+  if (searchPending) {
     for (const s of sortedSessions) {
       if (sessionMatchesSearch(s, query)) {
         out.set(s.id, s)
       }
     }
+
+    return [...out.values()]
   }
 
   for (const match of serverMatches) {

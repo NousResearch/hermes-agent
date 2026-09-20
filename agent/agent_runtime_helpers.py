@@ -2130,13 +2130,22 @@ def _resolve_switch_context_length(agent, snapshot):
         from hermes_cli.config import (
             get_compatible_custom_providers, get_custom_provider_context_length, load_config
         )
-        custom_providers = get_compatible_custom_providers(load_config())
-        intent = get_custom_provider_context_length(
-            model=agent.model, base_url=agent.base_url, custom_providers=custom_providers
-        )
+        from agent.agent_init import config_context_length_for_runtime
+        switch_cfg = load_config()
+        custom_providers = get_compatible_custom_providers(switch_cfg)
+        # The durable ``model.context_length`` pin is re-read from live config (never carried over
+        # blindly, never simply dropped): the destination IS the configured default route -> keep the
+        # ceiling; it is some other route -> the scoping inside returns None. Same precedence as
+        # construction, where the pin outranks custom_providers metadata (#116467).
+        intent = config_context_length_for_runtime(agent, switch_cfg)
+        if intent is None:
+            intent = get_custom_provider_context_length(
+                model=agent.model, base_url=agent.base_url, custom_providers=custom_providers
+            )
     except Exception:
         intent = None
-    agent._config_context_length = intent
+    from agent.agent_init import set_config_context_length
+    set_config_context_length(agent, intent)
     runtime_len = None
     if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
         try:

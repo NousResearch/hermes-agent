@@ -170,7 +170,7 @@ def test_cli_provider_fallback_notice_honors_policy(tmp_path, monkeypatch, setti
     from hermes_cli import cli_agent_setup_mixin as m
     out = []
     monkeypatch.setattr(climod, "_cprint", lambda s: out.append(s))
-    _cli_block(m, "from gateway.warning_notifications import render_notification\n                render_notification(\n                    lambda: _cprint(f\"⚠️  Primary auth failed",
+    _cli_block(m, "from gateway.warning_notifications import render_notification\n                    render_notification(\n                        lambda: _cprint(f\"⚠️  Primary auth failed",
                "self.requested_provider = _fb_provider", {"_fb_provider": "p", "_fb_model": "m"})
     assert (len(out) == 1 and "Primary auth failed" in out[0]) is _visible(setting)
 

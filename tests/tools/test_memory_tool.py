@@ -203,35 +203,36 @@ class TestMemoryStoreReplace:
         assert result["success"] is True
         assert store.memory_entries == ["RULE B: CI is per-head."]
         assert result["replaced_entry"] == entry
+        # Batch surface carries the same visibility: op index -> full overwritten text.
+        store.add("memory", "second entry")
+        batch_result = store.apply_batch("memory", [{"action": "replace", "old_text": "second entry",
+                                                     "content": "second entry, amended."}])
+        assert batch_result["success"] is True
+        assert batch_result["replaced_entries"] == {0: "second entry"}
 
-    def test_replace_same_across_single_batch_and_approval_replay(self, store):
+    def test_replace_same_across_single_batch_and_approval_replay(self, tmp_path, monkeypatch):
         """The three dispatch surfaces (store.replace, apply_batch, apply_memory_pending
-        write-approval replay) must agree on the final entry for the same op (#117952)."""
+        write-approval replay) must agree on the final entry for the same op (#117952).
+        Each surface gets its OWN store dir — the surfaces share nothing but the op."""
         from tools.memory_tool import apply_memory_pending
         entry = "alpha fact. beta fact. gamma fact."
+        op = {"action": "replace", "old_text": "beta fact.", "content": "beta fact, updated."}
+        results = {}
 
-        s1 = store
-        s1.add("memory", entry)
-        assert s1.replace("memory", "beta fact.", "beta fact, updated.")["success"] is True
-        single = s1.memory_entries[0]
+        for surface, run in (
+                ("single", lambda s: s.replace("memory", op["old_text"], op["content"])),
+                ("batch", lambda s: s.apply_batch("memory", [op])),
+                ("replay", lambda s: apply_memory_pending({"action": "batch", "target": "memory",
+                                                           "operations": [op]}, s))):
+            store_dir = tmp_path / surface
+            store_dir.mkdir()
+            monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda d=store_dir: d)
+            store = MemoryStore(memory_char_limit=500)
+            store.add("memory", entry)
+            assert run(store)["success"] is True
+            results[surface] = store.memory_entries[0]
 
-        s2 = store.__class__(memory_char_limit=500)
-        s2.add("memory", entry)
-        batch_result = s2.apply_batch("memory", [{"action": "replace", "old_text": "beta fact.",
-                                                  "content": "beta fact, updated."}])
-        assert batch_result["success"] is True
-        assert batch_result["replaced_entries"] == {0: entry}
-        batch = s2.memory_entries[0]
-
-        s3 = store.__class__(memory_char_limit=500)
-        s3.add("memory", entry)
-        payload = {"action": "batch", "target": "memory",
-                   "operations": [{"action": "replace", "old_text": "beta fact.",
-                                   "content": "beta fact, updated."}]}
-        assert apply_memory_pending(payload, s3)["success"] is True
-        replay = s3.memory_entries[0]
-
-        assert single == batch == replay == "beta fact, updated."
+        assert results["single"] == results["batch"] == results["replay"] == "beta fact, updated."
 
 
     def test_replace_ambiguous_match(self, store):

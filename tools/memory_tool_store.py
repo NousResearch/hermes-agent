@@ -74,7 +74,8 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
 # overwrote — a whole-entry write is never silent about the loss (#117952).
 _REPLACED_ENTRY = ("replaced_entry", lambda result: result[2] if len(result) > 2 else None)
 # Batch twin: op index -> full entry text that op's replace overwrote, same reason.
-_BATCH_REPLACED_ENTRIES = ("replaced_entries", lambda result: result[2] if len(result) > 2 else None)
+# Empty dict -> None so add/remove-only batches don't carry a noise field.
+_BATCH_REPLACED_ENTRIES = ("replaced_entries", lambda result: (result[2] if len(result) > 2 else None) or None)
 
 
 class MemoryStore:

@@ -16,19 +16,19 @@ from gateway.response_filters import (
 )
 
 
-def _source():
+def _source(platform=Platform.TELEGRAM):
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="-1001",
         chat_type="group",
         user_id="12345",
     )
 
 
-def _event(*, internal: bool = False):
+def _event(*, internal: bool = False, source=None):
     return MessageEvent(
         text="side chatter",
-        source=_source(),
+        source=source or _source(),
         message_id="msg-42",
         internal=internal,
     )
@@ -145,6 +145,41 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
 
 
 @pytest.mark.asyncio
+async def test_webhook_silence_token_suppresses_delivery_without_machinery_display_kind(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]", "messages": [], "tools": [], "history_offset": 0,
+        "last_prompt_tokens": 0, "api_calls": 1, "failed": False,
+    })
+    source = _source(Platform.WEBHOOK)
+
+    assert await runner._handle_message_with_agent(
+        _event(source=source), source, "agent:main:webhook:group:-1001:12345", 1,
+    ) == ""
+    appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
+    webhook_user_rows = [entry for entry in appended if entry.get("role") == "user"]
+    assert webhook_user_rows
+    assert all("display_kind" not in entry for entry in webhook_user_rows)
+
+
+@pytest.mark.asyncio
+async def test_failed_webhook_silence_marker_is_not_suppressed(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]", "messages": [], "tools": [], "history_offset": 0,
+        "last_prompt_tokens": 0, "api_calls": 1, "failed": True,
+    })
+    source = _source(Platform.WEBHOOK)
+
+    response = await runner._handle_message_with_agent(
+        _event(source=source), source, "agent:main:webhook:group:-1001:12345", 1,
+    )
+
+    assert "[SILENT]" in response
+    assert "request was not processed" in response
+
+
+@pytest.mark.asyncio
 async def test_scheduled_heartbeat_silence_suppresses_delivery(monkeypatch, tmp_path):
     """A poller-stamped heartbeat turn may end on a bare marker (#113031); the event stays
     non-internal so authorization and the emergency stop still apply to it."""
@@ -186,6 +221,28 @@ async def test_queued_human_turn_also_gets_the_visible_fallback():
     )
 
     assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_queued_webhook_turn_suppresses_a_bare_silence_marker():
+    runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="agent:main:webhook:group:-1001:12345",
+        stream_consumer_holder=[None],
+        mute_notification_reply=False,
+        persist_user_display_kind=None,
+        source=_source(Platform.WEBHOOK),
+        _status_thread_metadata=None,
+        event_message_id=None,
+        inbound_message_id="msg-42",
+        run_generation=1,
+    )
+    result = {"final_response": "[SILENT]", "failed": False}
+
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+
+    runner._deliver_queued_first_response.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -276,6 +333,23 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
 
     response = await runner._handle_message_with_agent(
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response == text
+
+
+@pytest.mark.asyncio
+async def test_webhook_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    text = "Use [SILENT] when no update is needed."
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": text, "messages": [], "tools": [], "history_offset": 0,
+        "last_prompt_tokens": 0, "api_calls": 1, "failed": False,
+    })
+    source = _source(Platform.WEBHOOK)
+
+    response = await runner._handle_message_with_agent(
+        _event(source=source), source, "agent:main:webhook:group:-1001:12345", 1,
     )
 
     assert response == text

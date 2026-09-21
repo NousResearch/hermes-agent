@@ -380,6 +380,20 @@ class GatewayTurnMixin:
         except Exception:
             return False
 
+    @staticmethod
+    def _is_autonomous_webhook_silence(source, agent_result, response) -> bool:
+        """Allow successful bare silence markers from the autonomous webhook lane.
+
+        Webhook requests are autonomous work triggers, not user-chat provenance:
+        they deliberately have no machinery ``display_kind``. Keep this exception
+        scoped to the webhook platform so ordinary interactive turns retain their
+        visible fallback.
+        """
+        return (
+            source.platform == Platform.WEBHOOK
+            and GatewayTurnMixin._is_intentional_silence(agent_result, response)
+        )
+
     async def _hmwa_resolve_session(self, event, source):
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
         topic-binding heal). Returns ``(source, session_entry, session_key)`` or ``None`` to drop
@@ -1516,7 +1530,14 @@ class GatewayTurnMixin:
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        _autonomous_webhook_silence = self._is_autonomous_webhook_silence(
+            source, agent_result, response,
+        )
+        if (
+            _intentional_silence
+            and not is_machinery_display_kind(_silence_kind)
+            and not _autonomous_webhook_silence
+        ):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -3682,7 +3703,12 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+            if (
+                is_machinery_display_kind(turn_ctx.persist_user_display_kind)
+                or self._is_autonomous_webhook_silence(
+                    turn_ctx.source, _delivery_result, first_response,
+                )
+            ):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",

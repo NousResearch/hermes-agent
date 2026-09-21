@@ -8,6 +8,8 @@ repo with per-project ``refs/hermes/<hash16>``, ``indexes/<hash16>``, ``projects
 (workdir, timestamps, parent identity), ``ledgers/<hash16>.json`` (agent-write ledger), shared
 ``info/exclude``; ``.last_prune`` marker; ``legacy-<ts>/`` archived pre-v2 repos.  Git runs
 with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE so nothing leaks into the user's project.
+Mutations share an exclusive lease at ``checkpoints/../.checkpoints.transaction.lock``;
+it stays outside the store so clearing checkpoints cannot replace a live lock inode.
 """
 
 import hashlib
@@ -28,6 +30,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
 from utils import env_int
+from tools.checkpoint_manager_lock import CheckpointStoreBusy, _CheckpointTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,12 @@ def _resolve_checkpoint_base() -> Path:
     serves every profile, so the import-time constant would write every profile's code-edit
     checkpoints into the launch profile's store."""
     return CHECKPOINT_BASE if CHECKPOINT_BASE != _CHECKPOINT_BASE_AT_IMPORT else get_hermes_home() / "checkpoints"
+
+
+def _canonical_checkpoint_base(base: Optional[Path] = None) -> Path:
+    """Capture one live profile root for both the lease and its nested mutations."""
+    return (base if base is not None else _resolve_checkpoint_base()).expanduser().resolve()
+
 
 _STORE_DIRNAME, _INDEXES_DIRNAME, _PROJECTS_DIRNAME, _LEDGERS_DIRNAME = "store", "indexes", "projects", "ledgers"
 _REFS_PREFIX, _LEGACY_PREFIX, _PRUNE_MARKER_NAME = "refs/hermes", "legacy-", ".last_prune"
@@ -60,6 +69,8 @@ DEFAULT_EXCLUDES = [
 ]
 
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
+_INTERACTIVE_LOCK_TIMEOUT = 2.0
+_MAINTENANCE_LOCK_TIMEOUT = float(_GIT_TIMEOUT * 3)
 _MAX_FILES = 50_000  # skip huge directories to avoid slowdowns
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')  # short or full SHA-1/SHA-256
 _MB = 1024 * 1024
@@ -310,6 +321,14 @@ def _commit_tree_args(tree_sha: str, message: str, parent: Optional[str]) -> Lis
     return ["commit-tree", tree_sha, *(["-p", parent] if parent is not None else []), "-m", message, "--no-gpg-sign"]
 
 
+def _commit_root_tree_readable(store: Path, working_dir: str, commit_sha: str) -> bool:
+    """Resolve and parse the root tree before publishing a newly created commit."""
+    ok, _, err = _run_git(["ls-tree", f"{commit_sha}^{{tree}}"], store, working_dir)
+    if not ok:
+        logger.error("Checkpoint commit %s has an unreadable root tree; ref not published: %s", commit_sha, err)
+    return ok
+
+
 def _rebuild_linear_chain(store: Path, working_dir: str, shas: List[str]) -> Optional[str]:
     """Re-commit each sha's tree (same message) as a fresh linear chain; new tip, or None on
     any failure (caller leaves the ref untouched)."""
@@ -320,7 +339,7 @@ def _rebuild_linear_chain(store: Path, working_dir: str, shas: List[str]) -> Opt
             return None
         msg = _git_out(["log", "--format=%s", "-1", sha], store, working_dir) or "checkpoint"
         new_parent = _git_out(_commit_tree_args(tree_sha, msg, new_parent), store, working_dir)
-        if not new_parent:
+        if not new_parent or not _commit_root_tree_readable(store, working_dir, new_parent):
             return None
     return new_parent
 
@@ -544,16 +563,16 @@ class _ProjectRefs(NamedTuple):
     ref: str
 
 
-def _project_refs(working_dir: str) -> _ProjectRefs:
+def _project_refs(working_dir: str, checkpoint_base: Optional[Path] = None) -> _ProjectRefs:
     abs_dir = str(_normalize_path(working_dir))
-    store, dir_hash = _store_path(), _project_hash(abs_dir)
+    store, dir_hash = _store_path(checkpoint_base), _project_hash(abs_dir)
     return _ProjectRefs(abs_dir, store, dir_hash, _index_path(store, dir_hash), _ref_name(dir_hash))
 
 
 def _locate(working_dir: str, commit_hash: str,
-            file_path: Optional[str] = None) -> Tuple[Optional[_ProjectRefs], Optional[Dict]]:
+            file_path: Optional[str] = None, checkpoint_base: Optional[Path] = None) -> Tuple[Optional[_ProjectRefs], Optional[Dict]]:
     """Validate inputs and resolve store coordinates; ``(refs, error_result_or_None)``."""
-    p = _project_refs(working_dir)
+    p = _project_refs(working_dir, checkpoint_base)
     err = _validate_commit_hash(commit_hash) or (file_path and _validate_file_path(file_path, p.abs_dir))
     if err:
         return p, {"success": False, "error": err}
@@ -635,16 +654,27 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            store, dir_hash = _store_path(), self._ledger_key(str(path))
-            _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
+            base = _canonical_checkpoint_base()
+            store, dir_hash = _store_path(base), self._ledger_key(str(path))
+            with _CheckpointTransaction(base, _INTERACTIVE_LOCK_TIMEOUT, "agent-write ledger update"):
+                _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
 
     def safe_restore_plan(self, working_dir: str, commit_hash: str) -> Dict:
+        """Serialize safe restore planning against all shared-store mutations."""
+        base = _canonical_checkpoint_base()
+        try:
+            with _CheckpointTransaction(base, _MAINTENANCE_LOCK_TIMEOUT, "safe restore planning"):
+                return self._safe_restore_plan_locked(working_dir, commit_hash, checkpoint_base=base)
+        except CheckpointStoreBusy as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _safe_restore_plan_locked(self, working_dir: str, commit_hash: str, *, checkpoint_base: Path) -> Dict:
         """Classify files changed since ``commit_hash``: ``restore`` = still matching what Hermes
         last wrote (or deleted since); ``skipped`` = user-edited afterwards or never written by
         Hermes.  ``ledger_empty`` => no ledger, callers fall back to a full restore."""
-        p, err = _locate(working_dir, commit_hash)
+        p, err = _locate(working_dir, commit_hash, checkpoint_base=checkpoint_base)
         if err:
             return err
 
@@ -729,8 +759,17 @@ class CheckpointManager:
         return sorted(results, key=lambda x: x.get("timestamp", ""), reverse=True)
 
     def diff(self, working_dir: str, commit_hash: str) -> Dict:
+        """Serialize checkpoint diff against all shared-store mutations."""
+        base = _canonical_checkpoint_base()
+        try:
+            with _CheckpointTransaction(base, _MAINTENANCE_LOCK_TIMEOUT, "checkpoint diff"):
+                return self._diff_locked(working_dir, commit_hash, checkpoint_base=base)
+        except CheckpointStoreBusy as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _diff_locked(self, working_dir: str, commit_hash: str, *, checkpoint_base: Path) -> Dict:
         """Show diff between a checkpoint and the current working tree."""
-        p, err = _locate(working_dir, commit_hash)
+        p, err = _locate(working_dir, commit_hash, checkpoint_base=checkpoint_base)
         if err:
             return err
         ok, _ = _commit_exists(p, commit_hash)
@@ -759,13 +798,23 @@ class CheckpointManager:
                 result["empty"] = True
         return result
 
-    def restore(self, working_dir: str, commit_hash: str, file_path: str = None,
+    def restore(self, working_dir: str, commit_hash: str, file_path: Optional[str] = None,
                 safe: bool = False) -> Dict:
+        """Serialize checkpoint restore against all shared-store mutations."""
+        base = _canonical_checkpoint_base()
+        try:
+            with _CheckpointTransaction(base, _MAINTENANCE_LOCK_TIMEOUT, "checkpoint restore"):
+                return self._restore_locked(working_dir, commit_hash, file_path=file_path, safe=safe, checkpoint_base=base)
+        except CheckpointStoreBusy as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _restore_locked(self, working_dir: str, commit_hash: str, file_path: Optional[str] = None,
+                        safe: bool = False, *, checkpoint_base: Path) -> Dict:
         """Restore files to a checkpoint state.  ``safe=True`` (full-directory only) leaves files
         the user hand-edited after Hermes' last write untouched (agent-write ledger); the result
         then gains ``skipped_user_edits``, ``skipped_oversize`` (size cap kept them out of every
         checkpoint) and, only when a delete failed, ``failed_deletes``."""
-        p, err = _locate(working_dir, commit_hash, file_path)
+        p, err = _locate(working_dir, commit_hash, file_path, checkpoint_base=checkpoint_base)
         if err:
             return err
         abs_dir = p.abs_dir
@@ -776,7 +825,7 @@ class CheckpointManager:
         skipped_user_edits: List[str] = []
         restore_paths: Optional[List[str]] = None
         if safe and not file_path:
-            plan = self.safe_restore_plan(abs_dir, commit_hash)
+            plan = self._safe_restore_plan_locked(abs_dir, commit_hash, checkpoint_base=checkpoint_base)
             if not plan.get("success"):
                 return {"success": False, "error": plan.get("error", "Safe-restore plan failed")}
             if not plan.get("ledger_empty"):  # no agent-write history => classic full restore
@@ -787,7 +836,8 @@ class CheckpointManager:
                                        skipped_oversize=[])
 
         # Take a pre-rollback snapshot so you can undo the undo.
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
+        self._take_locked(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})",
+                          checkpoint_base=checkpoint_base)
 
         targets = _SafeRestoreTargets(checkout=[file_path or "."])
         if restore_paths is not None:
@@ -854,8 +904,18 @@ class CheckpointManager:
     # --- internal ---
 
     def _take(self, working_dir: str, reason: str) -> bool:
+        """Serialize checkpoint snapshot against all shared-store mutations."""
+        base = _canonical_checkpoint_base()
+        try:
+            with _CheckpointTransaction(base, _INTERACTIVE_LOCK_TIMEOUT, "checkpoint snapshot"):
+                return self._take_locked(working_dir, reason, checkpoint_base=base)
+        except CheckpointStoreBusy as exc:
+            logger.info("Checkpoint skipped: %s", exc)
+            return False
+
+    def _take_locked(self, working_dir: str, reason: str, *, checkpoint_base: Path) -> bool:
         """Take a snapshot.  Returns True on success."""
-        p = _project_refs(working_dir)
+        p = _project_refs(working_dir, checkpoint_base)
         err = _init_store(p.store, working_dir)
         if err:
             return _step_failed("store init", err)
@@ -885,6 +945,8 @@ class CheckpointManager:
                                     p.store, working_dir, index_file=p.index_file)
         if not ok or not new_sha:
             return _step_failed("commit-tree", err)
+        if not _commit_root_tree_readable(p.store, working_dir, new_sha):
+            return False
         update_args = ["update-ref", p.ref, new_sha] + ([ref_commit] if ref_commit else [])
         ok, _, err = _run_git(update_args, p.store, working_dir)
         if not ok:
@@ -1110,6 +1172,17 @@ def _prune_v2_projects(store: Path, cutoff: float, delete_orphans: bool,
 
 
 def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, checkpoint_base: Optional[Path] = None,
+                      max_total_size_mb: int = 0, orphan_allowlist: Optional[set] = None) -> Dict:
+    """Run checkpoint pruning under the shared checkpoint-store writer lease."""
+    base = _canonical_checkpoint_base(checkpoint_base)
+    try:
+        with _CheckpointTransaction(base, _MAINTENANCE_LOCK_TIMEOUT, "checkpoint pruning"):
+            return _prune_checkpoints_locked(retention_days, delete_orphans, base, max_total_size_mb, orphan_allowlist)
+    except CheckpointStoreBusy as exc:
+        return {**_empty_prune_result(), "errors": 1, "lock_error": str(exc)}
+
+
+def _prune_checkpoints_locked(retention_days: int = 7, delete_orphans: bool = True, checkpoint_base: Optional[Path] = None,
                       max_total_size_mb: int = 0, orphan_allowlist: Optional[set] = None) -> Dict[str, int]:
     """Delete stale/orphan checkpoints and reclaim store space.  Never raises.  Deleted when
     ``delete_orphans`` and the workdir is observably gone, OR last touch predates ``retention_days``
@@ -1145,6 +1218,17 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
 
 
 def maybe_auto_prune_checkpoints(retention_days: int = 7, min_interval_hours: int = 24, delete_orphans: bool = True,
+                                 checkpoint_base: Optional[Path] = None, max_total_size_mb: int = 0) -> Dict:
+    """Run automatic checkpoint pruning under the shared checkpoint-store writer lease."""
+    base = _canonical_checkpoint_base(checkpoint_base)
+    try:
+        with _CheckpointTransaction(base, _INTERACTIVE_LOCK_TIMEOUT, "automatic checkpoint pruning"):
+            return _maybe_auto_prune_checkpoints_locked(retention_days, min_interval_hours, delete_orphans, base, max_total_size_mb)
+    except CheckpointStoreBusy as exc:
+        return {"skipped": True, "error": str(exc)}
+
+
+def _maybe_auto_prune_checkpoints_locked(retention_days: int = 7, min_interval_hours: int = 24, delete_orphans: bool = True,
                                  checkpoint_base: Optional[Path] = None, max_total_size_mb: int = 0) -> Dict[str, object]:
     """Idempotent wrapper around ``prune_checkpoints`` for startup hooks: writes
     ``CHECKPOINT_BASE/.last_prune`` so calls within ``min_interval_hours`` short-circuit.
@@ -1262,7 +1346,17 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     return out
 
 
-def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+def clear_all(checkpoint_base: Optional[Path] = None) -> Dict:
+    """Clear all checkpoints without unlinking an active writer's lease."""
+    base = _canonical_checkpoint_base(checkpoint_base)
+    try:
+        with _CheckpointTransaction(base, _MAINTENANCE_LOCK_TIMEOUT, "clearing checkpoint store"):
+            return _clear_all_locked(base)
+    except CheckpointStoreBusy as exc:
+        return {"bytes_freed": 0, "deleted": False, "lock_error": str(exc)}
+
+
+def _clear_all_locked(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
     Returns ``{"bytes_freed": N, "deleted": bool}``."""
     base = checkpoint_base or _resolve_checkpoint_base()
@@ -1278,7 +1372,17 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     return out
 
 
-def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict:
+    """Clear legacy archives while excluding migration and other store mutations."""
+    base = _canonical_checkpoint_base(checkpoint_base)
+    try:
+        with _CheckpointTransaction(base, _MAINTENANCE_LOCK_TIMEOUT, "clearing legacy checkpoints"):
+            return _clear_legacy_locked(base)
+    except CheckpointStoreBusy as exc:
+        return {"bytes_freed": 0, "deleted": 0, "errors": 1, "lock_error": str(exc)}
+
+
+def _clear_legacy_locked(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Delete all ``legacy-*`` archive directories and report any failures."""
     base = checkpoint_base or _resolve_checkpoint_base()
     out = {"bytes_freed": 0, "deleted": 0, "errors": 0}

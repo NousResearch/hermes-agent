@@ -81,3 +81,17 @@ def strip_unicode_tags(text: str) -> str:
     if not text or not _HAS_UNICODE_TAG.search(text):
         return text
     return _UNICODE_TAG_SUB_RE.sub(lambda m: m.group(1) or "", text)
+
+
+def strip_unicode_tags_deep(value):
+    """``strip_unicode_tags`` applied to every string in a nested dict/list/tuple structure —
+    server-controlled JSON payloads (MCP structuredContent, _meta) can smuggle invisible TAG
+    chars in nested strings, which a flat strip of the outer text never reaches."""
+    if isinstance(value, str):
+        return strip_unicode_tags(value)
+    if isinstance(value, dict):
+        return {strip_unicode_tags_deep(k) if isinstance(k, str) else k: strip_unicode_tags_deep(v)
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(strip_unicode_tags_deep(v) for v in value)
+    return value

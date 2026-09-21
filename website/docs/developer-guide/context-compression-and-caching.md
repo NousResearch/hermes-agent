@@ -234,7 +234,7 @@ compression:
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   tail_mode: lean            # Tail retention policy: lean | legacy (default: lean)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
-  max_tail_message_floor: 0 # Cap on the protected tail (0 = default 8)
+  max_tail_message_floor: 0 # Cap on the tail message floor (0 = default 8)
   min_tail_user_messages: 1  # Real user messages guaranteed in the tail (default: 1)
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
@@ -261,7 +261,7 @@ auxiliary:
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models without the `threshold_tokens` cap). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
-| `max_tail_message_floor` | `0` | ≥0 | Upper bound (messages) on how many recent `protect_last_n` messages survive verbatim when budget pressure trims the protected tail. `0` = built-in default of 8. Without a cap, a run of bulky tool results could force the whole `protect_last_n` window verbatim into the tail; the cap bounds that blowup while still honoring `min_tail_user_messages`. Caveat: on a lean tail (budget pinned at 10K tokens) a raised floor keeps N messages regardless of token size — the floor has no token bound yet (#108647) |
+| `max_tail_message_floor` | `0` | ≥0 | Upper bound (messages) on how many recent `protect_last_n` messages survive verbatim. `0` = built-in default of 8. The count floor is opportunistic: the tail walk drops it to 0 rows whenever the soft ceiling can hold the wire overhead of that many empty rows, so a raised floor only widens the verbatim window when the token bound (`TAIL_MAX_CONTEXT_FRACTION`) has room (#108647) |
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
@@ -516,14 +516,13 @@ accumulating tokens until the budget is exhausted. The budget — and the 1.5× 
 ceiling whole rows may overrun it by — is capped at 20% of the context window on every
 model, so `protect_last_n` is a *minimum* only up to a small count floor (8 rows) and never
 forces a tail that cannot leave room to compact; only the required last-user / last-assistant
-anchors and atomic tool groups may exceed the cap. That count floor is configurable as
-`compression.max_tail_message_floor` (0 = the built-in 8): raise it to keep more recent
-messages verbatim; on a lean tail it has no token bound of its own yet (#108647).
-accumulating tokens until the budget is exhausted. Falls back to the fixed
-`protect_last_n` count if the budget would protect fewer messages. That fallback
-is itself capped by `max_tail_message_floor` (default 8, configurable via
-`compression.max_tail_message_floor`) so a run of bulky tool results cannot force
-the entire `protect_last_n` window verbatim into the tail.
+anchors and atomic tool groups may exceed the cap. That count floor's cap is configurable as
+`compression.max_tail_message_floor` (0 = the built-in 8): raise it to widen the `protect_last_n`
+floor so more recent messages survive verbatim when bulky tool results fill the budget. The floor
+stays opportunistic — the walk drops it to 0 rows whenever the token ceiling can hold the wire
+overhead of that many empty rows — and the `TAIL_MAX_CONTEXT_FRACTION` (20% of the window) bound
+still applies, so a raised floor widens the verbatim window only where the token bound has room
+(#108647).
 
 Boundaries are aligned to avoid splitting tool_call/tool_result groups.
 The `_align_boundary_backward()` method walks past consecutive tool results

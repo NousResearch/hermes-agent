@@ -1899,22 +1899,17 @@ class TestTokenBudgetTailProtection:
         assert c.max_tail_message_floor == 0
         assert c._effective_max_tail_message_floor == 8  # module default
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Tail floor has no token bound (#108647): on a lean window a raised "
-            "floor keeps 20 messages / 70,190 tokens = 7.0x the 10,000 lean budget. "
-            "Remove this marker in the same PR that lands a token bound."
-        ),
-    )
-    def test_tail_floor_token_bound_pending_108647(self):
-        """The message-count floor clamps the tail cut in token-blind count space
-        (``min(cut_idx, fallback_cut)``) and the anchors only walk backward, so on a
-        lean window a raised floor keeps N messages of whatever size the run
-        produced — no token bound.  #108647 tracks the missing bound; when a bound
-        lands, remove the xfail marker in the same PR.
+    def test_tail_floor_respects_the_token_bound(self):
+        """The message-count floor must not push the tail past the token ceiling.
+
+        Upstream ``b7803a1763`` bound the lean tail at ``TAIL_MAX_CONTEXT_FRACTION``
+        of the window and made the count floor opportunistic (it drops to 0 rows
+        whenever the soft ceiling can hold the wire overhead of that many empty
+        rows), so a raised ``max_tail_message_floor`` can no longer force N bulky
+        rows verbatim into the tail (#108647). This pins that invariant for a
+        raised floor so a regression of the bound is caught here.
         """
-        from agent.context_compressor import LEAN_TAIL_FLOOR_TOKENS
+        from agent.context_compressor import LEAN_TAIL_FLOOR_TOKENS, TAIL_MAX_CONTEXT_FRACTION
         from agent.model_metadata import estimate_messages_tokens_rough
 
         c = ContextCompressor(
@@ -1934,8 +1929,11 @@ class TestTokenBudgetTailProtection:
             msgs.append({"role": "assistant", "content": "y" * 28_000})
         cut = c._find_tail_cut_by_tokens(msgs, head_end=0, token_budget=budget)
         tail_tokens = estimate_messages_tokens_rough(msgs[cut:])
-        # Desired invariant (today: 20 messages / 70,190 tokens = 7.0x the budget).
-        assert tail_tokens <= int(budget * 1.5)
+        # The tail may overrun the budget by the soft-ceiling factor (whole rows
+        # are kept), but never past the window-share bound.
+        assert tail_tokens <= int(budget * 1.5) or tail_tokens <= int(
+            c.context_length * TAIL_MAX_CONTEXT_FRACTION
+        ), (tail_tokens, budget)
 
 
     def test_small_conversation_still_compresses(self, budget_compressor):

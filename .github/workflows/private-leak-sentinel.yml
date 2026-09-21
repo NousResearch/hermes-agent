@@ -1,0 +1,18 @@
+# Private-leak sentinel (fleet-wide credential scan) for the hermes-agent fork.
+# Fork-only file: not present upstream; re-applied after each upstream sync.
+# Reusable workflow lives in codeo1io/.github — full-history gitleaks scan.
+name: private-leak-sentinel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "31 3 * * *"  # daily off-peak full-history rescan
+
+permissions:
+  contents: read
+
+jobs:
+  private-leak:
+    uses: codeo1io/.github/.github/workflows/private-leak-sentinel.yaml@main

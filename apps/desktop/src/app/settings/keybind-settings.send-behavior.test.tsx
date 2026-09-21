@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -24,9 +25,11 @@ afterEach(cleanup)
 describe('send behavior subpage', () => {
   const open = (subpage?: string) =>
     render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <KeybindSettings subpage={subpage} />
-      </I18nProvider>
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nProvider configClient={null} initialLocale="en">
+          <KeybindSettings subpage={subpage} />
+        </I18nProvider>
+      </QueryClientProvider>
     )
 
   it('renders the send settings on their own page, not the shortcut map', () => {

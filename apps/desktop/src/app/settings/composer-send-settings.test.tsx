@@ -7,10 +7,11 @@ import {
   SEND_GRACE_DEFAULT_REASONS,
   TYPING_IDLE_DEFAULT_MS
 } from '@hermes/shared'
-import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $composerSendPrefs } from '@/store/composer-send'
+import { $composerSendPrefs } from '@/store/composer-prefs'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { ComposerSendSettings } from './composer-send-settings'
@@ -19,15 +20,17 @@ import { ComposerSendSettings } from './composer-send-settings'
  * The graded half of the send settings: which rows exist for which state, and
  * whether a control persists what it says it does.
  *
- * The store is REAL here — only the IPC bridge and the i18n table are stubbed —
- * so a control that stopped persisting would fail these, not pass them.
+ * The store is REAL here — only the config write and the i18n table are stubbed
+ * — so a control that stopped persisting would fail these, not pass them. The
+ * write is the gateway config (`desktop.composer.*`), which is where the values
+ * live now; the panel has no storage of its own.
  */
 
 const mocks = vi.hoisted(() => ({
   haptic: vi.fn(),
   notify: vi.fn(),
   notifyError: vi.fn(),
-  set: vi.fn()
+  save: vi.fn()
 }))
 
 const WORDS = {
@@ -65,6 +68,7 @@ const WORDS = {
   graceReasonEnter: 'A bare Enter',
   graceReasonDoubleTap: 'A double tap',
   graceReasonPause: 'The pause send',
+  graceReasonLongPress: 'The long press',
   graceReasonHold: 'The long press',
   graceNone: 'None',
   graceAll: 'All',
@@ -90,10 +94,20 @@ vi.mock('@/i18n', () => ({
         placeholderSendNewline: 'Enter starts a new line',
         placeholderSendPause: 'Enter after a pause sends'
       },
-      keybinds: { composerSend: WORDS }
+      keybinds: { composerSend: WORDS },
+      settings: { config: { autosaveFailed: 'Could not save settings' } }
     }
   })
 }))
+
+vi.mock('@/hermes', async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>()
+
+  return {
+    ...actual,
+    saveHermesConfig: (...args: unknown[]) => mocks.save(...args)
+  }
+})
 
 vi.mock('@/lib/haptics', () => ({
   triggerHaptic: (...args: unknown[]) => mocks.haptic(...args)
@@ -143,29 +157,33 @@ const newlineMode = (next: Partial<typeof DEFAULTS> = {}) => setPrefs({ enterSen
 
 const later = () => Promise.resolve()
 
-beforeEach(() => {
-  mocks.set.mockReset()
-  mocks.notify.mockReset()
-  mocks.haptic.mockReset()
-  mocks.set.mockImplementation(async (prefs: unknown) => ({ ...(prefs as object), path: '/tmp/composer-send.json' }))
+/** The config record the panel asked the gateway to save. */
+const savedComposerRecord = () =>
+  (mocks.save.mock.calls.at(-1)?.[0] as { desktop?: { composer?: Record<string, unknown> } } | undefined)?.desktop
+    ?.composer
 
-  Object.defineProperty(window, 'hermesDesktop', {
-    configurable: true,
-    value: { composerSend: { get: async () => DEFAULTS, set: mocks.set } },
-    writable: true
-  })
+const open = () =>
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ComposerSendSettings />
+    </QueryClientProvider>
+  )
+
+beforeEach(() => {
+  mocks.save.mockReset()
+  mocks.save.mockResolvedValue({ ok: true })
+  mocks.notify.mockReset()
+  mocks.notifyError.mockReset()
+  mocks.haptic.mockReset()
 
   $composerSendPrefs.set(DEFAULTS)
 })
 
-afterEach(() => {
-  cleanup()
-  delete (window as { hermesDesktop?: unknown }).hermesDesktop
-})
+afterEach(cleanup)
 
 describe('ComposerSendSettings', () => {
   it('leads with the gate, and hides the newline choice until it can matter', () => {
-    const { getByRole, getByText, queryByText } = render(<ComposerSendSettings />)
+    const { getByRole, getByText, queryByText } = open()
 
     expect(getByText('Keep a bare Enter from sending')).toBeTruthy()
     expect(getByRole('switch', { name: 'Keep a bare Enter from sending' })).toBeTruthy()
@@ -174,30 +192,30 @@ describe('ComposerSendSettings', () => {
   })
 
   it('persists the gate, which is stored inverted from how it reads', async () => {
-    const { getByRole } = render(<ComposerSendSettings />)
+    const { getByRole } = open()
 
     fireEvent.click(getByRole('switch', { name: 'Keep a bare Enter from sending' }))
     await later()
 
-    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ enterSends: false }))
+    expect(savedComposerRecord()).toMatchObject({ enter_sends: false })
     expect(mocks.notify).toHaveBeenCalled()
   })
 
   it('offers the line break as its own choice once the gate is closed', async () => {
     newlineMode()
 
-    const { getByRole, getByText } = render(<ComposerSendSettings />)
+    const { getByRole, getByText } = open()
 
     expect(getByText('A bare Enter starts a new line')).toBeTruthy()
 
     fireEvent.click(getByRole('switch', { name: 'A bare Enter starts a new line' }))
     await later()
 
-    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ enterNewline: false }))
+    expect(savedComposerRecord()).toMatchObject({ enter_newline: false })
   })
 
   it('hides the gestures entirely while Enter sends on the press', () => {
-    const { queryByText } = render(<ComposerSendSettings />)
+    const { queryByText } = open()
 
     // They cannot fire, and a row of dead switches reads as a broken panel. The
     // note is what says where they went.
@@ -211,7 +229,7 @@ describe('ComposerSendSettings', () => {
   it('brings the gestures back once Enter only breaks the line', () => {
     newlineMode()
 
-    const { getByRole, getByText, queryByText } = render(<ComposerSendSettings />)
+    const { getByRole, getByText, queryByText } = open()
 
     expect(getByText('Press and hold')).toBeTruthy()
     expect(getByRole('switch', { name: 'Press and hold' })).toBeTruthy()
@@ -221,18 +239,18 @@ describe('ComposerSendSettings', () => {
   it('persists a gesture switch', async () => {
     newlineMode()
 
-    const { getByRole } = render(<ComposerSendSettings />)
+    const { getByRole } = open()
 
     fireEvent.click(getByRole('switch', { name: 'Press and hold' }))
     await later()
 
-    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendOnHold: true }))
+    expect(savedComposerRecord()).toMatchObject({ send_on_hold: true })
   })
 
   it('shows each window only for the gesture that is switched on', () => {
     newlineMode({ sendOnHold: true })
 
-    const { getByText, queryByText } = render(<ComposerSendSettings />)
+    const { getByText, queryByText } = open()
 
     expect(getByText('Hold time')).toBeTruthy()
     expect(queryByText('Idle time')).toBeNull()
@@ -242,13 +260,13 @@ describe('ComposerSendSettings', () => {
   it('shows the idle window, which is the only gesture that acts with no key', () => {
     newlineMode({ sendOnIdle: true })
 
-    const { getByText } = render(<ComposerSendSettings />)
+    const { getByText } = open()
 
     expect(getByText('Idle time')).toBeTruthy()
   })
 
   it('offers the delay in every configuration — default Enter is where undo-send matters most', () => {
-    const { getByText } = render(<ComposerSendSettings />)
+    const { getByText } = open()
 
     expect(getByText('Wait before sending')).toBeTruthy()
     expect(getByText('Hold duration')).toBeTruthy()
@@ -257,7 +275,7 @@ describe('ComposerSendSettings', () => {
   it('summarises the delay as a count, not a fixed scope', () => {
     setPrefs({ sendGraceFor: ['pause', 'hold'] })
 
-    const { getByText } = render(<ComposerSendSettings />)
+    const { getByText } = open()
 
     expect(getByText('2 of 4')).toBeTruthy()
   })
@@ -265,7 +283,7 @@ describe('ComposerSendSettings', () => {
   it('hides the duration exactly when nothing is set to wait', () => {
     setPrefs({ sendGraceFor: [] })
 
-    const { queryByText } = render(<ComposerSendSettings />)
+    const { queryByText } = open()
 
     expect(queryByText('Hold duration')).toBeNull()
   })
@@ -273,34 +291,48 @@ describe('ComposerSendSettings', () => {
   it('persists one situation at a time', async () => {
     setPrefs({ sendGraceFor: ['pause'] })
 
-    const { getByRole, getByText } = render(<ComposerSendSettings />)
+    const { getByRole, getByText } = open()
 
     fireEvent.click(getByRole('button', { name: '1 of 4' }))
     fireEvent.click(getByText('The long press'))
 
     await later()
 
-    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendGraceFor: ['pause', 'hold'] }))
+    expect(savedComposerRecord()).toMatchObject({ send_grace_for: ['pause', 'hold'] })
   })
 
   it('can turn a single situation back off without touching the others', async () => {
     setPrefs({ sendGraceFor: ['pause', 'hold'] })
 
-    const { getByRole, getByText } = render(<ComposerSendSettings />)
+    const { getByRole, getByText } = open()
 
     fireEvent.click(getByRole('button', { name: '2 of 4' }))
     fireEvent.click(getByText('The pause send'))
 
     await later()
 
-    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendGraceFor: ['hold'] }))
+    expect(savedComposerRecord()).toMatchObject({ send_grace_for: ['hold'] })
   })
 
-  it('names the file it persists to, so the hand-edit path is discoverable', () => {
+  it('names where it persists to, so the hand-edit path is discoverable', () => {
     newlineMode({ sendOnHold: true })
 
-    const { getAllByText } = render(<ComposerSendSettings />)
+    const { getAllByText } = open()
 
-    expect(getAllByText(/composer-send\.json/).length).toBeGreaterThan(0)
+    expect(getAllByText(/desktop\.composer/).length).toBeGreaterThan(0)
+  })
+
+  it('keeps the last known-good values when the write fails', async () => {
+    mocks.save.mockRejectedValue(new Error('gateway down'))
+
+    const { getByRole } = open()
+
+    fireEvent.click(getByRole('switch', { name: 'Keep a bare Enter from sending' }))
+
+    // The atom moved optimistically, then went back: the panel and the composer
+    // read this atom on every keystroke, so a failed write must not leave either
+    // of them claiming a setting the gateway never took.
+    await waitFor(() => expect($composerSendPrefs.get()).toEqual(DEFAULTS))
+    expect(mocks.notifyError).toHaveBeenCalled()
   })
 })

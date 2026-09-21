@@ -5,16 +5,15 @@ import { TRANSLATIONS } from '@/i18n/catalog'
 import { en } from '@/i18n/en'
 
 import {
-  composerKeybindRows,
   defaultBindings,
   KEYBIND_ACTIONS,
   KEYBIND_READONLY,
   keybindAction,
   keybindActionAllowedInEditableTarget,
-  readonlyShortcuts
+  primarySendRow,
+  readonlyKeybindsFor
 } from './actions'
 import { canonicalizeCombo } from './combo'
-
 // Relationship checks between the action table and its consumers, not the
 // specific chord or wording any one action ships with.
 describe('KEYBIND_ACTIONS', () => {
@@ -146,29 +145,26 @@ describe('composer keybind rows', () => {
   const prefs = (over: Record<string, unknown> = {}) => normalizeComposerSendPrefs({ enterSends: false, ...over })
 
   const keysFor = (over: Record<string, unknown>, id: string) =>
-    composerKeybindRows(prefs(over)).find(row => row.id === id)?.keys
+    readonlyKeybindsFor(prefs(over)).find(row => row.id === id)?.keys
 
   it('prints the historical Enter binding when Enter sends', () => {
-    const sending = normalizeComposerSendPrefs({})
-
-    expect(composerKeybindRows(sending).find(row => row.id === 'composer.send')?.keys).toEqual(['enter'])
-    expect(composerKeybindRows(sending).find(row => row.id === 'composer.newline')?.keys).toEqual(['shift+enter'])
+    expect(keysFor({ enterSends: true }, 'composer.send')).toEqual(['enter', 'mod+enter'])
+    expect(keysFor({ enterSends: true }, 'composer.newline')).toEqual(['shift+enter'])
   })
 
-  it('prints the chord when Enter only breaks the line and nothing else is armed', () => {
+  it('prints the submit chord when Enter only breaks the line and nothing else is armed', () => {
     expect(keysFor({}, 'composer.send')).toEqual(['mod+enter'])
-    expect(keysFor({}, 'composer.newline')).toEqual(['enter', 'shift+enter'])
+    expect(keysFor({}, 'composer.newline')).toEqual(['enter'])
+    expect(keysFor({}, 'composer.steer')).toEqual(['shift+enter'])
   })
 
   it('gives each armed gesture its own row, because they are different instructions', () => {
-    const rows = composerKeybindRows(prefs({ sendOnDoubleTap: true, sendOnHold: true }))
-    const ids = rows.map(row => row.id)
+    const ids = readonlyKeybindsFor(prefs({ sendOnDoubleTap: true, sendOnHold: true })).map(row => row.id)
 
     expect(ids).toContain('composer.send.double')
     expect(ids).toContain('composer.send.hold')
-    // The generic row is replaced, not duplicated: "Enter" cannot describe both
-    // a double tap and a long press.
-    expect(keysFor({ sendOnDoubleTap: true, sendOnHold: true }, 'composer.send')).toBeUndefined()
+    // Only the armed ones: an unarmed gesture advertises a key that does nothing.
+    expect(ids).not.toContain('composer.send.pause')
   })
 
   it('keeps the queue chord printed in every configuration', () => {
@@ -177,15 +173,20 @@ describe('composer keybind rows', () => {
     }
   })
 
+  it('drops the newline row when the settings removed the line break', () => {
+    expect(keysFor({ enterNewline: false }, 'composer.newline')).toBeUndefined()
+  })
+
   it('resolves every id the panel labels, so no row renders as a raw id', () => {
     const configurations = [
       normalizeComposerSendPrefs({}),
       prefs(),
+      prefs({ enterNewline: false }),
       prefs({ sendOnDoubleTap: true, sendOnHold: true, sendOnPause: true })
     ]
 
     for (const config of configurations) {
-      for (const row of readonlyShortcuts(config)) {
+      for (const row of readonlyKeybindsFor(config)) {
         const labelKey = row.labelKey ?? row.id
 
         expect(en.keybinds.actions[labelKey], labelKey).toBeDefined()
@@ -195,16 +196,23 @@ describe('composer keybind rows', () => {
 
   it('labels the send row per gesture, since the keys alone do not say what they do', () => {
     const labelFor = (over: Record<string, unknown>) =>
-      composerKeybindRows(prefs(over)).find(row => row.id.startsWith('composer.send'))?.labelKey
+      readonlyKeybindsFor(prefs(over)).find(row => row.id.startsWith('composer.send.'))?.labelKey
 
-    expect(labelFor({})).toBe('composer.send.mod')
     expect(labelFor({ sendOnDoubleTap: true })).toBe('composer.send.double')
     expect(labelFor({ sendOnHold: true })).toBe('composer.send.hold')
     expect(labelFor({ sendOnPause: true })).toBe('composer.send.pause')
   })
 
+  it('falls back to the chord row, labelled, when the gate is closed with nothing armed', () => {
+    expect(primarySendRow(prefs())).toEqual({
+      id: 'composer.send',
+      category: 'composer',
+      keys: ['mod+enter'],
+      labelKey: 'composer.send.mod'
+    })
+  })
+
   it('prints a single Enter for the pause gesture, which only sometimes means send', () => {
     expect(keysFor({ sendOnPause: true }, 'composer.send.pause')).toEqual(['enter'])
-    expect(keysFor({ sendOnPause: true }, 'composer.newline')).toEqual(['enter', 'shift+enter'])
   })
 })

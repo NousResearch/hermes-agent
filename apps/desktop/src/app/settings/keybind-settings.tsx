@@ -15,12 +15,11 @@ import {
   KEYBIND_PANEL_ACTION,
   type KeybindActionMeta,
   type KeybindReadonly,
-  KEYBINDS_AREA,
-  readonlyShortcuts
+  KEYBINDS_AREA,  readonlyKeybindsFor
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
-import { $composerSendPrefs } from '@/store/composer-send'
+import { $composerSendPrefs } from '@/store/composer-prefs'
 import {
   $bindings,
   $capture,
@@ -84,11 +83,12 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
   // allKeybindActions() stays memoized across that registration.
   const contributions = useContributions(KEYBINDS_AREA)
   const actionList = allKeybindActions(contributions)
+
   const [query, setQuery] = useState('')
   // The composer rows print different keys per send mode, so the map has to
   // follow Settings → Keyboards → Send with.
   const sendPrefs = useStore($composerSendPrefs)
-  const readonlyRows = useMemo(() => readonlyShortcuts(sendPrefs), [sendPrefs])
+  const readonlyRows = useMemo(() => readonlyKeybindsFor(sendPrefs), [sendPrefs])
 
   const openCombo = bindings[KEYBIND_PANEL_ACTION]?.[0]
 

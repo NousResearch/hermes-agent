@@ -137,6 +137,13 @@ response, and `num_turns: 0`. This demonstrates the print-timeout partial-return
 path. It does **not** demonstrate signal-based cancellation or server-side
 cancellation semantics.
 
+The Hermes transport therefore invokes `agy` with `--print-timeout 0s` and owns
+the timeout boundary itself. `antigravity.request_timeout_seconds` is an
+**inactivity timeout**: each valid NDJSON protocol event resets the deadline.
+This lets productive, long-running turns continue while still terminating a
+process that stops emitting protocol events. Cancellation remains available
+through the normal Hermes interrupt path.
+
 ## Permission modes
 
 The conservative default `antigravity.sandbox: true` emits `--sandbox`. An

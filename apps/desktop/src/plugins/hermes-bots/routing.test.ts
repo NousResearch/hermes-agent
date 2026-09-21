@@ -356,4 +356,36 @@ describe('group transcript speaker meta (#96432)', () => {
     expect(meta?.image).toBe('remote.png')
     expect(meta?.title).toBe('Remote Default')
   })
+
+  it("seats the 'default' member for a primary speaking as its 'hermes' handle (#118566)", () => {
+    const meta = groupTranscriptSpeakerMeta(
+      { from: { kind: 'member', name: 'hermes' } },
+      [localDefault, remoteDefault],
+      allMeta
+    )
+
+    expect(meta?.image).toBe('local.png')
+    expect(meta?.title).toBe('Local Default')
+  })
+
+  it("seats a member by the roster's precomputed handle (#118566)", () => {
+    const twin = { name: 'miku', handle: 'miku-laptop' } as RosterRow
+
+    const meta = groupTranscriptSpeakerMeta({ from: { kind: 'member', name: 'miku-laptop' } }, [twin], {
+      miku: { title: 'Miku', image: 'miku.png' }
+    })
+
+    expect(meta?.image).toBe('miku.png')
+  })
+
+  it("seats the source-qualified 'default' for a remote 'hermes' speaker, never the local twin (#118566)", () => {
+    const meta = groupTranscriptSpeakerMeta(
+      { from: { kind: 'member', name: 'hermes', source: 'spark' } },
+      [localDefault, remoteDefault],
+      allMeta
+    )
+
+    expect(meta?.image).toBe('remote.png')
+    expect(meta?.title).toBe('Remote Default')
+  })
 })

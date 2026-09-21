@@ -444,6 +444,43 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
   return own
 }
 
+/** Match a transcript speaker back to its member row. The name a local bot's
+ *  turn carries is its @handle, not its profile name (#118566): a bot-mode
+ *  delivery stamps the author with `_handle(profile)`, so the primary
+ *  profile speaks as 'hermes' and a bare-name compare never seats the
+ *  'default' member. Try the roster's precomputed handle, then the primary
+ *  profile's fixed 'hermes' alias. */
+export function findTranscriptMember(
+  from: GroupMessageAuthor | null | undefined,
+  members: RosterRow[]
+): RosterRow | null {
+  if (!from || from.kind === 'user') {
+    return null
+  }
+
+  const sameSource = (bot: RosterRow) =>
+    from.source ? (bot.connectionLabel || bot.connectionId) === from.source : !bot.remoteSource
+
+  const byName = members.find(bot => bot.name === from.name && sameSource(bot))
+
+  if (byName) {
+    return byName
+  }
+
+  const speaker = String(from.name || '').trim()
+
+  return (
+    members.find(bot => sameSource(bot) && Boolean(bot.handle) && bot.handle === speaker) ||
+    members.find(
+      bot =>
+        sameSource(bot) &&
+        speaker.toLowerCase() === 'hermes' &&
+        String(bot.name || '').trim().toLowerCase() === 'default'
+    ) ||
+    null
+  )
+}
+
 /** Group Chat transcript speaker meta (#96432). Owner-aware: a source-qualified
  *  line looks up the matched member via botRosterMeta, never `allMeta[name]`
  *  and never `null` just because `entry.from.source` is set. */
@@ -456,12 +493,7 @@ export function groupTranscriptSpeakerMeta(
     return null
   }
 
-  const member =
-    members.find(
-      bot =>
-        bot.name === entry.from?.name &&
-        (entry.from.source ? (bot.connectionLabel || bot.connectionId) === entry.from.source : !bot.remoteSource)
-    ) || null
+  const member = findTranscriptMember(entry.from, members)
 
   if (member) {
     return botRosterMeta(member, allMeta)

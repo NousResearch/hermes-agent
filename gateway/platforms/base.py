@@ -1843,6 +1843,11 @@ class BasePlatformAdapter(ABC):
     supports_async_delivery: bool = True
     # ``send()`` chunks natively via ``truncate_message()`` -> the router skips its truncation.
     splits_long_messages: bool = False
+    # Opt-in metadata contract for caller-owned outboxes; applies to send() and native
+    # media sends, NOT streaming/edit/control-message APIs. See TelegramAdapter.send.
+    # The shared _send_with_retry honors the flag even on adapters without this capability,
+    # but cannot prevent their internal retries/fallbacks.
+    supports_single_external_attempt: bool = False
     # Prefix users can always TYPE for Hermes commands ("!" where the client eats a leading "/").
     typed_command_prefix: str = "/"
     # ``in_channel`` continuable-cron surface: job delivered FLAT, plain replies continue it via
@@ -3502,7 +3507,13 @@ class BasePlatformAdapter(ABC):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None,
         max_retries: int = 2, base_delay: float = 2.0) -> "SendResult":
         """Send with exponential-backoff retry on transient network errors; permanent
-        failures fall back to a plain-text send, exhausted retries notify the user."""
+        failures fall back to a plain-text send, exhausted retries notify the user.
+
+        ``metadata["single_external_attempt"] is True`` returns the first result
+        unchanged: a caller-owned outbox owns retries and ambiguity reconciliation,
+        including failures marked retryable. No fallback or failure notice is sent.
+        Adapter-internal behavior requires ``supports_single_external_attempt``.
+        """
         async def _send(text: str) -> "SendResult":
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
@@ -3515,6 +3526,8 @@ class BasePlatformAdapter(ABC):
             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
 
         result = await _send(content)
+        if isinstance(metadata, dict) and metadata.get("single_external_attempt") is True:
+            return result
         if result.success or self._send_retry_is_final(result):
             return result
         error_str = result.error or ""

@@ -479,6 +479,7 @@ class TelegramAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    supports_single_external_attempt = True  # caller-owned outbox contract; see send()
     RICH_MESSAGE_MAX_CHARS = 32768  # Bot API 10.1 rich cap; above it use legacy chunking
     _SPLIT_THRESHOLD = 4000  # chunk near this length ⇒ a client-side split continuation is almost certain
     MEDIA_GROUP_WAIT_SECONDS = 0.8
@@ -1184,6 +1185,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Pruned stale Telegram DM topic binding chat=%s thread=%s (Bot API: thread not found)", self.name, chat_id, thread_id)
 
     @staticmethod
+    def _is_single_external_attempt(metadata: Optional[Dict[str, Any]]) -> bool:
+        return isinstance(metadata, dict) and metadata.get("single_external_attempt") is True
+
+    def _single_external_attempt_failure(self, error: Exception) -> SendResult:
+        safe_error = _redact_telegram_error_text(error)
+        logger.warning("[%s] Single external attempt failed (no fallback): %s", self.name, safe_error)
+        return SendResult(success=False, error=safe_error, retryable=False, error_kind=classify_send_error(error))
+
+    @staticmethod
     def _is_bad_request_error(error: Exception) -> bool:
         name = error.__class__.__name__.lower()
         if name == "badrequest" or name.endswith("badrequest"):
@@ -1225,6 +1235,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await _await_with_thread_deadline(
                     send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
             except Exception as send_err:
+                if self._is_single_external_attempt(metadata):
+                    raise
                 if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
                     raise
                 logger.warning(
@@ -1547,6 +1559,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._bot.do_api_request("sendRichMessage", api_kwargs=payload),
                 timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         except Exception as exc:
+            if self._is_single_external_attempt(metadata) and not self._is_bad_request_error(exc):
+                return self._single_external_attempt_failure(exc)
             if self._rich_rejected(exc, "sendRichMessage", "MarkdownV2"):
                 return None
             # Honor Telegram's flood-control retry_after over the base retry schedule.
@@ -3424,13 +3438,16 @@ class TelegramAdapter(BasePlatformAdapter):
             _TimedOut = None  # type: ignore[assignment,misc]
         return _NetErr, _BadReq, _TimedOut
 
-    async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: Dict[str, Any]):
+    async def _send_chunk_markdown_or_plain(
+        self, chunk: str, send_kwargs: Dict[str, Any], *, single_external_attempt: bool = False):
         """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
         try:
             return await _await_with_thread_deadline(
                 self._bot.send_message(text=chunk, parse_mode=ParseMode.MARKDOWN_V2, **send_kwargs),
                 timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
         except Exception as md_error:
+            if single_external_attempt and not self._is_bad_request_error(md_error):
+                raise
             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                 return await _await_with_thread_deadline(
@@ -3461,7 +3478,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
-                return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
+                return await self._send_chunk_markdown_or_plain(
+                    chunk, send_kwargs, single_external_attempt=self._is_single_external_attempt(metadata)), used_thread_fallback
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
                 if _BadReq and isinstance(send_err, _BadReq):
@@ -3504,7 +3522,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     raise
                 if is_pool_timeout:
                     await self._drain_general_connections_after_pool_timeout()
-                if _send_attempt >= 2:
+                if self._is_single_external_attempt(metadata) or _send_attempt >= 2:
                     raise
                 wait = 2 ** _send_attempt
                 logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
@@ -3520,10 +3538,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     # coroutine open for. Sleeping the server value verbatim pinned send() for 97 minutes in
                     # production and froze inbound on every platform when it ran on the gateway boot path
                     # (#91969).
-                    if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                    if self._is_single_external_attempt(metadata) or wait > _FLOOD_INLINE_WAIT_CAP_SECS:
                         logger.warning(
-                            "[%s] Telegram flood control on send (retry_after=%.1fs > %.0fs); failing closed instead of sleeping: %s",
-                            self.name, wait, _FLOOD_INLINE_WAIT_CAP_SECS, safe_send_error)
+                            "[%s] Telegram flood control on send (retry_after=%.1fs); returning without inline retry: %s",
+                            self.name, wait, safe_send_error)
                         return self._record_send_flood_cooldown(chat_id, wait)
                     if _send_attempt < 2:
                         logger.warning(
@@ -3551,6 +3569,8 @@ class TelegramAdapter(BasePlatformAdapter):
         long-polls live on until they rotted into CLOSE-WAIT while the adapter still reported connected
         (#111727). ``_keep_typing`` already refreshes every 2s, so one in-flight re-arm per chat, at most
         one per ``typing_retrigger_min_interval_seconds``, covers the gap a landed message leaves."""
+        if self._is_single_external_attempt(metadata):
+            return
         if (metadata or {}).get("notify") or not getattr(getattr(self, "config", None), "typing_indicator", True):
             return
         # __dict__.setdefault: tests build adapters via object.__new__() (no __init__).
@@ -3583,7 +3603,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send a message to a Telegram chat."""
+        """Send a message to a Telegram chat.
+
+        ``metadata["single_external_attempt"] is True`` lets a durable outbox own
+        the mutation boundary and ambiguous outcomes. send(), _send_with_retry(),
+        send_image, send_image_file, send_document, send_video, send_animation,
+        send_voice and send_multiple_images do not retry or fallback-send after
+        uncertain results, emit failure notices, or split into multiple send
+        operations. Multi-chunk text and image batches requiring multiple sends
+        fail with ``too_long``; one photo album may still create several messages.
+
+        Definitive BadRequest text/rich/voice-format and text-routing corrections
+        may issue another request. Transport connection establishment may try
+        alternative IPs before sending. This is neither exactly-once delivery nor
+        literally one HTTP request. Callers must reconcile uncertainty before
+        retrying, regardless of SendResult.retryable. Other flag values retain the
+        default behavior; streaming, edits and control-message APIs are not covered.
+        """
         if not self._bot:
             live = self._replacement_telegram_adapter()
             if live is not None:
@@ -3638,6 +3674,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
             chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+            if self._is_single_external_attempt(metadata) and len(chunks) > 1:
+                return SendResult(success=False, error="message_too_long", error_kind="too_long")
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix; escape the MarkdownV2-special parentheses.
                 chunks = [
@@ -5084,6 +5122,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._bot.send_voice, chat_id, reply_to, metadata, "voice", reset_media=lambda: audio_file.seek(0),
                     voice=audio_file, caption=_cap_text, parse_mode=_cap_parse_mode, duration=duration_secs)
             except Exception as _cap_error:
+                if self._is_single_external_attempt(metadata) and not self._is_bad_request_error(_cap_error):
+                    raise
                 err = str(_cap_error).lower()
                 if _cap_parse_mode is not None and ("parse" in err or "entit" in err):
                     logger.warning(
@@ -5130,6 +5170,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=chat_id, file_path=audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if self._is_single_external_attempt(metadata):
+                return self._single_external_attempt_failure(e)
             logger.error(
                 "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)
@@ -5147,9 +5189,16 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if not images:
             return SendResult(success=False, error="no images to send")
+        if self._is_single_external_attempt(metadata) and (
+            len(images) > 10 or (len(images) > 1 and any(
+                not url.startswith("file://") and self._is_animation_url(url) for url, _ in images))
+        ):
+            return SendResult(success=False, error="image_batch_requires_multiple_sends", error_kind="too_long")
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
+            if self._is_single_external_attempt(metadata):
+                return self._single_external_attempt_failure(exc)
             logger.warning("[%s] InputMediaPhoto unavailable, falling back to per-image send: %s", self.name, exc)
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         is_anim = lambda url: not url.startswith("file://") and self._is_animation_url(url)  # noqa: E731
@@ -5202,6 +5251,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     "media group", reset_media=_reset_opened_files)
                 delivered = True
             except Exception as e:
+                if self._is_single_external_attempt(metadata):
+                    return self._single_external_attempt_failure(e)
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s", self.name,
                     chunk_idx + 1, len(chunks), _redact_telegram_error_text(e), exc_info=True)
@@ -5271,6 +5322,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if self._is_single_external_attempt(metadata):
+                return self._single_external_attempt_failure(e)
             return await on_error(e)
 
     async def _warn_then(self, media_key: str, e: Exception, fallback) -> SendResult:
@@ -5332,6 +5385,8 @@ class TelegramAdapter(BasePlatformAdapter):
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
+            if self._is_single_external_attempt(metadata):
+                return SendResult(success=False, error="Unsafe image URL blocked")
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
         photo_caption = self._caption_1024(caption)
         try:
@@ -5339,6 +5394,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._bot.send_photo, chat_id, reply_to, metadata, "URL photo", photo=image_url, caption=photo_caption)
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if self._is_single_external_attempt(metadata):
+                return self._single_external_attempt_failure(e)
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
             try:
@@ -5367,6 +5424,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 caption=self._caption_1024(caption))
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if self._is_single_external_attempt(metadata):
+                return self._single_external_attempt_failure(e)
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s", self.name,
                 _redact_telegram_error_text(e), exc_info=True)

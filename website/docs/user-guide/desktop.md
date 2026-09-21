@@ -531,6 +531,14 @@ Hermes: **one row per plugin**, with two switch columns.
   or git remote) for that profile only. Optional extras such as the
   [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
   install from their own repos via **Install from Git**.
+- **Uninstall** — every plugin installed under the selected profile's
+  `plugins/` folder (user or git install) has a trash button beside its name.
+  It asks for confirmation, then deletes the plugin's files and install
+  metadata from that profile — the same operation as
+  `hermes plugins remove <name>` — and prunes the app-level copy of a unified
+  package's desktop half. Restart the gateway to unload the plugin's code.
+  Repo-bundled and pip-installed (entrypoint) plugins have no trash button:
+  the first cannot be removed, the second goes with its Python package.
 
 Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
 picker installs reviewed entries at their pinned commit into the selected

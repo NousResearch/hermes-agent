@@ -272,9 +272,13 @@ class HubLockFile(_JsonStateFile):
             return json.loads(json.dumps(self.EMPTY))
         except json.JSONDecodeError as exc:
             raise ValueError(f"Invalid skills hub lock file {self.path}: {exc}") from exc
-        if not isinstance(data, dict) or not isinstance(data.get("installed"), dict):
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get("installed"), dict)
+            or not all(isinstance(entry, dict) for entry in data["installed"].values())
+        ):
             raise ValueError(
-                f"Invalid skills hub lock file {self.path}: expected an installed mapping"
+                f"Invalid skills hub lock file {self.path}: expected installed record mappings"
             )
         return data
 

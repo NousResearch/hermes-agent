@@ -65,7 +65,7 @@ def test_concurrent_record_updates_compose(uninstall):
         children.append(second)
         assert started_b.wait(10)
         # An unlocked writer reaches load(); a locked writer waits for process A.
-        read_b.wait(3)
+        assert not read_b.wait(3)
         release.set()
         for child in children:
             child.join(10)
@@ -81,7 +81,10 @@ def test_concurrent_record_updates_compose(uninstall):
                 child.join(5)
 
 
-@pytest.mark.parametrize("payload", ["{", "[]"])
+@pytest.mark.parametrize(
+    "payload",
+    ["{", "[]", '{"version": 1, "installed": {"broken": []}}'],
+)
 def test_invalid_record_file_is_not_overwritten(tmp_path, payload):
     path = tmp_path / "lock.json"
     path.write_text(payload, encoding="utf-8")

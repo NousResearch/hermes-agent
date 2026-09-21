@@ -6,7 +6,9 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
-from agent.message_sanitization import _looks_like_image_content_rejection, _strip_images_from_messages
+from agent.message_sanitization import (
+    _looks_like_image_content_rejection, _strip_images_from_messages, strip_images_for_rejecting_model,
+)
 
 
 class TestStripImagesPreservesAlternation:
@@ -354,14 +356,25 @@ class TestRejectionNeverReachesPersistedHistory:
         assert retry is True
         assert history == before, "the recovery rewrote persisted history"
         assert agent._db_flush_scan_prefix == 7, "the recovery forced a history rewrite"
-        # The in-flight request still goes out text-only.
+        # The recovery only records the model; the retry re-enters build_api_request with the
+        # same api_messages and the send path strips them there, so the request goes out text-only.
+        assert strip_images_for_rejecting_model(agent, wire) is True
         assert "image_url" not in str(wire)
+        # ...and build_api_request really runs that strip on every attempt, before the kwargs
+        # are built from api_messages.
+        import inspect
+
+        from agent.turn_api_request import build_api_request
+
+        src = inspect.getsource(build_api_request)
+        strip_at = src.find("\n    strip_images_for_rejecting_model(agent, api_messages)")
+        assert strip_at != -1, "build_api_request no longer strips images for a rejecting model"
+        assert strip_at < src.find("_build_api_kwargs(api_messages"), "strip must precede _build_api_kwargs"
 
     def test_every_model_in_a_fallback_chain_is_tracked(self):
         """Two models reject images in the same turn (fallback A -> B). A turn-global guard
         skipped B's recovery once A had tripped it, failing the turn; recording only one model
         also forgot A on later turns. Each model is now judged and remembered on its own."""
-        from agent.message_sanitization import strip_images_for_rejecting_model
 
         agent = self._agent(provider="p", model="model-a")
         retry_a, _ = self._recover(agent, self._history(), [])
@@ -398,7 +411,6 @@ class TestRejectionNeverReachesPersistedHistory:
         the rest of the session."""
         import copy
 
-        from agent.message_sanitization import strip_images_for_rejecting_model
 
         class _CorruptErr(Exception):
             status_code = 400

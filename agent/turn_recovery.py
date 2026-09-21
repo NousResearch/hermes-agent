@@ -263,10 +263,9 @@ def recover_before_classification(
                 _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
                 return True, active_system_prompt
         else:
-            # Record the model; build_api_request strips images from each request to it instead.
+            # Record the model; the retry re-enters build_api_request with the same
+            # api_messages and strip_images_for_rejecting_model strips them there.
             _rejected.add(_model_key)
-            if isinstance(api_messages, list):
-                _strip_images_from_messages(api_messages)
             _vlines(
                 agent,
                 "⚠️  Server rejected image content — sending text only to this model; "

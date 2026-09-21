@@ -51,6 +51,7 @@ _FINAL_TEXT = object()
 _FLUSH = object()
 _APPROVAL_BOUNDARY = object()
 _REOPEN_SEED = object()
+_REPLY_TARGET = object()
 _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
 # Boundary finalize text when nothing has accumulated yet (overridable per boundary).
@@ -84,6 +85,7 @@ class _Tick:
     got_flush: bool = False
     flush_event: Any = None
     got_reopen_seed: bool = False
+    reply_target: Optional[tuple] = None
     approval_boundary: Optional[tuple] = None  # (future, cancelled_flag)
     commentary_text: Optional[str] = None
     # Set by _push_update for _finalize_turn / _end_segment.
@@ -375,6 +377,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             seen.append(self._visible_prefix())
         return bool(target) and any(sent.strip() == target for sent in seen)
 
+    def retarget_reply(self, message_id: Optional[str]) -> None:
+        """Order a reply-target change after earlier deltas, before the follow-up answer.
+
+        Telegram cannot re-thread an existing message by editing it: seal the old
+        preview as interim progress, then start the answer on the new target.
+        """
+        self._queue.put((_REPLY_TARGET, message_id))
+
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
@@ -579,6 +589,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     if not self._use_native_streaming and self._first_send_overflows():
                         if await self._split_first_send(tick):
                             return
+                        if tick.reply_target is not None:
+                            await self._push_update(tick)
+                            await self._end_segment(tick)
                         continue
                     await self._seal_overflow_heads()
                     await self._push_update(tick)
@@ -658,6 +671,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 tick.got_reopen_seed = True
                 return tick
             kind = item[0] if isinstance(item, tuple) and item else None
+            if kind is _REPLY_TARGET:
+                # Native one-message streams cannot move their thread after opening.
+                if self._cumulative_transport() or item[1] == self._initial_reply_to_id:
+                    continue
+                tick.got_segment_break = True
+                tick.reply_target = (item[1],)
+                return tick
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
             elif kind is _TOOL_PROGRESS:  # keep draining to batch simultaneous lines
@@ -923,6 +943,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 and self._message_id != "__no_edit__"):
             await self._flush_segment_tail_on_edit_failure()
         self._reset_segment_state(preserve_no_edit=True)
+        if tick.reply_target is not None:
+            self._initial_reply_to_id = tick.reply_target[0]
+            if self.metadata and "reply_to_message_id" in self.metadata:
+                self.metadata = dict(self.metadata, reply_to_message_id=self._initial_reply_to_id)
 
     async def _on_cancelled(self) -> None:
         """Best-effort final edit on task cancel: finalize=True so REQUIRES_EDIT_FINALIZE

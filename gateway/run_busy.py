@@ -291,11 +291,17 @@ class GatewayBusySessionMixin:
                 logger.warning("Steer into subagent %r failed: %s", getattr(child, "_delegate_id", child), exc)
         return accepted
 
-    def _steer_running_agent(self, running_agent: Any, text: str) -> bool:
+    def _steer_running_agent(
+        self, running_agent: Any, text: str, *, session_key: Optional[str] = None,
+        event: Optional[MessageEvent] = None,
+    ) -> bool:
         """``running_agent.steer(text)`` plus fan-out to its active subagents (see
         :meth:`_steer_active_subagents`); True when the parent or any child queued it."""
         accepted = bool(running_agent.steer(text))
-        return bool(self._steer_active_subagents(running_agent, text)) or accepted
+        accepted = bool(self._steer_active_subagents(running_agent, text)) or accepted
+        if accepted and event is not None:
+            self._reanchor_active_turn(running_agent, session_key, event)
+        return accepted
 
     async def _session_has_compression_in_flight(self, session_key: str) -> bool:
         """True when a compression lock is held for this session's id (callers demote interrupt →
@@ -620,7 +626,7 @@ class GatewayBusySessionMixin:
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
             if verb == "steer":
-                return self._steer_running_agent(running_agent, call_text)
+                return self._steer_running_agent(running_agent, call_text, session_key=session_key, event=event)
             return bool(getattr(running_agent, verb)(call_text))
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
@@ -636,9 +642,14 @@ class GatewayBusySessionMixin:
         """
         if not self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
             return False
+        self._reanchor_active_turn(running_agent, session_key, event)
+        return True
+
+    def _reanchor_active_turn(self, running_agent, session_key: str, event: MessageEvent) -> None:
+        """Accepted follow-ups own the eventual answer, including its streaming delivery."""
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
-            return True  # a newer turn already owns the slot; never re-anchor it
+            return  # a newer turn already owns the slot; never re-anchor it
         anchor = self._reply_anchor_for_event(event)
         inbound_id = str(event.message_id) if event.message_id else None
         if turn.event is not None and turn.event is not event:
@@ -647,7 +658,9 @@ class GatewayBusySessionMixin:
         if turn.ctx is not None:
             turn.ctx.event_message_id = anchor
             turn.ctx.inbound_message_id = inbound_id
-        return True
+            consumer = turn.ctx.stream_consumer_holder[0]
+            if consumer is not None:
+                consumer.retarget_reply(anchor)
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
@@ -1051,7 +1064,10 @@ class GatewayBusySessionMixin:
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback("No active agent — /steer queued for the next turn.")
         try:
-            accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
+            accepted = self._steer_running_agent(
+                running_agent, self._steer_text_with_origin(steer_text, event),
+                session_key=quick_key, event=event,
+            )
         except Exception as exc:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
             return f"⚠️ Steer failed: {exc}"

@@ -1,2 +1,2 @@
 anpicasso
-# hermes-oc-free-provider catalog submission
+# oc-free-provider catalog submission

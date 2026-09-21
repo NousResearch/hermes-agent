@@ -55,12 +55,26 @@ class GroupStateRead:
     actor: Any
     room: dict
     conn: Any
+    delegated_read: Any = None
 
     def authorize(self):
         owner, service, actor = self.owner, self.service, self.actor
         owner.current(self.conn)
         if actor.profile_id != owner.profile_id or 'session:read' not in actor.capabilities:
             raise RuntimeStoreError('permission_denied')
+        subject = actor.subject
+        if self.delegated_read is not None:
+            from gateway.session_group_messaging_read import _MessagingRoomRead
+            delegated = self.delegated_read
+            if (type(delegated) is not _MessagingRoomRead
+                    or delegated.authority is not owner.authority
+                    or delegated.actor is not actor
+                    or delegated.inventory.db is not owner.db
+                    or delegated.inventory.service is not service):
+                raise RuntimeStoreError('permission_denied')
+            delegated.require_current_on_held_connection(
+                self.conn, method='groups.state', room_id=self.room['room_id'])
+            subject = delegated.owner
         if service is not None:
             current = getattr(service, 'authority', None)
             if (getattr(current, 'db', None) is not owner.db
@@ -69,7 +83,7 @@ class GroupStateRead:
                 raise RuntimeStoreError('group_state_unavailable')
         row = self.conn.execute('SELECT value FROM state_meta WHERE key=?',
             ('gateway.hosted.owner.v1:' + self.room['room_id'],)).fetchone()
-        if row is None or row[0] != actor.subject:
+        if row is None or row[0] != subject:
             raise RuntimeStoreError('permission_denied')
         if self.conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='hosted_room_quarantine'").fetchone():
@@ -91,7 +105,7 @@ class GroupStateRead:
         return capability in self.actor.capabilities
 
 
-def read_group_state(owner, authority, actor, params):
+def read_group_state(owner, authority, actor, params, *, delegated_read=None):
     from gateway import hosted_rooms as rooms
     if owner.authority is not authority or actor.profile_id != owner.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -109,10 +123,12 @@ def read_group_state(owner, authority, actor, params):
         with owner.read() as conn:
             conn.execute('BEGIN')
             try:
-                scope = GroupStateRead(owner, service, actor, {'room_id': room_id}, conn)
+                scope = GroupStateRead(
+                    owner, service, actor, {'room_id': room_id}, conn, delegated_read)
                 scope.authorize()
                 room = rooms.room_state(owner.db.db_path, **params, conn=conn)
-                scope = GroupStateRead(owner, service, actor, room, conn)
+                scope = GroupStateRead(
+                    owner, service, actor, room, conn, delegated_read)
                 result = {'room': room}
                 if service is not None and room.get('disbanded_at') is None:
                     # A replaced S.runtime withdraws controls, not the original
@@ -127,11 +143,14 @@ def read_group_state(owner, authority, actor, params):
             # Recheck lifetime/room authorization outside the historical view.
             scope.authorize()
             if 'driver_status' in result:
-                available = scope.actions_available()
-                result['driver_status']['pending_actions'] = [
-                    a for a in result['driver_status']['pending_actions']
-                    if a['kind'] in {'output_retry', 'output_cleanup'}
-                    or (available and scope.action_permitted(a['kind']))]
+                if delegated_read is not None:
+                    result['driver_status']['pending_actions'] = []
+                else:
+                    available = scope.actions_available()
+                    result['driver_status']['pending_actions'] = [
+                        a for a in result['driver_status']['pending_actions']
+                        if a['kind'] in {'output_retry', 'output_cleanup'}
+                        or (available and scope.action_permitted(a['kind']))]
             return result
 
 

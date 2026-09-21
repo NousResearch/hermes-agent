@@ -64,14 +64,30 @@ automatically on crash and on user login.
 ## Alternative: one gateway for all profiles (multiplexing)
 
 The model above runs **one process per profile**. The alternative is a
-**single multiplexing gateway**: the default profile's gateway becomes the sole
-inbound process and serves messages for *every* profile on the box.
+**single multiplexing gateway**: one gateway process — whichever profile
+launched it — becomes the sole inbound process and serves messages for *every*
+profile on the box.
+
+Because there is only ever one of them, the lifecycle verbs target that process
+rather than "this profile's gateway":
+
+- `hermes -p <name> gateway run` while it is live **attaches** instead of
+  starting a second process: it prints the host gateway's PID and served set and
+  exits 0. If `<name>` is not served yet, it asks the host gateway to re-scan
+  `profiles/` and attaches once the answer includes it; it refuses (non-zero)
+  only when the host gateway cannot be made to serve it.
+- `hermes gateway start --all` / `restart --all` mean *the one host
+  multiplexer*. They never sweep every gateway process on the box; a profile
+  that still runs its own gateway is reported, never killed, with the
+  `hermes gateway migrate --multiplex` one-liner.
+- `hermes gateway run --replace` takes the host role over, whichever profile
+  launched the running process.
 
 Multiplexing is **on by default** (`gateway.multiplex_profiles` defaults to
 `true`), with one safety rule: an *unset* flag is a request the default gateway
 settles at boot, never a verdict. Each start it runs the same preflight as
 [`hermes gateway migrate --multiplex`](#migrating-from-per-profile-gateways) and
-multiplexes only when the fold would have been safe — the default profile, two
+multiplexes only when the fold would have been safe — two
 or more profiles, no secondary still running its own gateway (live process or
 installed service), no duplicate bot credential, no port-binding platform
 without a `/p/<profile>/` ingress, and a host the migration understands (not an
@@ -107,8 +123,8 @@ ability to restart one profile without touching the others).
 ### Pinning the flag
 
 With the flag unset, the default gateway decides at each boot (above). To pin
-it, set it on the **default profile** (it owns the multiplexer) and restart its
-gateway — `true` forces multiplexing even where the boot preflight would have
+it, set it on the profile whose gateway runs as the host process (usually the
+**default profile**) and restart its gateway — `true` forces multiplexing even where the boot preflight would have
 held back, `false` opts out durably:
 
 ```bash

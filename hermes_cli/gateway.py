@@ -3591,6 +3591,43 @@ def _running_under_gateway_supervisor() -> bool:
     return is_gateway_supervisor_process()
 
 
+def host_multiplexer_serving(profile_name: str | None = None):
+    """The ONE live host gateway when it serves ``profile_name`` (default: the current profile).
+
+    Companion to :func:`named_profile_served_by_running_multiplexer`, which answers the narrower
+    "is this a SATELLITE of the default's multiplexer" and is hard-False for ``default`` — the
+    profile that usually owns the shared process. Every lifecycle guard built on it was therefore
+    blind to the host process itself. This one is true for ``default`` too, and it reports WHICH
+    profiles the host process serves. Returns a ``gateway.host_attach.HostGateway`` or None.
+    """
+    try:
+        from gateway.host_attach import host_gateway_serving
+        name = profile_name if profile_name is not None else _current_profile_name()
+        return host_gateway_serving(name or "default")
+    except Exception:
+        logger.debug("Host multiplexer probe failed", exc_info=True)
+        return None
+
+
+def _served_by_another_host_gateway(profile_name: str | None = None):
+    """The host gateway serving ``profile_name`` when it is NOT this home's own process.
+
+    The owner must never be guarded out of restarting itself: a refusal keyed on "something serves
+    you" would make `hermes gateway restart` impossible for the profile that launched the host
+    process. Guards want "ANOTHER process already serves you", which is this.
+    """
+    gateway = host_multiplexer_serving(profile_name)
+    if gateway is None:
+        return None
+    try:
+        from gateway.status import _get_process_hermes_home, _same_hermes_home
+        if _same_hermes_home(gateway.home, _get_process_hermes_home()):
+            return None
+    except Exception:
+        logger.debug("Host multiplexer home comparison failed", exc_info=True)
+    return gateway
+
+
 def named_profile_served_by_running_multiplexer(profile_name: str | None = None) -> bool:
     """True when a live default multiplexer already ticks this named profile (a satellite profile has no
     gateway.pid; the multiplexer fires its jobs and serves its platforms). Defaults to the current profile.
@@ -3603,6 +3640,11 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
     if not suffix or suffix == "default":
         return False
+
+    # The host record answers first: it names the live host process whatever home launched it, so a
+    # multiplexer started by a named profile is visible here too.
+    if host_multiplexer_serving(suffix) is not None:
+        return True
 
     try:
         from hermes_constants import get_default_hermes_root
@@ -3660,25 +3702,27 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
         suffix = _current_profile_name()
     except Exception:
         return False
-    if not named_profile_served_by_running_multiplexer():
+    owner = _served_by_another_host_gateway()
+    if owner is None and not named_profile_served_by_running_multiplexer():
         return False
 
     print_error(
-        f"The default gateway is running as a profile multiplexer and already "
-        f"serves profile '{suffix}'."
+        f"The host gateway already serves profile '{suffix}'."
     )
+    if owner is not None:
+        print(f"  {owner.describe()}")
     print(
-        "  When gateway.multiplex_profiles is on, the default gateway is the\n"
-        "  single inbound process for every profile. Starting a separate\n"
-        "  gateway for this profile would double-bind its platforms (two\n"
-        "  pollers on one bot token, port conflicts).\n"
+        "  Exactly one gateway per host is the inbound process for every\n"
+        "  profile. Starting a separate gateway for this profile would\n"
+        "  double-bind its platforms (two pollers on one bot token, port\n"
+        "  conflicts).\n"
     )
-    print("  Manage the multiplexer instead (from the default profile):")
+    print("  Manage the host gateway instead:")
     print()
-    print("    hermes gateway restart")
+    print(f"    hermes -p {owner.profile_label if owner is not None else 'default'} gateway restart")
     print()
     print("  Pass --force to start a separate profile gateway anyway (not")
-    print("  recommended while the multiplexer is running).")
+    print("  recommended while the host gateway is running).")
     return True
 
 
@@ -3699,6 +3743,31 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     # loop. 78 also reaches the s6 finish script's 125 "permanent failure" translation (see #51228), the
     # same path the other fatal-config exits take.
     sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+
+def _attach_to_host_gateway_or_guard(force: bool = False) -> None:
+    """``gateway run`` against the ONE host gateway: attach, rescan-then-attach, or refuse.
+
+    A profile the host process already serves has nothing to run: print who serves it and exit 0
+    without spawning anything. Under a service supervisor the SAME situation exits 78 (EX_CONFIG)
+    instead — systemd (Restart=always, RestartPreventExitStatus=78) and launchd would restart-loop
+    an exit-0 unit forever, which is why the refusal used 78 in the first place.
+    """
+    if force:
+        return
+    try:
+        from gateway.host_attach import ATTACH, REFUSE, decide
+        decision = decide(get_hermes_home())
+    except Exception:
+        logger.debug("Host gateway attach probe failed", exc_info=True)
+        decision = None
+    if decision is not None and decision.outcome in (ATTACH, REFUSE):
+        print(decision.message)
+        if decision.outcome == REFUSE or _running_under_gateway_supervisor():
+            sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+        sys.exit(0)
+    # No host record (older gateway, unwritable lock dir): the config-derived refusal still applies.
+    _guard_named_profile_under_multiplexer(force=force)
 
 
 def _guard_supervised_gateway_conflict(force: bool = False) -> None:
@@ -3913,7 +3982,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     """Run the gateway in foreground. verbose 1=INFO/2+=DEBUG on stderr; quiet: no stderr logs; replace:
     kill an existing instance first (avoids systemd restart loops); force: skip the supervised guard."""
     _guard_official_docker_root_gateway()
-    _guard_named_profile_under_multiplexer(force=force)
+    _attach_to_host_gateway_or_guard(force=force)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -4561,13 +4630,58 @@ def _cmd_uninstall(args):
         _handle_no_backend("uninstall", wsl=False, s6=True)
 
 
+def _host_multiplexer_for_all_verb():
+    """The live host gateway a ``--all`` verb must target instead of sweeping every profile.
+
+    ``--all`` means "the ONE host multiplexer", not "every gateway process on this box": sweeping
+    killed a multiplexer serving N profiles and started a single gateway in its place, so a
+    per-profile command caused a host-wide outage and left exactly one profile served.
+    """
+    try:
+        from gateway.host_attach import host_gateway
+        return host_gateway()
+    except Exception:
+        logger.debug("Host gateway probe failed", exc_info=True)
+        return None
+
+
+def _host_multiplexer_is_ours(owner) -> bool:
+    try:
+        from gateway.status import _get_process_hermes_home, _same_hermes_home
+        return bool(_same_hermes_home(owner.home, _get_process_hermes_home()))
+    except Exception:
+        return False
+
+
+def _print_unfolded_gateway_note(owner) -> None:
+    """Detect-and-converge: name the per-profile gateways `--all` no longer sweeps, never kill them."""
+    try:
+        others = [pid for pid in find_gateway_pids(all_profiles=True) if pid != owner.pid]
+    except Exception:
+        return
+    if not others:
+        return
+    print(f"  {len(others)} per-profile gateway process(es) still run beside it "
+          f"(PIDs: {', '.join(str(p) for p in others)}).")
+    print("  They were left running; fold them in with: hermes gateway migrate --multiplex")
+
+
 def _cmd_start(args):
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
-    _guard_named_profile_under_multiplexer(force=getattr(args, "force", False))
+    force = getattr(args, "force", False)
+    _guard_named_profile_under_multiplexer(force=force)
     if not start_all and _dispatch_via_service_manager_if_s6("start"):
         return
     if start_all:
+        owner = None if force else _host_multiplexer_for_all_verb()
+        if owner is not None:
+            # Already up: `--all` has nothing to start, and the old sweep here SIGTERMed this very
+            # process before starting a single-profile replacement.
+            print(f"✓ The host gateway is already running — {owner.describe()}")
+            print("  One gateway per host serves every profile; nothing to start.")
+            _print_unfolded_gateway_note(owner)
+            return
         killed = kill_gateway_processes(all_profiles=True)
         if killed:
             print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
@@ -4587,18 +4701,23 @@ def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
-    if not stop_all and not find_gateway_pids() and named_profile_served_by_running_multiplexer():
+    if not stop_all and not find_gateway_pids() and (
+            _served_by_another_host_gateway() or named_profile_served_by_running_multiplexer()):
         # A served profile owns no gateway to stop; "No gateway running for this profile" (exit 0) would
-        # contradict `gateway status` ("running via the default-profile multiplexer") on the same profile.
+        # contradict `gateway status` ("running via the host multiplexer") on the same profile.
         # A `--force`-started separate gateway HAS a pid of its own and is stopped normally.
+        owner = _served_by_another_host_gateway()
         print_error(
-            f"The default gateway is running as a profile multiplexer and serves profile "
-            f"'{_current_profile_name()}' — there is no separate gateway for this profile to stop."
+            f"The host gateway serves profile '{_current_profile_name()}' — there is no separate "
+            f"gateway for this profile to stop."
         )
-        print("  Stop or restart the multiplexer from the default profile instead:")
+        if owner is not None:
+            print(f"  {owner.describe()}")
+        print("  Stop or restart the host gateway instead:")
         print()
-        print("    hermes gateway stop      # takes every served profile offline")
-        print("    hermes gateway restart")
+        owner_flag = f"-p {owner.profile_label} " if owner is not None else ""
+        print(f"    hermes {owner_flag}gateway stop      # takes every served profile offline")
+        print(f"    hermes {owner_flag}gateway restart")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
     # Under s6 a bare pkill is seen as a crash and restarted; go through the supervisor.
     if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
@@ -4622,11 +4741,45 @@ def _cmd_stop(args):
         print(f"✓ Stopped {get_service_name()} service")
 
 
+def _stop_host_multiplexer(owner) -> int:
+    """SIGTERM the host gateway and nothing else; returns how many processes were signalled."""
+    stopped = kill_gateway_processes()
+    if stopped:
+        return stopped
+    try:
+        terminate_pid(owner.pid, force=False)
+        return 1
+    except (ProcessLookupError, PermissionError, OSError):
+        return 0
+
+
 def _restart_all(system: bool) -> None:
+    owner = _host_multiplexer_for_all_verb()
+    if owner is not None and not _host_multiplexer_is_ours(owner):
+        # `--all` means "restart the ONE host multiplexer" — and this profile does not own it.
+        # Sweeping every profile here took the host process down and replaced it with a gateway
+        # serving only this profile.
+        print_error(f"The host gateway runs under profile '{owner.profile_label}'.")
+        print(f"  {owner.describe()}")
+        print("  `--all` restarts the one host multiplexer, and this profile is not its owner.")
+        print()
+        print(f"    hermes -p {owner.profile_label} gateway restart --all")
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
     service_stopped = _stop_installed_service(system)
-    total = kill_gateway_processes(all_profiles=True) + (1 if service_stopped else 0)
-    if total:
-        print(f"✓ Stopped {total} gateway process(es) across all profiles")
+    if owner is not None:
+        # Stop ONLY the host process: its served set comes back with it, and any per-profile
+        # gateway a pre-migration host still runs is left alone (never auto-SIGTERMed).
+        stopped = _stop_host_multiplexer(owner)
+        total = stopped + (1 if service_stopped else 0)
+        if total:
+            print(f"✓ Stopped the host gateway (PID {owner.pid}; serves "
+                  f"{', '.join(owner.profiles) or 'unknown'})")
+        _print_unfolded_gateway_note(owner)
+    else:
+        total = kill_gateway_processes(all_profiles=True) + (1 if service_stopped else 0)
+        if total:
+            print(f"✓ Stopped {total} gateway process(es) across all profiles")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     _wait_for_api_server_port_free()
 

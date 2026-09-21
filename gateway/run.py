@@ -4913,6 +4913,24 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
     restart loop). Ownership is decided by the persisted identity record ALONE, bound to the live target
     by exact PID + start-time; live argv can never PROVE ownership (no HERMES_HOME), it is only a
     consistency check. Missing, legacy, conflicting or unprovable identity → refuse (fail closed)."""
+    # Multiplex-only: the ONE host gateway serving this profile IS this profile's gateway, whatever
+    # home launched it — `hermes -p X gateway run --replace` means "replace the process serving X".
+    # Argv and HERMES_HOME can never prove that (the host singleton runs one home's argv while
+    # serving every profile), so the live served set answers first; everything below stays the
+    # fail-closed rule for a host with no usable record.
+    try:
+        from gateway.host_attach import host_gateway, profile_name_for_home
+
+        owner = host_gateway()
+        if owner is not None and owner.pid == existing_pid and owner.serves(
+                profile_name_for_home(get_hermes_home())):
+            logger.warning(
+                "--replace target PID %s is the host gateway serving %d profile(s) (%s); "
+                "replacing it restarts the host process for all of them.",
+                existing_pid, len(owner.profiles), ", ".join(owner.profiles) or "unknown")
+            return False
+    except Exception:
+        logger.debug("host served-set ownership probe failed for PID %s", existing_pid, exc_info=True)
     # On Windows there is no systemd/launchd service query at all (_get_service_pids() returns an empty
     # set), so a gateway supervised by a Scheduled Task / Startup VBS looks like an unsupervised orphan to
     # the process scan (#86098). The same holds on every platform for a healthy gateway launched standalone
@@ -5050,14 +5068,16 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     if not replace:
         hermes_home = str(get_hermes_home())
         logger.error(
-            "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
-            "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
+            "Another gateway instance is already running (PID %d, HERMES_HOME=%s) and did not "
+            "publish a host record this process could attach to.",
             existing_pid, hermes_home)
         print(
-            f"\n❌ Gateway already running (PID {existing_pid}).\n"
-            f"   Use 'hermes gateway restart' to replace it,\n"
-            f"   or 'hermes gateway stop' to kill it first.\n"
-            f"   Or use 'hermes gateway run --replace' to auto-replace.\n")
+            f"\n❌ A gateway already owns this host (PID {existing_pid}).\n"
+            f"   One gateway per host serves every profile, so there is nothing to start here.\n"
+            f"   Attach is impossible: PID {existing_pid} published no usable host record\n"
+            f"   (an older build, or an unwritable lock directory).\n"
+            f"   Take the host over:  hermes gateway run --replace\n"
+            f"   Or stop it first:    hermes gateway stop\n")
         return False
 
     # Never signal a process not provably ours (a poisoned PID record → cross-profile restart loop).
@@ -5277,7 +5297,8 @@ def _claim_host_gateway_role() -> None:
     try:
         outcome, error = hr.claim_host_lock(hr.ROLE_GATEWAY)
         if outcome is hr.HostLockOutcome.ACQUIRED:
-            hr.publish_record(hr.ROLE_GATEWAY, profiles=hr.served_profiles())
+            hr.publish_record(
+                hr.ROLE_GATEWAY, profiles=hr.served_profiles(), home=str(get_hermes_home()))
             # SIGTERM (systemd stop, docker stop, the update relaunch) does not run atexit.
             hr.cleanup_on_exit(hr.ROLE_GATEWAY)
             return
@@ -5294,6 +5315,56 @@ def _claim_host_gateway_role() -> None:
         )
     except Exception:
         logger.debug("host gateway rendezvous failed", exc_info=True)
+
+
+def _refresh_host_gateway_record(runner) -> None:
+    """Republish the host record once the attach channel is bound and multiplex is settled.
+
+    The claim-time publish can only guess the served set from config — the runner settles the
+    implicit default itself. Republishing here also means a record that names a served profile is
+    backed by a control socket that is already answering.
+    """
+    from gateway import host_rendezvous as hr
+
+    try:
+        if not hr.owns_host_lock(hr.ROLE_GATEWAY):
+            return
+        served = runner.served_profile_names() if getattr(
+            runner.config, "multiplex_profiles", False) else []
+        hr.publish_record(
+            hr.ROLE_GATEWAY,
+            profiles=tuple(served) or hr.served_profiles(),
+            home=str(get_hermes_home()))
+    except Exception:
+        logger.debug("host gateway record refresh failed", exc_info=True)
+
+
+async def _host_attach_or_none(replace: bool) -> Optional[bool]:
+    """Attach / rescan / refuse against the ONE host gateway; ``None`` = start normally.
+
+    Returns ``True`` when this invocation is satisfied by the running host process (exit 0, nothing
+    spawned) and ``False`` when it must refuse. The per-home duplicate guard below cannot answer
+    this at all: another profile's gateway lives in another home, so it sees no PID and starts a
+    second process — the shape multiplex-only forbids.
+    """
+    from gateway.host_attach import ATTACH, REFUSE, REPLACE_HOST, decide
+
+    decision = decide(get_hermes_home(), replace=replace)
+    if decision.outcome == ATTACH:
+        logger.info("Attaching to the host gateway instead of starting a second one: %s",
+                    decision.owner.describe() if decision.owner else "unknown")
+        print(decision.message)
+        return True
+    if decision.outcome == REFUSE:
+        logger.error("Refusing to start a second gateway on this host: %s",
+                     decision.owner.describe() if decision.owner else "unknown")
+        print(decision.message)
+        return False
+    if decision.outcome == REPLACE_HOST and decision.owner is not None:
+        # --replace names the HOST process, whichever home launched it.
+        if not await _start_gateway_replace_existing_instance(decision.owner.pid, True):
+            return False
+    return None
 
 
 async def _start_gateway_start_control_socket(runner):
@@ -5508,7 +5579,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
 
-    # Duplicate-instance guard scoped to HERMES_HOME; distinct-home multi-profile setups coexist.
+    # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
+    # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
+    _host_decision = await _host_attach_or_none(replace)
+    if _host_decision is not None:
+        return _host_decision
+
+    # Duplicate-instance guard scoped to HERMES_HOME (the host record is absent or unusable here).
     from gateway.status import get_running_pid
     existing_pid = get_running_pid()
     if (existing_pid is not None and existing_pid != os.getpid()
@@ -5579,6 +5656,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Right after the PID claim (which makes us authoritative); non-fatal — consumers fall back to scan.
     _control_server = await _start_gateway_start_control_socket(runner)
+    # Now the attach channel answers: republish the host record with the settled served set.
+    _refresh_host_gateway_record(runner)
 
     def _lifecycle_record_startup() -> None:
         # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the

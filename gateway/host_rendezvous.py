@@ -84,10 +84,17 @@ class HostRecord:
     token_fingerprint: str
     profiles: tuple[str, ...]
     updated_at: str
+    #: HERMES_HOME the owner was launched from. The attach channel (``gateway.control_socket``) is
+    #: keyed by home, so without it a client can only guess the default root — wrong as soon as a
+    #: named profile launches the host process. Absent in records written before this field; added
+    #: WITHOUT a protocol bump on purpose, because a bump would make every live owner's record read
+    #: as stale and a second gateway would start.
+    home: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
             "role": self.role,
+            "home": self.home,
             "pid": self.pid,
             "createTime": self.create_time,
             "host": self.host,
@@ -120,6 +127,7 @@ class HostRecord:
             token_fingerprint=str(payload.get("tokenFingerprint") or ""),
             profiles=tuple(str(p) for p in profiles if isinstance(p, str)) if isinstance(profiles, list) else (),
             updated_at=str(payload.get("updatedAt") or ""),
+            home=str(payload.get("home") or ""),
         )
 
 
@@ -379,10 +387,13 @@ def publish_record(
     port: Optional[int] = None,
     profiles: Sequence[str] = (),
     token: Optional[str] = None,
+    home: str = "",
 ) -> Optional[HostRecord]:
     """Publish this process as the host owner of ``role``. ``None`` when the write failed.
 
     ``token`` (serve) is persisted 0600 next to the record and only its fingerprint is published.
+    ``home`` is the launch HERMES_HOME — the key an attaching client needs to reach this owner's
+    control socket.
     """
     role = _validated_role(role)
     record = HostRecord(
@@ -395,6 +406,7 @@ def publish_record(
         token_fingerprint=token_fingerprint(token or ""),
         profiles=tuple(str(p) for p in profiles),
         updated_at=datetime.now(timezone.utc).isoformat(),
+        home=str(home or ""),
     )
     try:
         record_path(role).parent.mkdir(parents=True, exist_ok=True)

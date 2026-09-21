@@ -120,6 +120,20 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 #: even with this block removed.
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
+# ── Host-rendezvous isolation ───────────────────────────────────────────────
+# ``gateway/host_rendezvous.py`` publishes ONE record per role per OS USER, in
+# ``$HERMES_GATEWAY_LOCK_DIR`` else ``$XDG_STATE_HOME/hermes/gateway-locks`` —
+# deliberately outside HERMES_HOME, because the host singleton spans profiles.
+# Under the per-file parallel runner that directory is shared by ~40 pytest
+# subprocesses: one test that boots a real gateway publishes a record, and every
+# other file's lifecycle code then correctly attaches to a gateway that has
+# nothing to do with it. Give each pytest PROCESS its own rendezvous dir; tests
+# that want a specific record still set the variable themselves.
+if not os.environ.get("HERMES_GATEWAY_LOCK_DIR"):
+    _SESSION_LOCK_DIR = tempfile.mkdtemp(prefix="hermes-test-gateway-locks-")
+    os.environ["HERMES_GATEWAY_LOCK_DIR"] = _SESSION_LOCK_DIR
+    atexit.register(shutil.rmtree, _SESSION_LOCK_DIR, True)
+
 
 # ── Per-file process isolation ──────────────────────────────────────────────
 # Tests run via ``scripts/run_tests_parallel.py``, which spawns a fresh
@@ -499,6 +513,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # Per-TEST host-rendezvous dir (see the session-level block at the top): the
+    # host gateway/serve record is shared per OS user by design, so without this
+    # one test's published owner makes the next test's lifecycle code attach to it.
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test

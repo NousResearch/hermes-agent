@@ -636,17 +636,37 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
 
+def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
+    """Does the ONE host gateway — PID ``pid`` — serve ``profile_home``'s profile?
+
+    Argv cannot answer this: the host singleton runs ONE home's (usually bare/default) command line
+    while multiplexing every profile, so :func:`_command_line_belongs_to_profile` rejects every
+    secondary and the profile reads as "not running" while its messages are being served. The live
+    served set is the only proof; the argv rule stays as the fallback when no record exists.
+    """
+    try:
+        from gateway.host_attach import host_gateway, profile_name_for_home
+
+        owner = host_gateway()
+    except Exception:
+        return False
+    return owner is not None and owner.pid == pid and owner.serves(profile_name_for_home(profile_home))
+
+
 def _record_matches_live_gateway_pid(
     record: dict[str, Any], pid: int, *, expected_home: Optional[Path] = None
 ) -> bool:
     """True when a live PID still identifies as this gateway record. The live command line wins (a
     stale record's argv must not make a recycled PID count as a gateway; with ``expected_home`` it
-    must also belong to that profile); unreadable cmdline (Windows/EACCES) -> persisted record."""
+    must also belong to that profile — or serve it as the host multiplexer); unreadable cmdline
+    (Windows/EACCES) -> persisted record."""
     live_cmdline = _read_process_cmdline(pid)
     if not live_cmdline:
         return _record_looks_like_gateway(record)
     if not looks_like_gateway_runtime_command_line(live_cmdline):
         return False
+    if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
+        return True
     return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
 
 

@@ -614,6 +614,8 @@ Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and
 hermes logs gui -f
 ```
 
+On Linux, Chromium's own errors go to `HERMES_HOME/logs/desktop-chromium.log`, and a crash of the shell itself leaves a minidump under the app's `Crashpad/` directory (inside Electron's user-data directory, next to `connection.json`). If the window vanishes with `SIGTRAP` in the journal, the `FATAL:` line in that log names the check that fired; attach it to the bug report. Nothing is uploaded.
+
 Common resets:
 
 ```bash

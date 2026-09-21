@@ -1,6 +1,7 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
 import json
+import logging
 import sys
 import time
 from types import SimpleNamespace
@@ -9,11 +10,12 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.anthropic_adapter import build_anthropic_client, build_anthropic_kwargs
+from agent.anthropic_adapter import THINKING_BUDGET, build_anthropic_client, build_anthropic_kwargs
 from agent.anthropic_credentials import _is_oauth_token, _refresh_oauth_token, _write_claude_code_credentials, is_claude_code_token_valid, read_claude_code_credentials, resolve_anthropic_token, run_oauth_setup_token
 from agent.credential_pool import PooledCredential
 from agent.anthropic_message_convert import _to_plain_data, convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name
 from agent.transports import get_transport
+from hermes_constants import VALID_REASONING_EFFORTS
 
 
 # ---------------------------------------------------------------------------
@@ -1004,6 +1006,132 @@ class TestBuildAnthropicKwargs:
         beta_header = (kwargs.get("extra_headers") or {}).get("anthropic-beta", "")
         assert "fast-mode-2026-02-01" not in beta_header
 
+
+
+class TestManualThinkingBudgetClamp:
+    """Manual (budget_tokens) thinking clamps to the legal output ceiling.
+
+    The API rejects ``budget_tokens < 1024`` and requires ``budget_tokens < max_tokens``;
+    thinking tokens count toward ``max_tokens``, so the table value is a target that
+    shrinks to fit the model's output limit (and the context window, when known).
+    """
+
+    @staticmethod
+    def _build(model, effort="max", context_length=None):
+        return build_anthropic_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "think hard"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config={"enabled": True, "effort": effort},
+            context_length=context_length,
+        )
+
+    @pytest.mark.parametrize("effort", VALID_REASONING_EFFORTS)
+    def test_thinking_budget_covers_every_valid_effort(self, effort):
+        assert effort in THINKING_BUDGET
+        assert THINKING_BUDGET[effort] >= 1024
+        ladder = [THINKING_BUDGET[e] for e in ("minimal", "low", "medium", "high", "xhigh", "max")]
+        assert ladder == sorted(ladder), ladder
+        assert THINKING_BUDGET["max"] == THINKING_BUDGET["ultra"]
+
+    @pytest.mark.parametrize(
+        "effort,expected_budget",
+        [
+            ("minimal", 4000), ("low", 4000), ("medium", 8000), ("high", 16000),
+            ("xhigh", 32000), ("max", 64000), ("ultra", 64000),
+        ],
+    )
+    def test_manual_budget_per_effort(self, effort, expected_budget):
+        kwargs = self._build("claude-3-7-sonnet", effort=effort)
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": expected_budget}
+        assert kwargs["temperature"] == 1
+        assert "output_config" not in kwargs
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max", "ultra"])
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-3-opus", "claude-3-sonnet", "claude-3-5-sonnet", "claude-opus-4-1",
+            "claude-sonnet-4-20250514", "qwen3-max", "minimax-m2", "totally-unknown-model-v9",
+        ],
+    )
+    def test_manual_thinking_stays_within_output_ceiling(self, model, effort):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        kwargs = self._build(model, effort=effort)
+        thinking = kwargs["thinking"]
+        assert thinking["type"] == "enabled"
+        assert 1024 <= thinking["budget_tokens"] < kwargs["max_tokens"]
+        assert kwargs["max_tokens"] <= _get_anthropic_max_output(model)
+        assert "output_config" not in kwargs
+
+    @pytest.mark.parametrize(
+        "model",
+        ["claude-3-7-sonnet", "claude-sonnet-4-20250514", "qwen3-max", "minimax-m2", "totally-unknown-model-v9"],
+    )
+    def test_max_effort_outranks_xhigh(self, model):
+        budget_max = self._build(model, effort="max")["thinking"]["budget_tokens"]
+        budget_xhigh = self._build(model, effort="xhigh")["thinking"]["budget_tokens"]
+        assert budget_max > budget_xhigh
+
+    @pytest.mark.parametrize(
+        "model,effort,expected_budget,expected_max_tokens",
+        [
+            ("qwen3-max", "max", 61440, 65536),
+            ("claude-sonnet-4-20250514", "max", 59904, 64000),
+            ("claude-opus-4-1", "max", 27904, 32000),
+            ("claude-3-5-sonnet", "max", 4096, 8192),
+            ("claude-3-5-sonnet", "medium", 4096, 8192),
+            ("claude-3-opus", "max", 1024, 4096),
+            ("claude-3-opus", "low", 1024, 4096),
+            ("claude-3-7-sonnet", "max", 64000, 128000),
+            ("minimax-m2", "max", 64000, 131072),
+            ("totally-unknown-model-v9", "max", 64000, 128000),
+        ],
+    )
+    def test_manual_thinking_clamped_values(self, model, effort, expected_budget, expected_max_tokens):
+        kwargs = self._build(model, effort=effort)
+        assert kwargs["thinking"]["budget_tokens"] == expected_budget
+        assert kwargs["max_tokens"] == expected_max_tokens
+
+    def test_manual_thinking_dropped_when_no_legal_pair_fits(self):
+        kwargs = self._build("claude-sonnet-4-20250514", effort="max", context_length=1024)
+        assert "thinking" not in kwargs
+        assert "temperature" not in kwargs
+        assert kwargs["max_tokens"] == 1023
+
+    @pytest.mark.parametrize(
+        "model,context_length,expected_budget,expected_max_tokens",
+        [
+            ("qwen3-max", 8192, 4095, 8191),
+            ("qwen3-max", 16384, 12287, 16383),
+        ],
+    )
+    def test_manual_thinking_respects_context_length(self, model, context_length, expected_budget, expected_max_tokens):
+        kwargs = self._build(model, effort="max", context_length=context_length)
+        assert kwargs["thinking"]["budget_tokens"] == expected_budget
+        assert kwargs["max_tokens"] == expected_max_tokens
+        assert kwargs["max_tokens"] <= context_length - 1
+
+    def test_unmapped_effort_falls_back_to_medium_then_clamps(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            kwargs_37 = self._build("claude-3-7-sonnet", effort="extreme")
+            kwargs_35 = self._build("claude-3-5-sonnet", effort="extreme")
+        assert kwargs_37["thinking"]["budget_tokens"] == 8000
+        assert kwargs_35["thinking"]["budget_tokens"] == 4096
+        assert kwargs_35["max_tokens"] == 8192
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert warnings and any("extreme" in r.getMessage() for r in warnings)
+
+    def test_adaptive_path_untouched(self):
+        kwargs = self._build("claude-opus-4-6", effort="max")
+        assert kwargs["output_config"] == {"effort": "max"}
+        assert "budget_tokens" not in kwargs["thinking"]
+        assert "temperature" not in kwargs
+
+    def test_haiku_still_gets_no_thinking(self):
+        kwargs = self._build("claude-3-5-haiku", effort="max")
+        assert "thinking" not in kwargs
 
 # ---------------------------------------------------------------------------
 # Model output limit lookup

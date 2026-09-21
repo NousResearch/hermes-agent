@@ -60,7 +60,15 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
 
 logger = logging.getLogger(__name__)
 
-THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
+THINKING_BUDGET = {
+    "ultra": 64000, "max": 64000, "xhigh": 32000, "high": 16000,
+    "medium": 8000, "low": 4000, "minimal": 4000,
+}
+# Manual (budget_tokens) thinking limits: the API rejects budget_tokens < 1024 and requires
+# budget_tokens < max_tokens, and thinking tokens count toward max_tokens — so a table value is
+# a target that shrinks to fit the model's output ceiling.
+_MIN_THINKING_BUDGET = 1024
+_THINKING_RESPONSE_ROOM = 4096
 # Hermes effort -> Anthropic adaptive-thinking effort (output_config.effort). 4.7+ exposes
 # low/medium/high/xhigh/max; Opus/Sonnet 4.6 have no xhigh, so callers downgrade xhigh->max
 # there (see _supports_xhigh_effort). "minimal" is a legacy alias for low on every model.
@@ -571,12 +579,15 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
-def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
+def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int, context_length: Optional[int] = None) -> Dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
     manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
-    so "summarized" is requested to keep the activity feed populated."""
+    so "summarized" is requested to keep the activity feed populated. The manual (budget_tokens)
+    path clamps the budget and max_tokens to the legal output ceiling — the model's output limit,
+    and ``context_length - 1`` when a context length is known; thinking is omitted when no legal
+    (budget, max_tokens) pair fits."""
     if reasoning_config.get("enabled") is False:
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
@@ -590,11 +601,27 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
         if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
             adaptive_effort = "max"
         return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": adaptive_effort}}
-    budget = THINKING_BUDGET.get(effort, 8000)
+    budget = THINKING_BUDGET.get(effort)
+    if budget is None:
+        logger.warning(
+            "reasoning_effort=%r has no manual THINKING_BUDGET entry for model %r; "
+            "falling back to medium (%d tokens)",
+            effort, model, THINKING_BUDGET["medium"],
+        )
+        budget = THINKING_BUDGET["medium"]
+    # budget_tokens counts toward max_tokens and must stay below it, so the model's output
+    # ceiling caps both. Target the table value, shrink it to fit, and reserve
+    # _THINKING_RESPONSE_ROOM for the visible answer when the ceiling leaves room for it.
+    cap = _get_anthropic_max_output(model)
+    if context_length:
+        cap = min(cap, max(context_length - 1, 1))
+    if cap <= _MIN_THINKING_BUDGET:
+        return {}  # no legal (budget_tokens, max_tokens) pair fits this model/window
+    budget = min(budget, max(cap - _THINKING_RESPONSE_ROOM, _MIN_THINKING_BUDGET))
     return {
         "thinking": {"type": "enabled", "budget_tokens": budget},
         "temperature": 1,  # required when thinking is enabled on older models
-        "max_tokens": max(effective_max_tokens, budget + 4096),
+        "max_tokens": max(effective_max_tokens, min(budget + _THINKING_RESPONSE_ROOM, cap)),
     }
 
 
@@ -654,7 +681,7 @@ def build_anthropic_kwargs(
     # reasoning blocks stay populated — matching 4.6 behavior and preserving the activity-feed UX during
     # long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens))
+        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens, context_length))
     # Safety net so upstream 4.6 -> 4.7 migrations don't need coordinated edits everywhere callers
     # (auxiliary_client, ...) set sampling params.
     if _forbids_sampling_params(model):

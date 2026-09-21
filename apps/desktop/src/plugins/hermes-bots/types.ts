@@ -227,6 +227,8 @@ export interface GroupChat {
     canReconnect?: boolean
     canRetry?: boolean
     canStop?: boolean
+    /** Exact Desktop connection whose capability should be refreshed. */
+    checkConnectionId?: string
     label: string
     reconnectMemberId?: string
     retryCommandId?: string

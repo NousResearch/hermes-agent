@@ -226,6 +226,47 @@ describe('hosted Group Chat composer durability', () => {
     }
   )
 
+  it('checks an unsupported peer again without replaying room work or replacing history', async () => {
+    const runtime = await import('./hosted-room-runtime')
+    const check = vi.spyOn(runtime, 'checkHostedRoomGateway').mockResolvedValue(true)
+    const [{ GroupChatWorkspace }, chat] = await Promise.all([import('./group-chat-view'), import('./group-chat')])
+
+    chat.$groupChats.set({
+      Core: {
+        continuityMode: 'distributed',
+        continuityIssue: 'Update Studio to keep this Group Chat running.',
+        hosted: 'install:home',
+        hostedConnectionId: 'gateway-a',
+        hostedStatus: {
+          checkConnectionId: 'gateway-b',
+          label: 'Remote Builder needs your attention.',
+          state: 'needs-attention'
+        },
+        log: [
+          {
+            at: 1,
+            from: { kind: 'user', name: 'You' },
+            id: 'history-1',
+            text: 'Keep this shipped history',
+            thread: 'thread-1'
+          }
+        ],
+        members: MEMBERS,
+        roomId: 'room-1',
+        watermarks: {}
+      }
+    })
+
+    render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    expect(screen.getByText('Update Studio to keep this Group Chat running.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+
+    await waitFor(() => expect(check).toHaveBeenCalledWith('Core'))
+    expect(sendToGroupChatDurably).not.toHaveBeenCalled()
+    expect(chat.$groupChats.get().Core.log.map(entry => entry.text)).toEqual(['Keep this shipped history'])
+    expect(chat.$groupChats.get().Core.members).toEqual(MEMBERS)
+  })
+
   it.each([
     ['desktop', undefined, 'Keep Desktop open'],
     ['gateway', 'ready', 'Works without Desktop'],

@@ -110,6 +110,7 @@ import { $hostedRoomCleanup } from './hosted-room-cleanup'
 import { reconnectHostedGroupChatPeer } from './hosted-room-reauthorization'
 import {
   beginHostedRoomMutation,
+  checkHostedRoomGateway,
   disbandHostedGroupChat,
   markHostedRoomLocallyDeleted,
   readHostedGroupChatAttachment,
@@ -980,6 +981,24 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   const retryTaskId = String(room.hostedStatus?.taskId || '')
   const retryCommandId = String(room.hostedStatus?.retryCommandId || '')
   const reconnectMemberId = String(room.hostedStatus?.reconnectMemberId || '')
+  const checkConnectionId = String(room.hostedStatus?.checkConnectionId || '')
+  const [checkingGateway, setCheckingGateway] = useState(false)
+
+  const checkGatewayAgain = async () => {
+    if (!checkConnectionId || checkingGateway) {
+      return
+    }
+
+    setCheckingGateway(true)
+
+    try {
+      await checkHostedRoomGateway(group)
+    } catch {
+      host.notify({ kind: 'error', message: b.group.reconnectFailed })
+    } finally {
+      setCheckingGateway(false)
+    }
+  }
 
   const reconnectRoomMember = async () => {
     if (!reconnectMemberId || reconnecting) {
@@ -1071,6 +1090,17 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             variant="secondary"
           >
             {reconnecting ? b.group.reconnectingAction : b.group.reconnectAction}
+          </Button>
+        ) : null}
+        {checkConnectionId ? (
+          <Button
+            aria-busy={checkingGateway}
+            disabled={checkingGateway}
+            onClick={() => void checkGatewayAgain()}
+            size="xs"
+            variant="secondary"
+          >
+            {b.group.checkAgain}
           </Button>
         ) : null}
       </div>

@@ -218,6 +218,7 @@ type BotsMessages = {
     hostedRenameFailed: (host: string) => string
     hostRouteMissing: string
     hostUpdateNeeded: (host: string) => string
+    checkAgain: string
     hostReconnectToContinue: (host: string) => string
     hostedReconnectToDelete: (host: string) => string
     hostedSyncing: string
@@ -507,6 +508,7 @@ const en: BotsMessages = {
     hostedRenameFailed: host => `Could not rename. Reconnect ${host} and retry.`,
     hostRouteMissing: 'This Group Chat connection is unavailable.',
     hostUpdateNeeded: host => `Update ${host} to keep this Group Chat running.`,
+    checkAgain: 'Check again',
     hostReconnectToContinue: host => `Reconnect ${host} to continue.`,
     hostedReconnectToDelete: host => `Reconnect ${host} to delete this Group Chat.`,
     hostedSyncing: 'Syncing recent activity…',
@@ -791,6 +793,7 @@ const ja: BotsMessages = {
     hostedRenameFailed: host => `名前を変更できませんでした。${host} を再接続して再試行してください。`,
     hostRouteMissing: 'このグループチャットの接続を利用できません。',
     hostUpdateNeeded: host => `継続実行するには ${host} を更新してください。`,
+    checkAgain: '再確認',
     hostReconnectToContinue: host => `続行するには ${host} を再接続してください。`,
     hostedReconnectToDelete: host => `このグループチャットを削除するには ${host} を再接続してください。`,
     hostedSyncing: '最近のアクティビティを同期中…',
@@ -1068,6 +1071,7 @@ const zh: BotsMessages = {
     hostedRenameFailed: host => `无法重命名。请重新连接 ${host} 后重试。`,
     hostRouteMissing: '此群聊连接不可用。',
     hostUpdateNeeded: host => `请更新 ${host} 以保持此群聊运行。`,
+    checkAgain: '再次检查',
     hostReconnectToContinue: host => `请重新连接 ${host} 以继续。`,
     hostedReconnectToDelete: host => `请重新连接 ${host} 以删除此群聊。`,
     hostedSyncing: '正在同步近期活动…',
@@ -1345,6 +1349,7 @@ const zhHant: BotsMessages = {
     hostedRenameFailed: host => `無法重新命名。請重新連接 ${host} 後再試一次。`,
     hostRouteMissing: '此群組聊天連線無法使用。',
     hostUpdateNeeded: host => `請更新 ${host} 以保持此群組聊天運作。`,
+    checkAgain: '再次檢查',
     hostReconnectToContinue: host => `請重新連接 ${host} 以繼續。`,
     hostedReconnectToDelete: host => `請重新連接 ${host} 以刪除此群組聊天。`,
     hostedSyncing: '正在同步近期活動…',

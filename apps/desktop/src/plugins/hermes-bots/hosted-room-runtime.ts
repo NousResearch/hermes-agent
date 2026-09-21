@@ -304,7 +304,13 @@ function markHostedConnectionUnavailable(connectionId: string, unsupported = fal
     updateGroupChat(
       name,
       current =>
-        hostedUnavailableState(current, $hostedRoomCapabilities.get()[connectionId], connectionName, unsupported),
+        hostedUnavailableState(
+          current,
+          $hostedRoomCapabilities.get()[connectionId],
+          connectionName,
+          unsupported,
+          connectionId
+        ),
       {
         sync: false
       }
@@ -371,6 +377,40 @@ export function invalidateHostedRoomPoll(roomId: string) {
 
   hostedRoomPollCache.delete(id)
   hostedRoomPollGenerations.set(id, Number(hostedRoomPollGenerations.get(id) || 0) + 1)
+}
+
+/** Recheck only the connection named by an update notice. This refreshes
+ * capability and room projections; it never retries or dispatches Bot work. */
+export async function checkHostedRoomGateway(group: string) {
+  const room = $groupChats.get()[group]
+  const connectionId = String(room?.hostedStatus?.checkConnectionId || '')
+
+  if (!room || !groupChatHostedGateway(room) || !connectionId) {
+    return false
+  }
+
+  const routeExists = (await hostedDefaultRoutes()).some(candidate => candidate.connectionId === connectionId)
+
+  if (!routeExists) {
+    return false
+  }
+
+  hostedUnsupportedUntil.delete(connectionId)
+  invalidateHostedRoomsForConnection(connectionId)
+  invalidateHostedRoomPoll(String(room.roomId || ''))
+
+  if (hostedRoomSyncRunning) {
+    // Retire the older observation and let one immediate successor own the
+    // reprobe; do not race it with a second capability request.
+    scheduleHostedRoomSync(0)
+
+    return false
+  }
+
+  await refreshHostedRooms()
+  scheduleHostedRoomSync(0)
+
+  return String($groupChats.get()[group]?.hostedStatus?.checkConnectionId || '') !== connectionId
 }
 
 export function shouldRefreshHostedRoom(room: GroupChat | undefined, listed: unknown) {
@@ -751,14 +791,19 @@ export async function refreshHostedRooms() {
 
         const reconnectConnectionId =
           Object.entries(capabilities).find(([, candidate]) => candidate.authorityId === reconnectAuthority)?.[0] ||
+          String(existing?.hostedStatus?.checkConnectionId || '') ||
           String(reconnectPrior?.route?.connectionId || reconnectPrior?.connectionId || '')
 
         const reconnectCapability = reconnectConnectionId ? capabilities[reconnectConnectionId] : undefined
         const reconnectCapabilityKnown = Boolean(reconnectCapability)
+        const reconnectIdentityVerified = Boolean(
+          reconnectCapability?.authorityId && reconnectCapability.authorityId === reconnectAuthority
+        )
 
         const reconnectSupported = Boolean(
           capability.routeGrantFingerprint &&
           reconnectConnectionId &&
+          reconnectIdentityVerified &&
           reconnectCapability?.kind === 'driver-capable' &&
           reconnectCapability.exactPeerGrantRevoke
         )
@@ -766,7 +811,9 @@ export async function refreshHostedRooms() {
         const reconnectUpdateConnectionId = !capability.routeGrantFingerprint
           ? connectionId
           : reconnectCapability?.kind === 'unsupported' ||
-              (reconnectCapability?.kind === 'driver-capable' && !reconnectCapability.exactPeerGrantRevoke)
+              (reconnectIdentityVerified &&
+                reconnectCapability?.kind === 'driver-capable' &&
+                !reconnectCapability.exactPeerGrantRevoke)
             ? reconnectConnectionId
             : ''
 
@@ -843,6 +890,9 @@ export async function refreshHostedRooms() {
                           canReconnect: true,
                           reconnectMemberId
                         }
+                      : {}),
+                    ...(reconnectUpdateConnectionId
+                      ? { checkConnectionId: reconnectUpdateConnectionId }
                       : {}),
                     ...(reconnectMemberId &&
                     (!reconnectCapabilityKnown || reconnectCapability?.kind === 'transient-failure')

@@ -237,7 +237,8 @@ export function hostedUnavailableState(
   room: GroupChat,
   capability: HostedRoomCapability | undefined,
   connectionName: string,
-  unsupported = false
+  unsupported = false,
+  checkConnectionId = ''
 ): GroupChat {
   return {
     ...room,
@@ -246,7 +247,8 @@ export function hostedUnavailableState(
       state: unsupported ? 'unsupported' : 'offline',
       label: unsupported
         ? botsText().group.hostUpdateNeeded(connectionName)
-        : botsText().group.hostedUnavailable(connectionName)
+        : botsText().group.hostedUnavailable(connectionName),
+      ...(unsupported && checkConnectionId ? { checkConnectionId } : {})
     },
     continuityIssue: unsupported ? null : botsText().group.hostReconnectToContinue(connectionName),
     ...unavailableHostedReadOnlyState(room, capability)

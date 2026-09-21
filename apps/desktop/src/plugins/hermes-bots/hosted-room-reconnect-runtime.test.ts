@@ -504,7 +504,7 @@ describe('hosted Group Chat runtime', () => {
     loaded.runtime.stopHostedRoomRuntime()
   })
 
-  it('uses the stored member route to explain an older peer gateway without polling forever', async () => {
+  it('keeps a shipped room across second launch and recovers an unsupported peer only after explicit check', async () => {
     let peerUpgraded = false
     let stateCalls = 0
 
@@ -598,42 +598,77 @@ describe('hosted Group Chat runtime', () => {
       ]
     )
 
+    const shippedMembers: GroupMember[] = [
+      MEMBERS[0],
+      {
+        connectionId: 'gateway-b',
+        handle: 'builder',
+        name: 'builder',
+        route: {
+          connectionId: 'gateway-b',
+          mode: 'remote',
+          profile: 'builder',
+          targetProfile: 'builder'
+        },
+        sourceScoped: true,
+        targetProfile: 'builder'
+      }
+    ]
+
     loaded.chat.$groupChats.set({
       Release: room({
-        members: [
-          MEMBERS[0],
+        log: [
           {
-            connectionId: 'gateway-b',
-            handle: 'builder',
-            name: 'builder',
-            route: {
-              connectionId: 'gateway-b',
-              mode: 'remote',
-              profile: 'builder',
-              targetProfile: 'builder'
-            },
-            sourceScoped: true,
-            targetProfile: 'builder'
+            at: 1,
+            from: { kind: 'user', name: 'You' },
+            id: 'shipped-history-1',
+            text: 'History survives the upgrade',
+            thread: 'thread-1'
           }
-        ]
+        ],
+        members: shippedMembers
       })
     })
-    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+    const storage = scriptedStorage(loaded.storage).storage
 
-    expect(loaded.chat.$groupChats.get().Release.continuityIssue).toMatch(/^Update /)
+    await loaded.runtime.startHostedRoomRuntime(storage)
+    expect(loaded.chat.$groupChats.get().Release).toMatchObject({
+      continuityIssue: 'Update this device to keep this Group Chat running.',
+      hostedStatus: { checkConnectionId: 'gateway-b', state: 'needs-attention' }
+    })
     expect(stateCalls).toBe(1)
 
-    await loaded.runtime.refreshHostedRooms()
-    expect(stateCalls).toBe(1)
+    loaded.runtime.stopHostedRoomRuntime()
+    await loaded.runtime.startHostedRoomRuntime(storage)
+    expect(loaded.chat.$groupChats.get().Release).toMatchObject({
+      continuityIssue: 'Update this device to keep this Group Chat running.',
+      hostedStatus: { checkConnectionId: 'gateway-b', state: 'needs-attention' }
+    })
+    expect(Object.keys(loaded.chat.$groupChats.get())).toEqual(['Release'])
+    expect(loaded.chat.$groupChats.get().Release.log.map(entry => entry.text)).toContain('History survives the upgrade')
+    expect(loaded.chat.$groupChats.get().Release.members).toHaveLength(2)
+    expect(stateCalls).toBe(2)
 
     peerUpgraded = true
-    vi.setSystemTime(new Date(Date.now() + 31_000))
-    await loaded.runtime.refreshHostedRooms()
+    await expect(loaded.runtime.checkHostedRoomGateway('Release')).resolves.toBe(true)
 
-    expect(stateCalls).toBe(2)
-    expect(loaded.chat.$groupChats.get().Release.continuityIssue).toBe(
-      'Reconnect Remote Builder to continue this Group Chat.'
-    )
+    expect(stateCalls).toBe(3)
+    expect(loaded.chat.$groupChats.get().Release).toMatchObject({
+      continuityIssue: 'Reconnect Remote Builder to continue this Group Chat.',
+      hostedStatus: {
+        canReconnect: true,
+        reconnectMemberId: 'builder',
+        state: 'needs-attention'
+      }
+    })
+    expect(loaded.chat.$groupChats.get().Release.hostedStatus?.checkConnectionId).toBeUndefined()
+    expect(loaded.chat.$groupChats.get().Release.log.map(entry => entry.text)).toContain('History survives the upgrade')
+    expect(loaded.chat.$groupChats.get().Release.members).toHaveLength(2)
+    expect(
+      loaded.calls.filter(call =>
+        ['groups.create', 'groups.retry', 'groups.send', 'prompt.submit', 'session.create'].includes(call.method)
+      )
+    ).toEqual([])
     loaded.runtime.stopHostedRoomRuntime()
   })
 

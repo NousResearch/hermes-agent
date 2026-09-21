@@ -514,7 +514,14 @@ def _nvidia_smi_facts() -> dict:
     if smi.returncode != 0 or not smi.stdout.strip():
         return {}
     name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
-    return dict(gpu_name=name, gpu_util_percent=int(util), vram_used_bytes=int(used_mib) << 20)
+    # Drivers can report N/A per field (e.g. WDDM utilization). Preserve the
+    # other facts instead of letting one unavailable metric discard them all.
+    facts = {"gpu_name": name}
+    with contextlib.suppress(ValueError):
+        facts["gpu_util_percent"] = int(util)
+    with contextlib.suppress(ValueError):
+        facts["vram_used_bytes"] = int(used_mib) << 20
+    return facts
 
 
 @router.get("/api/local-models/hardware")

@@ -2288,6 +2288,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
 
     expect(accepted).toBe(true)
+
     const calls = requestGateway.mock.calls.map(([method, params]) => [
       method,
       (params as { session_id?: string })?.session_id

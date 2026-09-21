@@ -38,6 +38,7 @@ describe('renderer heap flags', () => {
     const cfg = readDesktopLaunchConfig(
       'desktop:\n  electron_flags: [--disable-gpu]\n  renderer_max_old_space_mb: 1536\n'
     )
+
     const planned = planLaunchSwitches(cfg, ['/app/hermes', '--js-flags=--expose-gc', '--disable-gpu'])
 
     // --disable-gpu is already on the launcher's argv: not re-applied.

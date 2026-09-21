@@ -33,6 +33,7 @@ import {
   saveThreadScrollPosition,
   shouldReapplyFrozenThreadScrollOffset,
   THREAD_SCROLL_BOTTOM,
+  THREAD_SCROLL_STICKY_THRESHOLD_PX,
   type ThreadScrollRestoreResizeMetrics,
   type ThreadScrollState,
   threadScrollStateFromMetrics,
@@ -836,19 +837,61 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
+    // use-stick-to-bottom follows a content resize on the next animation frame,
+    // so a busy streamed turn can grow the content before that callback runs:
+    // the viewport paints at the stale scrollTop, visibly drifting up before
+    // the re-pin (#118482). The RO leg closes that frame, synchronously before
+    // paint.
+    const resizeMetrics = (): ThreadScrollRestoreResizeMetrics => {
+      const clearance = content.querySelector('[data-slot="aui_composer-clearance"]')
+
+      return {
+        clearanceHeight: clearance instanceof HTMLElement ? clearance.clientHeight : 0,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight
+      }
+    }
+
+    // ponytail: previous-metrics precision is load-bearing — the predicate must
+    // see the frame BEFORE the growth, so a scroll event (which also writes it)
+    // can't leave a stale gap that makes a mid-stream resize look like growth.
+    let previousResizeMetrics = resizeMetrics()
+
     const update = () => {
+      previousResizeMetrics = resizeMetrics()
+      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+    }
+
+    const onResize = () => {
+      const nextResizeMetrics = resizeMetrics()
+
+      // Same transcript-only metric as the restore loop: a composer-only resize
+      // (every keystroke) grows the clearance spacer, not the rows, so it is
+      // distinguishable from streamed content. The pre-growth metrics hold the
+      // reader's position, so a reader who scrolled up is never yanked back
+      // (#108941); use-stick-to-bottom stays the single scroll owner otherwise.
+      if (
+        isRunning &&
+        shouldReapplyFrozenThreadScrollOffset(THREAD_SCROLL_BOTTOM, true, previousResizeMetrics, nextResizeMetrics) &&
+        previousResizeMetrics.scrollHeight - el.scrollTop - el.clientHeight <= THREAD_SCROLL_STICKY_THRESHOLD_PX &&
+        !hasTranscriptTextSelection(el)
+      ) {
+        el.scrollTop = threadScrollTargetTop(THREAD_SCROLL_BOTTOM, nextResizeMetrics)
+      }
+
+      previousResizeMetrics = nextResizeMetrics
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
     }
 
     el.addEventListener('scroll', update, { passive: true })
-    const observer = new ResizeObserver(update)
+    const observer = new ResizeObserver(onResize)
     observer.observe(content)
 
     return () => {
       el.removeEventListener('scroll', update)
       observer.disconnect()
     }
-  }, [contentRef, paneVisible, scrollRef])
+  }, [contentRef, isRunning, paneVisible, scrollRef, sessionKey])
 
   // Persist the live position on app close, so a reading position survives a
   // quit without a session switch (the switch cleanup below only runs on

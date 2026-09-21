@@ -49,6 +49,9 @@ const saveHermesConfigRecord = vi.fn()
 const getElevenLabsVoices = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  // useHermesConfigRecord (via VoiceProviderFields) reads these from the barrel.
+  peekConfigReadOrigin: () => undefined,
+  retainConfigReadOrigin: (next: unknown) => next,
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   getToolsetModels: (name: string, provider?: string) => getToolsetModels(name, provider),
   selectToolsetModel: (name: string, model: string, provider?: string) => selectToolsetModel(name, model, provider),

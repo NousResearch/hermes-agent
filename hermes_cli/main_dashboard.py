@@ -13,10 +13,15 @@ import sys
 
 from pathlib import Path
 from typing import NoReturn
-from hermes_cli.cli_output import line_input
 from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
-
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
+
+
+def _line_input(prompt_text: str) -> str:
+    """Use enhanced input unless this process retained a pre-update module."""
+    from hermes_cli import cli_output
+
+    return getattr(cli_output, "line_input", input)(prompt_text)
 
 
 def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
@@ -604,7 +609,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     import secrets
     print()
     try:
-        username = line_input("  Username [admin]: ").strip() or "admin"
+        username = _line_input("  Username [admin]: ").strip() or "admin"
         password = getpass.getpass("  Password: ")
         confirm = getpass.getpass("  Confirm password: ")
     except (EOFError, KeyboardInterrupt):

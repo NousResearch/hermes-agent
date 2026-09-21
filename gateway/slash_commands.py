@@ -591,7 +591,9 @@ class GatewaySlashCommandsMixin(
         never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
         from gateway.slash_access import policy_for_source
         source = event.source
-        policy = policy_for_source(self.config, source)
+        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
+        # no ``config``; policy_for_source treats None as ungated.
+        policy = policy_for_source(getattr(self, "config", None), source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
             return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
         return {}

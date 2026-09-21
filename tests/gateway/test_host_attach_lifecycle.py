@@ -137,14 +137,32 @@ def test_run_for_an_unserved_profile_rescans_then_attaches(tmp_path, monkeypatch
 
 
 def test_host_gateway_refuses_when_it_will_not_serve_the_profile(tmp_path, monkeypatch, owner_pid):
+    """A MULTIPLEXING owner whose roster still excludes us after a rescan is the permanent refusal."""
     owner_home = tmp_path / "root"
     _publish(owner_pid, owner_home, ("default",))
     _answer_identify(monkeypatch, owner_pid, owner_home, ["default"])
     monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: owner_home / "profiles" / "other")
     monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
-                        lambda home, timeout=8.0: {"multiplex": False})
+                        lambda home, timeout=8.0: {"multiplex": True, "served_profiles": ["default"]})
 
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is False
+
+
+def test_a_standalone_owner_is_the_per_profile_topology_not_a_refusal(tmp_path, monkeypatch, owner_pid, caplog):
+    """The owner answers ``multiplex: False``: it is a per-profile gateway, not a multiplexer that
+    excluded us. Refusing here (exit 78 → launchd parks the unit) took every other profile's
+    supervised gateway down at boot on a one-process-per-profile fleet. Start as before."""
+    owner_home = tmp_path / "root" / "profiles" / "tank"
+    _publish(owner_pid, owner_home, ("tank",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["tank"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path / "root" / "profiles" / "nous")
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["tank"]})
+
+    with caplog.at_level("WARNING", logger="gateway.host_attach"):
+        assert host_attach.decide(tmp_path / "root" / "profiles" / "nous").outcome == host_attach.START
+    assert any("migrate --multiplex" in r.getMessage() for r in caplog.records), "the converge hint is logged"
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None
 
 
 def test_replace_signals_the_owner_instead_of_standing_down(tmp_path, monkeypatch, owner_pid):

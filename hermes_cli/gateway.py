@@ -3797,7 +3797,12 @@ def _attach_to_host_gateway_or_guard(force: bool = False, replace: bool = False)
     if decision is not None and decision.outcome in (ATTACH, REFUSE):
         print(decision.message)
         if decision.outcome == REFUSE:
-            sys.exit(_host_decision_exit_code(decision))
+            code = _host_decision_exit_code(decision)
+            # stdout goes to the supervisor's unit log; under launchd a permanent refusal is then
+            # mapped to a clean exit and the unit is parked. The profile's own logs (errors.log,
+            # WARNING+) are where a parked fleet is diagnosed, so name the verdict and the remedy there.
+            logger.warning("gateway run refused (exit %d): %s", code, decision.message)
+            sys.exit(code)
         if _running_under_gateway_supervisor():
             sys.exit(_host_decision_exit_code(decision))
         sys.exit(0)

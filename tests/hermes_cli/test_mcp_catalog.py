@@ -622,6 +622,11 @@ class TestInstall:
         assert get_env_value("DEMO_CLIENT_SECRET") == "val-for-secret"
         raw = get_config_path().read_text(encoding="utf-8")
         assert "${DEMO_CLIENT_SECRET}" in raw and "val-for-secret" not in raw
+        # Non-secret client id is inlined into config.yaml (not .env, not a ref):
+        # .env stays secrets-only.
+        assert get_env_value("DEMO_CLIENT_ID") is None
+        assert "${DEMO_CLIENT_ID}" not in raw
+        assert "val-for-id" in raw
 
         # A ``${VAR}`` the manifest never declares would reach the token endpoint as a literal
         # placeholder (invalid_client): rejected at parse time, like the api_key header contract.
@@ -655,6 +660,22 @@ class TestUninstall:
         from hermes_cli.mcp_catalog import uninstall_entry
 
         assert uninstall_entry("nonexistent") is False
+
+    def test_uninstall_removes_read_only_git_clone(self, monkeypatch):
+        """Loose objects are read-only in a clone: the purge must clear that, not abort (#117176)."""
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "remove_server", lambda name: False)
+        clone = mc._install_root() / "demo"
+        obj_dir = clone / ".git" / "objects" / "4b"
+        obj_dir.mkdir(parents=True)
+        obj = obj_dir / "825dc642cb6eb9a060e54bf8d69288fbee4904"
+        obj.write_text("blob", encoding="utf-8")
+        obj.chmod(0o444)
+        obj_dir.chmod(0o555)
+
+        assert mc.uninstall_entry("demo") is True
+        assert not clone.exists()
 
 
 # ---------------------------------------------------------------------------

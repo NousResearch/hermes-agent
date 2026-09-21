@@ -56,6 +56,11 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Size of the pool that runs turn bodies (blocking agent work).
+_TURN_MAX_WORKERS = 10
+# Size of the separate pool for best-effort session HOUSEKEEPING; why it is separate: _run_housekeeping_in_executor.
+_HOUSEKEEPING_MAX_WORKERS = 4
+
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
 # _resolve_async_delegation_session so they never disagree (else a "delivered" reason is acked, then lost).
 _USER_BOUNDARY_END_REASONS = ("session_reset", "user_exit", "session_switch", "new_session")
@@ -3492,6 +3497,9 @@ class GatewayRunner(
         self._session_db_init_error: Optional[str] = None
         # Non-default profiles' adapters by profile then Platform; self.adapters stays the default's map.
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Each SERVED profile's gateway config, as loaded once by ``_load_secondary_profile_config``.
+        # ``self.config`` is only the launch profile's: anything host-wide (restart notices) needs these.
+        self._profile_configs: Dict[str, Any] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -3567,6 +3575,8 @@ class GatewayRunner(
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        # Best-effort session housekeeping runs on its OWN pool; see _run_housekeeping_in_executor.
+        self._housekeeping_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect the pool.
         self._executor_closing = False
         # ALL per-session state lives here (gateway/session_state.py); use _session_state / _peek_session_state.
@@ -4276,8 +4286,24 @@ class GatewayRunner(
         ctx = copy_context()
         return await loop.run_in_executor(self._get_executor(), ctx.run, func, *args)
 
-    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Return the gateway-owned executor for blocking agent work."""
+    async def _run_housekeeping_in_executor(self, func, *args):
+        """Run best-effort session housekeeping off the TURN pool.
+
+        Callers of this helper bound their await with ``asyncio.wait_for`` and, on timeout, log
+        "the worker thread is left to finish on its own" and proceed. That bounds the AWAIT but
+        NOT the OCCUPANCY: a ``concurrent.futures`` work item that has already begun executing is
+        not cancellable, so an abandoned worker keeps its pool slot until its blocking call
+        returns. On a shared pool, N abandonments retire N turn slots for ANY N — the failure is
+        scale-invariant, so raising ``max_workers`` does not fix it. Housekeeping therefore gets
+        its own bounded pool; exhausting that one delays only more housekeeping, which is
+        best-effort by construction.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._get_housekeeping_executor(), copy_context().run, func, *args)
+
+    def _get_or_create_pool(self, attr: str, max_workers: int, prefix: str) -> concurrent.futures.ThreadPoolExecutor:
+        """Return (creating under ``_executor_lock``) the pool at ``attr``; one lock + closing flag fences both."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
             lock = threading.Lock()
@@ -4285,18 +4311,37 @@ class GatewayRunner(
         with lock:
             if getattr(self, "_executor_closing", False):
                 raise RuntimeError("Gateway is shutting down; executor unavailable")
-            executor = getattr(self, "_executor", None)
+            executor = getattr(self, attr, None)
             if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=10, thread_name_prefix="hermes-gateway")
-                self._executor = executor
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
+                setattr(self, attr, executor)
             return executor
 
+    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the gateway-owned executor for blocking agent work."""
+        return GatewayRunner._get_or_create_pool(self, "_executor", _TURN_MAX_WORKERS, "hermes-gateway")
+
+    def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the gateway-owned executor for best-effort session housekeeping."""
+        return GatewayRunner._get_or_create_pool(self, "_housekeeping_executor", _HOUSEKEEPING_MAX_WORKERS, "hermes-gateway-hk")
+
+    @staticmethod
+    def _stop_pool(executor) -> list:
+        """Shut ``executor`` down without waiting; return its threads to join (`_threads` absent on test doubles)."""
+        if executor is None:
+            return []
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
+        return list(getattr(executor, "_threads", None) or ())
+
     def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
-        """Stop the gateway-owned executor; returns the number of worker threads still running.
+        """Stop the gateway-owned pools; returns the number of worker threads still running.
         ``drain_timeout=0`` is fire-and-forget; shutdown passes a bounded budget so blocking DB work
         cannot outlive ``SessionDB.close()``. ``cancel_futures`` only drops unstarted work and cancelling
-        a ``run_in_executor`` awaitable does not stop its thread, so running workers are joined."""
+        a ``run_in_executor`` awaitable does not stop its thread, so running workers are joined — on
+        the turn pool AND the housekeeping pool, both of which write to SessionDB."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
             return 0
@@ -4304,15 +4349,13 @@ class GatewayRunner(
             self._executor_closing = True
             executor = getattr(self, "_executor", None)
             self._executor = None
-        if executor is None:
-            return 0
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            executor.shutdown(wait=False)
-
-        # shutdown() has no timeout, so join workers directly; `_threads` is absent on test doubles (no wait).
-        workers = list(getattr(executor, "_threads", None) or ())
+            housekeeping = getattr(self, "_housekeeping_executor", None)
+            self._housekeeping_executor = None
+        # Housekeeping workers run SessionDB writes too (session finalize, agent cleanup), so a wedged
+        # one is exactly the mid-write worker the #101093 skip-close heuristic exists for. Both pools
+        # are therefore joined under the SAME drain deadline and both contribute to the live count.
+        # Class-qualified: run_shutdown and tests invoke these unbound on a duck-typed `self`.
+        workers = GatewayRunner._stop_pool(executor) + GatewayRunner._stop_pool(housekeeping)
         deadline = time.monotonic() + max(float(drain_timeout or 0.0), 0.0)
         for worker in workers:
             remaining = deadline - time.monotonic()

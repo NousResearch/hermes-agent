@@ -132,6 +132,15 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
     """
     _sanitize_structure_surrogates(api_kwargs)
     if agent._force_ascii_payload:
+        # ``tools`` is built from ``agent.tools`` per attempt and usually aliases it; detach
+        # before the in-place strip so the retry never rewrites the canonical tool schemas.
+        # A structural clone suffices: ``_sanitize_structure`` only rebinds str leaves
+        # inside dict/list containers.
+        if api_kwargs.get("tools") is not None and api_kwargs["tools"] is getattr(agent, "tools", None):
+            # Lazy: conversation_loop imports this module (cycle).
+            from agent.conversation_loop import _clone_message_for_send
+
+            api_kwargs["tools"] = _clone_message_for_send(api_kwargs["tools"])
         _sanitize_structure_non_ascii(api_kwargs)
 
 

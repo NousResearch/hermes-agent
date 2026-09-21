@@ -2180,6 +2180,10 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     # Same send-path vision eviction as the main loop (#89296).
     from agent.context_compressor import evict_stale_outbound_tool_images
     evict_stale_outbound_tool_images(api_messages)
+    # Same send-path image strip as build_api_request: this summary bypasses it, and history still
+    # holds the images a model that rejected them must not be sent again.
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    strip_images_for_rejecting_model(agent, api_messages)
     # Thinking-only assistant turns 400 on Anthropic-family providers; _thinking_prefill must
     # survive until here so the drop pass recognizes stubs after reasoning is stripped.
     api_messages = agent._drop_thinking_only_and_merge_users(api_messages)

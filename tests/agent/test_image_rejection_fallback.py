@@ -6,6 +6,8 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
+import pytest
+
 from agent.message_sanitization import _looks_like_image_content_rejection, _strip_images_from_messages
 
 
@@ -399,7 +401,7 @@ class TestRejectionNeverReachesPersistedHistory:
         retry_b, _ = self._recover(agent, self._history(), [])
 
         assert retry_a is True and retry_b is True
-        assert agent._image_rejecting_models == {("p", "model-a"), ("p", "model-b")}
+        assert agent._image_rejecting_models == {("p", "model-a", None), ("p", "model-b", None)}
         for model in ("model-a", "model-b"):
             agent.model = model
             api_messages = self._history()
@@ -417,3 +419,65 @@ class TestRejectionNeverReachesPersistedHistory:
         agent = self._agent()
         assert self._recover(agent, self._history(), [])[0] is True
         assert self._recover(agent, self._history(), [])[0] is False
+
+    def test_rejection_is_scoped_to_the_endpoint_not_just_the_model_name(self):
+        """Unnamed custom endpoints all report provider ``custom``; one of them rejecting images
+        must not strip images from another serving the same model name."""
+        from agent.message_sanitization import strip_images_for_rejecting_model
+
+        agent = self._agent(provider="custom", model="shared-name")
+        agent.base_url = "http://text-only.local/v1"
+        self._recover(agent, self._history(), [])
+
+        agent.base_url = "http://vision.local/v1"
+        api_messages = self._history()
+        assert strip_images_for_rejecting_model(agent, api_messages) is False
+        assert str(api_messages).count("data:image/png") == 2
+
+
+class TestRejectionOnARealAgent:
+    """End-to-end on a constructed AIAgent: the flag is initialised, and the max-iterations
+    summary — which builds its own messages and bypasses build_api_request — strips images for
+    a model that rejected them, without touching history."""
+
+    @pytest.fixture
+    def agent(self, tmp_path, monkeypatch):
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        agent = AIAgent(api_key="k", base_url="https://api.groq.com/openai/v1", provider="custom",
+                        model="text-model", quiet_mode=True, skip_context_files=True, skip_memory=True)
+        agent._cached_system_prompt = "SYS"
+        return agent
+
+    @staticmethod
+    def _history():
+        return [
+            {"role": "user", "content": [
+                {"type": "text", "text": "what is in this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ]},
+            {"role": "assistant", "content": "a cat"},
+        ]
+
+    def test_a_fresh_agent_starts_with_no_rejecting_models(self, agent):
+        assert agent._image_rejecting_models == set()
+
+    def test_iteration_summary_strips_images_for_a_rejecting_model(self, agent):
+        import copy
+
+        from agent.chat_completion_helpers import _iteration_summary_api_messages
+        from agent.message_sanitization import image_model_key
+
+        history = self._history()
+        before = copy.deepcopy(history)
+
+        # Before any rejection the summary carries the image.
+        assert "image_url" in str(_iteration_summary_api_messages(agent, history))
+
+        agent._image_rejecting_models.add(image_model_key(agent))
+        summary = _iteration_summary_api_messages(agent, history)
+
+        assert "image_url" not in str(summary)
+        assert "what is in this?" in str(summary)
+        assert history == before, "the summary build rewrote history"

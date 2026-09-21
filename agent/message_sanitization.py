@@ -392,9 +392,12 @@ _IMAGE_REJECTION_PHRASES = (
 
 
 def image_model_key(agent: Any) -> tuple:
-    """``(provider, model)`` the agent is currently talking to — the key image rejections are
-    tracked by, so each model in a fallback chain is judged on its own."""
-    return (getattr(agent, "provider", None), getattr(agent, "model", None))
+    """``(provider, model, base_url)`` the agent is currently talking to — the key image rejections
+    are tracked by, so each model in a fallback chain is judged on its own. ``base_url`` is part of
+    it because unnamed custom endpoints all report provider ``custom``: one endpoint rejecting
+    images must not strip them from another serving the same model name. All three are switched
+    together on a model switch or fallback."""
+    return (getattr(agent, "provider", None), getattr(agent, "model", None), getattr(agent, "base_url", None))
 
 
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
@@ -403,8 +406,8 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     Runs on the per-call ``api_messages`` copy in Hermes's own message format, BEFORE the
     provider-specific conversion: the part types this stripper knows are that format's, and a
     converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
-    past it. History is never touched. Keyed on each rejecting (provider, model), so a model
-    that accepts images gets them again.
+    past it. History is never touched. Keyed on each rejecting endpoint (see image_model_key), so
+    a model that accepts images gets them again.
     """
     rejected = getattr(agent, "_image_rejecting_models", None)
     if not isinstance(rejected, set) or image_model_key(agent) not in rejected:

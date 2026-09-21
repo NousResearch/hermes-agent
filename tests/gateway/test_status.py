@@ -284,6 +284,25 @@ class TestGatewayRuntimeStatus:
             os.getpid()
         )
 
+    def test_hermes_home_is_restamped_to_current_writer(self, tmp_path, monkeypatch):
+        # hermes_home is re-derived from _build_pid_record() (see its own docstring:
+        # "the owner's home lets a cross-profile --replace place its takeover marker
+        # where the target will read it") but was missing from the re-stamp set below,
+        # alongside kind/pid/argv/start_time -- which it must be re-stamped with for
+        # the same reason: the file can outlive its creator, and a later writer (e.g.
+        # a cross-profile --replace takeover) must overwrite a stale prior owner's
+        # home, not preserve it.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({"hermes_home": "/opt/data/profiles/stale-previous-owner"}),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["hermes_home"] == str(status._canonical_hermes_home(tmp_path))
+
     def test_clear_profile_platforms_repairs_malformed_platforms(
         self, tmp_path, monkeypatch
     ):

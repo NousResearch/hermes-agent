@@ -1053,7 +1053,7 @@ def _prepare_runtime_status_update(
                 if not isinstance(k, str) or ":" not in k
                 or (drop_prefix is not None and not k.startswith(drop_prefix))
             }
-        payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
+        payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time", "hermes_home")})
         payload["updated_at"] = _utc_now_iso()
         payload.update(_get_code_identity_fields())
         _apply_set_fields(payload, (

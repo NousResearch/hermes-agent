@@ -721,7 +721,14 @@ def _status_403(c: _Ctx) -> Verdict:
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
-    return _V_BILLING if billing else _V_AUTH_FALLBACK
+    if billing:
+        return _V_BILLING
+    # Structured codes that self-identify as transient server errors (e.g. OpenCode Go
+    # wrapping an upstream JSON parse failure as {"error": {"type": "server_error", ...}})
+    # are not credential problems — retry with backoff instead of aborting on attempt 1.
+    if c.code in ("server_error", "upstream_unavailable"):
+        return _v(_R.server_error, should_fallback=False, retryable=True)
+    return _V_AUTH_FALLBACK
 
 
 def _status_404(c: _Ctx) -> Verdict:

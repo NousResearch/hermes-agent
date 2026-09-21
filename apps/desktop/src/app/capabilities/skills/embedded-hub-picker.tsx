@@ -88,6 +88,7 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   const [dragging, setDragging] = useState(false)
   const [hubPickerUrl, setHubPickerUrl] = useState(HUB_PICKER_URL)
   const sectionRef = useRef<HTMLElement>(null)
+  const frameRef = useRef<HTMLIFrameElement | null>(null)
 
   // The Vercel docs endpoint can deny an entire IP range. Probe it before the
   // iframe is used and fall back to the same static docs on GitHub Pages when
@@ -160,6 +161,10 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
 
     const onMessage = (event: MessageEvent) => {
       if (!isHubOrigin(event.origin)) {
+        return
+      }
+
+      if (event.source !== frameRef.current?.contentWindow) {
         return
       }
 
@@ -256,6 +261,7 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
             }}
           >
             <iframe
+              ref={frameRef}
               sandbox="allow-scripts allow-same-origin"
               src={hubPickerUrl}
               style={{

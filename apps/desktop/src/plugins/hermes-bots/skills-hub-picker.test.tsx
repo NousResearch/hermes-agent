@@ -79,6 +79,7 @@ function routedInstallCalls() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
 })
 
 afterEach(() => {

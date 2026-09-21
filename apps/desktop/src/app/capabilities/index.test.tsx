@@ -97,6 +97,7 @@ async function renderSkills() {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
@@ -292,13 +293,16 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
 
     // The picker is expanded by default — the hub iframe is live on mount.
-    expect(document.querySelector('iframe')).toBeTruthy()
+    const frame = document.querySelector('iframe')
+
+    expect(frame).toBeTruthy()
 
     await act(async () => {
       window.dispatchEvent(
         new MessageEvent('message', {
           data: { type: 'hermes-skill-pick', name: 'web-research', identifier: 'web-research' },
-          origin: 'https://hermes-agent.nousresearch.com'
+          origin: 'https://hermes-agent.nousresearch.com',
+          source: frame?.contentWindow
         })
       )
     })
@@ -309,6 +313,48 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
         expect.objectContaining({ title: '"web-research" is already installed' })
       )
     )
+  })
+
+  it('accepts a fallback picker message from its own iframe', async () => {
+    const { installHubSkill } = await import('@/store/hub-actions')
+    const { EmbeddedHubPicker } = await import('./skills/embedded-hub-picker')
+
+    render(<EmbeddedHubPicker installedNames={new Set()} profile={null} />)
+
+    const frame = document.querySelector('iframe')
+
+    expect(frame).toBeTruthy()
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'hermes-skill-pick', name: 'Web Research', identifier: 'nous/web-research' },
+          origin: 'https://nousresearch.github.io',
+          source: frame?.contentWindow
+        })
+      )
+    })
+
+    expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('nous/web-research', null)
+  })
+
+  it('ignores a trusted picker-origin message from another window', async () => {
+    const { installHubSkill } = await import('@/store/hub-actions')
+    const { EmbeddedHubPicker } = await import('./skills/embedded-hub-picker')
+
+    render(<EmbeddedHubPicker installedNames={new Set()} profile={null} />)
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'hermes-skill-pick', name: 'Web Research', identifier: 'nous/web-research' },
+          origin: 'https://nousresearch.github.io',
+          source: window
+        })
+      )
+    })
+
+    expect(vi.mocked(installHubSkill)).not.toHaveBeenCalled()
   })
 
   it('uses GitHub Pages for the Capabilities picker when the Vercel probe fails', async () => {

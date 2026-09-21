@@ -97,3 +97,47 @@ def nous_portal_tags(session_id: str | None = None) -> List[str]:
     if effective:
         tags.append(conversation_tag(effective))
     return tags
+
+
+# Fixed descriptions identify the operation without copying prompts, tool output,
+# or arbitrary task names supplied by plugins into request metadata.
+_AUXILIARY_PURPOSES = {
+    "compression": "Summarize conversation context so the assistant can continue.",
+    "title_generation": "Generate a title for the conversation.",
+    "vision": "Interpret an image for the current assistant task.",
+    "skills_hub": "Select relevant skills for the assistant task.",
+    "approval": "Evaluate whether a requested tool action needs approval.",
+    "mcp": "Complete a model sampling request from a connected tool.",
+    "memory_query_rewrite": "Rewrite a query to retrieve relevant memories.",
+    "tts_audio_tags": "Prepare speech delivery annotations.",
+    "triage_specifier": "Expand a task description into a specification.",
+    "kanban_decomposer": "Break a task into actionable subtasks.",
+    "profile_describer": "Generate a short profile description.",
+    "goal_judge": "Define or assess the completion criteria for a goal.",
+    "curator": "Review skills and identify useful improvements.",
+    "monitor": "Assess the relevance of a monitored item.",
+    "background_review": "Review the conversation for memory and skill improvements.",
+    "moa_reference": "Produce a candidate response for the current assistant task.",
+    "moa_aggregator": "Synthesize candidate responses for the current assistant task.",
+}
+
+
+def nous_request_metadata(
+    session_id: str | None = None, *, task: str | None = None, messages: list | None = None,
+) -> dict[str, str]:
+    """Describe a Nous request and reuse its existing conversation lineage ID."""
+    if task is None:
+        activity = "assistant_chat"
+        purpose = (
+            "Continue the assistant response using the requested tool results."
+            if messages and messages[-1].get("role") == "tool"
+            else "Respond to the user's latest message."
+        )
+    else:
+        activity = task if task in _AUXILIARY_PURPOSES else "auxiliary"
+        purpose = _AUXILIARY_PURPOSES.get(task, "Complete a supporting operation for the assistant.")
+    metadata = {"hermes_activity": activity, "hermes_purpose": purpose}
+    conversation_id = get_conversation_context() or session_id
+    if conversation_id and len(conversation_id) <= 512 and conversation_id.strip():
+        metadata["hermes_activity_id"] = conversation_id
+    return metadata

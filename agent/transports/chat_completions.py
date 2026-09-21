@@ -570,6 +570,7 @@ class ChatCompletionsTransport(ProviderTransport):
         profile_body = profile.build_extra_body(
             session_id=params.get("session_id"), provider_preferences=params.get("provider_preferences"), model=model,
             base_url=params.get("base_url"), reasoning_config=reasoning_config,
+            messages=sanitized,
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):

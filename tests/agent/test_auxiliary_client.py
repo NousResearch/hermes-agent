@@ -2680,9 +2680,9 @@ class TestAuxiliaryTaskExtraBody:
         seen = {}
         real = aux._project_provider_profile
 
-        def spy(provider, provider_norm, model, effective_base, reasoning_config):
+        def spy(provider, provider_norm, model, effective_base, reasoning_config, task=None):
             seen["config"] = reasoning_config
-            return real(provider, provider_norm, model, effective_base, reasoning_config)
+            return real(provider, provider_norm, model, effective_base, reasoning_config, task)
 
         monkeypatch.setattr(aux, "_project_provider_profile", spy)
         kwargs = aux._build_call_kwargs(

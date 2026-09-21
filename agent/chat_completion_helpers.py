@@ -474,21 +474,19 @@ def _prompt_cache_scope_for_agent(agent) -> "str | None":
         return None
 
 
-def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dict:
-    """Merge Portal ``tags`` / ``session_id`` onto an Anthropic Messages kwargs dict.
-    The Nous profile is only consulted by the OpenAI-wire transport; ``session_id``
-    only — never ``provider_preferences`` (an OpenAI-wire routing object)."""
+def _merge_nous_portal_extra_body(agent, kwargs: dict, messages: list) -> dict:
+    """Apply the Nous profile to wires that bypass the chat transport's profile hook."""
     if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
-        return anthropic_kwargs
+        return kwargs
     try:
         from providers import get_provider_profile
         nous_profile = get_provider_profile("nous")
         if nous_profile is not None:
-            anthropic_kwargs.setdefault("extra_body", {}).update(
-                nous_profile.build_extra_body(session_id=getattr(agent, "session_id", None)))
+            kwargs.setdefault("extra_body", {}).update(
+                nous_profile.build_extra_body(session_id=getattr(agent, "session_id", None), messages=messages))
     except Exception as exc:  # noqa: BLE001 — never block a turn on tagging
         logger.debug("Nous Portal extra_body merge failed: %s", exc)
-    return anthropic_kwargs
+    return kwargs
 
 
 def _estimate_chunk_bytes(chunk: Any) -> int:
@@ -1358,7 +1356,7 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
     # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook
     # is only consulted by the OpenAI-wire transport — merge here to keep sticky routing.
-    return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
+    return _merge_nous_portal_extra_body(agent, anthropic_kwargs, api_messages)
 
 
 def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
@@ -1389,7 +1387,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
     ephemeral_out = _consume_ephemeral_max_output(agent)
-    return agent._get_transport().build_kwargs(model=agent.model,
+    codex_kwargs = agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, base_url=agent.base_url,
@@ -1400,6 +1398,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
         context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
+    return _merge_nous_portal_extra_body(agent, codex_kwargs, api_messages)
 
 
 
@@ -2243,7 +2242,7 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
-        ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
+        ant_kw = _merge_nous_portal_extra_body(agent, ant_kw, api_messages)
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt

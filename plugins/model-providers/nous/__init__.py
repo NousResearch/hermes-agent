@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from agent.portal_tags import get_affinity_scope, get_conversation_context, nous_portal_tags
+from agent.portal_tags import get_affinity_scope, get_conversation_context, nous_portal_tags, nous_request_metadata
 from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -21,7 +21,10 @@ class NousProfile(ProviderProfile):
             return ""
 
     def build_extra_body(self, *, session_id: str | None = None, **context) -> dict[str, Any]:
-        body: dict[str, Any] = {"tags": nous_portal_tags(session_id=session_id)}
+        body: dict[str, Any] = {
+            "tags": nous_portal_tags(session_id=session_id),
+            "metadata": nous_request_metadata(session_id, task=context.get("task"), messages=context.get("messages")),
+        }
         # Top-level session_id = sticky routing key, so Anthropic-style cache
         # breakpoints stay warm on one upstream instance. Resolved like the
         # ``conversation=`` tag: declared scope, then the ambient lineage ROOT

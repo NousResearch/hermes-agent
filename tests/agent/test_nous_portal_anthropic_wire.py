@@ -321,12 +321,12 @@ class TestPortalBodyFields:
 
     def test_helper_merge_is_a_no_op_for_non_nous(self):
         from agent.chat_completion_helpers import (
-            _merge_nous_portal_messages_extra_body,
+            _merge_nous_portal_extra_body,
         )
 
         kwargs = {"model": "claude-opus-4-8", "messages": []}
         agent = SimpleNamespace(provider="anthropic", session_id="s")
-        assert _merge_nous_portal_messages_extra_body(agent, kwargs) is kwargs
+        assert _merge_nous_portal_extra_body(agent, kwargs, []) is kwargs
         assert "extra_body" not in kwargs
 
 

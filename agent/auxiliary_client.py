@@ -1497,6 +1497,8 @@ class _CodexCompletionsAdapter:
         # The Codex endpoint rejects max_output_tokens/temperature (400) — omit.
         extra_body = kwargs.get("extra_body") or {}
         if isinstance(extra_body, dict):
+            if "metadata" in extra_body:
+                resp_kwargs["extra_body"] = {"metadata": extra_body["metadata"]}
             # service_tier (fast mode) is a top-level Responses field; xAI's endpoint rejects it.
             service_tier = extra_body.get("service_tier")
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
@@ -6460,6 +6462,7 @@ def _routes_to_custom_endpoint(provider_norm: str) -> bool:
 
 def _project_provider_profile(
     provider: str, provider_norm: str, model: str, effective_base: str, reasoning_config: Optional[dict],
+    task: Optional[str] = None,
 ) -> _ProfileProjection:
     """Provider profile's extra_body / kwargs projection; partial on failure."""
     body: Dict[str, Any] = {}
@@ -6480,7 +6483,9 @@ def _project_provider_profile(
             profile = get_provider_profile("custom")
         if profile is not None:
             messages_wire = profile.api_mode == "anthropic_messages"
-            body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config) or {}
+            body = profile.build_extra_body(
+                model=model, base_url=effective_base, reasoning_config=reasoning_config, task=task or "auxiliary",
+            ) or {}
             reasoning_extra, top_level = profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config, supports_reasoning=reasoning_config is not None,
                 model=model, base_url=effective_base,
@@ -6516,7 +6521,10 @@ def _merge_aux_extra_body(
         # gateways 400 on the contradiction (#114020) — while a profile whose disabled shape IS
         # ``extra_body.reasoning`` (OpenRouter) still lands it below.
         merged_extra.pop("reasoning", None)
+    caller_metadata = merged_extra.get("metadata")
     merged_extra.update(projection.body)
+    if isinstance(caller_metadata, dict) and isinstance(projection.body.get("metadata"), dict):
+        merged_extra["metadata"] = {**projection.body["metadata"], **caller_metadata}
     merged_extra.update(projection.reasoning_extra)
     # Profiles supply route defaults, but an explicit vendor wire control in the task/call config
     # is already provider-specific and must not be replaced by that default.
@@ -6597,7 +6605,7 @@ def _build_call_kwargs(
                 reasoning_config = task_reasoning
     reasoning_config = clamp_reasoning_config(
         known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
-    projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
+    projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config, task)
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
     if "response_format" in merged_extra:

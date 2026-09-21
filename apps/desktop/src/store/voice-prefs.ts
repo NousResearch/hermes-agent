@@ -21,23 +21,35 @@ export function applyAutoSpeakFromConfig(config: { voice?: { auto_tts?: unknown 
 // Defaults to "stop" (the backend default) before config loads.
 export const $voiceStopPhrase = atom<string | null>('stop')
 
-/** Seed the stop-phrase atom from a loaded config payload (mount / refresh). */
+/** How the desktop matcher should treat `voice.stop_phrases` (#117801). */
+export type VoiceStopPhraseConfig =
+  | { mode: 'default' }
+  | { mode: 'custom'; phrases: readonly string[] }
+  | { mode: 'disabled' }
+
+// Full matcher config — kept in sync with `$voiceStopPhrase` so the spoken
+// stop recognizer honours the same list the notice advertises.
+export const $voiceStopPhraseConfig = atom<VoiceStopPhraseConfig>({ mode: 'default' })
+
+/** Seed the stop-phrase atoms from a loaded config payload (mount / refresh). */
 export function applyVoiceStopPhraseFromConfig(
   config: { voice?: { stop_phrases?: unknown } | null } | null | undefined
 ) {
   const raw = config?.voice?.stop_phrases
 
   if (raw === undefined) {
-    // Key absent — backend default applies.
+    // Key absent — backend default + built-in English matcher list.
     $voiceStopPhrase.set('stop')
+    $voiceStopPhraseConfig.set({ mode: 'default' })
 
     return
   }
 
   const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
-  const first = list.map(entry => String(entry).trim()).find(entry => entry.length > 0)
+  const phrases = list.map(entry => String(entry).trim()).filter(entry => entry.length > 0)
 
-  $voiceStopPhrase.set(first ?? null)
+  $voiceStopPhrase.set(phrases[0] ?? null)
+  $voiceStopPhraseConfig.set(phrases.length > 0 ? { mode: 'custom', phrases } : { mode: 'disabled' })
 }
 
 // `voice.thinking_sound` — ambient bubble blips while the agent works during a

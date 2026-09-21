@@ -272,14 +272,36 @@ class HubLockFile(_JsonStateFile):
             return json.loads(json.dumps(self.EMPTY))
         except json.JSONDecodeError as exc:
             raise ValueError(f"Invalid skills hub lock file {self.path}: {exc}") from exc
-        if (
-            not isinstance(data, dict)
-            or not isinstance(data.get("installed"), dict)
-            or not all(isinstance(entry, dict) for entry in data["installed"].values())
-        ):
+        if not isinstance(data, dict) or not isinstance(data.get("installed"), dict):
             raise ValueError(
                 f"Invalid skills hub lock file {self.path}: expected installed record mappings"
             )
+        for name, entry in data["installed"].items():
+            required_strings = ("source", "trust_level", "install_path")
+            if (
+                not isinstance(name, str)
+                or not isinstance(entry, dict)
+                or any(not isinstance(entry.get(field), str) for field in required_strings)
+                or ("identifier" in entry and not isinstance(entry["identifier"], str))
+                or ("content_hash" in entry and not isinstance(entry["content_hash"], str))
+                or (
+                    "files" in entry
+                    and (
+                        not isinstance(entry["files"], list)
+                        or not all(isinstance(path, str) for path in entry["files"])
+                    )
+                )
+            ):
+                raise ValueError(
+                    f"Invalid skills hub lock file {self.path}: invalid record for {name!r}"
+                )
+            try:
+                safe_name = _validate_skill_name(name)
+                _normalize_lock_install_path(entry["install_path"], safe_name)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid skills hub lock file {self.path}: invalid record for {name!r}: {exc}"
+                ) from exc
         return data
 
     def save(self, data: dict) -> None:

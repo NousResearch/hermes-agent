@@ -13,7 +13,14 @@ from hermes_constants import get_hermes_home
 from hermes_cli.skills_hub import handle_skills_slash
 
 
-@pytest.fixture(params=["{", '{"version": 1, "installed": {"broken": []}}'])
+@pytest.fixture(
+    params=[
+        "{",
+        '{"version": 1, "installed": {"broken": []}}',
+        '{"version": 1, "installed": {"broken": {}}}',
+        '{"version": 1, "installed": {"broken": {"install_path": []}}}',
+    ]
+)
 def corrupt_record(request):
     path = get_hermes_home() / "skills" / ".hub" / "lock.json"
     path.parent.mkdir(parents=True)
@@ -41,16 +48,18 @@ def test_cli_reports_corrupt_provenance_and_recovers(corrupt_record, args):
     assert "Invalid skills hub lock file" not in recovered.stdout + recovered.stderr
 
 
-def test_chat_command_reports_corrupt_provenance_without_exiting(corrupt_record):
+@pytest.mark.parametrize("command", ["list", "audit"])
+def test_chat_command_reports_corrupt_provenance_without_exiting(corrupt_record, command):
     path, corrupt_bytes = corrupt_record
     output = io.StringIO()
     console = Console(file=output, force_terminal=False, width=200)
-    handle_skills_slash("/skills list", console=console)
+    handle_skills_slash(f"/skills {command}", console=console)
     assert "Invalid skills hub lock file" in output.getvalue()
     assert path.read_text(encoding="utf-8") == corrupt_bytes
 
     path.write_text(
         json.dumps({"version": 1, "installed": {}}), encoding="utf-8"
     )
-    handle_skills_slash("/skills list", console=console)
-    assert "Installed Skills" in output.getvalue()
+    handle_skills_slash(f"/skills {command}", console=console)
+    expected = "Installed Skills" if command == "list" else "No hub-installed skills to audit."
+    assert expected in output.getvalue()

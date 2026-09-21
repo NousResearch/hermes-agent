@@ -83,7 +83,13 @@ def test_concurrent_record_updates_compose(uninstall):
 
 @pytest.mark.parametrize(
     "payload",
-    ["{", "[]", '{"version": 1, "installed": {"broken": []}}'],
+    [
+        "{",
+        "[]",
+        '{"version": 1, "installed": {"broken": []}}',
+        '{"version": 1, "installed": {"broken": {}}}',
+        '{"version": 1, "installed": {"broken": {"install_path": []}}}',
+    ],
 )
 def test_invalid_record_file_is_not_overwritten(tmp_path, payload):
     path = tmp_path / "lock.json"

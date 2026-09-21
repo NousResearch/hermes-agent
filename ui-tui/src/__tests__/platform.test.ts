@@ -198,7 +198,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('escape')).toEqual(DEFAULT_VOICE_RECORD_KEY)
   })
 
-  it('rejects ctrl+c / ctrl+d / ctrl+l — reserved by the TUI input handler', async () => {
+  it('rejects ctrl+c / ctrl+d / ctrl+l / ctrl+t — reserved by the TUI input handler', async () => {
     const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('linux')
 
     // ``useInputHandlers()`` intercepts these before the voice check,
@@ -207,6 +207,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('ctrl+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+l')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('ctrl+t')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     // Alt-modifier versions of those letters are NOT intercepted, so
     // they remain usable.
     expect(parseVoiceRecordKey('alt+c').mod).toBe('alt')
@@ -549,6 +550,17 @@ describe('isMacActionFallback', () => {
     // Must not fire when Cmd (meta/super) is held — those are distinct chords.
     expect(isMacActionFallback({ ctrl: true, meta: true, super: false }, 'k', 'k')).toBe(false)
     expect(isMacActionFallback({ ctrl: true, meta: false, super: true }, 'w', 'w')).toBe(false)
+  })
+
+  it('routes literal Ctrl+D (terminal EOF) on macOS, where the action modifier is Cmd (#116443)', async () => {
+    const { isAction, isMacActionFallback } = await importPlatform('darwin')
+    const ctrlD = { ctrl: true, meta: false, super: false }
+
+    // The exit binding used isAction alone: Ctrl+D never matched on macOS, and Ghostty eats Cmd+D.
+    expect(isAction(ctrlD, 'd', 'd')).toBe(false)
+    expect(isMacActionFallback(ctrlD, 'd', 'd')).toBe(true)
+    expect(isMacActionFallback({ ctrl: true, meta: true, super: false }, 'd', 'd')).toBe(false)
+    expect(isMacActionFallback({ ctrl: false, meta: false, super: true }, 'd', 'd')).toBe(false)
   })
 
   it('is a no-op on non-macOS (Linux routes Ctrl+K/W through isActionMod directly)', async () => {

@@ -1,0 +1,3 @@
+[12:00:01] tool web_search query='Python 3.13 latest stable version' limit=5
+[12:00:02] web_search -> [{"url":"https://www.python.org/downloads/","title":"Download Python","description":"3.13"},{"url":"https://legacy.example.com/3.12","title":"Legacy","description":"3.12"}]
+[12:00:03] final: 'Latest is either 3.13 or 3.12, I am not sure.' (no confident verdict, cites both, no synthesis)

@@ -1,0 +1,1 @@
+A plugin 'broken' whose __init__.py raises a SyntaxError is skipped/isolated: it fails to load but does NOT crash the session or prevent healthy plugins from loading. Error is logged. Healthy plugin's tool still dispatches after the failed load.

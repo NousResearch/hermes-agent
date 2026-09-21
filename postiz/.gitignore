@@ -1,0 +1,6 @@
+.env
+docker-compose.override.yml
+patch-and-start.local.sh
+*.local
+*.bak
+*.backup

@@ -1,0 +1,878 @@
+# ═══════════════════════════════════════════════════════════════
+# LIVE CONFIG WARNING
+# This file contains host-specific paths, Discord IDs, and MCP configs
+# for Sahil's KenseiAgent deployment. It is NOT a clean example template.
+# Do not push to public repos without sanitising first.
+# ═══════════════════════════════════════════════════════════════
+model:
+  base_url: https://ollama.com/v1
+  default: deepseek-v4-flash
+  provider: ollama-cloud
+providers:
+  nous:
+    request_timeout_seconds: 1800
+    stale_timeout_seconds: 300
+  ollama-cloud:
+    request_timeout_seconds: 1800
+    stale_timeout_seconds: 300
+  openai-codex:
+    request_timeout_seconds: 1800
+    stale_timeout_seconds: 300
+  openrouter:
+    request_timeout_seconds: 1800
+    stale_timeout_seconds: 300
+fallback_providers:
+  - provider: ollama-cloud
+    model: deepseek-v4-pro
+    base_url: https://ollama.com/v1
+  - provider: openrouter
+    model: moonshotai/kimi-k2.6:free
+    base_url: https://openrouter.ai/api/v1
+  - provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    base_url: https://openrouter.ai/api/v1
+  - provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+  - provider: nvidia
+    model: nvidia/nemotron-3-super-120b-a12b
+    base_url: https://integrate.api.nvidia.com/v1
+credential_pool_strategies:
+  nous: fill_first
+  ollama-cloud: fill_first
+  openrouter: fill_first
+governance:
+  profile_activity_ledger:
+    enabled: false
+toolsets:
+  - hermes-cli
+  - browser
+  - gbrain
+agent:
+  max_turns: 90
+  gateway_timeout: 1800
+  restart_drain_timeout: 60
+  api_max_retries: 3
+  service_tier: ''
+  tool_use_enforcement: auto
+  task_completion_guidance: true
+  environment_probe: true
+  environment_hint: ''
+  gateway_timeout_warning: 900
+  clarify_timeout: 600
+  gateway_notify_interval: 180
+  gateway_auto_continue_freshness: 3600
+  image_input_mode: auto
+  disabled_toolsets: []
+  personalities:
+    catgirl: "You are Neko-chan, an anime catgirl AI assistant, nya~! Add 'nya' and
+      cat-like expressions to your speech. Use kaomoji like (=^･ω･^=) and ฅ^•ﻌ•^ฅ.
+      Be playful and curious like a cat, nya~!"
+    concise: You are a concise assistant. Keep responses brief and to the point.
+    creative: You are a creative assistant. Think outside the box and offer 
+      innovative solutions.
+    helpful: You are a helpful, friendly AI assistant.
+    hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question
+      is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE
+      YOU READY?! LET'S DO THIS! 💪😤🚀"
+    kawaii: "You are a kawaii assistant! Use cute expressions like (◕‿◕), ★, ♪, and
+      ~! Add sparkles and be super enthusiastic about everything! Every response should
+      feel warm and adorable desu~! ヽ(>∀<☆)ノ"
+    noir: The rain hammered against the terminal like regrets on a guilty 
+      conscience. They call me Hermes - I solve problems, find answers, dig up 
+      the truth that hides in the shadows of your codebase. In this city of 
+      silicon and secrets, everyone's got something to hide. What's your story, 
+      pal?
+    philosopher: Greetings, seeker of wisdom. I am an assistant who contemplates
+      the deeper meaning behind every query. Let us examine not just the 'how' 
+      but the 'why' of your questions. Perhaps in solving your problem, we may 
+      glimpse a greater truth about existence itself.
+    pirate: 'Arrr! Ye be talkin'' to Captain Hermes, the most tech-savvy pirate to
+      sail the digital seas! Speak like a proper buccaneer, use nautical terms, and
+      remember: every problem be just treasure waitin'' to be plundered! Yo ho ho!'
+    shakespeare: Hark! Thou speakest with an assistant most versed in the bardic
+      arts. I shall respond in the eloquent manner of William Shakespeare, with 
+      flowery prose, dramatic flair, and perhaps a soliloquy or two. What light 
+      through yonder terminal breaks?
+    surfer: "Duuude! You're chatting with the chillest AI on the web, bro! Everything's
+      gonna be totally rad. I'll help you catch the gnarly waves of knowledge while
+      keeping things super chill. Cowabunga! 🤙"
+    teacher: You are a patient teacher. Explain concepts clearly with examples.
+    technical: You are a technical expert. Provide detailed, accurate technical 
+      information.
+    uwu: hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you!
+      *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be 
+      vewy hewpful >w<
+  reasoning_effort: high
+  system_prompt: When sending messages to Discord, use concise Discord-safe 
+    Markdown/plain text. Do not use legacy HTML tags such as <b>, <code>, or 
+    <blockquote>. Use short headings, bullet points, and backticks for IDs, 
+    paths, commands, and hashes. For generated reports, attach files with 
+    MEDIA:/absolute/path when the file exists. Dates and times must use UK 
+    format DD/MM/YY HH:MM:SS.
+  verbose: false
+terminal:
+  backend: local
+  modal_mode: auto
+  cwd: .
+  timeout: 300
+  env_passthrough:
+    - HOME
+    - PATH
+  shell_init_files: []
+  auto_source_bashrc: true
+  docker_image: nikolaik/python-nodejs:python3.11-nodejs20
+  docker_forward_env: []
+  docker_env: {}
+  singularity_image: docker://nikolaik/python-nodejs:python3.11-nodejs20
+  modal_image: nikolaik/python-nodejs:python3.11-nodejs20
+  daytona_image: nikolaik/python-nodejs:python3.11-nodejs20
+  container_cpu: 1
+  container_memory: 5120
+  container_disk: 51200
+  container_persistent: true
+  docker_volumes: []
+  docker_mount_cwd_to_workspace: false
+  docker_extra_args: []
+  docker_run_as_host_user: false
+  persistent_shell: true
+  lifetime_seconds: 300
+  vercel_runtime: node24
+web:
+  backend: tavily
+  search_backend: tavily
+  extract_backend: tavily
+  extract_fallback_backend: firecrawl
+  fallback_backend: ddgs
+  search_fallback_backend: ddgs
+  use_gateway: false
+browser:
+  inactivity_timeout: 120
+  command_timeout: 30
+  record_sessions: false
+  allow_private_urls: false
+  engine: auto
+  auto_local_for_private_urls: true
+  cdp_url: ''
+  dialog_policy: must_respond
+  dialog_timeout_s: 300
+  camofox:
+    managed_persistence: false
+    user_id: ''
+    session_key: ''
+    adopt_existing_tab: false
+    rewrite_loopback_urls: false
+    loopback_host_alias: host.docker.internal
+checkpoints:
+  enabled: true
+  max_snapshots: 50
+  max_total_size_mb: 500
+  max_file_size_mb: 10
+  auto_prune: true
+  retention_days: 7
+  delete_orphans: true
+  min_interval_hours: 24
+file_read_max_chars: 50000
+tool_output:
+  max_bytes: 20000
+  max_lines: 2000
+  max_line_length: 2000
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 5
+    same_tool_failure: 8
+    idempotent_no_progress: 5
+compression:
+  enabled: true
+  threshold: 0.8
+  target_ratio: 0.2
+  protect_last_n: 20
+  hygiene_hard_message_limit: 400
+  protect_first_n: 3
+  abort_on_summary_failure: false
+prompt_caching:
+  cache_ttl: 5m
+openrouter:
+  response_cache: true
+  response_cache_ttl: 300
+  min_coding_score: 0.65
+bedrock:
+  region: ''
+  discovery:
+    enabled: true
+    provider_filter: []
+    refresh_interval: 3600
+  guardrail:
+    guardrail_identifier: ''
+    guardrail_version: ''
+    stream_processing_mode: async
+    trace: disabled
+auxiliary:
+  vision:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    download_timeout: 30
+    fallback_chain:
+      - provider: nvidia
+        model: meta/llama-3.2-11b-vision-instruct
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: gemma3:4b
+        base_url: http://localhost:11434/v1
+  web_extract:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 360
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/llama-3.1-nemotron-nano-8b-v1
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  compression:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/nemotron-3-super-120b-a12b
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  skills_hub:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 30
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/llama-3.1-nemotron-nano-8b-v1
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  approval:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 30
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/llama-3.1-nemotron-nano-8b-v1
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  mcp:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 30
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/llama-3.1-nemotron-nano-8b-v1
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  title_generation:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 30
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/llama-3.1-nemotron-nano-8b-v1
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  triage_specifier:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/llama-3.1-nemotron-nano-8b-v1
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  kanban_decomposer:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 180
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/nemotron-3-super-120b-a12b
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  profile_describer:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 60
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/nemotron-3-super-120b-a12b
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  curator:
+    provider: nous
+    model: stepfun/step-3.7-flash
+    base_url: https://inference-api.nousresearch.com/v1
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    fallback_chain:
+      - provider: nvidia
+        model: nvidia/llama-3.1-nemotron-nano-8b-v1
+        base_url: https://integrate.api.nvidia.com/v1
+      - provider: ollama-cloud
+        model: hf.co/LiquidAI/LFM2.5-8B-A1B-GGUF:Q4_K_M
+        base_url: http://localhost:11434/v1
+  session_search:
+    api_key: ''
+    base_url: ''
+    extra_body: {}
+    max_concurrency: 3
+    model: google/gemma-4-26b-a4b-it:free
+    provider: openrouter
+    timeout: 30
+display:
+  compact: false
+  personality: minimal
+  resume_display: full
+  resume_exchanges: 10
+  resume_max_user_chars: 300
+  resume_max_assistant_chars: 200
+  resume_max_assistant_lines: 3
+  resume_skip_tool_only: true
+  busy_input_mode: interrupt
+  tui_auto_resume_recent: false
+  tui_agents_nudge: true
+  bell_on_complete: false
+  show_reasoning: true
+  streaming: true
+  timestamps: false
+  final_response_markdown: strip
+  persistent_output: true
+  persistent_output_max_lines: 200
+  inline_diffs: true
+  file_mutation_verifier: true
+  turn_completion_explainer: true
+  show_cost: true
+  skin: kensei
+  language: en
+  tui_status_indicator: kaomoji
+  user_message_preview:
+    first_lines: 2
+    last_lines: 2
+  interim_assistant_messages: true
+  tool_progress_command: false
+  tool_progress_overrides: {}
+  tool_preview_length: 0
+  ephemeral_system_ttl: 0
+  platforms: {}
+  runtime_footer:
+    enabled: false
+    fields:
+      - model
+      - context_pct
+      - cwd
+  copy_shortcut: auto
+  background_process_notifications: all
+  tool_progress: new
+dashboard:
+  theme: mgs-retro
+  show_token_analytics: false
+  oauth:
+    client_id: ''
+    portal_url: ''
+  public_url: ''
+privacy:
+  redact_pii: false
+tts:
+  provider: kenseivoice
+  edge:
+    voice: en-US-AriaNeural
+  elevenlabs:
+    voice_id: pNInz6obpgDQGcFmaJgB
+    model_id: eleven_multilingual_v2
+  openai:
+    model: gpt-4o-mini-tts
+    voice: fable
+  xai:
+    voice_id: eve
+    language: en
+    sample_rate: 24000
+    bit_rate: 128000
+  mistral:
+    model: voxtral-mini-tts-2603
+    voice_id: c69964a6-ab8b-4f8a-9465-ec0925096ec8
+  neutts:
+    ref_audio: ''
+    ref_text: ''
+    model: neuphonic/neutts-air-q4-gguf
+    device: cpu
+  piper:
+    voice: en_US-lessac-medium
+  voice: kokoro:am_adam
+stt:
+  enabled: true
+  provider: local
+  local:
+    model: base
+    language: ''
+  openai:
+    model: whisper-1
+  mistral:
+    model: voxtral-mini-latest
+voice:
+  record_key: ctrl+b
+  max_recording_seconds: 120
+  auto_tts: false
+  beep_enabled: true
+  silence_threshold: 200
+  silence_duration: 3
+human_delay:
+  mode: false
+  min_ms: 800
+  max_ms: 2500
+context:
+  engine: compressor
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 2600
+  provider: mnemosyne
+  flush_min_turns: 6
+  mnemosyne:
+    auto_sleep: false
+    sleep_threshold: 50
+    vector_type: int8
+  nudge_interval: 10
+delegation:
+  model: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: ''
+  api_key: ''
+  api_mode: ''
+  inherit_mcp_toolsets: true
+  max_iterations: 50
+  child_timeout_seconds: 900
+  reasoning_effort: medium
+  max_concurrent_children: 3
+  max_spawn_depth: 2
+  orchestrator_enabled: true
+  subagent_auto_approve: false
+prefill_messages_file: ''
+goals:
+  max_turns: 20
+skills:
+  external_dirs: []
+  template_vars: true
+  inline_shell: false
+  inline_shell_timeout: 10
+  guard_agent_created: false
+  creation_nudge_interval: 15
+  disabled: []
+curator:
+  enabled: true
+  interval_hours: 168
+  min_idle_hours: 2
+  stale_after_days: 30
+  archive_after_days: 90
+  backup:
+    enabled: true
+    keep: 5
+  auxiliary:
+    model:
+    provider:
+honcho: {}
+timezone: Europe/London
+slack:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  channel_prompts: {}
+discord:
+  require_mention: true
+  free_response_channels: 
+    1506021205797507265,1506021598958719027,1506021665904001096,1506022593122009280,1507448578778333267,1507448576832311406,1506022531025469623,1507448573783183432
+  allowed_channels: ''
+  auto_thread: true
+  thread_require_mention: false
+  history_backfill: true
+  history_backfill_limit: 50
+  reactions: true
+  channel_prompts: {}
+  dm_role_auth_guild: ''
+  server_actions: ''
+  allow_any_attachment: false
+  max_attachment_bytes: 33554432
+  extra:
+    allow_bots: mentions
+    gateway_restart_notification: true
+    multi_agent_voice_channel_id: 1509492985669357691
+    voice_floor_ttl_seconds: 60
+    auto_join_user_id: 797682085224513547
+    auto_join_channel_id: 1509492985669357691
+    auto_join_delay_seconds: 0
+    auto_join_text_channel_id: 1507449349007999140
+    auto_join_greeting_text: KENSEI here. What are we working on?
+    auto_leave_on_user_exit: true
+    auto_join_send_text_greeting: false
+whatsapp: {}
+telegram:
+  reactions: false
+  channel_prompts: {}
+  allowed_chats: ''
+mattermost:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  channel_prompts: {}
+matrix:
+  require_mention: true
+  free_response_rooms: ''
+  allowed_rooms: ''
+approvals:
+  mode: manual
+  timeout: 60
+  cron_mode: approve
+  mcp_reload_confirm: true
+  destructive_slash_confirm: false
+command_allowlist:
+  - stop/restart system service
+  - script execution via -e/-c flag
+  - stop/restart hermes gateway (kills running agents)
+  - hermes update (restarts gateway, kills running agents)
+quick_commands: {}
+hooks: {}
+hooks_auto_accept: false
+personalities: {}
+security:
+  allow_private_urls: false
+  redact_secrets: true
+  tirith_enabled: true
+  tirith_path: tirith
+  tirith_timeout: 5
+  tirith_fail_open: false
+  website_blocklist:
+    enabled: false
+    domains: []
+    shared_files: []
+  acked_advisories: []
+  allow_lazy_installs: true
+cron:
+  wrap_response: false
+  max_parallel_jobs: 4
+kanban:
+  dispatch_in_gateway: true
+  dispatch_interval_seconds: 300
+  failure_limit: 2
+  worker_log_rotate_bytes: 2097152
+  worker_log_backup_count: 1
+  orchestrator_profile: ''
+  default_assignee: ''
+  max_in_progress_per_profile:
+  auto_decompose: false
+  auto_decompose_per_tick: 0
+  dispatch_stale_timeout_seconds: 14400
+  max_reassigns: 3
+  max_review_passes: 4
+  max_in_progress: 4
+  max_spawn: 4
+code_execution:
+  mode: project
+  max_tool_calls: 50
+  timeout: 300
+tools:
+  tool_search:
+    enabled: auto
+    threshold_pct: 10
+    search_default_limit: 5
+    max_search_limit: 20
+logging:
+  level: INFO
+  max_size_mb: 5
+  backup_count: 3
+  memory_monitor:
+    enabled: true
+    interval_seconds: 300
+model_catalog:
+  enabled: true
+  url: https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
+  ttl_hours: 1
+  providers:
+    nous:
+      request_timeout_seconds: 1800
+      stale_timeout_seconds: 300
+    ollama-cloud:
+      request_timeout_seconds: 1800
+      stale_timeout_seconds: 300
+    openai-codex:
+      request_timeout_seconds: 1800
+      stale_timeout_seconds: 300
+    openrouter:
+      request_timeout_seconds: 1800
+      stale_timeout_seconds: 300
+network:
+  force_ipv4: false
+gateway:
+  strict: false
+  media_delivery_allow_dirs: []
+  trust_recent_files: true
+  trust_recent_files_seconds: 600
+sessions:
+  auto_prune: true
+  retention_days: 30
+  vacuum_after_prune: true
+  min_interval_hours: 24
+  write_json_snapshots: false
+onboarding:
+  seen:
+    busy_input_prompt: true
+    tool_progress_prompt: true
+updates:
+  pre_update_backup: true
+  backup_keep: 5
+lsp:
+  enabled: true
+  wait_mode: document
+  wait_timeout: 5.0
+  install_strategy: auto
+  servers: {}
+x_search:
+  model: grok-4.20-reasoning
+  timeout_seconds: 180
+  retries: 2
+secrets:
+  bitwarden:
+    enabled: false
+    access_token_env: BWS_ACCESS_TOKEN
+    project_id: ''
+    cache_ttl_seconds: 300
+    override_existing: true
+    auto_install: true
+    server_url: ''
+paste_collapse_threshold: 5
+paste_collapse_threshold_fallback: 5
+paste_collapse_char_threshold: 2000
+_config_version: 25
+group_sessions_per_user: true
+guild_id: '1506021204363051249'
+known_plugin_toolsets:
+  cli:
+    - spotify
+mcp_servers:
+  gitnexus:
+    args:
+      - mcp
+    command: /home/kensei/.hermes/node/bin/gitnexus
+    enabled: true
+    prompts: false
+    resources: false
+    shared: true
+  google_workspace:
+    args:
+      - workspace-mcp
+      - --single-user
+    command: uvx
+    enabled: true
+    env:
+      GOOGLE_OAUTH_CLIENT_ID: 
+        "REDACTED"
+      GOOGLE_OAUTH_CLIENT_SECRET: "REDACTED"
+      OAUTHLIB_INSECURE_TRANSPORT: '1'
+    prompts: false
+    resources: false
+    shared: true
+    tools:
+      include:
+        - search_gmail_messages
+        - get_gmail_messages_content_batch
+        - start_google_auth
+        - list_calendars
+        - get_events
+        - query_freebusy
+  github:
+    command: /home/kensei/.local/bin/node
+    args:
+      - /home/kensei/.hermes/node/lib/node_modules/@modelcontextprotocol/server-github/dist/index.js
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "REDACTED"
+    enabled: true
+    prompts: false
+    resources: false
+    shared: true
+  mailbox_cleaner:
+    args:
+      - /home/kensei/.hermes/scripts/mailbox_cleaner_mcp.py
+    command: /home/kensei/repos/KenseiAgent/.venv/bin/python3
+    enabled: true
+    prompts: false
+    resources: false
+    shared: true
+  nanobanana:
+    args:
+      - /home/kensei/.hermes/node-mcps/node_modules/@ycse/nanobanana-mcp/dist/index.js
+    command: /home/kensei/.local/bin/node
+    enabled: false
+    env:
+      GOOGLE_AI_API_KEY: "REDACTED"
+    shared: true
+  outlook:
+    args:
+      - /home/kensei/.hermes/node/bin/ms-365-mcp-server
+      - --preset
+      - mail,calendar
+    command: /home/kensei/.local/bin/node
+    enabled: true
+    env:
+      MS365_MCP_TOKEN_CACHE_PATH: 
+        /home/kensei/.config/ms-365-mcp-server/token-cache.json
+    prompts: false
+    resources: false
+    shared: true
+platform_toolsets:
+  cli:
+    - browser
+    - clarify
+    - code_execution
+    - cronjob
+    - delegation
+    - file
+    - kanban
+    - memory
+    - messaging
+    - session_search
+    - skills
+    - terminal
+    - web
+  discord:
+    - hermes-discord
+  homeassistant:
+    - hermes-homeassistant
+  qqbot:
+    - hermes-qqbot
+  signal:
+    - hermes-signal
+  slack:
+    - hermes-slack
+  whatsapp:
+    - hermes-whatsapp
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      host: 0.0.0.0
+      port: 8644
+      secret: "REDACTED"
+plugins:
+  disabled: []
+  enabled:
+    - disk-cleanup
+    - prompt-optimizer
+    - kenseivoice
+  entries:
+    prompt-optimizer:
+      llm:
+        allow_model_override: true
+        allow_provider_override: true
+        allowed_models:
+          - deepseek-v4-flash
+        allowed_providers:
+          - nous
+session_reset:
+  at_hour: 4
+  idle_minutes: 120
+  mode: both
+streaming:
+  buffer_threshold: 20
+  edit_interval: 0.8
+  enabled: true
+workspace:
+  conductor_default_orchestrator_model: deepseek-v4-flash
+  conductor_default_orchestrator_provider: ollama-cloud
+  conductor_default_worker_model: kimi-k2.6
+  conductor_default_worker_provider: ollama-cloud
+  conductor_max_parallel_workers: 3
+  conductor_preferred_worker_models:
+    - model: kimi-k2.6
+      provider: ollama-cloud
+      use: primary general worker
+    - model: deepseek-v4-flash
+      provider: ollama-cloud
+      use: fast coding worker
+    - model: kimi-k2.6
+      provider: ollama-cloud
+      use: heavy coding/extraction worker
+    - model: glm-5.1
+      provider: ollama-cloud
+      use: planning and review worker
+  conductor_projects_dir: /tmp/scaffold
+  operations_default_worker_model: kimi-k2.6
+  operations_default_worker_provider: ollama-cloud
+
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   openai-codex (OAuth — hermes auth) — OpenAI Codex
+#   nous         (OAuth — hermes auth) — Nous Portal
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
+#
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4

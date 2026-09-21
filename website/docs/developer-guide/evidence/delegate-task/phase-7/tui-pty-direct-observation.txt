@@ -1,0 +1,12 @@
+Phase 7 direct PTY observation
+
+Command: timeout 20s env -u PYTHONPATH .venv/bin/hermes --tui --safe-mode --ignore-user-config
+Execution channel: terminal tool with an attached PTY (no stdout redirection)
+
+Observed process output:
+- starting agent…
+- ready | gpt 5.6 sol low | voice off | 1 session
+- status bar rendered during the bounded run
+- process exited 124 only because the intentional 20-second timeout fired
+
+The two nested `script` captures are marked invalid: they did not preserve the raw TUI markers. This file is an observation record, not a substitute for the direct PTY result.

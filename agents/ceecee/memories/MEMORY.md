@@ -1,0 +1,9 @@
+MCP config: Google Workspace (3 Gmail: saghir.sahil@gmail.com primary, sahilsaghir.ss9@gmail.com, fusionfirststudios@gmail.com; port 8000 OAuth; 7-day token expiry; labels use kensei/ prefix). Outlook (node/ms-365-mcp-server, 4 accounts: sahil_ss@outlook.com default, sahil_ss9@hotmail.com, sahil_saghir@hotmail.co.uk, matchdaymaestro@outlook.com; device login; false 403s possible). Gmail unblock: stop gateway, clear oauth_states.json to {}, rm blocked account token JSONs, start gateway. Orphan workspace-mcp processes survive restarts — kill stale PIDs.
+§
+KENSEI North Star MVP canonical: `/home/kensei/repos/KenseiAgent/docs/NorthStar.md`. MVP: mailbox digest (Option 1 Telegram-first), research digest, Command Center, content drafts, memory/session recall, stability.
+§
+As of 2026-05-02, `tvly` CLI is installed and Tavily API auth is available via Hermes environment config, but normal shell sessions do not export it. `tvly search` works when scripts load the key into subprocess env; use Hermes `web_search` as fallback.
+§
+notslop v0.8.0 installed at /home/kensei/.hermes/node/bin/notslop. Content lead skills: notslop-digest, notslop-content. Needs ZeroEntropy key (free) for reranker. X scraping requires Orthogonal key ($10 free). Reddit+HN+blogs free without keys.
+§
+KENSEI multi-profile rollout decisions: canonical profile IDs stay functional; default remains KENSEI; General Assistant sensitive/admin tools are task-scoped; Research Lead owns all research including social/web scraping and product validation; Coding Lead can edit/test only, commits by request, no push; Content Lead draft-only until free/near-free approval-gated posting solution is defined; Knowledge Librarian writes only to defined KENSEI Obsidian area, no push unless approved/sync job; Ops Lead owns security+DevOps+performance/upkeep, diagnoses freely, asks before restarts/destructive changes. First pilots: research→content→knowledge, then content drafting pipeline.

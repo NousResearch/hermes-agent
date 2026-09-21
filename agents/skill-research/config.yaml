@@ -1,0 +1,34 @@
+model:
+  default: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+toolsets:
+- hermes-cli
+- kanban
+- web
+- terminal
+- file
+agent:
+  max_turns: 85
+  reasoning_effort: low
+terminal:
+  backend: local
+  cwd: /home/kensei
+skills:
+  always_skills:
+  - kanban-worker
+  - external-skill-integration
+  - denji-write-skill
+  - code-security
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - code-security
+  - denji-write-skill
+  - external-skill-integration
+  - kanban-worker
+  enforcement_mode: enforce

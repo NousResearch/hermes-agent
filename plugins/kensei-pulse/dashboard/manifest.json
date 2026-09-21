@@ -1,0 +1,12 @@
+{
+  "name": "kensei-pulse",
+  "label": "Pulse",
+  "description": "Per-profile activity overview: current task, recent sessions, engage button.",
+  "icon": "Activity",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kensei-pulse",
+    "position": "after:kensei-postiz"
+  },
+  "entry": "dist/index.js"
+}

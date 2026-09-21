@@ -1,0 +1,9 @@
+{
+  "last_report_path": null,
+  "last_run_at": "2026-05-23T01:29:44.304502+00:00",
+  "last_run_duration_seconds": null,
+  "last_run_summary": "deferred first run — curator seeded, will run after one interval; use `hermes curator run --dry-run` to preview now",
+  "last_run_summary_shown_at": null,
+  "paused": false,
+  "run_count": 0
+}

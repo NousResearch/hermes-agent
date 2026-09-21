@@ -1,0 +1,9 @@
+{
+  "last_report_path": "/home/kensei/.hermes/profiles/quan/logs/curator/20260523-012944",
+  "last_run_at": "2026-05-23T01:29:44.080496+00:00",
+  "last_run_duration_seconds": 2.188846,
+  "last_run_summary": "auto: no changes; llm: no change",
+  "last_run_summary_shown_at": null,
+  "paused": false,
+  "run_count": 4
+}

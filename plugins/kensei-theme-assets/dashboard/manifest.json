@@ -1,0 +1,11 @@
+{
+  "name": "kensei-theme-assets",
+  "label": "Theme assets",
+  "description": "Static images served at /dashboard-plugins/kensei-theme-assets/assets/<theme>/bg.jpg. Hidden, no UI.",
+  "icon": "Image",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kensei-theme-assets",
+    "hidden": true
+  }
+}

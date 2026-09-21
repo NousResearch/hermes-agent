@@ -1,0 +1,31 @@
+provider: ollama-cloud
+model: gemma4:31b
+base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+- provider: openrouter
+  model: google/gemma-4-31b-it:free
+  base_url: https://openrouter.ai/api/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  base_url: https://openrouter.ai/api/v1
+toolsets:
+- hermes-cli
+- kanban
+- terminal
+- file
+agent:
+  max_turns: 30
+  reasoning_effort: minimal
+skills:
+  always_skills:
+  - teams-meeting-pipeline
+  - kanban-worker
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - kanban-worker
+  - teams-meeting-pipeline
+  enforcement_mode: enforce

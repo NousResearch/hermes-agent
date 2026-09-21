@@ -1,0 +1,46 @@
+model:
+  default: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  base_url: https://openrouter.ai/api/v1
+credential_pool_strategies: {}
+toolsets:
+- hermes-cli
+- kanban
+- browser
+agent:
+  max_turns: 40
+  reasoning_effort: low
+  personalities:
+    helpful: You are a helpful, friendly AI assistant.
+    concise: You are a concise assistant. Keep responses brief and to the point.
+    teacher: You are a patient teacher. Explain concepts clearly with examples.
+    technical: You are a technical expert. Provide detailed, accurate technical 
+      information.
+    creative: You are a creative assistant. Think outside the box and offer 
+      innovative solutions.
+terminal:
+  backend: local
+  cwd: /home/kensei
+skills:
+  always_skills:
+  - kanban-worker
+  - landscape-monitoring
+  - market-research
+  - blogwatcher
+  - job-hunt-automation
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - blogwatcher
+  - job-hunt-automation
+  - kanban-worker
+  - landscape-monitoring
+  - market-research
+  enforcement_mode: enforce

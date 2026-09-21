@@ -24,38 +24,58 @@ def _write_plugin_config(tmp_path, monkeypatch, entry: dict) -> None:
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
 
+def _host_stub(agent_running: bool = False):
+    """Real HermesCLI host (via __new__) with the queues PluginContext duck-calls into."""
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "sess-abc"
+    cli.agent = None
+    cli._agent_running = agent_running
+    cli._pending_input = SimpleQueue()
+    cli._interrupt_queue = SimpleQueue()
+    cli._injected_input = SimpleQueue()
+    return cli
+
+
 def test_cli_idle_injection_keeps_existing_queue_behaviour():
+    """Idle + queue: accepted, lands in the dedicated _injected_input queue.
+
+    Updated to the H-101..H-108 contract (supersedes the old _pending_input
+    internal): the TUI process loop transfers _injected_input into
+    _pending_input, so an idle injection still starts a new turn — the
+    behaviour this test was written to pin.
+    """
     context, manager = _context()
-    cli = SimpleNamespace(
-        _agent_running=False,
-        _pending_input=SimpleQueue(),
-        _interrupt_queue=SimpleQueue(),
-        session_id="sess-1",
-    )
-    cli.inject_message = MagicMock(return_value=True)
+    cli = _host_stub(agent_running=False)
     manager._cli_ref = cli
 
     assert context.inject_message("new input") is True
-    cli.inject_message.assert_called_once_with(
-        "new input", role="user", mode="queue", session_key=None
-    )
+    assert cli._injected_input.get_nowait() == "new input"
+    assert cli._pending_input.empty()
+    assert cli._interrupt_queue.empty()
 
 
 def test_cli_running_injection_keeps_existing_interrupt_behaviour():
+    """Running + interrupt mode: legacy hard-interrupt queue behaviour kept.
+
+    Queue mode while busy lands in _injected_input (contract: never touches
+    _interrupt_queue — it delivers at the next safe boundary); only explicit
+    interrupt mode touches the interrupt queue (H-101..H-108).
+    """
     context, manager = _context()
-    cli = SimpleNamespace(
-        _agent_running=True,
-        _pending_input=SimpleQueue(),
-        _interrupt_queue=SimpleQueue(),
-        session_id="sess-1",
-    )
-    cli.inject_message = MagicMock(return_value=True)
+    cli = _host_stub(agent_running=True)
     manager._cli_ref = cli
 
+    # queue mode while busy: safe boundary, NOT the interrupt queue
     assert context.inject_message("status", "system") is True
-    cli.inject_message.assert_called_once_with(
-        "status", role="system", mode="queue", session_key=None
-    )
+    assert cli._injected_input.get_nowait() == "[system] status"
+    assert cli._interrupt_queue.empty()
+    assert cli._pending_input.empty()
+
+    # explicit interrupt mode: legacy hard-interrupt behaviour kept
+    assert context.inject_message("stop now", mode="interrupt") is True
+    assert cli._interrupt_queue.get_nowait() == "stop now"
 
 
 def test_gateway_injection_requires_session_key(tmp_path, monkeypatch):

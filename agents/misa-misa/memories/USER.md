@@ -1,0 +1,3 @@
+Prefers plan-as-proposal pattern: write a full bulletproof plan first, present it for review, wait for explicit approval before building. Says "I want to have a bullet proof plan, idea first before we initiate the building." Do NOT start implementation after writing a plan unless he explicitly says go.
+§
+Uses Android phone. Primary Kensei interface goal is a native Android Auto app (Kotlin, Car App Library) with visual dashboard pages (Fleet, Chat, Kanban, Activity, System, Logs, Cron, etc.) plus voice input via Android Auto Voice Action. Push-to-talk voice for chat with silence auto-stop transcribe. No TTS. Replaces Telegram and Discord as primary interaction. Plan lives at PLAN-ANDROID-AUTO.md in kensei-dashboard repo.

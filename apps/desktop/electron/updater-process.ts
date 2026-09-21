@@ -1,8 +1,30 @@
 import { spawn, type SpawnOptions } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
+import { resolveVenvDir } from './venv-blocker-scan'
 import { hiddenWindowsChildOptions } from './windows-child-options'
+
+/** File prerequisites only: dependency recovery must remain reachable through update. */
+export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {
+  const maintainedDir = path.join(updateRoot, 'scripts', 'desktop-update')
+  const required = [path.join(resolveVenvDir(updateRoot), 'Scripts', 'python.exe')]
+
+  // Pre-reorg flat scripts remain supported; damaged modern trees do not.
+  if (existsSync(maintainedDir)) {
+    required.push(path.join(maintainedDir, 'windows.ps1'))
+  }
+
+  for (const candidate of required) {
+    if (stagedFileExists(candidate)) {
+      continue
+    }
+
+    return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
+  }
+
+  return null
+}
 
 export interface UpdaterChild {
   pid?: number
@@ -105,24 +127,34 @@ export function resolvePosixScriptHandoff(
 }
 
 /**
- * Wrap a PowerShell hand-off invocation so it survives a detached, hidden
- * spawn from Electron.
+ * Wrap a PowerShell hand-off invocation so it survives a hidden spawn from
+ * Electron without ever showing a console window (#116161).
  *
  * Verified empirically (2026-08-09, Windows 11): `spawn('powershell', [...,
  * '-File', script], { detached: true, stdio: 'ignore', windowsHide: true })`
  * exits 0 WITHOUT executing a single line of the script. powershell.exe is a
- * console-subsystem binary; detached+windowsHide gives it no console to
- * attach to, and Windows PowerShell 5.1 dies during console init before
- * -File processing (the same class of failure as #54220's conhost work, on
- * the launch side). The same spawn with a visible console, or non-detached,
- * runs fine — so unit tests and foreground use hide the bug.
+ * console-subsystem binary; libuv maps `detached: true` to DETACHED_PROCESS,
+ * which gives the child NO console (and makes the OS ignore CREATE_NO_WINDOW),
+ * and Windows PowerShell 5.1 dies during console init before -File processing
+ * (the same class of failure as #54220's conhost work, on the launch side).
  *
- * `cmd /c start "" /min powershell ...` was the variant that survived the
- * full detached+hidden production shape in testing: `start` allocates the
- * child its own (minimized) console and fully detaches it from cmd.exe,
- * which exits immediately. The spawned pid is therefore the WRAPPER's —
- * callers must not use it as a marker owner (the script claims the marker
- * itself with its own $PID).
+ * The parent-console model that follows from that (and that every other
+ * hidden spawn in this app relies on): a console child inherits its parent's
+ * console; only a console-LESS parent forces the OS to allocate a new,
+ * visible one. So the wrapper cmd.exe is spawned NON-detached — libuv then
+ * honours `windowsHide` (CREATE_NO_WINDOW) and cmd.exe owns one hidden
+ * console — and `start "" /b powershell ...` runs the script inside that
+ * hidden console (`/min` would tell `start` to allocate a NEW console for the
+ * child, which is what flashed a minimized PowerShell window on every
+ * hand-off; `/b` shares the wrapper's). The console outlives cmd.exe for as
+ * long as powershell is attached to it.
+ *
+ * Survival past our own exit does not need `detached`: libuv's per-process
+ * job object has JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, so grandchildren
+ * (`start`'s powershell) are never members and Windows does not tie a
+ * process's lifetime to its parent. `start` returns immediately, so the
+ * spawned pid is the WRAPPER's — callers must not use it as a marker owner
+ * (the script claims the marker itself with its own $PID).
  */
 export function wrapHandoffForDetachedConsole(
   handoff: UpdateScriptHandoff,
@@ -130,10 +162,13 @@ export function wrapHandoffForDetachedConsole(
 ): {
   command: string
   args: string[]
+  /** Spawn NON-detached so the wrapper gets a hidden console the script inherits. */
+  detached: false
 } {
   return {
     command: 'cmd.exe',
-    args: ['/d', '/s', '/c', 'start', '', '/min', handoff.command, ...handoff.args, ...extraArgs]
+    args: ['/d', '/s', '/c', 'start', '', '/b', handoff.command, ...handoff.args, ...extraArgs],
+    detached: false
   }
 }
 
@@ -317,4 +352,132 @@ export function spawnUpdaterProcess(
   child.unref()
 
   return child
+}
+
+export interface UpdaterHandoffOutcome {
+  ok: boolean
+  /** Set when ok is false. */
+  reason?: 'spawn-error' | 'early-exit'
+  /** Human-readable detail for logs (never contains argv secrets). */
+  message?: string
+  /** Exit code when the child exited inside the settle window. */
+  code?: number | null
+  /** Signal when the child was killed inside the settle window. */
+  signal?: string | null
+}
+
+export interface ObserveUpdaterHandoffDeps {
+  setTimeoutFn?: (callback: () => void, ms: number) => unknown
+  clearTimeoutFn?: (timer: unknown) => void
+}
+
+/**
+ * User-facing copy for a hand-off that did not take (spawn error or early exit).
+ * The lead sentence is plain: nothing changed and Hermes keeps running. The raw
+ * outcome message (exit code / signal / spawn error) stays on a trailing
+ * "Details:" line for logs and support.
+ */
+export function describeUpdaterHandoffFailure(outcome: Pick<UpdaterHandoffOutcome, 'message'>): string {
+  const lead =
+    "The updater couldn't start, so nothing was changed and Hermes keeps running as before. " +
+    'Try again; if it keeps failing, open the logs and send them to support.'
+
+  return outcome.message ? `${lead}\n\nDetails: ${outcome.message}` : lead
+}
+
+/**
+ * Watch a just-spawned detached updater for the duration of the quit dwell
+ * and report whether the hand-off actually became viable (#66753).
+ *
+ * Before this, the Desktop called `unref()` and quit after a fixed dwell
+ * without ever observing the child's async `error` event (ENOENT/EACCES —
+ * Node reports exec failures asynchronously) or an early `exit`. A failed
+ * spawn therefore looked identical to a successful one: the app vanished, no
+ * updater appeared, and nothing relaunched. Worse, an unhandled `'error'`
+ * event on the detached child would crash the Electron main process outright.
+ *
+ * Success is: no `error` event AND either the child survives the settle
+ * window or it exits 0 inside it (the Windows `cmd start` wrapper exits 0
+ * immediately by design — see wrapHandoffForDetachedConsole). Failure is a
+ * spawn `error`, a non-zero exit, or a signal death inside the window.
+ *
+ * Children that expose no event interface (bare test doubles) settle as ok
+ * after the window — the observation is a best-effort hardening, never a new
+ * way to wedge an update.
+ */
+export function observeUpdaterHandoff(
+  child: UpdaterChild,
+  settleMs: number,
+  deps: ObserveUpdaterHandoffDeps = {}
+): Promise<UpdaterHandoffOutcome> {
+  const setTimeoutFn = deps.setTimeoutFn ?? setTimeout
+
+  const clearTimeoutFn =
+    deps.clearTimeoutFn ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
+
+  const observable = child as UpdaterChild & {
+    once?: (event: string, listener: (...args: unknown[]) => void) => unknown
+    removeListener?: (event: string, listener: (...args: unknown[]) => void) => unknown
+  }
+
+  if (typeof observable.once !== 'function') {
+    return new Promise(resolve => {
+      setTimeoutFn(() => resolve({ ok: true }), settleMs)
+    })
+  }
+
+  return new Promise(resolve => {
+    let settled = false
+
+    const finish = (outcome: UpdaterHandoffOutcome) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      clearTimeoutFn(timer)
+      observable.removeListener?.('error', onError)
+      observable.removeListener?.('exit', onExit)
+      resolve(outcome)
+    }
+
+    const onError = (...args: unknown[]) => {
+      const error = args[0] as (Error & { code?: string }) | undefined
+
+      finish({
+        ok: false,
+        reason: 'spawn-error',
+        message: `updater spawn failed: ${error?.code || error?.message || 'unknown error'}`
+      })
+    }
+
+    const onExit = (...args: unknown[]) => {
+      const code = args[0] as number | null
+      const signal = args[1] as string | null
+
+      if (signal || (typeof code === 'number' && code !== 0)) {
+        finish({
+          ok: false,
+          reason: 'early-exit',
+          message: signal
+            ? `updater died from signal ${signal} before the settle window elapsed`
+            : `updater exited ${code} before the settle window elapsed`,
+          code: code ?? null,
+          signal: signal ?? null
+        })
+
+        return
+      }
+
+      // Clean exit 0 inside the window is expected for wrapper shapes
+      // (cmd.exe `start` on Windows exits immediately after launching the
+      // real script in its own console).
+      finish({ ok: true, code: code ?? 0, signal: null })
+    }
+
+    const timer = setTimeoutFn(() => finish({ ok: true }), settleMs)
+
+    observable.once('error', onError)
+    observable.once('exit', onExit)
+  })
 }

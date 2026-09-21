@@ -1,0 +1,3 @@
+[12:00:01] multistep skill run 1: step1 ok, step2 fail (network), step3 ok; reported partial
+[12:00:02] multistep skill run 2: step1 ok, step2 fail (network, identically), step3 ok; no state corruption
+[12:00:03] final: consistent partial-failure result on both runs

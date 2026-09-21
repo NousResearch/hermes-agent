@@ -1,0 +1,4 @@
+[12:00:01] tool web_extract urls=[https://example.com/long] char_limit=15000
+[12:00:02] web_extract -> head... (footer: 'full text saved to /tmp/we_123.md; read_file to see omitted middle')
+[12:00:03] tool read_file path=/tmp/we_123.md offset=100 limit=200 (followed footer, read middle)
+[12:00:04] final: 'Based on the full article...'

@@ -1,0 +1,164 @@
+{
+  "updated_at": "2026-06-12T15:35:44.561129",
+  "platforms": {
+    "discord": [
+      {
+        "id": "1507397516642091149",
+        "name": "ai-learning-qa",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506021205797507265",
+        "name": "general",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506022800190607370",
+        "name": "misa-misa",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506021598958719027",
+        "name": "cron-outputs",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506021665904001096",
+        "name": "kanban",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506022531025469623",
+        "name": "ops",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506022593122009280",
+        "name": "governance",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1507448573783183432",
+        "name": "war-room",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1507448578778333267",
+        "name": "approvals",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506022733287391282",
+        "name": "mailbox__calendar",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506022690501169295",
+        "name": "job-hunt",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506022640035303494",
+        "name": "content",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506021736536215813",
+        "name": "research-digest",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1507448577784283367",
+        "name": "research-ops",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1507448396015734984",
+        "name": "build-log",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1507448572784939151",
+        "name": "build-review",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1507542104262443192",
+        "name": "design-review",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1507448575796187278",
+        "name": "knowledge",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1507448576832311406",
+        "name": "decisions",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1509735039510778026",
+        "name": "deal-search",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1510403518169878689",
+        "name": "repurpose-inbox",
+        "guild": "Kensei Camp",
+        "type": "channel"
+      },
+      {
+        "id": "1506022640035303494",
+        "name": "Kensei Camp / #content",
+        "type": "group",
+        "thread_id": null
+      }
+    ],
+    "telegram": [],
+    "whatsapp": [],
+    "slack": [],
+    "signal": [],
+    "mattermost": [],
+    "matrix": [],
+    "homeassistant": [],
+    "email": [],
+    "sms": [],
+    "dingtalk": [],
+    "msgraph_webhook": [],
+    "feishu": [],
+    "wecom": [],
+    "wecom_callback": [],
+    "weixin": [],
+    "bluebubbles": [],
+    "qqbot": [],
+    "yuanbao": [],
+    "google_chat": [],
+    "irc": [],
+    "line": [],
+    "ntfy": [],
+    "photon": [],
+    "simplex": [],
+    "teams": []
+  }
+}

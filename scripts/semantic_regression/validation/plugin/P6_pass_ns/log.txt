@@ -1,0 +1,4 @@
+[12:00:01] plugin registered skill plugin:myhelper
+[12:00:02] tool skill_view name='plugin:myhelper' -> returns plugin skill (full content)
+[12:00:03] tool skill_view name='myhelper' -> returns user/global skill (different content)
+[12:00:04] namespacing resolves both correctly

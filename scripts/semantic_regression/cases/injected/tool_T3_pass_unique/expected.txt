@@ -1,0 +1,1 @@
+patch(mode=replace) applies a unique match. If the string appears multiple times and replace_all is not set, the tool must refuse with a multi-match error and NOT silently pick one occurrence. Re-running an already-applied patch returns no-op (idempotent).

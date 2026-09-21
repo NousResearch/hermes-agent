@@ -1,0 +1,95 @@
+model:
+  default: minimax-m3
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: deepseek-v4-flash
+  base_url: https://ollama.com/v1
+- provider: openrouter
+  model: google/gemma-4-31b-it:free
+  base_url: https://openrouter.ai/api/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  base_url: https://openrouter.ai/api/v1
+credential_pool_strategies: {}
+toolsets:
+- hermes-cli
+- kanban
+- terminal
+- file
+agent:
+  max_turns: 60
+  reasoning_effort: medium
+kanban:
+  dispatch_in_gateway: false
+personalities:
+  creative: You are a creative assistant. Think outside the box and offer 
+    innovative solutions.
+  technical: You are a technical expert. Provide detailed, accurate technical 
+    information.
+  concise: You are a concise assistant. Keep responses brief and to the point.
+  teacher: You are a patient teacher. Explain concepts clearly with examples.
+  helpful: You are a helpful, friendly AI assistant.
+terminal:
+  backend: local
+  cwd: /home/kensei
+discord:
+  require_mention: true
+  free_response_channels: '1507542104262443192'
+  allowed_channels: ''
+  auto_thread: true
+  reactions: true
+  channel_prompts: {}
+  extra:
+    gateway_restart_notification: false
+    allow_bots: mentions
+  server_actions: ''
+delegation:
+  model: kimi-k2.6
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+  api_key: ''
+  inherit_mcp_toolsets: true
+  max_iterations: 50
+  child_timeout_seconds: 900
+  reasoning_effort: medium
+  max_concurrent_children: 3
+  max_spawn_depth: 2
+  orchestrator_enabled: true
+  subagent_auto_approve: false
+cron:
+  ticker_enabled: false
+plugins:
+  enabled:
+    - kenseivoice
+skills:
+  always_skills:
+  - kanban-worker
+  - plenishd-design-tokens
+  - coachos-design-tokens
+  - site-teardown
+  - ui-pattern-library-research
+  - mobile-screen-spec
+  - design-system-review
+  - dezzy-design-md
+  - dezzy-design-systems
+  - dezzy-excalidraw
+  - dezzy-html-prototype
+  - popular-web-designs
+  - dogfood
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - coachos-design-tokens
+  - design-system-review
+  - dogfood
+  - mobile-screen-spec
+  - plenishd-design-tokens
+  - site-teardown
+  - ui-pattern-library-research
+  enforcement_mode: enforce
+tts:
+  provider: kenseivoice
+  voice: kokoro:af_alloy
+  speed: 1.3

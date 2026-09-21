@@ -1,0 +1,59 @@
+=== PHASE 0 BASELINE VERIFICATION ===
+HEAD=98a4aa453c1c576798a4461d5b2902d805eef71d
+ORIGIN_MAIN=98a4aa453c1c576798a4461d5b2902d805eef71d
+UPSTREAM_MAIN=e9bccc90a5e314ddf6dd4bd3772d50cb40027275
+BRANCH_STATUS
+## main...origin/main
+ M docs/ADR.md
+?? docs/evidence/
+WORKTREES
+worktree /home/kensei/repos/KenseiAgent
+HEAD 98a4aa453c1c576798a4461d5b2902d805eef71d
+branch refs/heads/main
+
+STASHES
+REMOTES
+origin	https://github.com/Sahil-SS9/KenseiAgent.git (fetch)
+origin	https://github.com/Sahil-SS9/KenseiAgent.git (push)
+upstream	https://github.com/NousResearch/hermes-agent.git (fetch)
+upstream	DISABLED (push)
+HEAD_METADATA
+98a4aa453c1c576798a4461d5b2902d805eef71d
+2026-09-07T15:57:11+01:00
+2026-09-07T15:57:11+01:00
+ccb8fb5760bccd96cf6d0408cf363594cb41310b
+fix(discord): restore retry-safe multipart helper
+OBSOLETE_BASELINE_REACHABILITY
+old_in_HEAD_exit=0
+FROZEN_BASELINE_REACHABILITY
+frozen_in_HEAD_exit=0
+ACTIVE_GATEWAY_SERVICES
+  hermes-gateway-ceecee.service        loaded active running Hermes Gateway – ceecee (Content drafting, brand, social scheduling)
+  hermes-gateway-denji.service         loaded active running Hermes Gateway – denji
+  hermes-gateway-dezzy.service         loaded active running Hermes Gateway – dezzy
+  hermes-gateway-gojo.service          loaded active running Hermes Gateway – gojo (Admin, mailbox, calendar, job-hunt)
+  hermes-gateway-kensei-review.service loaded active running Hermes Gateway – kensei-review (Independent process/output auditor)
+  hermes-gateway-light.service         loaded active running Hermes Gateway – light
+  hermes-gateway-misa-misa.service     loaded active running Hermes Gateway – misa-misa (Voice intake, STT/TTS, spoken commands)
+  hermes-gateway-mrhermagi.service     loaded active running Hermes Gateway – mrhermagi (AI/ML teacher, replaces miyagi)
+  hermes-gateway-octacon.service       loaded active running Hermes Gateway – octacon (Coding, build, debugging, PRs)
+  hermes-gateway-quan.service          loaded active running Hermes Gateway – quan
+  hermes-gateway-remii.service         loaded active running Hermes Gateway – remii (Research, signals, market scanning, deep dives)
+  hermes-gateway-sirvir.service        loaded active running Hermes Gateway – sirvir (Model fleet manager, turbofit, GPU watcher)
+  hermes-gateway-wesker.service        loaded active running Hermes Gateway – wesker (Ops, security, infra, gateway health)
+  hermes-gateway.service               loaded active running Hermes Agent Gateway - Messaging Platform Integration
+ACTIVE_SERVICE_CODE_BINDINGS
+hermes-gateway-ceecee.service PID=2067774 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-denji.service PID=2067810 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-dezzy.service PID=2067788 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-gojo.service PID=2067674 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-kensei-review.service PID=2067779 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-light.service PID=2067795 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-misa-misa.service PID=2067811 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-mrhermagi.service PID=2067799 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-octacon.service PID=2067803 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-quan.service PID=2067806 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-remii.service PID=2067809 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-sirvir.service PID=2067812 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway-wesker.service PID=2067813 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d
+hermes-gateway.service PID=2045837 cwd=/home/kensei/repos/KenseiAgent code_sha=98a4aa453c1c576798a4461d5b2902d805eef71d

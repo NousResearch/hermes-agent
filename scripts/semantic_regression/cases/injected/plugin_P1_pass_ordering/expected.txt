@@ -1,0 +1,1 @@
+A plugin registers a pre_user_message hook. Hook ordering is deterministic when two plugins register the same event - the log shows registration order and no dropped hook. The message the agent sees is transformed by the hooks in registration order.

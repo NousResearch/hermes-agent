@@ -24,12 +24,6 @@ def _clear_provider_caches():
     _pkg._PROVIDER_LIST_CACHE = None
     _pkg._discovered = False
     # Evict any cached plugin modules so the next import re-executes.
-    for mod in list(sys.modules.keys()):
-        if (
-            mod.startswith("plugins.model_providers")
-            or mod.startswith("_hermes_user_provider")
-        ):
-            del sys.modules[mod]
 
 
 def test_bundled_plugins_discovered():
@@ -70,6 +64,7 @@ def test_all_profiles_register():
     for required in (
         "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
         "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan", "fireworks",
+        "nebius-token-factory",
     ):
         assert required in names, f"Missing profile: {required}"
 

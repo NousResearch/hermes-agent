@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -116,7 +117,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     sent_msgs = [SimpleNamespace(id=1001), SimpleNamespace(id=1002)]
     send_calls = []
 
-    async def fake_send(*, content, reference=None):
+    async def fake_send(*, content, reference=None, view=None, allowed_mentions=None):
         send_calls.append({"content": content, "reference": reference})
         if len(send_calls) == 1:
             raise RuntimeError(
@@ -418,3 +419,123 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
 
 
+# ---------------------------------------------------------------------------
+# Upload-size preflight (#50846 / #52698)
+# ---------------------------------------------------------------------------
+
+
+def _preflight_adapter(channel):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._is_forum_parent = lambda _ch: False  # type: ignore[method-assign]
+    adapter._client = SimpleNamespace(get_channel=lambda _cid: channel, fetch_channel=AsyncMock())
+    return adapter
+
+
+def _fake_getsize(monkeypatch, oversized: Path, size: int):
+    original = os.path.getsize
+    monkeypatch.setattr(
+        os.path, "getsize",
+        lambda path: size if str(path) == str(oversized) else original(path),
+    )
+
+
+def test_discord_upload_limit_uses_guild_filesize_limit():
+    from plugins.platforms.discord.adapter_media import (
+        _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES,
+        DiscordMediaMixin,
+    )
+
+    limit_for = DiscordMediaMixin._discord_upload_limit_bytes
+    boosted = SimpleNamespace(guild=SimpleNamespace(filesize_limit=50 * 1024 * 1024))
+    # discord.py 2.7.1 still reports 10 MiB for unboosted guilds; the platform default is
+    # 20 MiB since Sep 3 2026, so a stale library constant must never lower the preflight.
+    stale = SimpleNamespace(guild=SimpleNamespace(filesize_limit=_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES // 2))
+
+    assert limit_for(boosted) == 50 * 1024 * 1024
+    assert limit_for(stale) == _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+    assert limit_for(SimpleNamespace(guild=None)) == _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+    assert limit_for(SimpleNamespace(guild=SimpleNamespace(filesize_limit=0))) == _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, path_kw, name", [
+    ("send_video", "video_path", "clip.mp4"),
+    ("send_document", "file_path", "report.pdf"),
+    ("send_voice", "audio_path", "note.ogg"),
+])
+async def test_oversized_upload_rejected_before_send(tmp_path, monkeypatch, method, path_kw, name):
+    """Oversized local files never reach channel.send(file(s)=...) (#50846): the caller gets an
+    actionable error (name, size, limit), the user a notice, and the base fallback never runs."""
+    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    big = tmp_path / name
+    big.write_bytes(b"x")
+    _fake_getsize(monkeypatch, big, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1)
+
+    async def base_must_not_run(*_a, **_k):
+        raise AssertionError("base adapter fallback must not run for a preflight reject")
+
+    monkeypatch.setattr(f"gateway.platforms.base.BasePlatformAdapter.{method}", base_must_not_run)
+    send = AsyncMock(return_value=SimpleNamespace(id=999))
+    http = SimpleNamespace(request=AsyncMock(side_effect=AssertionError("raw upload must not run")))
+    adapter = _preflight_adapter(SimpleNamespace(id=555, guild=None, send=send))
+    adapter._client.http = http
+
+    result = await getattr(adapter, method)("555", **{path_kw: str(big)})
+
+    assert result.success is False
+    assert "too large" in result.error.lower()
+    assert name in result.error and "20.0 MB" in result.error and "limit 20 MB" in result.error
+    assert send.await_count == 1
+    kwargs = send.await_args.kwargs
+    assert "file" not in kwargs and "files" not in kwargs
+    assert "Could not attach" in kwargs["content"] and name in kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_send_video_under_guild_boost_limit_uploads(tmp_path, monkeypatch):
+    """A boosted guild's higher cap is honored: a file over the default but under the guild
+    limit is uploaded, not rejected."""
+    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    video = tmp_path / "ok.mp4"
+    video.write_bytes(b"fake-video-bytes")
+    _fake_getsize(monkeypatch, video, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1)
+    sent_msg = SimpleNamespace(id=42, attachments=[SimpleNamespace(filename="ok.mp4", url="https://cdn/ok.mp4")])
+    send = AsyncMock(return_value=sent_msg)
+    adapter = _preflight_adapter(
+        SimpleNamespace(id=777, guild=SimpleNamespace(filesize_limit=50 * 1024 * 1024), send=send))
+
+    result = await adapter.send_video("777", str(video))
+
+    assert result.success is True and result.message_id == "42"
+    assert send.await_count == 1 and send.await_args.kwargs.get("files")
+
+
+@pytest.mark.asyncio
+async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeypatch):
+    """Sibling site of #50846: an oversized local image used to 413 the whole chunk and dump
+    its siblings into the per-image fallback. It is skipped up front, the rest of the chunk is
+    delivered with a notice appended; an all-oversized chunk still sends the notice alone."""
+    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    small = tmp_path / "small.png"
+    small.write_bytes(b"ok")
+    big = tmp_path / "big.png"
+    big.write_bytes(b"x")
+    _fake_getsize(monkeypatch, big, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1)
+    send = AsyncMock(return_value=SimpleNamespace(id=7))
+    adapter = _preflight_adapter(SimpleNamespace(id=9, guild=None, send=send))
+
+    mixed = await adapter.send_multiple_images("9", [(f"file://{small}", ""), (f"file://{big}", "")])
+    assert mixed.success is True
+    kwargs = send.await_args.kwargs
+    assert len(kwargs["files"]) == 1  # only the small image made it
+    assert "big.png" in kwargs["content"] and "exceeds" in kwargs["content"]
+
+    send.reset_mock()
+    only_big = await adapter.send_multiple_images("9", [(f"file://{big}", "")])
+    assert only_big.success is False
+    assert send.await_count == 1
+    kwargs = send.await_args.kwargs
+    assert not kwargs.get("files") and "big.png" in kwargs["content"]

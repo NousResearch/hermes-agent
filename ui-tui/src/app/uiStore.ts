@@ -8,12 +8,15 @@ import { DEFAULT_THEME } from '../theme.js'
 import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
 
 const buildUiState = (): UiState => ({
+  agentMode: 'auto',
   battery: false,
   batteryStatus: null,
   bgTasks: new Set(),
   busy: false,
   busyInputMode: 'queue',
   compact: false,
+  compacting: false,
+  destructiveSlashConfirm: true,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
   focusView: false,
@@ -31,7 +34,10 @@ const buildUiState = (): UiState => ({
   sid: null,
   status: 'summoning hermes…',
   statusBar: 'top',
+  storedSid: null,
+  statusBarFields: null,
   streaming: true,
+  timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.
   theme: bootTheme ?? DEFAULT_THEME,

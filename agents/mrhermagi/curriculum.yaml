@@ -1,0 +1,143 @@
+meta:
+  title: AI/ML Foundations Sprint
+  description: From zero ML knowledge to practical AI literacy. Conceptual only —
+    no hardware required.
+  total_days: 28
+  total_weeks: 4
+  start_date: 22/05/26
+  frequency: daily
+  duration_per_lesson: 30-60 mins
+weeks:
+- week: 1
+  theme: 'Foundations: Text Models'
+  days:
+  - day: 1
+    title: What Is a Language Model?
+    topic: Next-word prediction, the generation loop
+    status: delivered
+  - day: 2
+    title: 'Tokens: Your AI''s Alphabet'
+    topic: Tokenisation, token IDs, context windows, cost
+    status: delivered
+  - day: 3
+    title: Token-Maxxing & Tokenisation Deep-Dive
+    topic: Token optimisation, comparing tokenisers, cost-saving strategies
+    status: delivered
+  - day: 4
+    title: 'Parameters: What 7B vs 70B Means'
+    topic: What parameters store, how size affects memory/speed/quality
+    status: delivered
+  - day: 5
+    topic: Prompt processing, generation, t/s, streaming, tool calls
+    status: delivered
+  - day: 6
+    title: Sampling & Temperature
+    topic: Why models are creative, stochastic vs deterministic, top-p
+    status: delivered
+  - day: 7
+    title: Model Families Tour + How to Pick
+    topic: Landscape overview, decision tree for model selection
+    status: delivered
+  milestone:
+    title: Model Selection Demo
+    desc: MrHermagi walks through 3 real scenarios and picks the right model
+- week: 2
+  theme: Architecture & All Modalities
+  days:
+  - day: 8
+    title: The Transformer — How Language Models Process Text
+    topic: High-level transformer architecture, attention in → tokens out
+    status: delivered
+  - day: 9
+    title: 'Attention: How Models Focus'
+    topic: What attention weights measure, why context matters
+    status: delivered
+  - day: 10
+    title: 'Dense vs MoE: Why DeepSeek is Different'
+    topic: Active vs total parameters, router gating, expert balancing
+    status: delivered
+  - day: 11
+    title: 'Image Models: How AI Sees'
+    status: delivered
+  - day: 12
+    title: 'Voice & Audio Models: How AI Hears'
+    topic: Whisper, TTS, spectrograms, audio tokenisation
+    status: delivered
+  - day: 13
+    title: 'Video Models: How AI Generates Motion'
+    topic: Temporal attention, frame prediction, latent spaces
+    status: delivered
+  - day: 14
+    title: 'Multimodal Models: How Everything Connects'
+    topic: Modality alignment, joint embedding spaces
+    status: delivered
+  milestone:
+    title: Multi-Modal Trace Demo
+    desc: MrHermagi feeds the same request across text-only vs multimodal models
+- week: 3
+  theme: Running & Comparing Models
+  days:
+  - day: 15
+    title: 'Quantisation: Making Big Models Fit'
+    topic: Q2-Q8, GGUF, GPTQ, AWQ — size vs quality tradeoffs
+    status: delivered
+  - day: 16
+    title: 'Context Windows: Lost in the Middle'
+    topic: Effective vs maximum context, attention distribution
+    status: delivered
+  - day: 17
+    title: 'Benchmarks: What Scores Mean'
+    topic: MMLU, HumanEval, MT-Bench, Chatbot Arena
+    status: delivered
+  - day: 18
+    title: Model Evaluation Workshop
+    topic: MrHermagi runs eval framework, shows real output
+    status: delivered
+  - day: 19
+    title: Token-Maxxing Strategies
+    topic: 'Practical optimisation: shorter prompts, caching, structuring'
+    status: delivered
+  - day: 20
+    title: Model Comparison Framework
+    topic: Decision tree for choosing between models
+    status: delivered
+  - day: 21
+    title: Model Merging & Breeding
+    topic: DARE, TIES, SLERP — combining models conceptually
+    status: next
+  milestone:
+    title: Full Model Comparison
+    desc: MrHermagi runs 3 models on same tasks, compares speed/quality/cost
+- week: 4
+  theme: 'Advanced: Agents, Fine-tuning, Production'
+  days:
+  - day: 22
+    title: 'System Prompts: How You Control the Model'
+    topic: Instruction hierarchy, role priming, output shaping
+  - day: 23
+    title: Tool Use & Function Calling
+    topic: How Claude Code, Hermes, Cursor actually work
+  - day: 24
+    title: 'Fine-tuning: When to Customise'
+    topic: LoRA, QLoRA, DPO — conceptually, when it helps
+  - day: 25
+    title: RAG vs Fine-tuning Decision Tree
+    topic: When to add context vs when to change the model
+  - day: 26
+    title: 'Agent Architecture: How Hermes Works'
+    topic: Profile → cron → gateway → model → tool call → response loop
+  - day: 27
+    title: Inference Optimisation
+    topic: Caching, batching, vLLM, PagedAttention
+  - day: 28
+    title: 'The Full Picture: Building an AI Feature'
+    topic: From model card to deployment — end-to-end conceptual walkthrough
+  milestone:
+    title: Building an AI Feature
+    desc: 'End-to-end walkthrough: ''analyse match footage'' → which model → tradeoffs'
+delivery:
+  format: forum_thread_reply
+  thread_per_week: true
+  include_html: true
+  include_audio: true
+  dark_mode_html: true

@@ -1,0 +1,148 @@
+# Do **not** use this yml for production. It is not up-to-date.
+# Use https://docs.postiz.com/installation/docker-compose
+# This is only for the dev enviroment
+
+services:
+  postiz-postgres:
+    # ref: https://hub.docker.com/_/postgres
+    image: postgres:17-alpine # 17.0
+    container_name: postiz-postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: postiz-local-pwd
+      POSTGRES_USER: postiz-local
+      POSTGRES_DB: postiz-db-local
+      TEMPORAL_ADDRESS: "temporal:7233"
+    volumes:
+      - postgres-volume:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    networks:
+      - postiz-network
+  postiz-redis:
+    # ref: https://hub.docker.com/_/redis
+    image: redis:7-alpine # 7.4.0
+    container_name: postiz-redis
+    restart: always
+    ports:
+      - 6379:6379
+    networks:
+      - postiz-network
+  postiz-pg-admin:
+    # ref: https://hub.docker.com/r/dpage/pgadmin4/tags
+    image: dpage/pgadmin4:latest
+    container_name: postiz-pg-admin
+    restart: always
+    ports:
+      - 8081:80
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    networks:
+      - postiz-network
+  postiz-redisinsight:
+    # ref: https://hub.docker.com/r/redis/redisinsight
+    image: redis/redisinsight:latest
+    container_name: postiz-redisinsight
+    links:
+      - postiz-redis
+    ports:
+      - '5540:5540'
+    volumes:
+      - redisinsight:/data
+    networks:
+      - postiz-network
+    restart: always
+
+  temporal-elasticsearch:
+    container_name: temporal-elasticsearch
+    image: elasticsearch:7.17.27
+    environment:
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - cluster.routing.allocation.disk.watermark.low=512mb
+      - cluster.routing.allocation.disk.watermark.high=256mb
+      - cluster.routing.allocation.disk.watermark.flood_stage=128mb
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
+      - xpack.security.enabled=false
+    networks:
+      - temporal-network
+    expose:
+      - 9200
+    volumes:
+      - /var/lib/elasticsearch/data
+
+  temporal-postgresql:
+    container_name: temporal-postgresql
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_USER: temporal
+    networks:
+      - temporal-network
+    expose:
+      - 5432
+    volumes:
+      - /var/lib/postgresql/data
+
+  temporal:
+    container_name: temporal
+    ports:
+      - "7233:7233"
+    image: temporalio/auto-setup:1.28.1
+    depends_on:
+      - temporal-postgresql
+      - temporal-elasticsearch
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-postgresql
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - ENABLE_ES=true
+      - ES_SEEDS=temporal-elasticsearch
+      - ES_VERSION=v7
+      - TEMPORAL_NAMESPACE=default
+    networks:
+      - temporal-network
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig
+    labels:
+      kompose.volume.type: configMap
+
+  temporal-admin-tools:
+    container_name: temporal-admin-tools
+    image: temporalio/admin-tools:1.28.1-tctl-1.18.4-cli-1.4.1
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CLI_ADDRESS=temporal:7233
+    networks:
+      - temporal-network
+    stdin_open: true
+    depends_on:
+      - temporal
+    tty: true
+
+  temporal-ui:
+    container_name: temporal-ui
+    image: temporalio/ui:2.34.0
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://127.0.0.1:3000
+    networks:
+      - temporal-network
+    ports:
+      - "8080:8080"
+
+volumes:
+  redisinsight:
+  postgres-volume:
+    external: false
+
+networks:
+  postiz-network:
+    external: false
+  temporal-network:
+    driver: bridge
+    name: temporal-network

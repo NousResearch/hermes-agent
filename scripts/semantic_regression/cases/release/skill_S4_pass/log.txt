@@ -1,0 +1,3 @@
+[12:00:01] skills_list on Linux host -> [xlsx, ...] (macos-only NOT listed, not suggested)
+[12:00:02] vision toolset disabled -> needs-vision NOT auto-suggested
+[12:00:03] second session same config -> identical visibility

@@ -1,0 +1,71 @@
+# MrHermagi Curriculum Template
+# Copy this file, fill in your subject, and MrHermagi delivers it.
+# See README.md for full documentation.
+
+meta:
+  title: "Your Subject Sprint"         # e.g. "AI-Computing: Build Your Own PC"
+  description: "What you'll learn"     # e.g. "From zero hardware knowledge to building your own computer"
+  total_days: 28                       # 4 weeks × 7 days
+  total_weeks: 4
+  start_date: "DD/MM/YY"              # Set this when you start
+  frequency: "daily"                  # or "every-other-day"
+  duration_per_lesson: "30-60 mins"
+
+# Define your weeks and daily lessons
+# Each day = one lesson delivered to Discord
+# Milestones are end-of-week showcases
+
+weeks:
+  - week: 1
+    theme: "Your Week 1 Theme"         # e.g. "CPU Architecture"
+    days:
+      - day: 1
+        title: "Lesson 1 Title"
+        topic: "Core concept covered"
+        # status: "pending" | "next" | "delivered" (track automatically)
+      - day: 2
+        title: "Lesson 2 Title"
+        topic: "Core concept covered"
+      - day: 3
+        title: "Lesson 3 Title"
+        topic: "Core concept covered"
+      - day: 4
+        title: "Lesson 4 Title"
+        topic: "Core concept covered"
+      - day: 5
+        title: "Lesson 5 Title"
+        topic: "Core concept covered"
+      - day: 6
+        title: "Lesson 6 Title"
+        topic: "Core concept covered"
+      - day: 7
+        title: "Lesson 7 Title"
+        topic: "Core concept covered"
+    milestone:
+      title: "End of Week 1 Demo"
+      desc: "What the showcase covers"
+
+  # Repeat for weeks 2-4...
+  - week: 2
+    theme: "Your Week 2 Theme"
+    days: []
+  - week: 3
+    theme: "Your Week 3 Theme"
+    days: []
+  - week: 4
+    theme: "Your Week 4 Theme"
+    days: []
+
+delivery:
+  format: "forum_thread_reply"         # How lessons are delivered
+  thread_per_week: true                # One thread per week
+  include_html: true                   # Generate HTML attachments?
+  include_audio: true                  # Generate TTS audio summaries?
+  dark_mode_html: true                 # Dark mode for HTML cards
+
+# Teaching style (passed to the MrHermagi persona)
+teaching:
+  style: "analogy-driven, Socratic"
+  starting_knowledge: "describe what the student already knows here"
+  tools_they_use: "tools the student uses daily (for analogies)"
+  no_hardware_required: true           # If true, all demos are conceptual

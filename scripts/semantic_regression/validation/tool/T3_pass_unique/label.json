@@ -1,0 +1,4 @@
+{
+  "label": "pass",
+  "note": "unique match applied, idempotent re-run"
+}

@@ -65,10 +65,31 @@ class TestBuildOSSConfig:
         oss, env_writes = build_oss_config(flags)
         assert oss["llm"]["provider"] == "openai"
         assert oss["llm"]["config"]["model"] == "gpt-5-mini"
+        assert oss["llm"]["config"]["is_reasoning_model"] is True
         assert oss["embedder"]["provider"] == "openai"
         assert oss["embedder"]["config"]["model"] == "text-embedding-3-small"
         assert oss["vector_store"]["provider"] == "qdrant"
         assert env_writes["OPENAI_API_KEY"] == "sk-oai"
+
+
+    def test_explicit_gpt_5_mini_is_reasoning_model(self):
+        flags = parse_flags([
+            "--mode", "oss", "--oss-llm-key", "sk-oai",
+            "--oss-llm-model", "gpt-5-mini",
+        ])
+        oss, _ = build_oss_config(flags)
+        assert oss["llm"]["config"]["model"] == "gpt-5-mini"
+        assert oss["llm"]["config"]["is_reasoning_model"] is True
+
+
+    def test_custom_openai_model_is_not_forced_to_reasoning(self):
+        flags = parse_flags([
+            "--mode", "oss", "--oss-llm-key", "sk-oai",
+            "--oss-llm-model", "gpt-5.2",
+        ])
+        oss, _ = build_oss_config(flags)
+        assert oss["llm"]["config"]["model"] == "gpt-5.2"
+        assert "is_reasoning_model" not in oss["llm"]["config"]
 
 
     def test_ollama_no_key_needed(self):
@@ -77,6 +98,7 @@ class TestBuildOSSConfig:
         assert oss["llm"]["provider"] == "ollama"
         assert "model" in oss["llm"]["config"]
         assert oss["llm"]["config"]["ollama_base_url"] == "http://localhost:11434"
+        assert "is_reasoning_model" not in oss["llm"]["config"]
         assert oss["embedder"]["config"]["ollama_base_url"] == "http://localhost:11434"
         assert env_writes == {}
 
@@ -231,3 +253,29 @@ class TestConnectivityChecks:
         assert ok is True
 
 
+
+
+def test_discovery_loaded_setup_module_exposes_post_setup():
+    """`hermes memory setup mem0` reaches the wizard when the package is first imported by plugin
+    discovery, which execs sibling modules before ``__init__`` (#103078). The invariant is on the
+    module the loader actually caches — verified without polluting shared import state, so later
+    mem0 backend-routing tests keep their cached modules (rebuilding them would re-import the
+    absent mem0 SDK and fail backend routing)."""
+    import importlib
+    import importlib.util
+    from pathlib import Path
+
+    import plugins.memory as pm
+
+    setup_path = Path(pm.__file__).resolve().parent / "mem0" / "_setup.py"
+    assert setup_path.exists(), f"missing {setup_path}"
+    # Exec the sibling exactly as the discovery loader does — under its canonical
+    # package key, so the module the loader would cache carries post_setup.
+    spec = importlib.util.spec_from_file_location(
+        "plugins.memory.mem0._setup", setup_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert hasattr(module, "post_setup")
+    # Ensure the loader-visible module (if already cached) also exposes it.
+    cached = importlib.import_module("plugins.memory.mem0._setup") if "plugins.memory.mem0._setup" in sys.modules else module
+    assert hasattr(cached, "post_setup")

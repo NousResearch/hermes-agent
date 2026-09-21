@@ -1,0 +1,163 @@
+.....FFFF.F.                                                             [100%]
+=================================== FAILURES ===================================
+_ TestToolsetStarvationBackstop.test_composite_only_profile_falls_back_to_parent_set _
+
+self = <tests.tools.test_delegate_toolset_scope.TestToolsetStarvationBackstop object at 0x7505e9537b10>
+caplog = <_pytest.logging.LogCaptureFixture object at 0x7505e6c31e90>
+
+    def test_composite_only_profile_falls_back_to_parent_set(self, caplog):
+        import logging
+    
+        parent = _mock_parent(["terminal", "file", "web", "skills", "session_search"])
+        with caplog.at_level(logging.WARNING):
+            with patch("run_agent.AIAgent") as MockAgent:
+                MockAgent.return_value = MagicMock()
+                _build_child_agent(
+                    task_index=0, goal="g", context=None, toolsets=None,
+                    model=None, max_iterations=10, task_count=1,
+                    parent_agent=parent, profile="octacon",
+                    profile_content=_profile_cfg(["hermes-cli", "kanban"]),
+                )
+        enabled = self._enabled(MockAgent)
+        # Not empty — the backstop rescued it.
+        assert enabled
+        # Equals the parent's bounded set (blocked tools stripped).
+        assert set(enabled) == set(_strip_blocked_tools(parent.enabled_toolsets))
+>       assert any("falling back" in r.message for r in caplog.records)
+E       assert False
+E        +  where False = any(<generator object TestToolsetStarvationBackstop.test_composite_only_profile_falls_back_to_parent_set.<locals>.<genexpr> at 0x7505e8e62cf0>)
+
+tests/tools/test_delegate_toolset_scope.py:152: AssertionError
+___ TestToolsetStarvationBackstop.test_audit_toolset_fixes_composite_failure ___
+
+self = <tests.tools.test_delegate_toolset_scope.TestToolsetStarvationBackstop object at 0x7505e95242d0>
+
+    def test_audit_toolset_fixes_composite_failure(self):
+        """When the profile also declares 'audit', the audit toolset survives
+        the intersection (its tools are a strict subset of the parent's) and
+        is the only resolved toolset — proving the toolsets.py addition fixes
+        the real bug without the backstop."""
+        parent = _mock_parent(["terminal", "file", "web", "skills", "session_search"])
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=None,
+                model=None, max_iterations=10, task_count=1,
+                parent_agent=parent, profile="octacon",
+                profile_content=_profile_cfg(["hermes-cli", "kanban", "audit"]),
+            )
+>       assert self._enabled(MockAgent) == ["audit"]
+E       AssertionError: assert ['terminal', ...ssion_search'] == ['audit']
+E         
+E         At index 0 diff: 'terminal' != 'audit'
+E         Left contains 4 more items, first extra item: 'file'
+E         Use -v to get more diff
+
+tests/tools/test_delegate_toolset_scope.py:168: AssertionError
+_ TestToolsetStarvationBackstop.test_kanban_parent_profile_kanban_only_falls_back _
+
+self = <tests.tools.test_delegate_toolset_scope.TestToolsetStarvationBackstop object at 0x7505e9524a10>
+caplog = <_pytest.logging.LogCaptureFixture object at 0x7505e59fe8d0>
+
+    def test_kanban_parent_profile_kanban_only_falls_back(self, caplog):
+        """Real Kensei parent shape: the parent HAS 'kanban' enabled (it is
+        listed in platform_toolsets.cli) and the profile requests
+        ['hermes-cli', 'kanban']. The intersection keeps 'kanban' (the parent
+        exposes it), _strip_blocked_tools removes it, and the observability
+        re-add puts it back — leaving child_toolsets non-empty while its
+        tools are subtracted via disabled_toolsets. The backstop must treat
+        a fully-neutralised set as starvation and fall back to the parent's
+        bounded set, or the child is left with only ambient tools
+        (rescuer_fetch) — the Octacon inline-delegation incident."""
+        import logging
+    
+        parent = _mock_parent(
+            ["terminal", "file", "web", "skills", "session_search", "kanban"]
+        )
+        with caplog.at_level(logging.WARNING):
+            with patch("run_agent.AIAgent") as MockAgent:
+                MockAgent.return_value = MagicMock()
+                _build_child_agent(
+                    task_index=0, goal="g", context=None, toolsets=None,
+                    model=None, max_iterations=10, task_count=1,
+                    parent_agent=parent, profile="octacon",
+                    profile_content=_profile_cfg(["hermes-cli", "kanban"]),
+                )
+        enabled = self._enabled(MockAgent)
+        # Not empty — the backstop rescued it.
+        assert enabled
+        # Equals the parent's bounded set (blocked tools stripped, kanban
+        # stripped because its schemas are subtracted via disabled_toolsets).
+        assert set(enabled) == set(_strip_blocked_tools(parent.enabled_toolsets))
+>       assert any("falling back" in r.message for r in caplog.records)
+E       assert False
+E        +  where False = any(<generator object TestToolsetStarvationBackstop.test_kanban_parent_profile_kanban_only_falls_back.<locals>.<genexpr> at 0x7505e5a3f440>)
+
+tests/tools/test_delegate_toolset_scope.py:200: AssertionError
+_ TestToolsetStarvationBackstop.test_browser_masked_partial_collapse_falls_back _
+
+self = <tests.tools.test_delegate_toolset_scope.TestToolsetStarvationBackstop object at 0x7505e95250d0>
+caplog = <_pytest.logging.LogCaptureFixture object at 0x7505e5855350>
+
+    def test_browser_masked_partial_collapse_falls_back(self, caplog):
+        """quan/remii shape: profile ['hermes-cli', 'kanban', 'browser'] with
+        a parent exposing 'browser'. The composite fails to expand but the
+        extra 'browser' toolset survives the intersection, masking the
+        starvation — the child would resolve to browser-only (no file, no
+        terminal). It must fall back to the parent's bounded set so the core
+        inspection trio (read_file + search_files + terminal) is preserved."""
+        import logging
+    
+        parent = _mock_parent(
+            ["terminal", "file", "web", "skills", "session_search", "kanban", "browser"]
+        )
+        with caplog.at_level(logging.WARNING):
+            with patch("run_agent.AIAgent") as MockAgent:
+                MockAgent.return_value = MagicMock()
+                _build_child_agent(
+                    task_index=0, goal="g", context=None, toolsets=None,
+                    model=None, max_iterations=10, task_count=1,
+                    parent_agent=parent, profile="quan",
+                    profile_content=_profile_cfg(["hermes-cli", "kanban", "browser"]),
+                )
+        enabled = self._enabled(MockAgent)
+        # Not empty — the backstop rescued it.
+        assert enabled
+        # Equals the parent's bounded set (blocked tools stripped) — includes
+        # browser, but crucially also file + terminal + web + skills.
+        assert set(enabled) == set(_strip_blocked_tools(parent.enabled_toolsets))
+        assert {"file", "terminal"} <= set(enabled)
+>       assert any("falling back" in r.message for r in caplog.records)
+E       assert False
+E        +  where False = any(<generator object TestToolsetStarvationBackstop.test_browser_masked_partial_collapse_falls_back.<locals>.<genexpr> at 0x7505e5f12330>)
+
+tests/tools/test_delegate_toolset_scope.py:230: AssertionError
+_ TestToolsetStarvationBackstop.test_unresolvable_explicit_toolsets_fall_back_not_empty _
+
+self = <tests.tools.test_delegate_toolset_scope.TestToolsetStarvationBackstop object at 0x7505e95341d0>
+
+    def test_unresolvable_explicit_toolsets_fall_back_not_empty(self):
+        """Explicit (test-only) toolsets that don't resolve to anything must
+        fall back to the parent's bounded set, never []."""
+        parent = _mock_parent(["terminal", "file", "web", "skills", "session_search"])
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="g", context=None,
+                toolsets=["nonexistent-a", "nonexistent-b"],
+                model=None, max_iterations=10, task_count=1,
+                parent_agent=parent,
+            )
+>       assert self._enabled(MockAgent)
+E       AssertionError: assert []
+E        +  where [] = _enabled(<MagicMock name='AIAgent' id='128668184556816'>)
+E        +    where _enabled = <tests.tools.test_delegate_toolset_scope.TestToolsetStarvationBackstop object at 0x7505e95341d0>._enabled
+
+tests/tools/test_delegate_toolset_scope.py:269: AssertionError
+=========================== short test summary info ============================
+FAILED tests/tools/test_delegate_toolset_scope.py::TestToolsetStarvationBackstop::test_composite_only_profile_falls_back_to_parent_set
+FAILED tests/tools/test_delegate_toolset_scope.py::TestToolsetStarvationBackstop::test_audit_toolset_fixes_composite_failure
+FAILED tests/tools/test_delegate_toolset_scope.py::TestToolsetStarvationBackstop::test_kanban_parent_profile_kanban_only_falls_back
+FAILED tests/tools/test_delegate_toolset_scope.py::TestToolsetStarvationBackstop::test_browser_masked_partial_collapse_falls_back
+FAILED tests/tools/test_delegate_toolset_scope.py::TestToolsetStarvationBackstop::test_unresolvable_explicit_toolsets_fall_back_not_empty
+5 failed, 7 passed in 4.59s

@@ -236,7 +236,7 @@ Agent 会代你执行终端命令并显示结果。
 hermes gateway setup    # 交互式平台配置
 ```
 
-接入 [Telegram](/user-guide/messaging/telegram)、[Discord](/user-guide/messaging/discord)、[Slack](/user-guide/messaging/slack)、[WhatsApp](/user-guide/messaging/whatsapp)、[Signal](/user-guide/messaging/signal)、[Email](/user-guide/messaging/email)、[Home Assistant](/user-guide/messaging/homeassistant) 或 [Microsoft Teams](/user-guide/messaging/teams)。
+接入 [Telegram](../user-guide/messaging/telegram.md)、[Discord](../user-guide/messaging/discord.md)、[Slack](../user-guide/messaging/slack.md)、[WhatsApp](../user-guide/messaging/whatsapp.md)、[Signal](../user-guide/messaging/signal.md)、[Email](../user-guide/messaging/email.md)、[Home Assistant](../user-guide/messaging/homeassistant.md) 或 [Microsoft Teams](../user-guide/messaging/teams.md)。
 
 ### 自动化与工具
 
@@ -259,7 +259,7 @@ hermes config set terminal.backend ssh       # 远程服务器
 # 在 Hermes 安装目录下运行（curl 安装器在 Linux/macOS 上将其放置于
 # ~/.hermes/hermes-agent，在 Windows 上为 %LOCALAPPDATA%\hermes\hermes-agent）：
 cd ~/.hermes/hermes-agent
-uv pip install --python ./venv/bin/python -e ".[voice]"
+uv pip install -e ".[voice]"
 # 包含 faster-whisper，用于免费的本地语音转文字
 ```
 

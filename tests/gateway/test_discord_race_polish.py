@@ -25,6 +25,9 @@ def _make_adapter():
     adapter._voice_timeout_tasks = {}
     adapter._voice_text_channels = {}
     adapter._voice_sources = {}
+    adapter._use_voice_bridge = False
+    adapter._voice_bridges = {}
+    adapter._voice_bridge_latency_logs = {}
     adapter._client = MagicMock()
     return adapter
 

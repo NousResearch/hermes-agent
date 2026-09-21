@@ -1,4 +1,5 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
+import type { Usage } from '@hermes/shared/gateway-events'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
@@ -19,17 +20,19 @@ import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
+  AskUserQuestionsReq,
   ClarifyReq,
   ConfirmReq,
   DetailsMode,
   Msg,
   PanelSection,
+  PromptOptimizationReq,
   SecretReq,
   SectionVisibility,
   SessionInfo,
   SlashCatalog,
   SudoReq,
-  Usage
+  VaultUnlockReq
 } from '../types.js'
 
 export interface StateSetter<T> {
@@ -37,6 +40,9 @@ export interface StateSetter<T> {
 }
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
+
+export const AGENT_MODES = ['auto', 'plan', 'gods_plan', 'recon'] as const
+export type AgentMode = (typeof AGENT_MODES)[number]
 
 export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
 
@@ -280,13 +286,21 @@ export interface SubscriptionOverlayState {
   stepUpRetry?: null | SubscriptionStepUpRetry
 }
 
+export interface ConnectionOverlayState {
+  opId: string
+}
+
 export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
   approval: ApprovalReq | null
   billing: BillingOverlayState | null
+  askUserQuestions: AskUserQuestionsReq | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  /** KENSEI CUSTOM: Control Room overlay (Ctrl+P). */
+  controlRoom: boolean
+  connection: ConnectionOverlayState | null
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */
@@ -296,7 +310,9 @@ export interface OverlayState {
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
+  promptOptimization: PromptOptimizationReq | null
   secret: null | SecretReq
+  vaultUnlock: null | VaultUnlockReq
   sessions: boolean
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
@@ -316,12 +332,17 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  agentMode: AgentMode
   battery: boolean
   batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
+  // Context compaction in progress (idle/preflight/auto). Distinct from
+  // `compact`, which is the /compact layout-density flag.
+  compacting: boolean
+  destructiveSlashConfirm: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   // Focus view (/focus) — display-only reduced-output mode. Drives the
@@ -342,8 +363,19 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  // Durable session id (state.db row) of the live session — what session.resume
+  // and the exit epilogue take. Kept apart from `info`, which producers replace
+  // wholesale with payloads that may omit `stored_session_id`.
+  storedSid: null | string
+  // display.status_bar.fields — visibility filter for status-rule segments,
+  // shared with the classic CLI bar. null = user has not customized (show
+  // the default set).
+  statusBarFields: null | ReadonlySet<string>
   streaming: boolean
   theme: Theme
+  // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
+  // rows, the same config key the classic CLI honors (#41531).
+  timestamps: boolean
   usage: Usage
 }
 
@@ -387,12 +419,25 @@ export interface ComposerActions {
   syncTokens: (value: string) => void
 }
 
+/**
+ * Options that ride along with a submission from the composer / overlay call
+ * site down through submit -> dispatchSubmission -> send -> submitPrompt. Named
+ * (not positional booleans) so the "skip re-optimisation" intent of an accepted
+ * prompt-optimisation preview cannot be silently dropped somewhere in the chain.
+ */
+export interface SubmissionOptions {
+  showUserMessage?: boolean
+  skipOptimization?: boolean
+  skipDetectDrop?: boolean
+  displayText?: string
+}
+
 export interface ComposerRefs {
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
   queueRef: MutableRefObject<QueueItem[]>
-  submitRef: MutableRefObject<(value: string) => void>
+  submitRef: MutableRefObject<(value: string, options?: SubmissionOptions) => void>
   tokensRef: MutableRefObject<ComposerToken[]>
 }
 
@@ -410,7 +455,7 @@ export interface ComposerState {
 
 export interface UseComposerStateOptions {
   gw: GatewayClient
-  submitRef: MutableRefObject<(value: string) => void>
+  submitRef: MutableRefObject<(value: string, options?: SubmissionOptions) => void>
   sys: (text: string) => void
 }
 
@@ -421,6 +466,7 @@ export interface UseComposerStateResult {
 }
 
 export interface InputHandlerActions {
+  answerAskUserQuestions: (answers: Record<number, string>, requestId: string) => void
   answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
   die: () => void
@@ -470,19 +516,22 @@ export interface GatewayEventHandlerContext {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
     newSession: (msg?: string, title?: string) => void
-    // Set by useMainApp's exit handler to the session that was live when the
-    // gateway died unexpectedly; consumed once by the next `gateway.ready` so a
-    // respawn resumes that session instead of forging a fresh one.
+    // Session carried across a transport loss or child exit, cleared after resume.
     recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
-    resumeById: (id: string) => void
+    resumeById: (id: string) => Promise<void>
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {
-    submitRef: MutableRefObject<(value: string) => void>
+    /** Submit text literally as a prompt — no slash/!/interpolation dispatch.
+     *  Used for `-q` startup queries, which are arbitrary launcher-provided
+     *  text (parity with one-shot's literal prompt handling). */
+    submitLiteralRef: MutableRefObject<(value: string) => void>
+    submitRef: MutableRefObject<(value: string, options?: SubmissionOptions) => void>
   }
   system: {
     bellOnComplete: boolean
+    bellOnPrompt?: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }
@@ -547,9 +596,15 @@ export interface SlashHandlerContext {
 
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
+  answerAskUserQuestions: (answers: Record<number, string>, requestId: string) => void
   answerClarify: (answer: string) => void
+  answerClarifyBatchCancel: (answers: Record<string, string>) => Promise<void>
+  answerClarifyBatchSubmit: (answers: Record<string, string>) => Promise<void>
+  answerPromptOptimization: (choice: string) => void
+  answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
+  answerVaultUnlock: (password: string) => void
   clearSelection: () => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
@@ -614,7 +669,12 @@ export interface AppOverlaysProps {
   compIdx: number
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
+  onAskUserQuestionsAnswer: (answers: Record<number, string>, requestId: string) => void
   onClarifyAnswer: (value: string) => void
+  onClarifyBatchCancel: (answers: Record<string, string>) => void
+  onClarifyBatchSubmit: (answers: Record<string, string>) => void
+  onPromptOptimizationChoice: (choice: string) => void
+  onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void
@@ -623,6 +683,7 @@ export interface AppOverlaysProps {
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
+  onVaultUnlockSubmit: (password: string) => void
   pagerPageSize: number
 }
 

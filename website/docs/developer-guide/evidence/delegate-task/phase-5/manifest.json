@@ -1,0 +1,69 @@
+{
+  "phase": "phase-5",
+  "status": "GO",
+  "plan": "/home/kensei/delegate-task-phased-implementation-plan.md",
+  "base_sha": "8b821c9e7be627d8e7d3e2a8d552a03cdb5320bc",
+  "implementation_commit_sha": "86c8b7feb99bc34e2266533346b6a6e104fdd908",
+  "branch": "delegate-task-phase-5-delivery",
+  "worktree": "/home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-5",
+  "changed_files": [
+    "docs/evidence/delegate-task/phase-5/audit.md",
+    "docs/evidence/delegate-task/phase-5/manifest.json",
+    "docs/evidence/delegate-task/phase-5/phase5-delivery-final.txt",
+    "docs/evidence/delegate-task/phase-5/phase5-delivery-initial.txt",
+    "docs/evidence/delegate-task/phase-5/phase5-post-commit.txt",
+    "docs/evidence/delegate-task/phase-5/results.md",
+    "docs/evidence/delegate-task/phase-5/upstream-104299.patch",
+    "tests/tools/test_delegate_completion_units.py",
+    "tools/async_delegation.py",
+    "tools/delegate_tool.py",
+    "tools/delegate_tool_dispatch.py",
+    "tools/process_registry_notifications.py"
+  ],
+  "production_source_changes": [
+    "tools/async_delegation.py",
+    "tools/delegate_tool.py",
+    "tools/delegate_tool_dispatch.py",
+    "tools/process_registry_notifications.py"
+  ],
+  "test_changes": [
+    "tests/tools/test_async_delegation.py",
+    "tests/tools/test_delegate_completion_units.py"
+  ],
+  "evidence_hashes": {
+    "docs/evidence/delegate-task/phase-5/phase5-delivery-final.txt": "e61bcbb1242838da69852320f712670e6060ced2f6eacd766536c65148289672",
+    "docs/evidence/delegate-task/phase-5/phase5-delivery-initial.txt": "322d06c8d7cc3baacb0002e650e09ba4adb2f3389e473b1c8dd2f9e35e1e8a52",
+    "docs/evidence/delegate-task/phase-5/phase5-post-commit.txt": "6efd4f1686665be6db6701d50226993f98bd413f55153688995f864cb9b61676",
+    "docs/evidence/delegate-task/phase-5/results.md": "29c236adf6278b200ea35219fd947b4c21c8a5b632c767490c388fd60584a822",
+    "docs/evidence/delegate-task/phase-5/upstream-104299.patch": "11ef4e04f35fa65de847945468fd84cc6934798d15bd05d113e37663f2b13413",
+    "tests/tools/test_delegate_completion_units.py": "284a7a3d40b5084f08072845f9f8b0258860382208eae896bc92c54f401d2a29",
+    "tools/async_delegation.py": "f5a7fbd4bb4868f2deef10cbb7baa5148416b2dd608c221af879ac2adca3eea7",
+    "tools/delegate_tool.py": "26d41a6c5b50acc6ee6db9ca47cfa1229b1b5bf523865035eb5e61234bc9a1ee",
+    "tools/delegate_tool_dispatch.py": "c968cbdffc38c61ee49f8eb3fae68a5472e5997d6e9ec61697e02f70f6d8e506",
+    "tools/process_registry_notifications.py": "1bb0986920c510e512bfffa4a3bca87c20bc4658f39d8454094a3cb3893ea163",
+    "docs/evidence/delegate-task/phase-5/audit.md": "0b78814f71ce287f3dde9479fa5133cf366873953c74edb3f332161cc31c728b"
+  },
+  "upstream_patch": {
+    "pr": "104299",
+    "merge_commit": "028fe2c4c857710ab335a8455f5cbbcc52cbf795",
+    "path": "docs/evidence/delegate-task/phase-5/upstream-104299.patch",
+    "sha256": "11ef4e04f35fa65de847945468fd84cc6934798d15bd05d113e37663f2b13413"
+  },
+  "test_results": {
+    "delivery_initial": "66 passed, 1 failed, 1 skipped (pre-persistence seam)",
+    "delivery_final": "69 passed, 1 skipped",
+    "post_commit": "69 passed, 1 skipped"
+  },
+  "acceptance": {
+    "independent_ungrouped_units": true,
+    "grouped_units_together": true,
+    "grouping_not_execution_order": true,
+    "one_slot_capacity": true,
+    "task_indexes": true,
+    "partial_child_persistence": true,
+    "failure_notices": true,
+    "existing_claim_retry_dead_letter_preserved": true,
+    "live_surface_acknowledgement": false
+  },
+  "remaining_gate": "real client staging/restart acknowledgement reserved for Phase 7"
+}

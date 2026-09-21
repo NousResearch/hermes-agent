@@ -1,0 +1,15 @@
+# Route-registry local artifacts — never commit live-config backups or caches
+
+# Live-config backups (contain full pre-apply profile configs — not source)
+route_registry/backups/
+route_registry/backups
+**/route_registry/backups/
+
+# Generated dry-run/preview plans (deterministic, reproducible via generator)
+out/
+out/*.json
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/

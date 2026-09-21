@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preview: sahi_c5c4308a</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #1a1a2e;
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+               Ubuntu, Cantarell, sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.preview-banner {
+  background: linear-gradient(90deg, #e94560, #0f3460);
+  padding: 10px 20px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 10000;
+  letter-spacing: 0.5px;
+}
+.preview-banner span {
+  background: rgba(0,0,0,0.4);
+  padding: 2px 10px;
+  margin-left: 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+}
+
+/* ── Short post card (Twitter / LinkedIn) ── */
+
+.post-card {
+  max-width: 600px;
+  margin: 40px auto;
+  background: #16213e;
+  border-radius: 12px;
+  padding: 24px;
+  border: 1px solid #1a1a3e;
+}
+
+/* Twitter mockup */
+.twitter-card .avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.twitter-card .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e94560;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.twitter-card .name-row {
+  display: flex;
+  flex-direction: column;
+}
+.twitter-card .display-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+}
+.twitter-card .handle {
+  font-size: 13px;
+  color: #8899a6;
+}
+.twitter-card .post-body {
+  font-size: 15px;
+  line-height: 1.5;
+  color: #e1e8ed;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.twitter-card .post-meta {
+  font-size: 13px;
+  color: #8899a6;
+  border-top: 1px solid #1a1a3e;
+  padding-top: 12px;
+  margin-top: 4px;
+}
+
+/* LinkedIn mockup */
+.linkedin-card .header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.linkedin-card .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e94560;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.linkedin-card .name-details {
+  display: flex;
+  flex-direction: column;
+}
+.linkedin-card .display-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+}
+.linkedin-card .headline {
+  font-size: 12px;
+  color: #8899a6;
+}
+.linkedin-card .post-body {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e1e8ed;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.linkedin-card .post-meta {
+  font-size: 12px;
+  color: #8899a6;
+  border-top: 1px solid #1a1a3e;
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+/* ── Article preview ── */
+
+.article-container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.article-header {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #1a1a3e;
+}
+
+.article-title {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.3px;
+  margin-bottom: 12px;
+  color: #ffffff;
+}
+
+.article-lede {
+  font-size: 16px;
+  color: #a0a0b8;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.article-meta {
+  font-size: 13px;
+  color: #8899a6;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.article-meta .pillar-tag {
+  background: #0f3460;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #e94560;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Hero image */
+.hero-image {
+  width: 100%;
+  margin-bottom: 32px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #1a1a3e;
+  position: relative;
+}
+.hero-image img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.hero-image .hero-label {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(0,0,0,0.75);
+  color: #e94560;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* Article body sections */
+.article-body {
+  font-size: 15px;
+  color: #d0d0e0;
+  line-height: 1.7;
+}
+
+.article-body h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 32px 0 12px;
+  color: #ffffff;
+  padding-left: 14px;
+  border-left: 3px solid #e94560;
+}
+
+.article-body h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 24px 0 10px;
+  color: #ffffff;
+}
+
+.article-body p {
+  margin-bottom: 16px;
+}
+
+.article-body a {
+  color: #e94560;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.article-body a:hover {
+  border-bottom-color: #e94560;
+}
+
+.article-body strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.article-body em {
+  color: #a0a0b8;
+}
+
+.article-body code {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 13px;
+  background: #0f3460;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #e94560;
+}
+
+.article-body pre {
+  background: #0f3460;
+  border: 1px solid #1a1a3e;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 20px 0;
+  overflow-x: auto;
+}
+.article-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #d0d0e0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.article-body blockquote {
+  border-left: 3px solid #e94560;
+  padding: 12px 20px;
+  margin: 20px 0;
+  background: #0f3460;
+  border-radius: 0 8px 8px 0;
+  color: #a0a0b8;
+  font-style: italic;
+}
+
+.article-body ul, .article-body ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+.article-body li {
+  margin-bottom: 6px;
+}
+.article-body ul li::marker {
+  color: #e94560;
+}
+
+.article-body hr {
+  border: none;
+  border-top: 1px solid #1a1a3e;
+  margin: 32px 0;
+}
+
+.article-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid #1a1a3e;
+  margin: 20px 0;
+}
+
+/* ── Approval action bar ── */
+
+.approval-bar {
+  position: sticky;
+  bottom: 0;
+  background: #16213e;
+  border-top: 1px solid #1a1a3e;
+  padding: 14px 24px;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  z-index: 9998;
+  flex-wrap: wrap;
+}
+.approval-bar .draft-id {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #8899a6;
+  margin-right: auto;
+}
+.approval-bar .approval-commands {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #a0a0b8;
+  display: flex;
+  gap: 16px;
+}
+.approval-bar .cmd {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.approval-bar .cmd.approve {
+  color: #2ecc71;
+  background: rgba(46, 204, 113, 0.1);
+}
+.approval-bar .cmd.reject {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.1);
+}
+.approval-bar .cmd.amend {
+  color: #f39c12;
+  background: rgba(243, 156, 18, 0.1);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .article-title { font-size: 24px; }
+  .article-container { padding: 24px 16px 60px; }
+  .post-card { margin: 20px 12px; }
+  .approval-bar { flex-direction: column; }
+  .approval-bar .draft-id { margin-right: 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="preview-banner">
+  📝 CEE CEE PREVIEW — not live · sahil_twitter
+  <span>sahi_c5c4308a</span>
+</div>
+
+
+<div class="post-card twitter-card">
+  <div class="avatar-row">
+    <div class="avatar">S</div>
+    <div class="name-row">
+      <span class="display-name">Sahil Saghir</span>
+      <span class="handle">@Sahil_Saghir</span>
+    </div>
+  </div>
+  <div class="post-body"><strong>shipping with AI</strong>
+
+Built 4 apps with Claude Code this year. Shipped one. Three still in flight. The one that works is the one I thought about hardest, not the one the AI wrote fastest. Speed multiplies. Debugging doesn't compound. #buildinpublic</div>
+  <div class="post-meta">
+    05 Jul 2026 · 05:31 UTC · honest_debrief · scene
+  </div>
+</div>
+
+<div class="approval-bar">
+  <span class="draft-id">sahi_c5c4308a</span>
+  <div class="approval-commands">
+    <span class="cmd approve">!approve sahi_c5c4308a</span>
+    <span class="cmd reject">!reject sahi_c5c4308a [reason]</span>
+    <span class="cmd amend">!amend sahi_c5c4308a [notes]</span>
+  </div>
+</div>
+
+</body>
+</html>

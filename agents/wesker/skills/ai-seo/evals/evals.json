@@ -1,0 +1,90 @@
+{
+  "skill_name": "ai-seo",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "How do I make sure our SaaS product shows up in AI search results? We're a project management tool and we keep getting left out of ChatGPT and Perplexity recommendations when people ask about project management software.",
+      "expected_output": "Should check for product-marketing-context.md first. Should apply the three pillars framework: Structure (make content extractable), Authority (make content citable), Presence (be where AI looks). Should run through the AI Visibility Audit checklist across platforms (Google AI Overviews, ChatGPT, Perplexity, etc.). Should check content extractability (clear definitions, structured comparisons, statistics). Should reference Princeton GEO research findings (citations improve visibility +40%, statistics +37%). Should check AI bot access in robots.txt. Should provide a prioritized action plan.",
+      "assertions": [
+        "Checks for product-marketing-context.md",
+        "Applies three pillars framework (Structure, Authority, Presence)",
+        "Runs AI Visibility Audit across platforms",
+        "Checks content extractability",
+        "References Princeton GEO research findings",
+        "Checks AI bot access in robots.txt",
+        "Provides prioritized action plan"
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Should we block AI crawlers like GPTBot and PerplexityBot in our robots.txt? We're worried about content theft.",
+      "expected_output": "Should address the AI bot access question directly. Should explain the tradeoff: blocking AI bots prevents training on your content but also prevents AI platforms from citing and recommending you. Should reference the specific bots and their purposes (GPTBot, Google-Extended, PerplexityBot, ClaudeBot, etc.). Should provide the recommended robots.txt configuration. Should explain that blocking may hurt AI visibility more than it protects content. Should provide a nuanced recommendation based on business goals.",
+      "assertions": [
+        "Addresses the blocking tradeoff directly",
+        "Explains impact on AI visibility vs content protection",
+        "Lists specific AI bot user agents",
+        "Provides recommended robots.txt configuration",
+        "Gives nuanced recommendation based on business goals",
+        "Explains what each bot does"
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "What kind of content gets cited most by AI systems? We want to create content specifically optimized for AI search.",
+      "expected_output": "Should reference the content types that get cited most, including comparisons (~33% of AI citations), definitive guides (~15%), and other high-citation content types. Should explain why these formats work (they provide the structured, extractable, authoritative information AI systems need). Should provide specific recommendations for creating AI-optimized content: clear definitions, structured data, original statistics, comparison tables, expert quotes. Should reference the Princeton GEO research on what increases citation probability.",
+      "assertions": [
+        "References specific content types with citation rates",
+        "Mentions comparisons as highest-cited format",
+        "Explains why these formats work for AI",
+        "Provides specific content creation recommendations",
+        "References Princeton GEO research",
+        "Mentions structured data, statistics, and clear definitions"
+      ],
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "we noticed our competitors are showing up in google AI overviews but we're not. what do we need to change?",
+      "expected_output": "Should trigger on casual phrasing. Should focus specifically on Google AI Overviews visibility. Should explain how AI Overviews selects sources (authoritative, well-structured, directly answers queries). Should run through the Structure pillar checklist: content extractability, heading hierarchy, answer-first format, structured data. Should check Authority signals: domain authority, citations, E-E-A-T. Should recommend specific content structure changes. Should suggest monitoring approach.",
+      "assertions": [
+        "Triggers on casual phrasing",
+        "Focuses on Google AI Overviews specifically",
+        "Explains how AI Overviews selects sources",
+        "Checks Structure pillar (extractability, headings, answer-first)",
+        "Checks Authority signals",
+        "Recommends specific content structure changes",
+        "Suggests monitoring approach"
+      ],
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "Can you audit our website for AI search readiness? We want to know how visible we are across ChatGPT, Perplexity, Google AI Overviews, and other AI platforms.",
+      "expected_output": "Should run the full AI Visibility Audit. Should check each platform in the landscape (Google AI Overviews, ChatGPT, Perplexity, Claude, Gemini, Copilot). Should evaluate all three pillars: Structure (content extractability, JSON-LD, clear definitions), Authority (citations, backlinks, E-E-A-T signals), Presence (AI bot access, platform-specific factors). Should provide findings organized by pillar. Should provide a prioritized action plan with specific fixes.",
+      "assertions": [
+        "Runs full AI Visibility Audit",
+        "Checks multiple AI platforms",
+        "Evaluates all three pillars (Structure, Authority, Presence)",
+        "Checks content extractability",
+        "Checks AI bot access",
+        "Provides findings organized by pillar",
+        "Provides prioritized action plan"
+      ],
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "Our organic search traffic has dropped 30% this quarter. Can you do a full SEO audit to figure out what's going on?",
+      "expected_output": "Should recognize this is a traditional SEO audit request, not specifically an AI SEO task. Should defer to or cross-reference the seo-audit skill, which handles comprehensive traditional SEO audits including crawlability, technical foundations, on-page optimization, and content quality. May mention AI search as one factor to investigate but should make clear that seo-audit is the primary skill for this task.",
+      "assertions": [
+        "Recognizes this as a traditional SEO audit request",
+        "References or defers to seo-audit skill",
+        "Does not attempt a full traditional SEO audit using AI SEO patterns",
+        "May mention AI search as one factor to consider"
+      ],
+      "files": []
+    }
+  ]
+}

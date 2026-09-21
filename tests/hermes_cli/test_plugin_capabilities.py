@@ -7,6 +7,7 @@ and backward compatibility with the legacy ``allow_*`` gates.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -82,7 +83,7 @@ class TestDeclarationParsing:
 
     def test_manifest_field_lands_on_parsed_manifest(self, tmp_path):
         """PluginManifest picks up ``capabilities:`` from plugin.yaml."""
-        from hermes_cli.plugins import PluginManager
+        from hermes_cli.plugins import parse_manifest_file
 
         plugin_dir = tmp_path / "capplug"
         plugin_dir.mkdir()
@@ -91,27 +92,64 @@ class TestDeclarationParsing:
             "capabilities:\n  - tools.override\n  - bogus.capability\n",
             encoding="utf-8",
         )
-        mgr = PluginManager()
-        manifest = mgr._parse_manifest(
+        manifest = parse_manifest_file(
             plugin_dir / "plugin.yaml", plugin_dir, "user", ""
         )
         assert manifest is not None
         assert manifest.capabilities == ["tools.override"]
 
     def test_manifest_without_capabilities_field(self, tmp_path):
-        from hermes_cli.plugins import PluginManager
+        from hermes_cli.plugins import parse_manifest_file
 
         plugin_dir = tmp_path / "plainplug"
         plugin_dir.mkdir()
         (plugin_dir / "plugin.yaml").write_text(
             "name: plainplug\n", encoding="utf-8"
         )
-        mgr = PluginManager()
-        manifest = mgr._parse_manifest(
+        manifest = parse_manifest_file(
             plugin_dir / "plugin.yaml", plugin_dir, "user", ""
         )
         assert manifest is not None
         assert manifest.capabilities == []
+
+    def test_entrypoint_companion_metadata_declares_capabilities_without_import(
+        self, monkeypatch
+    ):
+        """Installed plugins can declare consent metadata in dist entry points."""
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+
+        load = MagicMock(side_effect=AssertionError("plugin code must not be imported"))
+        plugin_ep = SimpleNamespace(
+            name="thread-namer",
+            value="thread_namer.plugin:register",
+            group="hermes_agent.plugins",
+            dist=SimpleNamespace(
+                version="1.2.3",
+                metadata={"Summary": "Names gateway threads"},
+            ),
+            load=load,
+        )
+        capability_ep = SimpleNamespace(
+            name="thread-namer.gateway.platform_actions",
+            value="thread_namer.plugin:register",
+            group="hermes_agent.plugin_capabilities",
+            load=load,
+        )
+        monkeypatch.setattr(
+            plugins_mod.importlib.metadata,
+            "entry_points",
+            lambda: [plugin_ep, capability_ep],
+        )
+
+        manifests = PluginManager()._scan_entry_points()
+
+        assert len(manifests) == 1
+        assert manifests[0].name == "thread-namer"
+        assert manifests[0].version == "1.2.3"
+        assert manifests[0].description == "Names gateway threads"
+        assert manifests[0].capabilities == ["gateway.platform_actions"]
+        load.assert_not_called()
 
 
 # ── Consent grant + persistence ──────────────────────────────────────────────

@@ -1,0 +1,7 @@
+# Publish Queue — matchdaymaestro / twitter
+# Generated: 2026-05-14T08:26:07.530199+00:00
+# Title: Integration Test
+
+Test post — this should fall through to manual export
+
+# --- Copy the text above, paste into the platform below ---

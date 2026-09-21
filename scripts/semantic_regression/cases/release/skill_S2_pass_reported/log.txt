@@ -1,0 +1,4 @@
+[12:00:01] executing multistep skill step 1: ok
+[12:00:02] step 2: tool network call failed (transient error)
+[12:00:03] step 3: ok (independent)
+[12:00:04] final: 'Steps 1 and 3 succeeded; step 2 failed (network error). Partial failure.'

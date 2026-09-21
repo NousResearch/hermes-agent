@@ -1,0 +1,91 @@
+{
+  "phase": "phase-2",
+  "status": "GO",
+  "plan": "/home/kensei/delegate-task-phased-implementation-plan.md",
+  "base_sha": "4d11a3057f4c9e85e918596f94e8b54ae52b2775",
+  "implementation_commit_sha": "7e4f899f0d1d6f5301acf5e82e033f51265b88e7",
+  "branch": "delegate-task-phase-2-profile-scope",
+  "worktree": "/home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-2",
+  "changed_files": [
+    "agent/profile_runtime_scope.py",
+    "docs/evidence/delegate-task/phase-2/audit.md",
+    "docs/evidence/delegate-task/phase-2/manifest.json",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-collection-final.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-collection.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-deferred-red-final.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-deferred-red.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-owned-green-execution-scope.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-owned-green-final.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-owned-green.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-scope-regression-final.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-scope-regression.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-collection-final.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-deferred-final.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-owned-final.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-post-commit-collection.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-post-commit-owned.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-post-commit-scope.txt",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-scope-final.txt",
+    "docs/evidence/delegate-task/phase-2/results.md",
+    "docs/evidence/delegate-task/phase-2/manifest.json",
+    "docs/evidence/delegate-task/phase-2/audit.md",
+    "gateway/run.py",
+    "tests/tools/test_delegate_profile_runtime_scope.py",
+    "tools/delegate_tool.py",
+    "tools/delegate_tool_config.py"
+  ],
+  "production_source_changes": [
+    "agent/profile_runtime_scope.py",
+    "gateway/run.py",
+    "tools/delegate_tool.py",
+    "tools/delegate_tool_config.py"
+  ],
+  "test_changes": [
+    "tests/tools/test_delegate_profile_runtime_scope.py"
+  ],
+  "evidence_hashes": {
+    "agent/profile_runtime_scope.py": "6b84dd14c0b8dce010fb880ba0186f08ad46145fc10275f50d3c2dc69cdddad5",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-collection-final.txt": "6720d88de91f56a3e1cd50a2c2795ef41615b129bde275bf884a0b20c3c4c41b",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-collection.txt": "1e312d105c04de098d8a10b6fcf0c0c95414c837eed9039d466498302adc0783",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-deferred-red-final.txt": "f2eb2534d3decbe52b1c8d5520ae46c32d0740c09e4b88280863807bdfd9ca40",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-deferred-red.txt": "ccb8927ea1887b4e91687af3610783db6230481c9293746bcaa770ac6f8f292a",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-owned-green-execution-scope.txt": "3d3ec2e30db0276327b09e836aac8c44739956c2618a44f10dda03e924cd32c8",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-owned-green-final.txt": "8d1e532b7433dcade1010f89be0cc0808e5e368a6c31cd974ef115b3cb0c8dc4",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-owned-green.txt": "5e6b65d4fd14774d6a805a07969e0cb6d6ad6a9593c7f584553d9920a181705c",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-scope-regression-final.txt": "efdd5b6ad9a921fcf064ab00a6ec4ab05b11de5b69adffdeba17bcfe1385897e",
+    "docs/evidence/delegate-task/phase-2/raw/phase-2-scope-regression.txt": "5639faeefbb6cacfd587dbff010198071ae61b72446e7c4e1cf4f7f89a87c10c",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-collection-final.txt": "d4e3a71a4b3e3cba19f367a3a554c5499186fb389a8834de8b45576f1febb646",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-deferred-final.txt": "1a15e578a3853ad404de8cc4ef9a09e6dfe5f7e9a46afc33ae8c9e203f77cde2",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-owned-final.txt": "ceb8f90991b9765a108f9460e9b6f3d5f1b04d86293bc9e326f699f3c0390357",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-post-commit-collection.txt": "87fd4fb708f88cdc59a74a9e67806ec6d86ba87f460802aab2087697db58b4bd",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-post-commit-owned.txt": "3cab7f6e7e7b3e4fe0ab47ce7eea082606397ac5d3ed674ae4365ac792eba08b",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-post-commit-scope.txt": "661ef163e63e148258b1883980ecbc87481f141cb5d6e3069e65fb0a2a280645",
+    "docs/evidence/delegate-task/phase-2/raw/phase2-scope-final.txt": "137366a4d64d3bb88d465e066057153808a34511378a1a76b6ff75cf8e8414e5",
+    "docs/evidence/delegate-task/phase-2/audit.md": "fd6b102f1dc28fa4c551917710f22d5ca7ad11792ddf6f2e20f2a84ea09a4c71",
+    "docs/evidence/delegate-task/phase-2/results.md": "8bba43aabf30fdf851e5206ef3b9cb7abab98d07941cbf98e84d9910ee2d24d2",
+    "gateway/run.py": "2635f3c735db101c5ce2c432c518e9c667fb5735982364041835aebd80d6768a",
+    "tests/tools/test_delegate_profile_runtime_scope.py": "85ccd92b7614a3e5640c0c93a42acef57d92d838550cd8f7c6d4e8dceb697cf2",
+    "tools/delegate_tool.py": "b5941d3ec886712c5819eed33ac1f037fb0159c154f7646244f98ad9948b01fb",
+    "tools/delegate_tool_config.py": "da5d90bfd7c7470e7cf1607bca36972149de73cf51ab13ca33be40c0b1783b1b"
+  },
+  "test_results": {
+    "owned_phase2": "14 passed, 1 deselected",
+    "scope_regression": "15 passed, 1 warning",
+    "collection": "29 collected",
+    "deferred": "10 assertion-level failures, 13 passed"
+  },
+  "deferred_contracts": [
+    "per-model OpenRouter routing",
+    "completion units/grouping",
+    "profile fallback chain"
+  ],
+  "out_of_scope": [
+    "merge",
+    "push",
+    "restart",
+    "activation",
+    "deployment",
+    "Phase 3 provider overlay",
+    "Phase 5 completion-unit implementation"
+  ]
+}

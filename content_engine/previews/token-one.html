@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preview: The Token-Efficiency Frontier: A Framework for PMs</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+@font-face {
+  font-family: 'Inter';
+  src: local('Inter'), local('Segoe UI'), local('system-ui');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'VT323';
+  src: local('VT323'), local('Courier New');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: local('JetBrains Mono'), local('Consolas'), local('monospace');
+  font-display: swap;
+}
+
+:root {
+  --bg: #1a1426;
+  --bg-elev: #251a3a;
+  --bg-card: #2d1f47;
+  --bg-card-2: #3a2855;
+  --rule: #3a1d4a;
+  --rule-soft: #2a1538;
+  --fg: #ffffff;
+  --fg-soft: #d4cee8;
+  --fg-mute: #968aa8;
+  --neon-magenta: #ff2bd6;
+  --neon-cyan: #00f0ff;
+  --neon-yellow: #fff02e;
+  --neon-purple: #a855f7;
+  --neon-green: #5ffb8c;
+  --neon-red: #ff3a5c;
+  --neon-orange: #ff8a3d;
+  --max-content: 720px;
+  --max-read: 680px;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Inter', system-ui, sans-serif;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Scanline overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.06) 2px,
+    rgba(0,0,0,0.06) 4px
+  );
+}
+
+.preview-banner {
+  background: linear-gradient(90deg, var(--neon-magenta), var(--neon-cyan));
+  padding: 8px 16px;
+  text-align: center;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: #000;
+  position: sticky;
+  top: 0;
+  z-index: 10000;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.preview-banner span {
+  background: #000;
+  color: var(--neon-yellow);
+  padding: 1px 8px;
+  margin-left: 8px;
+  font-size: 11px;
+}
+
+.article-container {
+  max-width: var(--max-content);
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+
+/* Header / Hero */
+.article-header {
+  margin-bottom: 48px;
+  padding-bottom: 32px;
+  border-bottom: 1px solid var(--rule);
+  position: relative;
+}
+.article-header::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 60px;
+  height: 3px;
+  background: var(--neon-magenta);
+  box-shadow: 0 0 8px var(--neon-magenta);
+}
+
+.article-stream {
+  display: inline-block;
+  font-family: 'VT323', monospace;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: var(--neon-cyan);
+  margin-bottom: 12px;
+  padding: 2px 10px;
+  border: 1px solid var(--neon-cyan);
+  animation: pixel-blink 2.4s steps(1) infinite;
+}
+.article-stream.ai { color: var(--neon-magenta); border-color: var(--neon-magenta); }
+.article-stream.pm { color: var(--neon-yellow); border-color: var(--neon-yellow); }
+.article-stream.builder { color: var(--neon-green); border-color: var(--neon-green); }
+
+.article-title {
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.5px;
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, var(--fg), var(--neon-magenta));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.article-meta {
+  font-size: 14px;
+  color: var(--fg-mute);
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.article-meta .tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--rule);
+  color: var(--fg-soft);
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.article-meta .date {
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  color: var(--fg-mute);
+}
+
+/* Hero image */
+.hero-image {
+  width: 100%;
+  margin-bottom: 40px;
+  border: 1px solid var(--rule);
+  position: relative;
+}
+.hero-image img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.hero-image .hero-label {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(0,0,0,0.8);
+  color: var(--neon-cyan);
+  font-family: 'VT323', monospace;
+  font-size: 11px;
+  padding: 2px 8px;
+  letter-spacing: 1px;
+  border: 1px solid var(--neon-cyan);
+}
+
+/* Body content */
+.article-body {
+  max-width: var(--max-read);
+  font-size: 16px;
+  color: var(--fg-soft);
+}
+
+.article-body h2 {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 40px 0 16px;
+  color: var(--fg);
+  padding-left: 16px;
+  border-left: 3px solid var(--neon-magenta);
+  position: relative;
+}
+.article-body h2::before {
+  content: attr(data-number);
+  position: absolute;
+  left: -40px;
+  top: 2px;
+  font-family: 'VT323', monospace;
+  font-size: 18px;
+  color: var(--fg-mute);
+  opacity: 0.6;
+}
+
+.article-body h3 {
+  font-size: 19px;
+  font-weight: 600;
+  margin: 32px 0 12px;
+  color: var(--fg);
+}
+
+.article-body p {
+  margin-bottom: 20px;
+}
+
+.article-body a {
+  color: var(--neon-cyan);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s;
+}
+.article-body a:hover {
+  border-bottom-color: var(--neon-cyan);
+}
+
+.article-body strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.article-body em {
+  color: var(--neon-purple);
+}
+
+.article-body code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  background: var(--bg-elev);
+  padding: 2px 6px;
+  border: 1px solid var(--rule);
+  color: var(--neon-green);
+}
+
+.article-body pre {
+  background: var(--bg-elev);
+  border: 1px solid var(--rule);
+  padding: 20px;
+  margin: 24px 0;
+  overflow-x: auto;
+  position: relative;
+}
+.article-body pre::before {
+  content: '▌ CODE';
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  font-family: 'VT323', monospace;
+  font-size: 11px;
+  color: var(--fg-mute);
+  letter-spacing: 2px;
+}
+.article-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg-soft);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.article-body blockquote {
+  border-left: 3px solid var(--neon-purple);
+  padding: 16px 20px;
+  margin: 24px 0;
+  background: var(--bg-elev);
+  color: var(--fg-soft);
+  font-style: italic;
+  position: relative;
+}
+.article-body blockquote::before {
+  content: '"';
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  font-size: 32px;
+  color: var(--neon-purple);
+  font-family: 'VT323', monospace;
+  opacity: 0.5;
+}
+
+.article-body ul, .article-body ol {
+  margin: 16px 0;
+  padding-left: 24px;
+}
+.article-body li {
+  margin-bottom: 8px;
+}
+.article-body ul li::marker {
+  color: var(--neon-magenta);
+}
+.article-body ol li::marker {
+  color: var(--neon-cyan);
+  font-family: 'VT323', monospace;
+}
+
+.article-body hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 40px 0;
+  position: relative;
+}
+.article-body hr::after {
+  content: '◆ ◆ ◆';
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg);
+  padding: 0 12px;
+  color: var(--fg-mute);
+  font-size: 12px;
+  letter-spacing: 8px;
+}
+
+.article-body img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--rule);
+  margin: 24px 0;
+}
+
+/* Section image container */
+.section-image {
+  margin: 32px 0;
+  border: 1px solid var(--rule-soft);
+  position: relative;
+}
+.section-image img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.section-image .section-label {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.8);
+  color: var(--neon-yellow);
+  font-family: 'VT323', monospace;
+  font-size: 10px;
+  padding: 1px 6px;
+  letter-spacing: 1px;
+}
+
+/* Approval action bar */
+.approval-bar {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--rule);
+  padding: 12px 24px;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  z-index: 9998;
+  flex-wrap: wrap;
+}
+.approval-bar .slug {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--fg-mute);
+  margin-right: auto;
+}
+.approval-bar .approved-badge {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--neon-green);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  padding: 4px 16px;
+  border: 1px solid var(--neon-green);
+}
+.approval-bar .rejected-badge {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--neon-red);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  padding: 4px 16px;
+  border: 1px solid var(--neon-red);
+}
+.approval-bar .action-btn {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  padding: 8px 24px;
+  border: 1px solid var(--neon-cyan);
+  background: transparent;
+  color: var(--neon-cyan);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.approval-bar .action-btn.approve {
+  border-color: var(--neon-green);
+  color: var(--neon-green);
+}
+.approval-bar .action-btn.approve:hover {
+  background: var(--neon-green);
+  color: #000;
+}
+.approval-bar .action-btn.reject {
+  border-color: var(--neon-red);
+  color: var(--neon-red);
+}
+.approval-bar .action-btn.reject:hover {
+  background: var(--neon-red);
+  color: #000;
+}
+.approval-bar .action-btn.amend {
+  border-color: var(--neon-yellow);
+  color: var(--neon-yellow);
+}
+.approval-bar .action-btn.amend:hover {
+  background: var(--neon-yellow);
+  color: #000;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .article-title { font-size: 26px; }
+  .article-container { padding: 24px 16px 60px; }
+  .approval-bar { flex-direction: column; }
+  .approval-bar .slug { margin-right: 0; }
+}
+
+/* Animations */
+@keyframes pixel-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.4; }
+}
+@keyframes glitch {
+  0%, 90%, 100% { transform: translate(0, 0); }
+  92% { transform: translate(-2px, 0); }
+  94% { transform: translate(2px, 0); }
+  96% { transform: translate(-1px, 1px); }
+}
+
+/* Framework / Mermaid fallback */
+.mermaid-fallback {
+  background: var(--bg-card-2);
+  border: 1px solid var(--neon-purple);
+  padding: 24px;
+  margin: 24px 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--neon-cyan);
+}
+.mermaid-fallback::before {
+  content: '【FRAMEWORK】';
+  display: block;
+  font-family: 'VT323', monospace;
+  font-size: 12px;
+  color: var(--neon-purple);
+  letter-spacing: 3px;
+  margin-bottom: 12px;
+}
+</style>
+</head>
+<body>
+
+<div class="preview-banner">
+  ⚡ PREVIEW — not live · The Token-Efficiency Frontier: A Framework for PMs
+  <span>token-one</span>
+</div>
+
+<div class="article-container">
+
+  <div class="article-header">
+    <div class="article-stream pm">pm</div>
+    <h1 class="article-title">The Token-Efficiency Frontier: A Framework for PMs</h1>
+    <p style="color:var(--fg-mute);font-size:15px;margin-bottom:16px;">Preview test</p>
+    <div class="article-meta">
+      <span class="date">◆ 2026-06-30</span>
+      <span class="tag">tier: pm</span>
+      <span class="tag">test</span>
+    </div>
+  </div>
+
+  
+
+  <div class="article-body">
+    <h1>The Token-Efficiency Frontier: A Framework for PMs</h1>
+<p>Body.</p>
+
+  </div>
+
+  
+
+</div>
+
+<div class="approval-bar">
+  <span class="slug">token-one</span>
+  <span class="approved-badge" style="border-color:var(--neon-orange);color:var(--neon-orange);">⏳ PENDING REVIEW</span>
+</div>
+
+</body>
+</html>

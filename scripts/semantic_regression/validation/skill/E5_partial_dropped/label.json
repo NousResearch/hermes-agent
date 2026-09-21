@@ -1,0 +1,4 @@
+{
+  "label": "fail",
+  "note": "partial failure silently dropped, no explicit report"
+}

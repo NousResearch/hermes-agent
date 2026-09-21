@@ -1,0 +1,11 @@
+{
+  "name": "kensei-brand",
+  "label": "KENSEI Brand",
+  "description": "Sidebar wordmark + per-theme logo crest. Slot-only; no main page. Theme customCSS hides the original Hermes wordmark.",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kensei-brand",
+    "hidden": true
+  },
+  "slots": ["header-left"]
+}

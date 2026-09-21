@@ -23,11 +23,13 @@ export const isActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean
  *   - Ctrl+K (kill-to-end) and Ctrl+W (delete-word-back) are standard readline
  *     bindings that users expect to work regardless of platform, even though
  *     no terminal rewrites Cmd into them.
+ *   - Ctrl+D is the terminal EOF convention (exit on an empty line); Cmd+D is
+ *     taken by the terminal itself in Ghostty (split pane), so it is no substitute.
  */
 export const isMacActionFallback = (
   key: { ctrl: boolean; meta: boolean; super?: boolean },
   ch: string,
-  target: 'a' | 'e' | 'u' | 'k' | 'w'
+  target: 'a' | 'd' | 'e' | 'u' | 'k' | 'w'
 ): boolean => isMac && key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === target
 
 /** Match action-modifier + a single character (case-insensitive). */
@@ -141,8 +143,8 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
 
 /** ``useInputHandlers()`` intercepts these unconditionally before the
  * voice check runs, so a binding like ``ctrl+c`` (interrupt),
- * ``ctrl+d`` (quit), or ``ctrl+l`` (clear screen) would be advertised
- * in /voice status but never fire push-to-talk. Reject at parse time
+ * ``ctrl+d`` (quit), ``ctrl+l`` (clear screen), or ``ctrl+t`` (todo tray)
+ * would be advertised in /voice status but never fire push-to-talk. Reject at parse time
  * so the user gets the documented Ctrl+B instead of a dead shortcut
  * (Copilot round-4 review on #19835).
  *
@@ -150,7 +152,7 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
  * queue-edit (``queueEditIdx !== null``), so the voice binding works
  * for most of the session and matches CLI parity for ``ctrl+<letter>``
  * bindings (Copilot round-8 review on #19835). */
-const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l'])
+const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l', 't'])
 
 /** On macOS the action-modifier intercepts these editor chords via
  * ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:

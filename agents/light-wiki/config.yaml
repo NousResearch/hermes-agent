@@ -1,0 +1,35 @@
+provider: ollama-cloud
+model: gemma4:31b
+base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+- provider: nous
+  model: qwen/qwen3.6-plus
+  base_url: https://inference-api.nousresearch.com/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b
+  base_url: https://openrouter.ai/api/v1
+toolsets:
+- hermes-cli
+- kanban
+- file
+- terminal
+agent:
+  max_turns: 30
+  reasoning_effort: minimal
+skills:
+  always_skills:
+  - llm-wiki
+  - kanban-worker
+  - avoid-ai-writing
+  - gbrain-knowledge
+  - obsidian
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - avoid-ai-writing
+  - kanban-worker
+  - llm-wiki
+  enforcement_mode: enforce

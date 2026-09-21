@@ -133,10 +133,15 @@ class TestToolSchemaSurface:
             "properties"
         ]["tasks"]["items"]["required"]
 
-    def test_output_schema_on_top_level_goal_form(self):
+    def test_output_schema_advertised_for_single_and_batch_forms(self):
+        """KENSEI keeps the single-goal route model-facing alongside batch.
+
+        Both forms must therefore advertise the same optional output contract.
+        """
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        assert "output_schema" in props
         assert props["output_schema"]["type"] == "object"
+        task_props = props["tasks"]["items"]["properties"]
+        assert task_props["output_schema"]["type"] == "object"
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +263,64 @@ class TestRunSingleChildSchemaValidation:
         assert entry["status"] == "failed"
         assert len(child.calls) == 1
         assert entry.get("schema_valid") is False
+
+    def test_schema_failure_returns_raw_text_with_schema_valid_false(self):
+        """A final answer that still violates the contract after the bounded retry is NOT discarded: the
+        child did the work (audits of 400-4100 s were written off over a stray fence or one missing
+        field). The parent gets the raw text as ``summary`` with status "completed", ``schema_valid``
+        false, ``schema_errors`` populated and a ``schema_note`` saying the text is unvalidated."""
+        prose = 'Findings:\n```json\n{"town": "Oslo"}\n```\nlet me know.'
+        child = _StubChild([prose, prose])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert entry["summary"] == prose
+        assert entry["schema_valid"] is False
+        assert entry["schema_errors"] and entry["schema_retries"] == 1
+        assert "UNVALIDATED" in entry["schema_note"]
+        assert "error" not in entry
+        assert len(child.calls) == 2  # exactly one bounded retry
+
+    def test_prose_wrapped_array_answer_validates(self):
+        """A fenced JSON array with prose around it is the answer, not a violation: the extractor
+        used to slice it to its first..last object and reject every array-shaped result."""
+        text = 'Verdicts below.\n```json\n[{"n": 1}, {"n": 2}]\n```\n'
+        child = _StubChild([text])
+        child._delegate_output_schema = {"type": "array", "items": {"type": "object"}}
+        entry = _run(child)
+        assert entry["schema_valid"] is True and len(child.calls) == 1
+
+    def test_schema_valid_entry_still_completed(self):
+        """Guard: schema_valid=True keeps status="completed" untouched."""
+        child = _StubChild(['{"city": "Berlin"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert "error" not in entry
+
+    def test_retry_turn_runs_in_delegated_child_context(self, monkeypatch):
+        """The retry is a second run_conversation on the child, issued from the parent's
+        thread where HERMES_KANBAN_TASK is set. Unwrapped it carries the worker's identity,
+        so the kanban stop guard nudges the child toward a board tool it does not have
+        (#109735 / #87671)."""
+        from agent.delegation_context import is_delegated_child_context
+        from tools.delegate_tool_child_run import _validate_child_output_schema
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+        seen: list = []
+
+        class _Child(_StubChild):
+            session_id = "sess-child"
+
+            def run_conversation(self, user_message, task_id=None, **_kwargs):
+                seen.append(is_delegated_child_context())
+                return super().run_conversation(user_message, task_id, **_kwargs)
+
+        child = _Child(['{"city": "Berlin"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, "child-0", None)
+        assert seen == [True]
+        assert is_delegated_child_context() is False
 
 
 # ---------------------------------------------------------------------------

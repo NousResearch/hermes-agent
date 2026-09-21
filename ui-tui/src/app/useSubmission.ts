@@ -1,8 +1,9 @@
+import { looksLikeSlashCommand, parseSlashCommand } from '@hermes/shared/slash'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens } from '../domain/attachments.js'
-import { completionToApplyOnSubmit, looksLikeSlashCommand, parseSlashCommand } from '../domain/slash.js'
+import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
@@ -10,7 +11,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
+import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken, SubmissionOptions } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -38,6 +39,24 @@ export const queueItemFromSlash = (displayCommand: string, expandedCommand: stri
 export const prepareSubmission = (display: string, tokens: ComposerToken[]) => ({
   display,
   text: expandTokens(tokens)(display)
+})
+
+/**
+ * Split a slash submission into the two things it has to be at once.
+ *
+ * A slash command's argument is ordinary user text, so a collapsed paste in it
+ * must resolve BEFORE the command runs — otherwise `/pr-triage [[ … [412 lines]
+ * … ]]` hands the skill the label and the agent faithfully reports that the
+ * paste is truncated. The transcript still shows the compact form, because a
+ * 412-line paste inlined into the scrollback is exactly what collapsing it was
+ * for.
+ *
+ * Image tokens stay as labels: the gateway already holds those files in
+ * `attached_images` and splices them in at submit.
+ */
+export const prepareSlashSubmission = (display: string, tokens: ComposerToken[]) => ({
+  command: expandPasteTokens(tokens)(display),
+  display
 })
 
 export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
@@ -79,7 +98,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
   }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (text: string, showUserMessage = true, displayText?: string, expandOverride?: (value: string) => string) => {
+    (
+      text: string,
+      showUserMessage = true,
+      displayText?: string,
+      expandOverride?: (value: string) => string,
+      submitOpts: SubmissionOptions = {}
+    ) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
       const expand = expandOverride ?? expandTokens(composerRefs.tokensRef.current)
@@ -95,7 +120,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
           sys
         },
         showUserMessage,
-        displayText
+        displayText,
+        submitOpts
       )
     },
     [appendMessage, composerActions, composerRefs, gw, setLastUserMsg, sys]
@@ -225,7 +251,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
   )
 
   const dispatchSubmission = useCallback(
-    (full: string) => {
+    (full: string, options?: SubmissionOptions) => {
       if (!full.trim()) {
         return
       }
@@ -238,22 +264,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const submissionTokens = [...composerRefs.tokensRef.current]
       const submission = prepareSubmission(full, submissionTokens)
       const toHistory = submission.text
-      const queuePayload = expandPasteTokens(submissionTokens)(full)
 
       if (looksLikeSlashCommand(full)) {
-        appendMessage({ kind: 'slash', role: 'system', text: full })
+        const slash = prepareSlashSubmission(full, submissionTokens)
+
+        appendMessage({ kind: 'slash', role: 'system', text: slash.display })
         composerActions.pushHistory(toHistory)
 
         const parsed = parseSlashCommand(full)
 
         const queued =
-          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(full, queuePayload) : undefined
+          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
 
         if (queued) {
           composerActions.enqueue(queued.text, queued.display)
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
-          slashRef.current(full)
+          slashRef.current(slash.command)
         }
 
         composerActions.clearIn()
@@ -312,11 +339,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
         patchUiState({ busy: true })
 
         return interpolate(full, text =>
-          send(prepareSubmission(text, submissionTokens).text, true, text, value => value)
+          send(
+            prepareSubmission(text, submissionTokens).text,
+            options?.showUserMessage ?? true,
+            options?.displayText ?? text,
+            value => value,
+            options
+          )
         )
       }
 
-      send(submission.text, true, submission.display, value => value)
+      send(
+        submission.text,
+        options?.showUserMessage ?? true,
+        options?.displayText ?? submission.display,
+        value => value,
+        options
+      )
     },
     [
       appendMessage,
@@ -333,7 +372,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
   )
 
   const submit = useCallback(
-    (value: string) => {
+    (value: string, options?: SubmissionOptions) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
         const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
@@ -377,14 +416,29 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return composerActions.setInput('')
       }
 
-      dispatchSubmission([...composerState.inputBuf, value].join('\n'))
+      dispatchSubmission([...composerState.inputBuf, value].join('\n'), options)
     },
     [appendMessage, composerActions, composerRefs, composerState, dispatchSubmission, gw, sys]
   )
 
   submitRef.current = submit
 
-  return { dispatchSubmission, send, sendQueued, submit }
+  // Literal submission: route text straight to the prompt pipeline, skipping
+  // slash-command routing, `!` shell dispatch, [[token]] expansion, and
+  // $(...) interpolation. Startup `-q` queries use this — they're arbitrary
+  // launcher/script text, and one-shot mode already treats them literally.
+  const submitLiteral = useCallback(
+    (value: string) => {
+      if (!value.trim()) {
+        return
+      }
+
+      send(value, true, value, v => v, { skipDetectDrop: true })
+    },
+    [send]
+  )
+
+  return { dispatchSubmission, send, sendQueued, submit, submitLiteral }
 }
 
 export interface UseSubmissionOptions {
@@ -395,6 +449,6 @@ export interface UseSubmissionOptions {
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
   slashRef: MutableRefObject<(cmd: string) => boolean>
-  submitRef: MutableRefObject<(value: string) => void>
+  submitRef: MutableRefObject<(value: string, options?: SubmissionOptions) => void>
   sys: (text: string) => void
 }

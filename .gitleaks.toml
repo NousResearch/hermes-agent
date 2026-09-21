@@ -1,0 +1,57 @@
+# Gitleaks config for Hermes Agent
+# Prevents accidental credential commits
+
+title = "Hermes Agent Secret Scanner"
+
+[extend]
+# Use the default gitleaks rules as a base
+useDefault = true
+
+# =============================================================================
+# Custom rules for Hermes-specific patterns
+# =============================================================================
+
+[[rules]]
+id = "hermes-discord-bot-token"
+description = "Discord Bot Token hardcoded in source"
+regex = '''(?i)(?:discord|bot)[\s_\.\-]*(?:token|key|secret)[\s:=]*["']?(M|N)[T][A-Za-z0-9_\-\.]{20,}["']?'''
+tags = ["discord", "credential", "hermes"]
+
+[[rules]]
+id = "hermes-telegram-bot-token"
+description = "Telegram Bot Token hardcoded in source"
+regex = '''(?i)(?:telegram|tg)[\s_\.\-]*(?:bot[\s_\.\-]*)?(?:token|key|secret)[\s:=]*["']?\d{8,10}:[\w\-_]{20,}["']?'''
+tags = ["telegram", "credential", "hermes"]
+
+[[rules]]
+id = "hermes-slack-bot-token"
+description = "Slack Bot Token hardcoded in source"
+regex = '''(?i)(?:slack)[\s_\.\-]*(?:bot[\s_\.\-]*)?(?:token|key|secret)[\s:=]*["']?xox[bprsa]-[\w\-]{10,}["']?'''
+tags = ["slack", "credential", "hermes"]
+
+[[rules]]
+id = "hermes-generic-bot-token"
+description = "Generic hardcoded BOT_TOKEN assignment in scripts"
+regex = '''BOT_TOKEN\s*=\s*["'][A-Za-z0-9_\-\.]{20,}["']'''
+tags = ["credential", "hermes"]
+
+# =============================================================================
+# Path allowlists — known false positive locations
+# =============================================================================
+
+[allowlist]
+description = "Known safe paths and test fixtures"
+paths = [
+    # Test fixtures that use fake tokens
+    '''(?i)test_.*\.py''',
+    '''(?i)conftest\.py''',
+    # Migration scripts that reference env var names (not values)
+    '''(?i)openclaw_to_hermes\.py''',
+    # Install scripts that reference env var names
+    '''(?i)install\.sh''',
+    '''(?i)install\.ps1''',
+    # .env.example — template, not real secrets
+    '''\.env\.example''',
+    # Docs that reference env var names
+    '''(?i)\.md$''',
+]

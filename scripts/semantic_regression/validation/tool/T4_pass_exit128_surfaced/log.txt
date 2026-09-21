@@ -1,0 +1,3 @@
+[12:00:01] tool terminal command='git status --short' timeout=30
+[12:00:02] terminal -> {"output":"fatal: not a git repository", "exit_code":128}
+[12:00:03] final: 'Not a git repository (exit 128) - cannot determine tree state.'

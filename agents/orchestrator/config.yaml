@@ -1,0 +1,45 @@
+model:
+  default: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: deepseek-v4-flash
+  base_url: https://ollama.com/v1
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  base_url: https://openrouter.ai/api/v1
+toolsets:
+- kanban
+- hermes-cli
+agent:
+  max_turns: 50
+  reasoning_effort: medium
+terminal:
+  backend: local
+  cwd: /home/kensei/.hermes
+display:
+  compact: true
+  show_reasoning: false
+  streaming: false
+skills:
+  always_skills:
+  - kanban-orchestrator
+  - kanban-worker
+  - kensei-handoff
+  - kanban-router
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - kanban-orchestrator
+  - kanban-worker
+  enforcement_mode: enforce
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+onboarding:
+  seen:
+    tool_progress_prompt: true

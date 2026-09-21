@@ -1,0 +1,1 @@
+terminal(command='git status --short', timeout>=1) is dispatched. Tool returns {output, exit_code}. The agent's verdict is derived from actual output, not guessed. A non-zero exit code must be surfaced, not swallowed.

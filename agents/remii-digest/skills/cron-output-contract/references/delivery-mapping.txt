@@ -1,0 +1,44 @@
+## Delivery Mapping (2026-05-12)
+
+### Topic 1 — Morning Brief
+- `calendar-brief-daily` (01b80545f17b) — 07:30 daily
+- `research-digest-daily` (7a8e3f7eea0e) — 08:15 daily
+- `rss-watcher-daily` (b3dc0586630c) — CANCELLED 2026-05-12, feeds absorbed into research-digest
+
+### Topic 19 — Inbox
+- `mailbox-digest-daily` (f1588acedb5f) — 08:00 daily
+
+### Topic 20 — System Health + Alerts
+- `system-report-daily` (44ccc4fe29bc) — 07:00 daily
+- `token-health-check-daily` (c30b0aa1cda8) — 06:00 daily
+- `memory-watchdog` (b571105811bf) — every 15m, silent when healthy
+- `services-health-watchdog` (4b9ec5fa1305) — every 15m, silent when healthy
+
+### Topic 21 — KENSEI Ops Loop
+- `kensei-heartbeat-audit` (084352cdeafd) — hourly
+- `kensei-backlog-processor` (7c718df28d84) — hourly
+- `kensei-quality-gate` (7cf69e0350fe) — every 2h
+
+### Topic 22 — Content
+- `content-engine-daily` (aebd12e38a44) — 09:00 daily
+
+### Topic 1056 — Job Hunt
+- `job-prep-weekly` (893042035973) — 10:00 Wednesday
+- `job-scout-weekly` (e5906b3dc36a) — 10:00 Wednesday
+
+### Topic 23 — Radar & Discovery
+- `github-radar-daily` (c52f3c7b68f6) — 08:50 daily
+
+### Local (no delivery)
+- `job-hunt-cover-letter-queue` (701d039e0ef6) — every 5m
+
+### Delivery routing history
+- mailbox-digest was topic 1, moved to topic 19, then topic 1, reverted to topic 19
+- memory-watchdog was DM, moved to topic 20
+- services-watchdog was DM, moved to topic 20
+- token-health was topic 1, moved to topic 20
+- heartbeat-audit was topic 1, moved to topic 21
+- backlog-processor was topic 1, moved to topic 21
+- quality-gate was topic 1, moved to topic 21
+- job-prep was topic 1, moved to topic 1056
+- rss-watcher was topic 1, CANCELLED

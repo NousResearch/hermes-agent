@@ -1,0 +1,4 @@
+[12:00:01] plugin demo registered hook pre_user_message (order 1)
+[12:00:02] user message received
+[12:00:03] agent received: 'Hello' (no [demo] prefix, hook never fired)
+[12:00:05] log shows plugin 'loaded' but no hook invocation

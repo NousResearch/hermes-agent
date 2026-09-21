@@ -1,0 +1,12 @@
+{
+  "name": "kensei-console",
+  "label": "Console",
+  "description": "Embedded Hermes Workspace UI (forked, chrome stripped). Distinct from native /chat which is a PTY terminal.",
+  "icon": "Terminal",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kensei-console",
+    "position": "end"
+  },
+  "entry": "dist/index.js"
+}

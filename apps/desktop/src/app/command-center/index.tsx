@@ -1,17 +1,18 @@
+import { compactNumber } from '@hermes/shared'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
 import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import type { ActionStatusResponse, AnalyticsResponse, SessionInfo, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { compactNumber } from '@/lib/format'
 import {
   Activity,
   AlertCircle,
@@ -19,6 +20,7 @@ import {
   Bookmark,
   BookmarkFilled,
   Download,
+  LayoutDashboard,
   MessageCircle,
   Trash2,
   Wrench
@@ -29,18 +31,21 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import { $sessions, sessionPinId } from '@/store/session'
+import { confirmSharedGatewayRestart } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
+import { ControlRoomHome } from './control-room-home'
 import { MaintenancePanel } from './maintenance'
 
-export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+export type CommandCenterSection = 'home' | 'maintenance' | 'sessions' | 'system' | 'usage'
 
-const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+export const SECTIONS = ['home', 'sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
@@ -138,11 +143,12 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   // $sessions ticks on every streaming token (title updates, new sessions),
   // but we only need the data on the Sessions tab. Subscribe conditionally so
   // the System/Usage/Maintenance tabs don't re-render on every stream delta.
-  const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
+  const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'home')
   const sessions = useStoreSelector($sessions, s => (section === 'sessions' ? s : EMPTY_SESSIONS))
   const pinnedSessionIds = useStoreSelector($pinnedSessionIds, s => (section === 'sessions' ? s : EMPTY_PINNED))
 
   const [query, setQuery] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<SessionInfo | null>(null)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
@@ -265,6 +271,13 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     async (kind: 'restart' | 'update') => {
       setSystemError('')
 
+      // A profile served by the shared multiplexer restarts every bot on this device: ask first.
+      const shared = kind === 'restart' ? await confirmSharedGatewayRestart() : null
+
+      if (shared === false) {
+        return
+      }
+
       try {
         const started = kind === 'restart' ? await restartGateway() : await updateHermes()
         let nextStatus: ActionStatusResponse | null = null
@@ -279,6 +292,10 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           if (!polled.running) {
             break
           }
+        }
+
+        if (shared && nextStatus && !nextStatus.running && (nextStatus.exit_code ?? 0) === 0) {
+          notify({ kind: 'success', message: cc.sharedGatewayRestarted(shared.length) })
         }
 
         if (!nextStatus) {
@@ -307,13 +324,15 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       SECTIONS.map(value => ({
         active: section === value,
         icon:
-          value === 'sessions'
-            ? MessageCircle
-            : value === 'system'
-              ? Activity
-              : value === 'maintenance'
-                ? Wrench
-                : BarChart3,
+          value === 'home'
+            ? LayoutDashboard
+            : value === 'sessions'
+              ? MessageCircle
+              : value === 'system'
+                ? Activity
+                : value === 'maintenance'
+                  ? Wrench
+                  : BarChart3,
         id: value,
         label: cc.sections[value],
         onSelect: () => setSection(value)
@@ -356,7 +375,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             </div>
           </header>
 
-          {section === 'sessions' ? (
+          {section === 'home' ? (
+            <div className="min-h-0 flex-1">
+              <ControlRoomHome />
+            </div>
+          ) : section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
                 <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
@@ -395,7 +418,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                           </RowIconButton>
                           <RowIconButton
                             className="hover:text-destructive"
-                            onClick={() => void onDeleteSession(session.id)}
+                            onClick={() => setPendingDelete(session)}
                             title={cc.deleteSession}
                           >
                             <Trash2 className="size-3.5" />
@@ -509,6 +532,19 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           )}
         </OverlayMain>
       </OverlaySplitLayout>
+      {pendingDelete && (
+        <ConfirmDialog
+          busyLabel={t.sidebar.row.deleting}
+          confirmLabel={t.common.delete}
+          description={t.sidebar.row.deleteDesc(sessionTitle(pendingDelete))}
+          destructive
+          doneLabel={t.sidebar.row.deleted}
+          onClose={() => setPendingDelete(null)}
+          onConfirm={() => void onDeleteSession(pendingDelete.id)}
+          open
+          title={t.sidebar.row.deleteTitle}
+        />
+      )}
     </OverlayView>
   )
 }

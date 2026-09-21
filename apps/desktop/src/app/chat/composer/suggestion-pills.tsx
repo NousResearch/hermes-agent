@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { composerFloatingPill } from '@/components/chat/composer-dock'
 import { Codicon } from '@/components/ui/codicon'
@@ -32,13 +32,70 @@ import { $composerSuggestionsBySession, markSuggestionInvoked, suggestionKey } f
 
 type PillPhase = 'done' | 'idle' | 'working'
 
+/**
+ * Phase belongs to the pill the user is looking at, so it lives and dies with
+ * that pill — the bus owns whether a suggestion exists, this owns only how far
+ * along it is. Remounting per session enforces the half of that the strip
+ * can't see: one composer stays mounted across a session switch, and phase
+ * keys are `provider:id`, so without this "Added GitHub" in one chat renders
+ * the next chat's genuine offer as already-done and inert.
+ */
 export function SuggestionPills({ sessionId }: { sessionId: null | string }) {
+  return <SessionSuggestionPills key={sessionId ?? ''} sessionId={sessionId} />
+}
+
+function SessionSuggestionPills({ sessionId }: { sessionId: null | string }) {
   const suggestions = useSessionSlice($composerSuggestionsBySession, sessionId)
   const [phases, setPhases] = useState<Record<string, PillPhase>>({})
   // Cancel flags outlive renders but never trigger them (poll-boundary abort).
   const [cancels] = useState(() => new Map<string, boolean>())
 
   const setPhase = (key: string, phase: PillPhase) => setPhases(current => ({ ...current, [key]: phase }))
+
+  // A pill that leaves the strip takes its phase with it, and cancels whatever
+  // it had in flight. Both halves matter:
+  //
+  //  - Phase, because keys repeat. A provider withdraws and re-offers the same
+  //    `provider:id` constantly (the draft loses and regains the trigger word,
+  //    a connect fails and the word is still typed), and a `done` left on file
+  //    paints the fresh offer as "Added GitHub" — a pill that says it already
+  //    worked and ignores clicks, since only `idle` invokes.
+  //  - Cancellation, because a withdrawn pill is the user's ONLY cancel
+  //    affordance. Clicking a working pill sets this flag; once the pill is
+  //    gone nothing can, so an OAuth flow the user walked away from would poll
+  //    forever, hold the server's in-progress slot against a retry, and either
+  //    land a server they never confirmed or roll one back with no UI to say
+  //    so. Withdrawal aborts it at the next poll boundary and lets the
+  //    provider roll back.
+  //
+  // `suggestions` is reference-stable while the offered set is unchanged (the
+  // bus preserves identity on no-op writes), so this runs on real churn only.
+  useEffect(() => {
+    const live = new Set(suggestions.map(suggestionKey))
+
+    for (const key of cancels.keys()) {
+      if (!live.has(key)) {
+        cancels.set(key, true)
+      }
+    }
+
+    setPhases(current => {
+      const kept = Object.entries(current).filter(([key]) => live.has(key))
+
+      return kept.length === Object.keys(current).length ? current : Object.fromEntries(kept)
+    })
+  }, [cancels, suggestions])
+
+  // Unmount withdraws everything at once (composer closing, session switch
+  // remounting this subtree) — same rule, same reason.
+  useEffect(
+    () => () => {
+      for (const key of cancels.keys()) {
+        cancels.set(key, true)
+      }
+    },
+    [cancels]
+  )
 
   return suggestions.map(suggestion => {
     const key = suggestionKey(suggestion)
@@ -66,6 +123,8 @@ export function SuggestionPills({ sessionId }: { sessionId: null | string }) {
         // Provider owns error surfacing (and swallows its own cancels);
         // the pill just returns to idle so it can be tried again.
         setPhase(key, 'idle')
+      } finally {
+        cancels.delete(key)
       }
     }
 

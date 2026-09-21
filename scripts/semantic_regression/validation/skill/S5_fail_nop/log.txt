@@ -1,0 +1,3 @@
+[12:00:01] tool skill_manage create name=scratchskill content=<SKILL.md>
+[12:00:02] tool skill_manage patch old_string=does-not-exist -> returned success (silent no-op, no error)
+[12:00:03] patch did nothing but reported applied

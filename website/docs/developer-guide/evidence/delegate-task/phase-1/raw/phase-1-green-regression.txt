@@ -1,0 +1,9 @@
+..s.........................                                             [100%]
+=============================== warnings summary ===============================
+tests/tools/test_async_delegation.py::test_gateway_formatter_renders_async_block
+  /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-1/agent/account_usage.py:11: HermesPluginCompatWarning: hermes plugin compat: `agent.anthropic_adapter.resolve_anthropic_token` moved to `agent.anthropic_credentials.resolve_anthropic_token`. The old path is kept only for external plugins and is removed on 2026-09-14; update your import.
+    from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+27 passed, 1 skipped, 1 warning in 9.11s
+green_regression_exit=0

@@ -1,0 +1,20 @@
+[Unit]
+Description=Turbohaul Aux — Qwopus 27B (Sirvir fast)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=kensei
+Environment=CUDA_VISIBLE_DEVICES=1
+ExecStart=/home/sahil/ai/turbohaul-manager/vendor/turboquant-bin/llama-server \
+    -m /home/sahil/ai/turbohaul-manager/models/Qwopus3.6-27B-v2-MTP-Q4_K_M.gguf \
+    --host 127.0.0.1 --port 8082 \
+    -ngl 99 --ctx-size 65536 \
+    --threads 8 --threads-batch 8
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

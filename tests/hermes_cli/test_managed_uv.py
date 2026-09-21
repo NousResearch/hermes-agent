@@ -11,15 +11,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hermes_cli.managed_uv import _CandidateStageError
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Host-native managed-uv binary name: managed_uv_path() installs `uv` on
+# POSIX and `uv.exe` on Windows. Fixtures must build what the real host
+# resolves — no platform fake.
+_UV_BINARY_NAME = "uv.exe" if sys.platform == "win32" else "uv"
+
+
 def _make_executable(path: Path) -> None:
     """Create a minimal fake uv binary at *path*."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\necho uv 0.1.2\n")
+    path.write_text("#!/bin/sh\necho uv 0.1.2\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
@@ -83,6 +91,74 @@ class TestManagedUvPath:
             assert managed_uv_path() == tmp_path / "bin" / "uv"
 
 
+class TestMacOSManagedPythonSigning:
+    def test_signs_with_stable_identifier_and_verifies(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "generation" / "bin" / "python3.11"
+        python.parent.mkdir(parents=True)
+        python.touch()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+
+        assert managed_uv._macos_sign_managed_python(python) is True
+        assert calls[0][0] == [
+            "/usr/bin/codesign",
+            "--force",
+            "--deep",
+            "--sign",
+            "-",
+            "--timestamp=none",
+            "--identifier",
+            "com.nousresearch.hermes.managed-python",
+            "--requirements",
+            '=designated => identifier "com.nousresearch.hermes.managed-python"',
+            str(python),
+        ]
+        assert calls[1][0] == [
+            "/usr/bin/codesign",
+            "--verify",
+            "--deep",
+            "--strict",
+            str(python),
+        ]
+
+    def test_is_non_blocking_when_signing_fails(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        python = tmp_path / "python3.11"
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(managed_uv.shutil, "which", lambda name: "/usr/bin/codesign")
+        monkeypatch.setattr(
+            managed_uv.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1, stdout="", stderr="not signable"
+            ),
+        )
+
+        assert managed_uv._macos_sign_managed_python(python) is False
+
+    def test_skips_non_macos(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        monkeypatch.setattr(managed_uv.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(
+            managed_uv.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("codesign must not run on Linux"),
+        )
+
+        assert managed_uv._macos_sign_managed_python(tmp_path / "python") is False
+
+
 # ---------------------------------------------------------------------------
 # resolve_uv
 # ---------------------------------------------------------------------------
@@ -90,21 +166,37 @@ class TestManagedUvPath:
 class TestResolveUv:
 
     def test_existing_executable(self, tmp_path):
-        _make_executable(tmp_path / "bin" / "uv")
+        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        _make_executable(uv)
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
             from hermes_cli.managed_uv import resolve_uv
             result = resolve_uv()
-            assert result == str(tmp_path / "bin" / "uv")
+            assert result == str(uv)
 
     def test_non_executable_file_returns_none(self, tmp_path):
         uv = tmp_path / "bin" / "uv"
         uv.parent.mkdir(parents=True)
-        uv.write_text("not a binary")
+        uv.write_text("not a binary", encoding="utf-8")
         # Ensure no execute bit
         uv.chmod(0o644)
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
             from hermes_cli.managed_uv import resolve_uv
             assert resolve_uv() is None
+
+
+class TestPipInstallHint:
+
+    def test_names_the_managed_uv_when_present(self, tmp_path):
+        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        _make_executable(uv)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import pip_install_hint
+            assert pip_install_hint("qrcode") == f"{uv} pip install --python {sys.executable} qrcode"
+
+    def test_falls_back_to_bare_uv_when_absent(self, tmp_path):
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import pip_install_hint
+            assert pip_install_hint("qrcode") == f"uv pip install --python {sys.executable} qrcode"
 
 
 # ---------------------------------------------------------------------------
@@ -114,18 +206,36 @@ class TestResolveUv:
 class TestEnsureUv:
 
     def test_installs_if_missing(self, tmp_path):
+        uv = tmp_path / "bin" / _UV_BINARY_NAME
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
+             patch("hermes_cli.managed_uv._uv_version", return_value="uv 0.1.2"), \
              patch("hermes_cli.managed_uv._install_uv") as mock_install:
-            # Simulate the installer creating the binary
+            # Simulate the installer creating the binary (host-native name:
+            # uv.exe on Windows, uv on POSIX).
             def fake_install(target):
                 _make_executable(target)
             mock_install.side_effect = fake_install
 
             from hermes_cli.managed_uv import ensure_uv
             path = ensure_uv()
-            assert path == str(tmp_path / "bin" / "uv")
+            assert path == str(uv)
             mock_install.assert_called_once()
+
+    def test_dead_managed_launcher_is_reinstalled(self, tmp_path):
+        """A managed uv that exists, is executable, and exits non-zero (a relocated shim a pre-fix
+        installer copied in) must be replaced, not handed out."""
+        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        uv.parent.mkdir(parents=True)
+        uv.write_text("#!/bin/sh\necho 'launcher target missing' >&2\nexit 1\n", encoding="utf-8")
+        uv.chmod(uv.stat().st_mode | stat.S_IEXEC)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
+             patch("hermes_cli.managed_uv._uv_version", return_value="uv 0.1.2"), \
+             patch("hermes_cli.managed_uv._install_uv", side_effect=_make_executable) as mock_install:
+            from hermes_cli.managed_uv import ensure_uv
+            assert ensure_uv() == str(uv)
+            mock_install.assert_called_once_with(uv)
 
     def test_install_reports_runtime_repair_to_observer(self, tmp_path):
         from hermes_cli.managed_uv import (
@@ -150,12 +260,15 @@ class TestEnsureUv:
             "hermes_cli.managed_uv._install_uv",
             side_effect=fake_install,
         ), patch(
+            "hermes_cli.managed_uv._uv_version",
+            return_value="uv 0.1.2",
+        ), patch(
             "hermes_cli.managed_uv.repair_vulnerable_runtime",
             return_value=repair,
         ):
             path = ensure_uv(repair_observer=observed.append)
 
-        assert path == str(tmp_path / "bin" / "uv")
+        assert path == str(tmp_path / "bin" / _UV_BINARY_NAME)
         assert observed == [repair]
 
 
@@ -241,9 +354,11 @@ class TestEnsureUvWindowsSafe:
         proved the branch existed, not that the field crash was fixed on the
         host that reported it."""
         import subprocess
-        # On Windows the managed binary is uv.exe.
+        # On Windows the managed binary is uv.exe (a shell-script stand-in cannot run there, so the
+        # launcher probe is answered for it).
         _make_executable(tmp_path / "bin" / "uv.exe")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._uv_runs", return_value=True), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")):
             from hermes_cli.managed_uv import _UvResult, ensure_uv
             uv_bin = ensure_uv()
@@ -261,25 +376,30 @@ class TestUpdateManagedUv:
 
 
 
-    def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path, monkeypatch):
+    def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path):
         """A recent success stamp must skip `uv self update` entirely while the
         vulnerable-runtime repair probe still runs (CVE repair is never gated)."""
+        import time
+
         from hermes_cli.managed_uv import RuntimeRepairResult, update_managed_uv
 
-        uv = tmp_path / "bin" / "uv"
+        uv = tmp_path / "bin" / _UV_BINARY_NAME
         _make_executable(uv)
-        # Fresh stamp under the isolated HERMES_HOME.
-        import hermes_constants
-        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        # The stamp reader imports get_hermes_home separately from the binary
+        # resolver. Give both paths the same explicit test root.
+        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
+        # File timestamps can lead time.time() briefly on Windows. Stay well
+        # inside the freshness window instead of racing its age >= 0 boundary.
+        recent = time.time() - 60
+        os.utime(stamp, (recent, recent))
 
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
-             patch(
-                 "hermes_cli.managed_uv.repair_vulnerable_runtime",
-                 return_value=RuntimeRepairResult("skipped"),
-             ) as mock_repair:
+             patch("hermes_cli.managed_uv._uv_self_update_stamp", return_value=stamp), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime",
+                   return_value=RuntimeRepairResult("skipped")) as mock_repair, \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
             result = update_managed_uv()
 
         assert result == str(uv)
@@ -293,17 +413,19 @@ class TestUpdateManagedUv:
 
         from hermes_cli.managed_uv import UV_SELF_UPDATE_INTERVAL_SECONDS, update_managed_uv
 
-        uv = tmp_path / "bin" / "uv"
+        uv = tmp_path / "bin" / _UV_BINARY_NAME
         _make_executable(uv)
-        import hermes_constants
-        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        # Keep the stamp and binary resolver in the same test root.
+        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
         old = _time.time() - UV_SELF_UPDATE_INTERVAL_SECONDS - 60
         _os.utime(stamp, (old, old))
 
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._uv_self_update_stamp", return_value=stamp), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
+             patch("hermes_cli.managed_uv._uv_version", return_value="uv 0.2.0"), \
              patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")
             update_managed_uv()
@@ -396,47 +518,6 @@ class TestRuntimeRepair:
         assert not (root / ".hermes-runtime").exists()
         mock_install.assert_not_called()
 
-    def test_stage_candidate_sync_keeps_uv_project_config(self, tmp_path):
-        from hermes_cli.managed_uv import _stage_candidate_venv
-
-        root = tmp_path / "checkout"
-        root.mkdir()
-        (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
-        generation = root / ".hermes-runtime" / "python" / "gen"
-        python = generation / "bin" / "python"
-        python.parent.mkdir(parents=True)
-        python.write_text("py", encoding="utf-8")
-
-        calls = []
-
-        def fake_run(argv, **kwargs):
-            calls.append((list(argv), kwargs.get("env")))
-            return MagicMock(returncode=0)
-
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
-             patch(
-                 "hermes_cli.managed_uv._smoke_candidate_venv",
-                 return_value=(True, "", None),
-             ):
-            candidate = _stage_candidate_venv(
-                "uv",
-                project_root=root,
-                generation=generation,
-                python=python,
-            )
-
-        assert candidate is not None
-        assert len(calls) == 2
-        venv_argv, venv_env = calls[0]
-        sync_argv, sync_env = calls[1]
-        assert venv_argv[:2] == ["uv", "venv"]
-        assert "--no-config" in venv_argv
-        assert venv_env.get("UV_NO_CONFIG") == "1"
-        assert sync_argv[:2] == ["uv", "sync"]
-        assert "--locked" in sync_argv
-        assert "--no-config" not in sync_argv
-        assert "UV_NO_CONFIG" not in sync_env
-
     def test_failed_candidate_preserves_live_venv(self, tmp_path):
         from hermes_cli.managed_uv import (
             _acquire_repair_lock,
@@ -462,7 +543,7 @@ class TestRuntimeRepair:
              ), \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=None,
+                 side_effect=_CandidateStageError("replacement environment rejected"),
              ):
             result = repair_vulnerable_runtime("uv", project_root=root)
 
@@ -552,6 +633,119 @@ class TestRuntimeRepair:
         assert leftovers == [], f"no stale markers may remain: {leftovers}"
 
 
+def _make_candidate_layout(tmp_path):
+    """The minimal checkout + pinned generation python `_stage_candidate_venv` needs."""
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
+    generation = root / ".hermes-runtime" / "python" / "gen"
+    python = generation / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("py", encoding="utf-8")
+    return root, generation, python
+
+
+def _fake_sync_proc(lines, returncode=0):
+    """``subprocess.Popen`` stand-in for the candidate sync: text lines on stdout."""
+    proc = MagicMock()
+    proc.stdout = iter(lines)
+    proc.wait.return_value = returncode
+    return proc
+
+
+class TestStageCandidateVenvCrossPlatform:
+    """Candidate sync preserves project config and streams progress on every host."""
+
+    def test_sync_keeps_uv_project_config_and_merges_stderr(self, tmp_path):
+        import subprocess
+
+        from hermes_cli.managed_uv import _stage_candidate_venv
+
+        root, generation, python = _make_candidate_layout(tmp_path)
+        created = []
+        synced = []
+
+        def fake_run(argv, **kwargs):
+            created.append((list(argv), kwargs))
+            return MagicMock(returncode=0)
+
+        def fake_popen(argv, **kwargs):
+            synced.append((list(argv), kwargs))
+            return _fake_sync_proc([])
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.managed_uv.subprocess.Popen", side_effect=fake_popen), \
+             patch(
+                 "hermes_cli.managed_uv._smoke_candidate_venv",
+                 return_value=(True, "", None),
+             ):
+            candidate = _stage_candidate_venv(
+                "uv",
+                project_root=root,
+                generation=generation,
+                python=python,
+            )
+
+        assert candidate is not None
+        assert len(created) == 1
+        venv_argv, venv_kwargs = created[0]
+        assert venv_argv[:2] == ["uv", "venv"]
+        assert "--no-config" in venv_argv
+        assert venv_kwargs["env"].get("UV_NO_CONFIG") == "1"
+        sync_argv, sync_kwargs = synced[0]
+        assert sync_argv[:2] == ["uv", "sync"]
+        assert "--locked" in sync_argv
+        assert "--no-config" not in sync_argv
+        assert "UV_NO_CONFIG" not in sync_kwargs["env"]
+        assert sync_kwargs["stderr"] == subprocess.STDOUT
+
+    def test_sync_failure_reports_the_child_reason(self, tmp_path, caplog):
+        """A rejected candidate must say WHY — the child's own diagnosis, not a bare rc.
+
+        The reason rides the rejection into ``RuntimeRepairResult.detail`` (#111417, #111497).
+        """
+        import logging
+
+        from hermes_cli.managed_uv import _stage_candidate_venv
+
+        root, generation, python = _make_candidate_layout(tmp_path)
+        lock_error = [
+            "Resolving despite existing lockfile due to addition of exclude newer exclusion\n",
+            "error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.\n",
+            "\n",
+            "hint: To update the lockfile, run `uv lock`.\n",
+        ]
+
+        with caplog.at_level(logging.WARNING), \
+             patch("hermes_cli.managed_uv.subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch(
+                 "hermes_cli.managed_uv.subprocess.Popen",
+                 return_value=_fake_sync_proc(lock_error, returncode=1),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._smoke_candidate_venv",
+                 return_value=(True, "", None),
+             ), \
+             pytest.raises(_CandidateStageError) as rejected:
+            _stage_candidate_venv(
+                "uv",
+                project_root=root,
+                generation=generation,
+                python=python,
+            )
+
+        # The reason is the child's own diagnosis: the error + hint, without the progress noise
+        # that precedes them. It reaches the rejection the repair returns AND the log.
+        reason = str(rejected.value)
+        assert reason.startswith("candidate dependency sync failed (rc=1): ")
+        assert "error: The lockfile at `uv.lock` needs to be updated" in reason
+        assert "hint: To update the lockfile, run `uv lock`." in reason
+        assert "Resolving despite existing lockfile" not in reason
+        assert "candidate dependency sync failed (rc=1)" in caplog.text
+        assert "needs to be updated" in caplog.text
+        assert not list((root / ".hermes-runtime").glob("venv-candidate-*"))
+
+
 class TestRuntimeCutover:
     def test_os_lock_blocks_concurrent_repair_and_releases(self, tmp_path):
         from hermes_cli.managed_uv import _acquire_repair_lock, _release_repair_lock
@@ -606,13 +800,23 @@ class TestRuntimeCutover:
 # ---------------------------------------------------------------------------
 
 class TestInstallUvInternals:
-    def test_posix_sets_uv_unmanaged_install(self, tmp_path):
-        target = tmp_path / "bin" / "uv"
-        with patch("hermes_cli.managed_uv._install_uv_posix") as mock_posix:
-            from hermes_cli.managed_uv import _install_uv
-            _install_uv(target)
-            mock_posix.assert_called_once()
-            call_env = mock_posix.call_args[0][0]
+    def test_installer_uses_host_branch_and_managed_directory(self, tmp_path):
+        """The native installer receives the managed directory, not a PATH default."""
+        import hermes_cli.managed_uv as managed_uv
+
+        target = tmp_path / "bin" / _UV_BINARY_NAME
+        with patch("hermes_cli.managed_uv._install_uv_posix") as mock_posix, \
+             patch("hermes_cli.managed_uv._install_uv_windows") as mock_windows:
+            managed_uv._install_uv(target)
+
+        host_installer, other_installer = (
+            (mock_windows, mock_posix) if sys.platform == "win32"
+            else (mock_posix, mock_windows))
+        host_installer.assert_called_once()
+        other_installer.assert_not_called()
+        call_env = host_installer.call_args[0][0]
+        assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "bin")
+        if sys.platform != "win32":
             assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
 
 
@@ -715,11 +919,11 @@ class TestPatchRetryOnVulnerableCandidate:
             # which request produced it so the probe below can look it up.
             python = state["generation"] / "cpython" / "bin" / "python3"
             python.parent.mkdir(parents=True, exist_ok=True)
-            python.write_text(state["requested"] or "")
+            python.write_text(state["requested"] or "", encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
 
         def fake_probe(python, **kwargs):
-            requested = Path(python).read_text()
+            requested = Path(python).read_text(encoding="utf-8")
             # Bare minor request ("3.11") always resolves to the FIRST
             # (worst-case / already-known-vulnerable) version in the list.
             if requested in vulnerable_versions or requested == "3.11":
@@ -778,20 +982,13 @@ class TestPatchRetryOnVulnerableCandidate:
 
 
     def test_retry_is_bounded_by_max_retries_constant(self, tmp_path, monkeypatch):
-        """A very long patch list must not result in unbounded retries --
-        capped at _MAX_PATCH_RETRIES attempts."""
+        """A very long patch list must not result in unbounded retries -- capped at
+        _MAX_PATCH_RETRIES attempts.  After exhausting same-minor retries the
+        fallback tries the next minor line, which may succeed."""
         import hermes_cli.managed_uv as managed_uv
 
-        install_calls = []
-        fake_run, fake_probe = self._versioned_probe_run({"3.11"})
-        original_fake_run = fake_run
-
-        def counting_fake_run(cmd, **kwargs):
-            if "install" in cmd:
-                install_calls.append(cmd[3])
-            return original_fake_run(cmd, **kwargs)
-
         from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
         current = SQLiteRuntimeInfo(
             executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
             python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
@@ -802,7 +999,14 @@ class TestPatchRetryOnVulnerableCandidate:
         all_vulnerable = {f"3.11.{v}" for v in range(30, 10, -1)} | {"3.11"}
         fake_run2, fake_probe2 = self._versioned_probe_run(all_vulnerable)
 
-        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run2)
+        install_calls = []
+
+        def counting_fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                install_calls.append(cmd[3])
+            return fake_run2(cmd, **kwargs)
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", counting_fake_run)
         monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe2)
         monkeypatch.setattr(
             managed_uv, "_list_available_patches", lambda *a, **kw: huge_patch_list
@@ -810,12 +1014,195 @@ class TestPatchRetryOnVulnerableCandidate:
         result = managed_uv._install_safe_python_generation(
             "uv", project_root=tmp_path, current=current
         )
-        assert result is None
+        # The same-minor retries are bounded, but the minor-line fallback
+        # (3.11 → 3.12) succeeds because the mock returns a fixed build.
+        assert result is not None, (
+            "Minor-line fallback should find a fixed 3.12 build"
+        )
         # 1 initial bare-minor attempt + at most _MAX_PATCH_RETRIES retries.
         assert managed_uv._MAX_PATCH_RETRIES <= 5, (
             "sanity: constant should stay small since each attempt is a "
             "real download+install+probe cycle"
         )
+        same_minor_explicit = [
+            call for call in install_calls if call.startswith("3.11.")
+        ]
+        assert len(same_minor_explicit) <= managed_uv._MAX_PATCH_RETRIES, (
+            f"same-minor explicit retries must be capped: {same_minor_explicit}"
+        )
+        assert install_calls[0] == "3.11"
+        # The run ends the moment the bare next-minor fallback succeeds.
+        assert install_calls[-1] == "3.12"
+        assert install_calls.count("3.12") == 1
+
+
+class TestMinorLineFallForward:
+    """Regression tests for issue #76106: when EVERY build on the current
+    minor line (e.g. all of 3.11 on Windows) links a vulnerable SQLite,
+    the provisioner must fall forward to the next supported minor line
+    (3.12, then 3.13) -- first via a bare minor request, then via explicit
+    patches on that line -- instead of leaving the user stuck on every
+    `hermes update` with no path to a fixed runtime.
+    """
+
+    @staticmethod
+    def _mapped_run(resolutions, fixed_versions, install_calls):
+        """Fake subprocess.run/probe pair driven by explicit tables:
+
+        - *resolutions*: request string -> python_version tuple the probe
+          reports for that request (bare minors resolve like uv would).
+        - *fixed_versions*: set of version tuples that link FIXED SQLite;
+          everything else probes as vulnerable 3.50.4.
+        - *install_calls*: list collecting each `uv python install` request,
+          in order, so tests can assert the actual request sequence.
+        """
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        state: dict = {"requested": None}
+
+        def fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                # cmd = [uv, "python", "install", <request>, ...]
+                state["requested"] = cmd[3]
+                state["generation"] = Path(kwargs["env"]["UV_PYTHON_INSTALL_DIR"])
+                install_calls.append(cmd[3])
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "list" in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # uv python find → a path inside the generation dir, tagged with
+            # the request that produced it so the probe can look it up.
+            python = state["generation"] / "cpython" / "bin" / "python3"
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text(state["requested"] or "", encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
+
+        def fake_probe(python, **kwargs):
+            requested = Path(python).read_text(encoding="utf-8")
+            version = resolutions[requested]
+            if version in fixed_versions:
+                return SQLiteRuntimeInfo(
+                    executable=Path(python),
+                    base_prefix=Path(python).parent.parent,
+                    python_version=version, sqlite_version=(3, 53, 1),
+                    sqlite_version_string="3.53.1", sqlite_source_id="fixed",
+                )
+            return SQLiteRuntimeInfo(
+                executable=Path(python),
+                base_prefix=Path(python).parent.parent,
+                python_version=version, sqlite_version=(3, 50, 4),
+                sqlite_version_string="3.50.4", sqlite_source_id="vulnerable",
+            )
+
+        return fake_run, fake_probe
+
+    @staticmethod
+    def _current_3_11_14():
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        return SQLiteRuntimeInfo(
+            executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
+            python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
+            sqlite_version_string="3.50.4", sqlite_source_id="old",
+        )
+
+    def test_explicit_patch_fallback_when_bare_next_minor_is_vulnerable(
+        self, tmp_path, monkeypatch
+    ):
+        """The review-gap scenario from #76252: the bare '3.12' request
+        resolves to a VULNERABLE 3.12 build, but an explicit 3.12 patch
+        links fixed SQLite -- the `_list_available_patches(..., '3.12', ...)`
+        fallback branch must run, skip the already-tried bare resolution,
+        and succeed via the explicit patch."""
+        import hermes_cli.managed_uv as managed_uv
+
+        install_calls = []
+        fake_run, fake_probe = self._mapped_run(
+            resolutions={
+                "3.11": (3, 11, 14),      # bare current minor: vulnerable
+                "3.12": (3, 12, 11),      # bare next minor: ALSO vulnerable
+                "3.12.10": (3, 12, 10),   # explicit patch: fixed
+            },
+            fixed_versions={(3, 12, 10)},
+            install_calls=install_calls,
+        )
+        patch_lists = {
+            # No newer 3.11 patch exists (the Windows #76106 reality).
+            "3.11": [(3, 11, 14), (3, 11, 13)],
+            # Newest 3.12 is the same build the bare request resolved to.
+            "3.12": [(3, 12, 11), (3, 12, 10)],
+        }
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches",
+            lambda uv_bin, minor, **kw: patch_lists[minor],
+        )
+
+        result = managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=self._current_3_11_14()
+        )
+        assert result is not None, (
+            "Explicit-patch fallback on the next minor line must recover"
+        )
+        _, _, candidate = result
+        assert candidate.python_version == (3, 12, 10)
+        assert not candidate.wal_reset_vulnerable
+        # The actual uv-install request sequence: bare current minor, then
+        # bare next minor, then STRAIGHT to the fixed explicit patch --
+        # 3.12.11 must NOT be re-requested explicitly, because the bare
+        # '3.12' attempt already resolved to (and rejected) that build.
+        assert install_calls == ["3.11", "3.12", "3.12.10"]
+
+    def test_returns_none_with_bounded_attempts_when_all_minors_exhausted(
+        self, tmp_path, monkeypatch
+    ):
+        """When every build on every supported minor line (3.11-3.13) is
+        vulnerable, the provisioner must give up with None -- and the total
+        install workload must stay bounded by _MAX_PATCH_RETRIES per line."""
+        import hermes_cli.managed_uv as managed_uv
+
+        install_calls = []
+        resolutions = {"3.11": (3, 11, 14), "3.12": (3, 12, 30), "3.13": (3, 13, 30)}
+        patch_lists = {}
+        for minor in (11, 12, 13):
+            versions = [(3, minor, v) for v in range(30, 10, -1)]  # 20 patches
+            patch_lists[f"3.{minor}"] = versions
+            for version in versions:
+                resolutions[".".join(str(p) for p in version)] = version
+
+        fake_run, fake_probe = self._mapped_run(
+            resolutions=resolutions, fixed_versions=set(),
+            install_calls=install_calls,
+        )
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches",
+            lambda uv_bin, minor, **kw: patch_lists[minor],
+        )
+
+        result = managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=self._current_3_11_14()
+        )
+        assert result is None, "Nothing fixed anywhere: must give up cleanly"
+
+        cap = managed_uv._MAX_PATCH_RETRIES
+        # Per line: one bare request + at most _MAX_PATCH_RETRIES explicit
+        # patches; three lines total (3.11, 3.12, 3.13) and nothing beyond
+        # 3.13 (requires-python is <3.14).
+        assert install_calls.count("3.11") == 1
+        assert install_calls.count("3.12") == 1
+        assert install_calls.count("3.13") == 1
+        assert not any(call.startswith("3.14") for call in install_calls)
+        for minor in (11, 12, 13):
+            explicit = [
+                call for call in install_calls
+                if call.startswith(f"3.{minor}.")
+            ]
+            assert len(explicit) <= cap, (
+                f"3.{minor} explicit retries must be capped at {cap}: {explicit}"
+            )
+        assert len(install_calls) <= 3 * (1 + cap)
 
 
 class TestListAvailablePatches:
@@ -939,7 +1326,7 @@ class TestRepairRetriesAfterUvRefresh:
              ) as mock_refresh, \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=None,
+                 side_effect=_CandidateStageError("candidate dependency sync failed (rc=1)"),
              ):
             result = repair_vulnerable_runtime("uv", project_root=root)
         return result, attempts, mock_refresh, sentinel
@@ -982,10 +1369,10 @@ class TestRepairRetriesAfterUvRefresh:
             refresh_result=True,
             second_attempt=second_attempt,
         )
-        # Provisioning succeeded on retry; staging (mocked to None) is what
-        # failed — proving the retry result flows into the normal pipeline.
+        # Provisioning succeeded on retry; staging rejects the candidate,
+        # proving the retry result flows into the normal pipeline.
         assert result.status == "failed"
-        assert "replacement environment" in result.detail
+        assert result.detail == "candidate dependency sync failed (rc=1)"
         assert len(attempts) == 2
         assert sentinel.read_text(encoding="utf-8") == "live"
 
@@ -1001,10 +1388,16 @@ class TestDefaultLiveVenv:
         root = tmp_path / "checkout"
         root.mkdir()
         (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        # Host-native venv layout: bin/python on POSIX, Scripts/python.exe on
+        # Windows — what _venv_python() resolves on the real host.
+        if sys.platform == "win32":
+            bin_dir_name, python_name = "Scripts", "python.exe"
+        else:
+            bin_dir_name, python_name = "bin", "python"
         for d in dirs:
-            bin_dir = root / d / "bin"
+            bin_dir = root / d / bin_dir_name
             bin_dir.mkdir(parents=True)
-            (bin_dir / "python").write_text("py", encoding="utf-8")
+            (bin_dir / python_name).write_text("py", encoding="utf-8")
         return root
 
     def test_dot_venv_only_is_targeted(self, tmp_path):
@@ -1103,4 +1496,3 @@ class TestVenvPythonUpdateBoundary:
         expected = Path("/opt/hermes/venv/Scripts/python.exe") \
             if sys.platform == "win32" else Path("/opt/hermes/venv/bin/python")
         assert _venv_python(Path("/opt/hermes/venv")) == expected
-

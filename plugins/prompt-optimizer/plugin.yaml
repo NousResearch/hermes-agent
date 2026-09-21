@@ -1,0 +1,10 @@
+name: prompt-optimizer
+version: 1.0.0
+description: "Model-aware prompt rewriter with token-efficiency scoring, coaching metrics, and slash commands."
+author: "KENSEI / Octacon"
+hooks:
+  - pre_gateway_dispatch
+  - transform_llm_output
+requires_env:
+  - OPENROUTER_API_KEY
+  - NOUS_API_KEY

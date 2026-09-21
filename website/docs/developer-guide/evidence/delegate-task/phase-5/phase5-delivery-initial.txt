@@ -1,0 +1,103 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-5/.venv/bin/python
+hypothesis profile 'default'
+rootdir: /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-5
+configfile: pyproject.toml
+plugins: hypothesis-6.165.5, asyncio-1.4.0, cov-7.1.0, anyio-4.14.2, timeout-2.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 60.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 68 items
+
+tests/tools/test_async_delegation.py::test_schema_init_preserves_shared_state_db_journal_mode PASSED [  1%]
+tests/tools/test_async_delegation.py::test_schema_init_preserves_shared_state_db_wal_mode PASSED [  2%]
+tests/tools/test_async_delegation.py::test_connect_preserves_wal_and_applies_macos_durability_barriers SKIPPED [  4%]
+tests/tools/test_async_delegation.py::test_dispatch_returns_immediately_without_blocking PASSED [  5%]
+tests/tools/test_async_delegation.py::test_async_executor_workers_are_daemon_threads PASSED [  7%]
+tests/tools/test_async_delegation.py::test_completion_event_lands_on_shared_queue_with_session_key PASSED [  8%]
+tests/tools/test_async_delegation.py::test_rich_reinjection_block_is_self_contained PASSED [ 10%]
+tests/tools/test_async_delegation.py::test_dispatch_rejected_at_capacity PASSED [ 11%]
+tests/tools/test_async_delegation.py::test_interrupt_all_signals_running_children PASSED [ 13%]
+tests/tools/test_async_delegation.py::test_stalled_runner_is_interrupted_then_finalized PASSED [ 14%]
+tests/tools/test_async_delegation.py::test_progressing_runner_is_never_stalled PASSED [ 16%]
+tests/tools/test_async_delegation.py::test_stalling_runner_that_honors_interrupt_keeps_its_result PASSED [ 17%]
+tests/tools/test_async_delegation.py::test_streaming_child_counts_as_alive PASSED [ 19%]
+tests/tools/test_async_delegation.py::test_stalled_event_carries_structured_stall_metadata PASSED [ 20%]
+tests/tools/test_async_delegation.py::test_list_async_delegations_exposes_live_activity PASSED [ 22%]
+tests/tools/test_async_delegation.py::test_in_tool_stall_uses_higher_threshold PASSED [ 23%]
+tests/tools/test_async_delegation.py::test_real_process_restart_restores_owned_completion_once PASSED [ 25%]
+tests/tools/test_async_delegation.py::test_delegate_task_background_routes_async_and_does_not_block PASSED [ 26%]
+tests/tools/test_async_delegation.py::test_delegate_task_background_uses_live_tui_agent_session_id PASSED [ 27%]
+tests/tools/test_async_delegation.py::test_concurrent_dispatch_respects_capacity PASSED [ 29%]
+tests/tools/test_async_delegation.py::test_gateway_formatter_renders_async_block PASSED [ 30%]
+tests/tools/test_async_delegation.py::test_gateway_cli_origin_event_left_unrouted PASSED [ 32%]
+tests/tools/test_async_delegation.py::test_single_task_truncation_banner_when_max_iterations PASSED [ 33%]
+tests/tools/test_async_delegation.py::test_single_task_no_banner_when_clean PASSED [ 35%]
+tests/tools/test_async_delegation.py::test_batch_truncation_banner_marks_only_truncated_task PASSED [ 36%]
+tests/tools/test_async_delegation.py::test_batch_model_rejection_notice_prepended PASSED [ 38%]
+tests/tools/test_async_delegation.py::test_batch_model_rejection_notice_absent_when_clean PASSED [ 39%]
+tests/tools/test_async_delegation.py::test_batch_model_rejection_notice_requires_configured_model_in_text PASSED [ 41%]
+tests/tools/test_delegate_completion_units.py::test_units_partition_ungrouped_tasks_independently PASSED [ 42%]
+tests/tools/test_delegate_completion_units.py::test_units_keep_same_group_together_but_not_unrelated_tasks PASSED [ 44%]
+tests/tools/test_delegate_completion_units.py::test_grouping_controls_delivery_not_execution_order PASSED [ 45%]
+tests/tools/test_delegate_completion_units.py::test_each_unit_uses_one_shared_slot_key_and_preserves_task_indexes PASSED [ 47%]
+tests/tools/test_delegate_completion_units.py::test_whole_batch_occupies_one_async_slot_but_reports_child_count PASSED [ 48%]
+tests/tools/test_delegate_completion_units.py::test_child_completion_preserves_task_index_and_group_in_published_event PASSED [ 50%]
+tests/tools/test_delegate_completion_units.py::test_partial_child_persistence_and_failed_child_notice_are_first_class FAILED [ 51%]
+tests/gateway/test_async_delegation_session_binding.py::TestInterruptForSessionByParentId::test_parent_session_id_selector PASSED [ 52%]
+tests/gateway/test_async_delegation_session_binding.py::TestGatewayPinningFailsClosed::test_live_spawning_session_rebinds_from_different_route PASSED [ 54%]
+tests/gateway/test_async_delegation_session_binding.py::TestGatewayPinningFailsClosed::test_non_compression_ended_parent_drops PASSED [ 55%]
+tests/gateway/test_async_delegation_session_binding.py::TestGatewayPinningFailsClosed::test_intermediate_compression_route_advances_to_same_live_tip PASSED [ 57%]
+tests/gateway/test_async_delegation_session_binding.py::TestGatewayPinningFailsClosed::test_compression_parent_follows_real_sessiondb_lineage PASSED [ 58%]
+tests/gateway/test_async_delegation_session_binding.py::TestResetHandlerInterruptsDelegations::test_reset_command_calls_interrupt_for_session PASSED [ 60%]
+tests/cli/test_cli_delegate_background_notice.py::test_background_dispatch_prints_resume_notice PASSED [ 61%]
+tests/cli/test_cli_delegate_background_notice.py::test_background_batch_dispatch_pluralizes PASSED [ 63%]
+tests/cli/test_cli_delegate_background_notice.py::test_synchronous_delegate_result_prints_no_notice PASSED [ 64%]
+tests/cli/test_cli_delegate_background_notice.py::test_non_delegate_tool_prints_no_notice PASSED [ 66%]
+tests/gateway/test_background_process_notifications.py::TestLoadBackgroundNotificationsMode::test_defaults_to_concise PASSED [ 67%]
+tests/gateway/test_background_process_notifications.py::TestLoadBackgroundNotificationsMode::test_unknown_mode_falls_back_to_concise PASSED [ 69%]
+tests/gateway/test_background_process_notifications.py::TestLoadBackgroundNotificationsMode::test_reads_config_yaml PASSED [ 70%]
+tests/gateway/test_background_process_notifications.py::test_consumed_completion_skips_raw_notification PASSED [ 72%]
+tests/gateway/test_background_process_notifications.py::test_consumed_completion_skips_raw_notification_without_agent_notify PASSED [ 73%]
+tests/gateway/test_background_process_notifications.py::test_inject_watch_notification_routes_from_session_store_origin PASSED [ 75%]
+tests/gateway/test_background_process_notifications.py::test_post_turn_watch_drain_off_consumes_without_injecting PASSED [ 76%]
+tests/gateway/test_background_process_notifications.py::test_post_turn_watch_drain_all_injects_from_queued_event_origin PASSED [ 77%]
+tests/gateway/test_background_process_notifications.py::test_inject_watch_notification_carries_message_id_reply_anchor PASSED [ 79%]
+tests/gateway/test_background_process_notifications.py::test_inject_watch_notification_loads_session_store_off_loop PASSED [ 80%]
+tests/gateway/test_background_process_notifications.py::test_inject_watch_notification_ignores_foreground_event_source PASSED [ 82%]
+tests/gateway/test_background_process_notifications.py::TestConciseFormatter::test_success_is_one_line_without_output PASSED [ 83%]
+tests/gateway/test_background_process_notifications.py::TestConciseFormatter::test_failure_appends_short_tail PASSED [ 85%]
+tests/gateway/test_background_process_notifications.py::TestConciseFormatter::test_long_command_is_truncated PASSED [ 86%]
+tests/gateway/test_background_process_notifications.py::test_concise_mode_sends_pretty_message_not_raw_dump PASSED [ 88%]
+tests/gateway/test_background_process_notifications.py::test_concise_mode_failure_includes_tail PASSED [ 89%]
+tests/gateway/test_background_process_notifications.py::test_concise_mode_no_interim_output_updates PASSED [ 91%]
+tests/gateway/test_background_process_notifications.py::test_parse_session_key_with_extra_parts PASSED [ 92%]
+tests/gateway/test_background_process_notifications.py::test_inject_watch_notification_raw_session_key_self_posts PASSED [ 94%]
+tests/gateway/test_background_process_notifications.py::test_inject_watch_notification_origin_session_id_wins PASSED [ 95%]
+tests/gateway/test_background_process_notifications.py::test_async_delegation_apiserver_persists_delivery_not_self_post PASSED [ 97%]
+tests/gateway/test_background_process_notifications.py::test_async_delegation_apiserver_persist_failure_is_retryable PASSED [ 98%]
+tests/gateway/test_background_process_notifications.py::test_gateway_drain_retains_and_formats_overflow_events PASSED [100%]
+
+=================================== FAILURES ===================================
+____ test_partial_child_persistence_and_failed_child_notice_are_first_class ____
+
+    def test_partial_child_persistence_and_failed_child_notice_are_first_class():
+>       assert callable(getattr(ad, "record_unit_child", None))
+E       AssertionError: assert False
+E        +  where False = callable(None)
+E        +    where None = getattr(ad, 'record_unit_child', None)
+
+tests/tools/test_delegate_completion_units.py:137: AssertionError
+=============================== warnings summary ===============================
+agent/account_usage.py:11
+  /home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-5/agent/account_usage.py:11: HermesPluginCompatWarning: hermes plugin compat: `agent.anthropic_adapter.resolve_anthropic_token` moved to `agent.anthropic_credentials.resolve_anthropic_token`. The old path is kept only for external plugins and is removed on 2026-09-14; update your import.
+    from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/tools/test_delegate_completion_units.py::test_partial_child_persistence_and_failed_child_notice_are_first_class - AssertionError: assert False
+ +  where False = callable(None)
+ +    where None = getattr(ad, 'record_unit_child', None)
+============= 1 failed, 66 passed, 1 skipped, 1 warning in 13.52s ==============
+phase5_delivery_initial_exit=1

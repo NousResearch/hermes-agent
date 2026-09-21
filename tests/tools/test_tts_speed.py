@@ -60,7 +60,7 @@ class TestOpenaiTtsSpeed:
         mock_cls = MagicMock(return_value=mock_client)
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool._resolve_openai_audio_client_config",
+             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)):
             from tools.tts_tool import _generate_openai_tts
             _generate_openai_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
@@ -93,7 +93,7 @@ class TestOpenaiTtsLangCode:
         mock_cls = MagicMock(return_value=mock_client)
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool._resolve_openai_audio_client_config",
+             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)):
             from tools.tts_tool import _generate_openai_tts
             _generate_openai_tts("Hola", str(tmp_path / "out.mp3"), tts_config)
@@ -113,6 +113,14 @@ class TestOpenaiTtsLangCode:
         kwargs = create.call_args[1]
         assert kwargs["extra_body"] == {"lang_code": "es"}
         assert kwargs["speed"] == 2.0
+
+    def test_consent_attestation_merges_into_extra_body(self, tmp_path, monkeypatch):
+        """tts.openai.consent_attestation rides in the JSON body next to lang_code (#99775):
+        OpenAI-compatible servers 400 ``consent_required`` on cloned voices without it."""
+        create = self._run({"openai": {"language": "es", "consent_attestation": "I have consent"}},
+                           tmp_path, monkeypatch)
+        assert create.call_args[1]["extra_body"] == {
+            "lang_code": "es", "consent_attestation": "I have consent"}
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +235,7 @@ class TestToolLevelSpeed:
         mock_cls = MagicMock(return_value=mock_client)
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool._resolve_openai_audio_client_config",
+             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)), \
              patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
              patch("tools.tts_tool._get_provider", return_value="openai"), \

@@ -1,0 +1,5 @@
+[12:00:01] tool todo -> created items [write-report, run-tests, ship-build] (3 distinct)
+[12:00:02] user asked to add 'run test suite' -> agent recognized as near-duplicate of 'run-tests', produced NO new item (deduplicated to one)
+[12:00:03] tool todo merge=true id=run-tests -> updated by id (no duplicate created)
+[12:00:04] tool todo merge=false -> replaces list, still 3 distinct items
+[12:00:05] final snapshot: write-report=done, run-tests=completed, ship-build=completed

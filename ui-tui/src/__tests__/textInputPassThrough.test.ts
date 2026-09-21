@@ -45,6 +45,7 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('c', key({ ctrl: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('x', key({ ctrl: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('o', key({ ctrl: true }))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('t', key({ ctrl: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ escape: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)

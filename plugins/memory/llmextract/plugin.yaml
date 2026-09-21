@@ -1,0 +1,5 @@
+name: llmextract
+version: 0.1.0
+description: "LLM-based entity extraction and consolidation using local Ollama model."
+pip_dependencies:
+  - ollama

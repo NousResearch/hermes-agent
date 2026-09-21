@@ -1,0 +1,37 @@
+provider: ollama-cloud
+model: minimax-m3
+base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+- provider: openrouter
+  model: google/gemma-4-31b-it:free
+  base_url: https://openrouter.ai/api/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  base_url: https://openrouter.ai/api/v1
+toolsets:
+- hermes-cli
+- kanban
+- browser
+- file
+- terminal
+agent:
+  max_turns: 30
+  reasoning_effort: minimal
+skills:
+  always_skills:
+  - kanban-worker
+  - ui-pattern-library-research
+  - mobile-screen-spec
+  - dezzy-design-systems
+  - design-system-review
+  - dezzy-excalidraw
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - kanban-worker
+  - mobile-screen-spec
+  - ui-pattern-library-research
+  enforcement_mode: enforce

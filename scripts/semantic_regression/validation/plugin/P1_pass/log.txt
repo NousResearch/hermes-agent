@@ -1,0 +1,5 @@
+[12:00:01] plugin demo registered hook pre_user_message (order 1)
+[12:00:02] user message received
+[12:00:03] pre_user_message hook fired -> message prefixed '[demo]Hello'
+[12:00:04] agent received: '[demo]Hello'
+[12:00:05] transform_llm_output hook NOT invoked on pre_user_message

@@ -1,0 +1,4 @@
+{
+  "label": "pass",
+  "note": "idempotent partial-failure, consistent across reruns"
+}

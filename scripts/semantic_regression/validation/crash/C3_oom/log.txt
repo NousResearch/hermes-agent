@@ -1,0 +1,3 @@
+[12:00:01] tool web_extract urls=[big]
+[12:00:02] MemoryError: unable to allocate 4GB buffer
+[12:00:03] Process killed (OOM)

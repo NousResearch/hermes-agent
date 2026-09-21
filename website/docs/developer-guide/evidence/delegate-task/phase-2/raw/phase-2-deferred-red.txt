@@ -1,0 +1,32 @@
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+___________ test_profile_fallback_chain_is_scoped_to_target_profile ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x72a0d4cc7ed0>
+
+    def test_profile_fallback_chain_is_scoped_to_target_profile(monkeypatch):
+        kwargs, _ = _build(
+            monkeypatch,
+            {
+                "name": "target-profile",
+                "config": {
+                    "fallback_providers": [
+                        {"provider": "target-provider", "model": "target-fallback"}
+                    ]
+                },
+                "soul_md": None,
+                "skills": [],
+            },
+        )
+>       assert kwargs.get("override_fallback_providers") == [
+            {"provider": "target-provider", "model": "target-fallback"}
+        ]
+E       AssertionError: assert None == [{'provider': 'target-provider', 'model': 'target-fallback'}]
+E        +  where None = <built-in method get of dict object at 0x72a0d162fb40>('override_fallback_providers')
+E        +    where <built-in method get of dict object at 0x72a0d162fb40> = {'task_index': 0, 'goal': 'profile task', 'context': 'task context', 'toolsets': [], ...}.get
+
+tests/tools/test_delegate_profile.py:148: AssertionError
+=========================== short test summary info ============================
+FAILED tests/tools/test_delegate_profile.py::test_profile_fallback_chain_is_scoped_to_target_profile
+1 failed, 1 passed, 21 deselected in 1.44s
+phase2_deferred_red_exit=1

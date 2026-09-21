@@ -1,0 +1,1 @@
+A skill 'macos-only' declares platforms:[macos]; a skill 'needs-vision' declares requires_tools:[vision_analyze]. On Linux, macos-only is hidden from skills_list. needs-vision is only surfaced when vision toolset enabled. Same config yields same visibility across sessions.

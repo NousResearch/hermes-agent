@@ -6,6 +6,31 @@ import sys
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
+def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):
+    """The post-recovery updater must not remap native vault dependencies."""
+    import hermes_cli.env_loader as env_loader
+    from hermes_cli import _early_recovery
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("UPDATE_RETRY_DOTENV=loaded\n", encoding="utf-8")
+    monkeypatch.delenv("UPDATE_RETRY_DOTENV", raising=False)
+    monkeypatch.setattr(_early_recovery, "_UPDATE_RETRY_RECOVERED", True)
+    external_calls = []
+    monkeypatch.setattr(
+        env_loader,
+        "_apply_external_secret_sources",
+        lambda path: external_calls.append(path),
+    )
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.environ["UPDATE_RETRY_DOTENV"] == "loaded"
+    assert external_calls == []
+
+
 def test_utf8_bom_does_not_mangle_first_key(tmp_path, monkeypatch):
     """A leading UTF-8 BOM must not prefix the first key name in os.environ.
 
@@ -30,6 +55,36 @@ def test_utf8_bom_does_not_mangle_first_key(tmp_path, monkeypatch):
     assert os.getenv("FIRST_KEY") == "first-value"
     assert os.getenv("SECOND_KEY") == "second-value"
     assert os.environ.get("\ufeffFIRST_KEY") is None
+
+
+def test_bom_first_key_is_seen_by_installer_and_scrub_alike(tmp_path, monkeypatch):
+    """Invariant: the key set the dashboard/profile scrub computes (``_env_keys_defined_in_dotenv``) equals
+    the key set the installers define (``load_hermes_dotenv`` into os.environ, ``load_env_file`` into a
+    profile scope). A BOM'd first line, ``export``, quotes and inline comments must not split them —
+    a key one side sees and the other doesn't is a scrub miss."""
+    from hermes_cli.env_loader import _env_keys_defined_in_dotenv
+    from agent.secret_scope import load_env_file
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_bytes(
+        b"\xef\xbb\xbfFIRST_KEY=first-value\n"
+        b"export EXPORTED_KEY='quoted # not a comment'\n"
+        b"COMMENTED_KEY=value # trailing comment\n"
+        b"EMPTY_KEY=\n"
+    )
+    for key in ("FIRST_KEY", "EXPORTED_KEY", "COMMENTED_KEY", "EMPTY_KEY", "\ufeffFIRST_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+    installed = {k for k in ("FIRST_KEY", "EXPORTED_KEY", "COMMENTED_KEY", "EMPTY_KEY") if k in os.environ}
+    scoped = load_env_file(env_file)
+
+    assert _env_keys_defined_in_dotenv(env_file) == installed == set(scoped)
+    assert "\ufeffFIRST_KEY" not in _env_keys_defined_in_dotenv(env_file)
+    assert scoped["EXPORTED_KEY"] == os.environ["EXPORTED_KEY"] == "quoted # not a comment"
+    assert scoped["COMMENTED_KEY"] == os.environ["COMMENTED_KEY"] == "value"
 
 
 def test_bomless_utf8_env_still_loads(tmp_path, monkeypatch):
@@ -595,3 +650,40 @@ def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch
 
     # The other profile's .env value stands; the process config was not applied.
     assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_parent_injected_dashboard_session_token_survives_dotenv(tmp_path, monkeypatch):
+    """A parent that spawns `hermes dashboard` mints HERMES_DASHBOARD_SESSION_TOKEN and keeps it for
+    its own /api probes; a persisted token in ~/.hermes/.env must not replace it, or the parent gets
+    HTTP 401 from its own child (#115955). Ordinary keys keep the documented .env-wins precedence."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\nHERMES_DASHBOARD_PUBLIC_URL=http://127.0.0.1:1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "link-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "http://127.0.0.1:43123")
+
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "link-token"
+    assert os.environ["HERMES_DASHBOARD_PUBLIC_URL"] == "http://127.0.0.1:1"  # control: .env still wins
+
+    # Reload with the same injection: the injected value still holds.
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "link-token"
+
+
+def test_dotenv_published_dashboard_session_token_still_reloads(tmp_path, monkeypatch):
+    """No injection: the .env token is published, and a later edit + reload replaces the value the
+    earlier pass published (the guard only protects values dotenv did not put there)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=first\n", encoding="utf-8")
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "first"
+
+    (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=second\n", encoding="utf-8")
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "second"

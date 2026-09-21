@@ -1,0 +1,12 @@
+{
+  "cycle": "quarterly",
+  "generated_at": "2026-06-11T04:32:24.407759+00:00",
+  "timestamp_epoch": 1781152344,
+  "profiles_reviewed": 1,
+  "results": [
+    {
+      "profile": "default",
+      "recommendation": "dormant \u2014 consider archival or removal"
+    }
+  ]
+}

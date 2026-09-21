@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
 
 import { clearProjectDirCache, readProjectDir } from './ipc'
+import { $showIgnoredRoots, setShowIgnoredFiles } from './prefs'
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 const readFileDataUrl = vi.fn<(path: string) => Promise<string>>()
@@ -43,6 +44,7 @@ describe('readProjectDir', () => {
 
   afterEach(() => {
     clearProjectDirCache()
+    $showIgnoredRoots.set([])
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
@@ -82,33 +84,6 @@ describe('readProjectDir', () => {
     expect(readFileDataUrl).toHaveBeenCalledWith('C:/repo/.gitignore')
   })
 
-  it('filters gitignored entries when Windows path casing differs across IPC results', async () => {
-    gitRoot.mockResolvedValue('C:\\Repo')
-    readDir.mockImplementation(async path => {
-      if (path === 'c:\\repo\\src') {
-        return ok([
-          { name: 'debug.log', path: 'c:\\repo\\src\\debug.log', isDirectory: false },
-          { name: 'keep.ts', path: 'c:\\repo\\src\\keep.ts', isDirectory: false }
-        ])
-      }
-
-      if (path === 'C:/Repo') {
-        return ok([{ name: '.gitignore', path: 'C:/Repo/.gitignore', isDirectory: false }])
-      }
-
-      if (path === 'C:/Repo/src') {
-        return ok([])
-      }
-
-      return ok([])
-    })
-    readFileDataUrl.mockResolvedValue(dataUrl('src/*.log\n'))
-
-    const result = await readProjectDir('c:\\repo\\src', 'c:\\repo')
-
-    expect(result.entries.map(entry => entry.name)).toEqual(['keep.ts'])
-  })
-
   it('does not fetch .gitignore contents when listings do not contain .gitignore', async () => {
     gitRoot.mockResolvedValue('/repo')
     readDir.mockImplementation(async path => {
@@ -123,5 +98,70 @@ describe('readProjectDir', () => {
 
     expect(result.entries.map(entry => entry.name)).toEqual(['debug.log'])
     expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('keeps gitignored entries — and skips the gitignore reads — when the root opted in', async () => {
+    setShowIgnoredFiles('/repo', true)
+    gitRoot.mockResolvedValue('/repo')
+    readDir.mockImplementation(async path => {
+      if (path === '/repo/src') {
+        return ok([
+          { name: 'debug.log', path: '/repo/src/debug.log', isDirectory: false },
+          { name: 'keep.ts', path: '/repo/src/keep.ts', isDirectory: false }
+        ])
+      }
+
+      if (path === '/repo') {
+        return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockResolvedValue(dataUrl('src/*.log\n'))
+
+    const result = await readProjectDir('/repo/src', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['debug.log', 'keep.ts'])
+    expect(gitRoot).not.toHaveBeenCalled()
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('still excludes ALWAYS_EXCLUDED entries when the root opted in', async () => {
+    setShowIgnoredFiles('/repo', true)
+    readDir.mockResolvedValue(
+      ok([
+        { name: '.git', path: '/repo/.git', isDirectory: true },
+        { name: 'node_modules', path: '/repo/node_modules', isDirectory: true },
+        { name: 'src', path: '/repo/src', isDirectory: true }
+      ])
+    )
+
+    const result = await readProjectDir('/repo', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['src'])
+  })
+
+  it('opting one root in leaves other roots filtered', async () => {
+    setShowIgnoredFiles('/repo', true)
+    gitRoot.mockResolvedValue('/other')
+    readDir.mockImplementation(async path => {
+      if (path === '/other/src') {
+        return ok([
+          { name: 'debug.log', path: '/other/src/debug.log', isDirectory: false },
+          { name: 'keep.ts', path: '/other/src/keep.ts', isDirectory: false }
+        ])
+      }
+
+      if (path === '/other') {
+        return ok([{ name: '.gitignore', path: '/other/.gitignore', isDirectory: false }])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockResolvedValue(dataUrl('src/*.log\n'))
+
+    const result = await readProjectDir('/other/src', '/other')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['keep.ts'])
   })
 })

@@ -1,0 +1,11 @@
+MCP orphan cleanup: `kill -TERM -<PGID>` to kill a tree. 2026-05-28: killed 3 trees — hermes --resume (693MB), claude (632MB), hermes chat (541MB) = 1867MB reclaimed. All from May 27 CLI sessions. Original estimate ~602MB was 3x low. All responded to SIGTERM. Parents (bash shells) left alive. Check with `ps -eo pid,ppid,pgid,rss,comm | grep -E 'hermes|claude' | grep -v gateway`.
+§
+KENSEI North Star MVP canonical: `/home/kensei/repos/KenseiAgent/docs/NorthStar.md`. MVP: mailbox digest (Option 1 Telegram-first), research digest, Command Center, content drafts, memory/session recall, stability.
+§
+Ollama fallback fix 2026-05-15: removed dup ollama-cloud route, added nemotron-3-super + qwen3.6-plus fallbacks. Kanban gave_up loop fix 2026-05-21: check kind IN (blocked,unblocked,gave_up). Needs gateway restart. WAL bloat fix 2026-06-04: SessionDB lacked wal_autocheckpoint. Added PRAGMA wal_autocheckpoint=100 in hermes_state.py. WAL monitor cron: 4607b022e4fa (every 6h, no_agent, 50MB threshold).
+§
+KENSEI multi-profile rollout decisions: canonical profile IDs stay functional; default remains KENSEI; General Assistant sensitive/admin tools are task-scoped; Research Lead owns all research including social/web scraping and product validation; Coding Lead can edit/test only, commits by request, no push; Content Lead draft-only until free/near-free approval-gated posting solution is defined; Knowledge Librarian writes only to defined KENSEI Obsidian area, no push unless approved/sync job; Ops Lead owns security+DevOps+performance/upkeep, diagnoses freely, asks before restarts/destructive changes. First pilots: research→content→knowledge, then content drafting pipeline.
+§
+Dispatch health watchdog cron created: job_id e19d5b97dddb. Runs every 30m. Script at ~/.hermes/profiles/wesker/scripts/dispatch-health-watchdog.py. Monitors: stuck tasks (>30min running), oldest pending tasks, crash events 24h. Profile-board dedup via resolved path + crash dedup by (task_id, started_at, ended_at). Silent when all clear. Delivers to Discord #ops.
+§
+Session archive at /home/kensei/backups/sessions/stale-sessions-20260527.tar.gz — 2493 stale session files compressed from 1.28GB to 219MB.

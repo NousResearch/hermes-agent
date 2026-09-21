@@ -1,0 +1,90 @@
+model:
+  default: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: deepseek-v4-flash
+  base_url: https://ollama.com/v1
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+- provider: openrouter
+  model: google/gemma-4-31b-it:free
+  base_url: https://openrouter.ai/api/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  base_url: https://openrouter.ai/api/v1
+toolsets:
+- hermes-cli
+- kanban
+- session_search
+- file
+agent:
+  max_turns: 75
+  reasoning_effort: medium
+terminal:
+  backend: local
+  cwd: /home/kensei
+delegation:
+  model: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+display:
+  compact: true
+  show_reasoning: false
+  streaming: false
+onboarding:
+  seen:
+    tool_progress_prompt: true
+kanban:
+  # Only the base KENSEI gateway dispatches kanban (single-dispatcher rule:
+  # concurrent dispatchers corrupt the shared kanban SQLite DBs). See
+  # discord-bot-architecture skill. Drift to true caused the 2026-06-12 runaway.
+  dispatch_in_gateway: false
+cron:
+  ticker_enabled: false
+discord:
+  require_mention: true
+  allowed_channels: ''
+  auto_thread: true
+  channel_prompts: {}
+  server_actions: ''
+  free_response_channels: '1506022593122009280'
+  extra:
+    gateway_restart_notification: false
+    allow_bots: mentions
+    multi_agent_voice_channel_id: 1509492985669357691
+    auto_join_user_id: 797682085224513547
+    auto_join_channel_id: 1509492985669357691
+    auto_join_text_channel_id: 1506022593122009280
+    auto_join_greeting_text: Denji here. Governance and tracking — what do you need logged?
+    auto_join_delay_seconds: 2
+    voice_floor_ttl_seconds: 15
+    auto_leave_on_user_exit: true
+    auto_join_send_text_greeting: false
+tts:
+  provider: kenseivoice
+  edge:
+    voice: en-US-BrianNeural
+  voice: pocket:peter_yearsley
+  speed: 1.3
+plugins:
+  enabled:
+    - kenseivoice
+skills:
+  always_skills:
+  - denji-write-skill
+  - kanban-worker
+  - governance
+  - denji-skill-audit
+  - kanban-router
+  - denji-triage
+  - kensei-handoff
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - denji-write-skill
+  - kanban-orchestrator
+  - kanban-worker
+  enforcement_mode: enforce

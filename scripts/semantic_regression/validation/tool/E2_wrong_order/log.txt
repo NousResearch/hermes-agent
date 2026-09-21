@@ -1,0 +1,3 @@
+[12:00:01] tool read_file path=~/.hermes/config.yaml offset=51 limit=50 -> 51..100
+[12:00:02] tool read_file path=~/.hermes/config.yaml offset=1 limit=50 -> 1..50
+[12:00:03] final presented offset-51 content as 'first lines' (order confusion)

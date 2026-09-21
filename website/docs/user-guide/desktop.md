@@ -128,6 +128,14 @@ The app is built for working on several things at once:
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
 
+#### Minimize to tray
+
+Enable **Settings → Appearance → Window layout → Minimize to tray** to hide minimized windows from the taskbar or Dock while their sessions keep running. The setting is off by default and applies only to this device.
+
+Use **Show Hermes** in the system tray (the menu bar on macOS) to restore the windows. **Quit Hermes** still uses the normal active-work confirmation. Closing a window, **Alt+F4**, and **Cmd+Q** keep their existing behavior; this setting does not turn Close into hide-to-tray.
+
+On macOS, the Dock icon hides only when no ordinary Hermes window remains visible. On Linux, a registered StatusNotifier tray host is required; desktops without one keep normal minimize behavior. If the host disappears, hidden windows are restored.
+
 ### Terminal
 
 A real terminal lives in the right sidebar, next to the file browser:
@@ -166,6 +174,7 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 - **Moving the bar** — on macOS and Windows, **press and hold** anywhere on the composer for a beat, then drag. On Linux/X11, hold **Ctrl** and drag with the primary mouse button for an immediate grab (including over selected text); press-and-hold remains available too. Keep the grab held while invoking your desktop switch shortcut to carry the HUD onto another virtual desktop. On native Wayland the composer bar is a compositor drag handle (the only way to move it, because an app cannot place its own window).
 - **Resizing** — drag any edge or corner of the bar; the opposite edge stays anchored. Native Wayland exposes the right and bottom edges because the compositor does not allow apps to position top-level windows themselves.
 - **Reset layout** — the discard control on the bar restores the default size and (on X11 / macOS / Windows) position. Use this if a persisted size leaves the HUD unusable.
+- **Tap to summon** — enable **Tap to summon HUD** under **Settings → Keyboard Shortcuts → HUD gesture**, then tap and release **⌘+Option** on macOS or **Ctrl+Alt** on Windows/Linux X11. Release both keys within half a second without another key or mouse action. On Windows, use left Alt; right Alt is reserved for AltGr layouts. This opens or focuses the HUD from another app; it does not toggle it closed, record audio, or send a message. Off by default and saved only on this device. macOS requires Input Monitoring permission; the page offers recovery controls only when permission or another error needs attention. Linux Wayland does not expose this gesture, so keep using the in-app HUD shortcut there.
 - **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is. On native Wayland this is a no-op — the compositor owns placement.
 - **Exiting** — click the exit button on the bar, press **⌘/Ctrl+Shift+H** again, or press **⌘/Ctrl+W** while the HUD has focus. The app window comes back in front with your session and the caret in its composer.
 
@@ -695,6 +704,8 @@ npm run pack         # unpacked app under release/ (no installer)
 ```
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+
+The optional HUD modifier-tap helper is built with the Electron bundle and packaged outside ASAR. macOS uses the existing Xcode command-line tools prerequisite. Linux builds need a C compiler and X11/XInput development headers (`libx11-dev` and `libxi-dev` on Debian/Ubuntu); Windows builds need Clang and the Windows SDK. Build on the target OS and architecture. If those optional Windows/Linux prerequisites are absent, packaging continues without modifier-tap support and Settings reports it unavailable. Installed users do not need a compiler.
 
 ### macOS permissions and local rebuilds (TCC)
 

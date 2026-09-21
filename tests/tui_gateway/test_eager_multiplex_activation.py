@@ -32,16 +32,18 @@ def test_activates_for_a_real_second_profile(two_profile_host):
     assert secret_scope.is_multiplex_active()
 
 
-def test_multiplex_disabled_in_config_is_honoured(two_profile_host, monkeypatch):
-    """A host that pinned ``gateway.multiplex_profiles: false`` keeps per-profile gateways AND
-    per-profile credential semantics; arming the guard there breaks legitimate unscoped reads."""
+def test_the_retired_opt_out_no_longer_disarms_the_credential_guard(two_profile_host, monkeypatch):
+    """``gateway.multiplex_profiles: false`` is retired as a topology opt-out, so it must not
+    disarm this guard: a multi-home host that skipped activation because of a stale ``false``
+    would serve the second profile with the LAUNCH profile's credentials -- the exact fail-open
+    the guard exists to prevent. The host is multi-profile; that is the whole question."""
     (two_profile_host / "config.yaml").write_text("{}\n", encoding="utf-8")
     from hermes_cli import config as cfg_mod
 
     monkeypatch.setattr(cfg_mod, "load_config", lambda *a, **k: {"gateway": {"multiplex_profiles": False}})
 
-    assert launch_profile_policy.activate_multi_profile_hosting_eagerly() is False
-    assert not secret_scope.is_multiplex_active()
+    assert launch_profile_policy.activate_multi_profile_hosting_eagerly() is True
+    assert secret_scope.is_multiplex_active()
 
 
 def test_a_crashed_profile_create_shell_is_not_a_second_tenant(two_profile_host):

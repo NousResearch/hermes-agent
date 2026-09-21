@@ -918,7 +918,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   {groupActivityLabel(event, group)}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
-                {event.kind === 'working' ? (
+                {room.running && event.kind === 'working' ? (
                   <Tip label={b.group.stopHint}>
                     <Button
                       className="shrink-0 text-(--ui-accent)"
@@ -1088,6 +1088,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
     const seed = (current: string) =>
       current.includes(`@${tag}`) ? current : `@${tag} ${current}`.replace(/\s+$/, ' ')
+
     const thread = groupThreadOf(entry)
 
     if (replyThread === thread) {

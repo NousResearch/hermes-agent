@@ -6,6 +6,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const native = vi.hoisted(() => ({ start: vi.fn(), stop: vi.fn() }))
+
 const electron = vi.hoisted(() => ({
   handlers: new Map(),
   windows: [] as any[],
@@ -13,6 +14,7 @@ const electron = vi.hoisted(() => ({
   screenPermission: 'granted',
   directory: ''
 }))
+
 vi.mock('./command-screenshot-monitor', () => ({
   CommandScreenshotMonitor: class {
     start = native.start
@@ -59,6 +61,7 @@ afterEach(async () => {
 
 function window(id: number, url = 'http://127.0.0.1:5174/') {
   const frame = { url }
+
   const wc = Object.assign(new EventEmitter(), {
     id,
     mainFrame: frame,
@@ -66,6 +69,7 @@ function window(id: number, url = 'http://127.0.0.1:5174/') {
     isDestroyed: () => false,
     send: vi.fn()
   })
+
   const win = { webContents: wc, isDestroyed: () => false }
   electron.windows.push(win)
 

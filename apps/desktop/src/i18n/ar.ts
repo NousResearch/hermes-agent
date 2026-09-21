@@ -407,6 +407,7 @@ export const ar = defineLocale({
       gatewayManagedUpdatesUnavailable: 'تتطلب التحديثات البعيدة إصدار سطح مكتب يدعم تحديثات SSH المُدارة.',
       gatewayManagedUpdatesEmpty: 'أضف اتصال SSH في الاتصالات المحفوظة لإدارة تحديثاته هنا.',
       keyboardShortcuts: 'تعيينات المفاتيح',
+      hudGesture: 'إيماءة HUD',
       screenCapture: 'التقاط الشاشة',
       notificationAlerts: 'تنبيهات سطح المكتب',
       notificationSounds: 'الأصوات',
@@ -879,6 +880,11 @@ export const ar = defineLocale({
       daysAgo: count => `قبل ${count} يوم`
     },
     config: {
+      minimizeToTrayTitle: 'التصغير إلى علبة النظام',
+      minimizeToTrayDesc:
+        'إخفاء النوافذ المصغّرة في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. يظل سلوك الإغلاق وAlt+F4 وCmd+Q كما هو. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
+      minimizeToTrayUnavailable:
+        'علبة النظام غير متاحة. ستُصغّر النوافذ وتُغلق كالمعتاد. أوقف هذا الخيار ثم فعّله لإعادة المحاولة.',
       none: 'لا شيء',
       noneParen: '(لا شيء)',
       notSet: 'غير مضبوط',
@@ -893,6 +899,15 @@ export const ar = defineLocale({
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'تم استيراد الإعدادات',
       invalidJson: 'JSON غير صالح'
+    },
+    hudModifier: {
+      title: 'استدعاء HUD بضغطة',
+      description:
+        'اضغط ثم حرّر ⌘ + Option على Mac، أو Ctrl + Alt على Windows/Linux، لإظهار HUD من أي تطبيق. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
+      permission:
+        'اسمح لـ Hermes في إعدادات النظام ← الخصوصية والأمان ← مراقبة الإدخال، ثم أعد المحاولة. لا تسجّل هذه الإيماءة ضغطات المفاتيح ولا تلتقط الشاشة.',
+      unavailable:
+        'هذه الإيماءة غير متاحة هنا. يتطلب Linux جلسة X11؛ لا يتيح Wayland رصد ضغطات مفاتيح التعديل على مستوى النظام. يظل اختصار HUD الحالي يعمل داخل Hermes.'
     },
     screenshot: {
       enabledTitle: 'اختصار لقطة الشاشة',
@@ -2234,6 +2249,8 @@ export const ar = defineLocale({
     }
   },
   statusStack: {
+    hideStack: 'إخفاء لوحة الحالة',
+    showStack: 'إظهار لوحة الحالة',
     agents: 'الوكلاء',
     background: count => `${count} في الخلفية`,
     goalActive: 'الهدف نشط',

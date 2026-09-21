@@ -19,6 +19,7 @@ const deps = {
 function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string) {
   const respond = vi.fn()
   const fail = vi.fn()
+
   const handled = handleServerRequest(
     { fail, id: 'srq-1', method, params, profile: 'default', respond },
     deps,

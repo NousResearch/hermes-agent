@@ -44,7 +44,5 @@ it('updates the write origin when a refetch replaces the displayed record', asyn
   await queryClient.invalidateQueries({ queryKey: HERMES_CONFIG_KEY })
 
   await waitFor(() => expect(result.current.data).toEqual(second))
-  await waitFor(() =>
-    expect(result.current.writeScope).toEqual({ connectionId: 'connection-b', profile: 'worker' })
-  )
+  await waitFor(() => expect(result.current.writeScope).toEqual({ connectionId: 'connection-b', profile: 'worker' }))
 })

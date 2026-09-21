@@ -22,12 +22,13 @@ from agent.model_metadata import is_output_cap_error, parse_available_output_tok
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
-    _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
+    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
     _strip_images_from_messages, _strip_non_ascii,
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
+from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
     CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
     provider_label_for, site_copy, stamp_failure,
@@ -219,14 +220,26 @@ def _recover_unicode_encode_error(
     return True, active_system_prompt
 
 
+def _strip_request_images_and_retry(agent: Any, api_messages: Any) -> bool:
+    """Strip image parts from the per-call ``api_messages`` copy; True if anything was removed.
+
+    Shared by the corrupt-image recoveries: a bad payload says nothing about the model, so it
+    is stripped for this attempt only and the model is never recorded as image-rejecting."""
+    if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
+        _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+        return True
+    return False
+
+
 def recover_before_classification(
     agent: Any, api_error: Exception, *, messages: List[Dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
 ) -> Tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
-    sanitization, provider image-content rejection (switch session to text-only), and the
-    Bedrock AnthropicBedrock SDK streaming fallback. Returns ``(retry_now,
-    active_system_prompt)``; the prompt may be ASCII-sanitized in place."""
+    sanitization, provider image-content rejection (record the (provider, model);
+    build_api_request strips images from that model's requests only), and the Bedrock
+    AnthropicBedrock SDK streaming fallback. Returns ``(retry_now, active_system_prompt)``;
+    the prompt may be ASCII-sanitized in place."""
     if isinstance(api_error, UnicodeEncodeError) and getattr(agent, '_unicode_sanitization_passes', 0) < 2:
         _recovered, active_system_prompt = _recover_unicode_encode_error(
             agent, api_error, messages, api_messages, api_kwargs, active_system_prompt
@@ -234,8 +247,9 @@ def recover_before_classification(
         if _recovered:
             return True, active_system_prompt
 
-    # Some providers 4xx on image_url content: strip images, mark session
-    # vision-unsupported, retry text-only. English phrase match; extend it.
+    # Some providers 4xx on image_url content: record the (provider, model) and retry;
+    # build_api_request strips images from that model's requests only. English phrase
+    # match; extend it.
     _err_body = ""
     try:
         _err_body = str(getattr(api_error, "body", None) or getattr(api_error, "message", None) or str(api_error))
@@ -244,19 +258,33 @@ def recover_before_classification(
     _err_status = getattr(api_error, "status_code", None)
     # 4xx-only gate: 5xx/timeouts are transient and take the retry path.
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
-    if getattr(agent, "_vision_supported", True) and _looks_like_image_content_rejection(_err_body) and _status_ok:
-        agent._vision_supported = False
-        _imgs_removed = _strip_images_from_messages(messages)
-        if _imgs_removed:
-            agent._db_flush_scan_prefix = None
-        if isinstance(api_messages, list):
-            _strip_images_from_messages(api_messages)
-        _vlines(
-            agent,
-            "⚠️  Server rejected image content — switching to text-only mode for this session"
-            + (". Stripped images from history and retrying." if _imgs_removed else "."),
-        )
-        return True, active_system_prompt
+    # Guarded PER MODEL, not by a turn-global flag: in a fallback chain the next model can reject
+    # images too, and a turn-wide flag would skip its recovery and fail the turn.
+    _model_key = _provider_model_key(agent)
+    _rejected = agent._image_rejecting_models
+    _corrupt = _looks_like_corrupt_image_rejection(_err_body)
+    if _status_ok and (_corrupt or (_model_key not in _rejected and _looks_like_image_content_rejection(_err_body))):
+        # Send-path only. A rejection says what THIS model accepts, not what the conversation
+        # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
+        # image — and every image-only message — from state.db for good, so a later switch to a
+        # vision model found them gone. Same failure as the ASCII strip in #117802.
+        if _corrupt:
+            # A bad payload says nothing about the model's capability: strip this attempt only
+            # (like the image_corrupt branch below) and leave the model unmarked so a later good
+            # image still reaches it. Retry only if something was stripped, or a text-only
+            # request would loop on the same error.
+            if _strip_request_images_and_retry(agent, api_messages):
+                return True, active_system_prompt
+        else:
+            # Record the model; the retry re-enters build_api_request with the same
+            # api_messages and strip_images_for_rejecting_model strips them there.
+            _rejected.add(_model_key)
+            _vlines(
+                agent,
+                "⚠️  Server rejected image content — sending text only to this model; "
+                "images stay in the session history.",
+            )
+            return True, active_system_prompt
 
     # AnthropicBedrock SDK raises "Unexpected event order" when Bedrock errors before
     # message_start; fall back to native Converse for this session.
@@ -694,8 +722,7 @@ def recover_after_classification(
     # Strip ONLY the per-call copy: replacing msg["content"] on the shallow api_messages
     # rows keeps canonical history's images (transient rejection must not erase history).
     if classified.reason == FailoverReason.image_corrupt:
-        if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
-            _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+        if _strip_request_images_and_retry(agent, api_messages):
             return True, recovered_with_pool
         logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
 

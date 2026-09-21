@@ -400,17 +400,23 @@ _IMAGE_REJECTION_PHRASES = (
 )
 
 
+def image_model_key(agent: Any) -> tuple:
+    """``(provider, model)`` the agent is currently talking to — the key image rejections are
+    tracked by, so each model in a fallback chain is judged on its own."""
+    return (getattr(agent, "provider", None), getattr(agent, "model", None))
+
+
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     """Send-path image strip for a model that rejected image content (see turn_recovery).
 
     Runs on the per-call ``api_messages`` copy in Hermes's own message format, BEFORE the
     provider-specific conversion: the part types this stripper knows are that format's, and a
     converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
-    past it. History is never touched. Keyed on the rejecting (provider, model), so a model
+    past it. History is never touched. Keyed on each rejecting (provider, model), so a model
     that accepts images gets them again.
     """
-    rejecting = getattr(agent, "_image_rejecting_model", None)
-    if rejecting is None or rejecting != (getattr(agent, "provider", None), getattr(agent, "model", None)):
+    rejected = getattr(agent, "_image_rejecting_models", None)
+    if not isinstance(rejected, set) or image_model_key(agent) not in rejected:
         return False
     return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
 
@@ -428,7 +434,7 @@ __all__ = [
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
-    "strip_images_for_rejecting_model",
+    "strip_images_for_rejecting_model", "image_model_key",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
     "tool_result_id_variants", "uniquify_tool_call_ids",

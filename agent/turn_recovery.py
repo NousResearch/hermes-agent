@@ -24,7 +24,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _strip_images_from_messages, _strip_non_ascii,
+    _strip_images_from_messages, _strip_non_ascii, image_model_key,
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
@@ -244,14 +244,20 @@ def recover_before_classification(
     _err_status = getattr(api_error, "status_code", None)
     # 4xx-only gate: 5xx/timeouts are transient and take the retry path.
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
-    if getattr(agent, "_vision_supported", True) and _looks_like_image_content_rejection(_err_body) and _status_ok:
+    # Guarded PER MODEL, not by the turn-global ``_vision_supported``: in a fallback chain the next
+    # model can reject images too, and a turn-wide flag would skip its recovery and fail the turn.
+    _model_key = image_model_key(agent)
+    _rejected = getattr(agent, "_image_rejecting_models", None)
+    if not isinstance(_rejected, set):
+        _rejected = agent._image_rejecting_models = set()
+    if _model_key not in _rejected and _looks_like_image_content_rejection(_err_body) and _status_ok:
         agent._vision_supported = False
         # Send-path only. A rejection says what THIS model accepts, not what the conversation
         # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
         # image — and every image-only message — from state.db for good, so a later switch to a
         # vision model found them gone. Same failure as the ASCII strip in #117802. Record the
         # model; build_api_request strips images from each request to it instead.
-        agent._image_rejecting_model = (getattr(agent, "provider", None), getattr(agent, "model", None))
+        _rejected.add(_model_key)
         if isinstance(api_messages, list):
             _strip_images_from_messages(api_messages)
         _vlines(

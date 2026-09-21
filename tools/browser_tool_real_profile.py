@@ -248,7 +248,8 @@ def _real_profile_cdp() -> tuple:
                       "Set browser.engine to 'auto' or 'chrome' to use real-profile browsing, or turn the toggle off.")
 
     from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
-                                            real_profile_copy_dir, snapshot_real_profile)
+                                            real_profile_binary_override, real_profile_copy_dir,
+                                            snapshot_real_profile)
 
     with _bt._real_profile_cdp_lock:
         cached = _bt._real_profile_cdp_cache.get("cdp")
@@ -290,7 +291,11 @@ def _real_profile_cdp() -> tuple:
         copy_dir, err = snapshot_real_profile(browser)
         if err or not copy_dir:
             return None, _real_profile_snapshot_error(err)
-        real_binary = chromium_executable(browser)
+        # Optional binary override (browser.real_profile_binary): e.g. Chrome-for-Testing so a
+        # headless automation instance is never the REAL Chrome.app holding the macOS Launch
+        # Services registration (dock trap). Falls back to the detected real browser when unset
+        # or unresolvable — never blocks browsing.
+        real_binary = real_profile_binary_override() or chromium_executable(browser)
         if real_binary is None:
             return None, f"{_RP}the real browser binary for '{browser}' could not be found. Reinstall it or turn the toggle off."
         port, err = _launch_real_profile_chrome(real_binary, copy_dir)

@@ -440,6 +440,15 @@ DEFAULT_CONFIG = {
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
         # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
         "real_profile_pin": "",
+        # Override the BINARY launched for real-profile browsing (absolute path, ~ expanded, or a
+        # glob — the NEWEST match wins, e.g. the packaged Chrome-for-Testing whose revision number
+        # changes between installs). Empty = launch the detected real browser. Rationale (macOS):
+        # a headless instance of the REAL Google Chrome.app holds the Launch Services
+        # registration, so every dock click activates a windowless Chrome ("dock trap");
+        # Chrome-for-Testing is a separate bundle invisible to Launch Services. Cookie behavior is
+        # identical in headless background launches either way. An unresolvable value falls back
+        # to the real binary (logged) — never blocks browsing.
+        "real_profile_binary": "",
         # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
         # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
         # is the legacy override that bypasses that denylist entirely.

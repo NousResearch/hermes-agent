@@ -120,6 +120,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       // Skill completions are per session: project-local skills follow the
       // session's repo, so the gateway must know which session is asking.
       const sid = getUiState().sid
+
       const params =
         request.method === 'complete.slash' && sid ? { ...request.params, session_id: sid } : request.params
 

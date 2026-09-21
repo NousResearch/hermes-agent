@@ -18,10 +18,12 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   const expectedUrl = new URL(rendererUrl)
   const monitor = new CommandScreenshotMonitor({ appPath: app.getAppPath() })
   const hasScreenPermission = () => systemPreferences.getMediaAccessStatus('screen') === 'granted'
+
   const capture = createScreenshotCapture({
     hasScreenPermission,
     getSources: options => desktopCapturer.getSources(options)
   })
+
   const recipients = new Map<number, () => void>()
   let lastRecipient: BrowserWindow | null = null
   let enabled = false

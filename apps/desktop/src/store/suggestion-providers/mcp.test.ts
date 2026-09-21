@@ -10,6 +10,7 @@ it('does not send local-app or non-OAuth catalog suggestions through the hosted 
     transport: 'http',
     suggest: { keywords: ['hosted'], hosts: [] }
   }
+
   const editor = {
     ...hosted,
     name: 'editor',
@@ -17,6 +18,7 @@ it('does not send local-app or non-OAuth catalog suggestions through the hosted 
     auth_type: 'none',
     suggest: { ...hosted.suggest, requires_app: true }
   }
+
   const key = { ...hosted, name: 'key', auth_type: 'api_key' }
   const stdio = { ...hosted, name: 'stdio', url: null, transport: 'stdio' }
   expect(buildMcpSuggestionIndex([hosted, editor, key, stdio]).map(row => row.server)).toEqual([hosted.name])

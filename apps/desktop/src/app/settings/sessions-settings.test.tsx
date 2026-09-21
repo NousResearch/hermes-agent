@@ -60,6 +60,25 @@ describe('SessionsSettings unarchive', () => {
     expect($messagingSessions.get()[0]?.archived).toBe(false)
     expect($sessions.get()).toEqual([])
   })
+
+  it('routes a connection-tagged row back to its exact owner', async () => {
+    vi.mocked(listAllProfileSessions).mockResolvedValue({
+      sessions: [{ ...archivedMatrixSession, connection_id: 'gateway-b', profile: 'default' }],
+      total: 1
+    } as never)
+
+    render(<SessionsSettings />)
+    const button = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
+
+    await act(async () => fireEvent.click(button))
+
+    await waitFor(() =>
+      expect(setSessionArchived).toHaveBeenCalledWith('matrix-1', false, {
+        connectionId: 'gateway-b',
+        profile: 'default'
+      })
+    )
+  })
 })
 
 describe('SessionsSettings auto archive', () => {

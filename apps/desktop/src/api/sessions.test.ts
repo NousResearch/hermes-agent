@@ -109,12 +109,28 @@ describe('getSession dial priority', () => {
 })
 
 describe('setSessionArchived profile scoping', () => {
+  it('pins the PATCH to the row connection while carrying its profile in the body', async () => {
+    hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.capabilityScoped).mockReturnValue({ connectionId: 'gateway-b', profile: 'default' })
+
+    await setSessionArchived('sess-remote', false, { connectionId: 'gateway-b', profile: 'default' })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      body: { archived: false, profile: 'default' },
+      connectionId: 'gateway-b',
+      method: 'PATCH',
+      path: '/api/sessions/sess-remote',
+      profile: 'default'
+    })
+  })
+
   it('carries the owning profile in the PATCH body', async () => {
     // Same class as the unscoped DELETE: the PATCH handler reads its target DB
     // from body.profile, so archiving a foreign-profile session must send it in
     // the body, not only as request.profile (Electron routing), or on a remote
     // gateway the archive lands on the wrong state.db and silently no-ops.
     hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'tommy' })
 
     await setSessionArchived('sess-a', true, 'tommy')
 

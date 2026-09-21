@@ -21,6 +21,7 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
+import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
 import { forgetSessionUnread } from '@/store/session-unread'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
@@ -83,7 +84,7 @@ function ArchivedSessionsSettings({
       setBusyId(session.id)
 
       try {
-        await setSessionArchived(session.id, false, session.profile)
+        await setSessionArchived(session.id, false, sessionOwnerRouteFromRow(session) ?? session.profile)
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
@@ -115,7 +116,7 @@ function ArchivedSessionsSettings({
       setBusyId(session.id)
 
       try {
-        await deleteSession(session.id, session.profile)
+        await deleteSession(session.id, sessionOwnerRouteFromRow(session) ?? session.profile)
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
         forgetSessionUnread([session.id, session._lineage_root_id], session.profile)

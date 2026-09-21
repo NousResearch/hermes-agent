@@ -16,7 +16,7 @@ export function registerNativeNotifications({
   getMainWindow,
   focusWindow,
   platform = process.platform
-}: NotificationHost): void {
+}: NotificationHost): { dispose: () => void } {
   const dedupeIntervalMs = 1000
   const isDuplicateNotification = createEventDeduper(dedupeIntervalMs)
   const deliveries = new Map<string, Promise<boolean>>()
@@ -119,4 +119,6 @@ export function registerNativeNotifications({
 
     return delivery
   })
+
+  return { dispose: () => linux?.dispose() }
 }

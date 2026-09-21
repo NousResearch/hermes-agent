@@ -317,5 +317,9 @@ export function createLinuxNotifications() {
     return Object.assign(notification, { show, close })
   }
 
-  return { create }
+  // Quit teardown: the close event fails every live notification and drops the
+  // connection, the same path a daemon crash takes.
+  const dispose = () => connection?.bus.connection.stream.destroy()
+
+  return { create, dispose }
 }

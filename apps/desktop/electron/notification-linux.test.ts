@@ -135,7 +135,11 @@ function setup(alreadyRunning = false) {
   const source = { isDestroyed: vi.fn(() => false), webContents: { send: vi.fn() } }
   host.fromWebContents.mockReturnValue(source)
   const focusWindow = vi.fn()
-  registerNativeNotifications({ getMainWindow: () => primary as unknown as BrowserWindow, focusWindow, platform: 'linux' })
+  const { dispose } = registerNativeNotifications({
+    getMainWindow: () => primary as unknown as BrowserWindow,
+    focusWindow,
+    platform: 'linux'
+  })
 
   const notify = (payload: HermesNotification) =>
     Promise.resolve(
@@ -154,6 +158,7 @@ function setup(alreadyRunning = false) {
 
   return {
     connection,
+    dispose,
     calls,
     primary,
     source,
@@ -331,6 +336,11 @@ it(
     expect(reused.source.webContents.send).not.toHaveBeenCalled()
     reused.signal('ActionInvoked', [retainedId, 'default'])
     expect(reused.source.webContents.send).toHaveBeenCalledWith('hermes:focus-session', 'new-session')
-    reused.connection.emit('close')
+
+    // Quit teardown closes the bus; a delivered notification's callbacks die with it.
+    reused.dispose()
+    expect(reused.connection.stream.destroy).toHaveBeenCalled()
+    reused.signal('ActionInvoked', [retainedId, 'default'])
+    expect(reused.source.webContents.send).toHaveBeenCalledTimes(1)
   }
 )

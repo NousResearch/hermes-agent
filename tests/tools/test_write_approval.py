@@ -323,3 +323,55 @@ class TestSkillGist:
         assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
         assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
         assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"
+
+
+class TestSkillPendingDiffBatch:
+    """A staged batch (skill_manager_batch) must render every operation — this is the
+    /skills diff review affordance for gated skill writes (#118134)."""
+
+    def test_batch_renders_each_operation(self):
+        from tools import write_approval as wa
+
+        rec = {
+            "payload": {
+                "action": "batch",
+                "operations": [
+                    {
+                        "action": "create",
+                        "name": "demo",
+                        "content": "# Demo\nStep 1.\n",
+                    },
+                    {
+                        "action": "write_file",
+                        "name": "demo",
+                        "file_path": "references/a.md",
+                        "file_content": "a",
+                    },
+                ],
+            }
+        }
+        out = wa.skill_pending_diff(rec)
+        assert "--- [1/2] create 'demo' ---" in out
+        assert "# Demo" in out
+        assert "--- [2/2] write_file 'demo' ---" in out
+        assert "(batch on '')" not in out
+
+    def test_batch_op_without_name_labels_action_only(self):
+        from tools import write_approval as wa
+
+        rec = {
+            "payload": {
+                "action": "batch",
+                "operations": [{"action": "create", "content": "x"}],
+            }
+        }
+        out = wa.skill_pending_diff(rec)
+        assert "--- [1/1] create ---" in out
+        assert "x" in out
+
+    def test_empty_batch(self):
+        from tools import write_approval as wa
+
+        assert (
+            wa.skill_pending_diff({"payload": {"action": "batch"}}) == "(empty batch)"
+        )

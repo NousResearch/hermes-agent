@@ -251,12 +251,32 @@ def _find_skill_path(name: str) -> Optional[Path]:
     return found["path"] if found else None
 
 
+def _batch_pending_diff(payload: Dict[str, Any]) -> str:
+    """Op-by-op rendering for a staged skill batch (skill_manager_batch stages
+    ``{"action": "batch", "operations": [...]}``): every operation goes through
+    the same per-action logic as a standalone pending write."""
+    operations = payload.get("operations") or []
+    if not operations:
+        return "(empty batch)"
+    parts = []
+    for i, op in enumerate(operations, 1):
+        name = op.get("name") or ""
+        label = f"{op.get('action', '?')} '{name}'" if name else op.get("action", "?")
+        parts.append(
+            f"--- [{i}/{len(operations)}] {label} ---\n"
+            + skill_pending_diff({"payload": op})
+        )
+    return "\n\n".join(parts)
+
+
 def skill_pending_diff(record: Dict[str, Any]) -> str:
     """Full content (create) or unified diff vs. the on-disk skill (edit/patch/write_file),
     rendered by /skills diff <id> on surfaces that can show it."""
     payload = record.get("payload", {})
     action = payload.get("action", "")
     name = payload.get("name", "")
+    if action == "batch":
+        return _batch_pending_diff(payload)
     if action == "create":
         return payload.get("content") or ""
     if action not in {"edit", "patch", "write_file"}:

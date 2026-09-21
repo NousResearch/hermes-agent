@@ -387,7 +387,7 @@ When you start Hermes from the application grid or menu (the launcher sets `DESK
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
 | `--cwd PATH`         | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`)           |
 | `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
-| `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |
+| `--ignore-existing`  | Make the app ignore every discovered local runtime (active install, `hermes` on `PATH`, system-python module) during backend resolution — no local backend is started; `--hermes-root` still wins      |
 | `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |
 
 ## How it works

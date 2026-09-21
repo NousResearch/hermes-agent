@@ -1866,7 +1866,7 @@ _YAML_BRIDGE = (  # (extra key, env var, kind) for apply_yaml_bridge
     ("channels", "BUZZ_CHANNELS", "csv"), ("allowed_users", "BUZZ_ALLOWED_USERS", "csv"),
     ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"), ("allow_all_users", "BUZZ_ALLOW_ALL_USERS", "lower"),
     ("require_mention", "BUZZ_REQUIRE_MENTION", "lower"), ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "lower"),
-    ("reply_to_mode", "BUZZ_REPLY_TO_MODE", "lower"),
+    ("reply_to_mode", "BUZZ_REPLY_TO_MODE", "lower"), ("dm_threads", "BUZZ_DM_THREADS", "lower"),
 )
 
 

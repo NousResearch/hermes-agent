@@ -395,3 +395,11 @@ class TestDmThreadSessions:
         ev = await self._dispatch(_make_adapter(), "dm",
                                   _nip10_reply_event("r4", root=ROOT_EVT, parent=MID_EVT, content="shorter"))
         assert ev.source.thread_id is None
+
+
+def test_apply_yaml_config_bridges_dm_threads(monkeypatch):
+    monkeypatch.delenv("BUZZ_DM_THREADS", raising=False)
+    _buzz_mod._apply_yaml_config({}, {"extra": {"dm_threads": False}})
+    import os
+    assert os.environ["BUZZ_DM_THREADS"] == "false"
+    monkeypatch.delenv("BUZZ_DM_THREADS", raising=False)

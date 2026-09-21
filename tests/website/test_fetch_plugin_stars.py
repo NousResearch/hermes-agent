@@ -79,7 +79,10 @@ def test_probe_starts_with_one_graphql_request_and_rest_fills_missing_counts(mod
     assert data["fetched_at"] > "2026-01-01"
 
 
-def test_failed_graphql_probe_stops_fallback_and_keeps_cache(mod, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("failure_mode", ["exception", "payload"])
+def test_failed_graphql_probe_stops_fallback_and_keeps_cache(
+    mod, tmp_path, monkeypatch, capsys, failure_mode,
+):
     cat = _catalog(tmp_path, "https://github.com/a/one", "https://github.com/b/two")
     out = tmp_path / "plugin-stars.json"
     timestamp = "2026-01-01T00:00:00+00:00"
@@ -89,7 +92,9 @@ def test_failed_graphql_probe_stops_fallback_and_keeps_cache(mod, tmp_path, monk
     }), encoding="utf-8")
 
     def limited(query, token):
-        raise urllib.error.HTTPError("u", 401, "unauthorized", hdrs=None, fp=None)
+        if failure_mode == "exception":
+            raise urllib.error.HTTPError("u", 401, "unauthorized", hdrs=None, fp=None)
+        return {"data": None, "errors": [{"message": "API rate limit exceeded"}]}
     monkeypatch.setattr(mod, "_graphql", limited)
 
     def unexpected_rest(*args, **kwargs):

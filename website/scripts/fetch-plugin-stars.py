@@ -132,9 +132,12 @@ def probe_stars(
         _log(f"GraphQL probe failed ({e}); keeping previous counts")
         return {slug: previous[slug] for slug in slugs if slug in previous}, False
     else:
-        data = payload.get("data") or {}
         for err in payload.get("errors") or []:
             _log(f"GraphQL: {err.get('message')}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            _log("GraphQL probe returned no repository data; keeping previous counts")
+            return {slug: previous[slug] for slug in slugs if slug in previous}, False
         for i, slug in enumerate(slugs):
             node = data.get(f"r{i}")
             if isinstance(node, dict) and isinstance(node.get("stargazerCount"), int):

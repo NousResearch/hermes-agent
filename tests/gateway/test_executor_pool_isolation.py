@@ -108,13 +108,31 @@ def test_abandoned_housekeeping_cannot_delay_a_turn_body():
 
 
 def test_shutdown_stops_the_housekeeping_pool():
-    """A pool nobody drains must still be shut down, or its threads outlive the runner."""
+    """A pool nobody drains must still be shut down, or its threads outlive the runner — and a
+    wedged housekeeping worker must be counted as live, or the #101093 skip-close heuristic in
+    ``_stop_quiesce_and_close_session_dbs`` closes SessionDB under a mid-write worker."""
+    wedge = threading.Event()
+    entered = threading.Event()
+
+    def wedged(_agent):
+        entered.set()
+        assert wedge.wait(60), "wedge never released"
+
     runner = _runner()
     hk = runner._get_housekeeping_executor()
     assert not hk._shutdown
+    hk.submit(wedged, object())
+    assert entered.wait(5), "wedged housekeeping item never started"
 
-    runner._shutdown_executor()
+    try:
+        started = time.monotonic()
+        live = runner._shutdown_executor(drain_timeout=0.2)
+        elapsed = time.monotonic() - started
+    finally:
+        wedge.set()
 
+    assert live == 1, f"wedged housekeeping worker not reported as live (got {live})"
+    assert elapsed < 5, f"drain deadline not honoured for the housekeeping pool ({elapsed:.2f}s)"
     assert hk._shutdown, "housekeeping pool was left running at shutdown"
     assert runner._housekeeping_executor is None
     with pytest.raises(RuntimeError):

@@ -4337,10 +4337,11 @@ class GatewayRunner(
             return executor
 
     def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
-        """Stop the gateway-owned executor; returns the number of worker threads still running.
+        """Stop the gateway-owned pools; returns the number of worker threads still running.
         ``drain_timeout=0`` is fire-and-forget; shutdown passes a bounded budget so blocking DB work
         cannot outlive ``SessionDB.close()``. ``cancel_futures`` only drops unstarted work and cancelling
-        a ``run_in_executor`` awaitable does not stop its thread, so running workers are joined."""
+        a ``run_in_executor`` awaitable does not stop its thread, so running workers are joined — on
+        the turn pool AND the housekeeping pool, both of which write to SessionDB."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
             return 0
@@ -4350,22 +4351,19 @@ class GatewayRunner(
             self._executor = None
             housekeeping = getattr(self, "_housekeeping_executor", None)
             self._housekeeping_executor = None
-        # Housekeeping is best-effort and nothing drains it, so it gets no drain budget — but a
-        # pool nobody drains must still be shut down, or its threads outlive the runner.
-        if housekeeping is not None:
+        # Housekeeping workers run SessionDB writes too (session finalize, agent cleanup), so a wedged
+        # one is exactly the mid-write worker the #101093 skip-close heuristic exists for. Both pools
+        # are therefore joined under the SAME drain deadline and both contribute to the live count.
+        workers: list = []
+        for pool in (executor, housekeeping):
+            if pool is None:
+                continue
             try:
-                housekeeping.shutdown(wait=False, cancel_futures=True)
+                pool.shutdown(wait=False, cancel_futures=True)
             except TypeError:
-                housekeeping.shutdown(wait=False)
-        if executor is None:
-            return 0
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            executor.shutdown(wait=False)
-
-        # shutdown() has no timeout, so join workers directly; `_threads` is absent on test doubles (no wait).
-        workers = list(getattr(executor, "_threads", None) or ())
+                pool.shutdown(wait=False)
+            # shutdown() has no timeout, so join workers directly; `_threads` is absent on test doubles (no wait).
+            workers.extend(getattr(pool, "_threads", None) or ())
         deadline = time.monotonic() + max(float(drain_timeout or 0.0), 0.0)
         for worker in workers:
             remaining = deadline - time.monotonic()

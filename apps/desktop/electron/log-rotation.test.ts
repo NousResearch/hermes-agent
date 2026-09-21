@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict'
+
+import { test } from 'vitest'
+
+import { LOG_DISCARD_BYTES, LOG_MAX_BYTES, logBackupPath, planLogRotation } from './log-rotation'
+
+// Regression for #100573 follow-up: the Chromium diagnostic log added for that
+// issue is opened with APPEND_TO_OLD_LOG_FILE, so it grows across launches the
+// same way desktop.log did before it was bounded (~326 GB, disk exhausted).
+// The bound is one shared planner, so any log the shell keeps gets it.
+
+test('a log under the cap is left alone, whatever its path', () => {
+  assert.deepEqual(planLogRotation(LOG_MAX_BYTES - 1, '/logs/desktop-chromium.log'), [])
+})
+
+test('an oversized log cascades to backups instead of growing forever', () => {
+  const base = '/logs/desktop-chromium.log'
+  const ops = planLogRotation(LOG_MAX_BYTES, base)
+
+  // The live file is moved aside, so the next launch starts from zero.
+  assert.ok(ops.some(([op, src, dst]) => op === 'mv' && src === base && dst === logBackupPath(base, 1)))
+  // The chain is bounded: the oldest backup is dropped, never accumulated.
+  assert.deepEqual(ops[0], ['rm', logBackupPath(base, 3)])
+  assert.ok(ops.every(([, src, dst]) => [src, dst].every(p => p === undefined || p.startsWith(base))))
+})
+
+test('a boot-loop log past the discard ceiling is reclaimed, not stranded in .1', () => {
+  const base = '/logs/desktop-chromium.log'
+  const ops = planLogRotation(LOG_DISCARD_BYTES + 1, base)
+
+  // Renaming a multi-GB file keeps the disk full for a cycle a healthy app may
+  // never reach, so every generation is deleted outright.
+  assert.ok(ops.every(([op]) => op === 'rm'))
+  assert.ok(ops.some(([, src]) => src === base))
+})

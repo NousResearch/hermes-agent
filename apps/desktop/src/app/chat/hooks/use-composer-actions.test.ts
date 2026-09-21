@@ -299,12 +299,14 @@ describe('useComposerActions native image drops', () => {
 
   it('does not attach a screenshot when its draft changes during native image saving', async () => {
     let finishSave!: (path: string) => void
+
     const saveImageBuffer = vi.fn(
       () =>
         new Promise<string>(resolve => {
           finishSave = resolve
         })
     )
+
     const add = vi.fn()
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { saveImageBuffer } })
 
@@ -324,10 +326,12 @@ describe('useComposerActions native image drops', () => {
     )
 
     let current = true
+
     const pending = result.current.attachImageBlob(
       new Blob([new Uint8Array([1])], { type: 'image/png' }),
       () => current
     )
+
     await vi.waitFor(() => expect(saveImageBuffer).toHaveBeenCalledOnce())
     current = false
     finishSave('/test/screenshot.png')

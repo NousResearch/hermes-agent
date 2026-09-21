@@ -55,7 +55,9 @@ describe('TimelineRail', () => {
     const { container, rerender } = render(
       <TimelineRail activeIndex={0} entries={entries} loadingId={null} onJump={vi.fn()} />
     )
+
     const rail = container.querySelector<HTMLElement>('[data-slot="thread-timeline-ticks"]')!
+
     const widths = () =>
       Array.from(rail.querySelectorAll<HTMLElement>('[data-slot="timeline-bar"]'), bar => bar.style.width)
 

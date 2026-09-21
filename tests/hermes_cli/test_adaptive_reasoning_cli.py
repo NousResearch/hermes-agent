@@ -53,6 +53,41 @@ class TestReasoningCommandSetsOverrideFlag(unittest.TestCase):
         self.assertFalse(getattr(stub, "_session_reasoning_override", False))
 
 
+class TestInitPromptSetsOverrideFlag(unittest.TestCase):
+    """--reasoning is re-homed onto CLIInitMixin after the cli.py split."""
+
+    def _call(self, reasoning):
+        from hermes_cli.cli_init_mixin import CLIInitMixin
+
+        stub = SimpleNamespace(model="test-model")
+        with patch("hermes_cli.personality.available_personalities", return_value={}), patch(
+            "hermes_cli.personality.resolve_ephemeral_system_prompt", return_value=""
+        ), patch(
+            "hermes_constants.resolve_reasoning_config",
+            return_value={"enabled": True, "effort": "medium"},
+        ), patch("cli._load_prefill_messages", return_value=[]), patch(
+            "cli._resolve_prefill_messages_file", return_value=""
+        ), patch(
+            "cli._parse_reasoning_config",
+            side_effect=lambda value: {"enabled": True, "effort": str(value).strip()}
+            if value
+            else None,
+        ), patch("cli._parse_service_tier_config", return_value=None), patch(
+            "cli.CLI_CONFIG", {"agent": {}, "provider_routing": {}, "openrouter": {}}
+        ):
+            CLIInitMixin._init_prompt_and_reasoning(stub, reasoning)
+        return stub
+
+    def test_explicit_reasoning_sets_override(self):
+        stub = self._call("high")
+        self.assertTrue(stub._session_reasoning_override)
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+
+    def test_missing_reasoning_keeps_override_false(self):
+        stub = self._call(None)
+        self.assertFalse(stub._session_reasoning_override)
+
+
 class TestNewSessionResetsOverrideFlag(unittest.TestCase):
     def test_new_session_clears_session_reasoning_override(self):
         from cli import CLI_CONFIG, HermesCLI

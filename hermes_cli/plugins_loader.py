@@ -36,6 +36,24 @@ _NS_PARENT = "hermes_plugins"
 _MODULE_NAMESPACE_LOCK = threading.RLock()
 _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
 
+# Bundled backend category -> module exposing the registry it feeds. Deferring a category means
+# "import the plugin the first time something reads that registry"; a category missing here has no
+# registry to hang the trigger on, so it keeps loading eagerly.
+#
+# ``dashboard_auth`` is deliberately ABSENT. Its plugins do not only register a provider:
+# ``dashboard_auth/drain`` also calls ``register_token_route("/api/gateway/drain")`` from its
+# ``register()``, and that call is not gated on the registry being read. Deferring it left the
+# NAS drain endpoint un-token-authable until some *other* consumer happened to read the auth
+# registry, so the first ``POST /api/gateway/drain`` on a loopback dashboard answered 401
+# instead of authenticating the bearer secret (fail-closed, but a silent behavior change).
+# Four tiny plugins, no SDK import — not worth the correctness risk.
+_BACKEND_REGISTRY_MODULES = {
+    "web": "agent.web_search_registry",
+    "browser": "agent.browser_registry",
+    "image_gen": "agent.image_gen_registry",
+    "video_gen": "agent.video_gen_registry",
+}
+
 
 def _evict_modules(module_name: str) -> None:
     """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
@@ -215,6 +233,48 @@ class PluginLoaderMixin:
                 "" if complete else " The remainder will be missing from CLI/TUI sessions.",
                 exc_info=_PLUGINS_DEBUG,
             )
+
+    def _register_deferred_backend(self, manifest: PluginManifest) -> None:
+        """Register a lazy loader for a bundled backend: the provider module imports only when the
+        registry it feeds is first read (a web search, an image/video generation), instead of on
+        every CLI startup; a placeholder ``LoadedPlugin`` keeps it visible in
+        ``hermes plugins list`` until then.
+
+        A backend whose category is absent from ``_BACKEND_REGISTRY_MODULES`` — tool-only plugins
+        such as ``spotify``, and ``dashboard_auth`` (whose ``register()`` has side effects that are
+        not gated on the registry being read) — stays eager: there is no safe trigger for it.
+        """
+        from hermes_cli.plugins import LoadedPlugin
+        lookup_key = manifest_key(manifest)
+        category = lookup_key.split("/", 1)[0]
+        module_name = _BACKEND_REGISTRY_MODULES.get(category)
+        if module_name is None:
+            self._load_plugin(manifest)
+            return
+        self._plugins[lookup_key] = LoadedPlugin(manifest=manifest, enabled=True, deferred=True)
+        cancelled = threading.Event()
+        try:
+            registry = importlib.import_module(module_name)
+
+            def _loader(_manifest: PluginManifest = manifest) -> None:
+                # Lock before checking cancellation: if an unload won the race the plugin must stay
+                # gone; if loading won, unload waits and disposes whatever this registers.
+                with self._discovery_lock, _plugin_home_scope(self.home_path):
+                    if cancelled.is_set():
+                        return
+                    self._load_plugin_scoped(_manifest)
+
+            registry.register_deferred(_loader)
+            # Ledger entry so unload / force re-discovery cancels the pending loader instead of
+            # letting a disabled plugin import later on the first registry read.
+            self._track_registration(manifest, "deferred_backend", lookup_key, cancelled.set)
+            logger.debug("Registered deferred backend loader: %s (%s)", lookup_key, module_name)
+        except Exception:
+            # Fall back to eager loading so the backend is never silently lost.
+            logger.debug(
+                "Deferred backend registration failed for '%s'; eager-loading", lookup_key, exc_info=True)
+            self._plugins.pop(lookup_key, None)
+            self._load_plugin(manifest)
 
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
         """Warn about declared pip dependencies missing at load time. Installing happens at

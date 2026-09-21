@@ -1371,7 +1371,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if verdict.action == "load_now":
             self._load_plugin(manifest)
         elif verdict.action == "defer":
-            self._register_deferred_platform(manifest)
+            # Bundled platforms defer onto the platform registry; bundled backends onto the provider
+            # registry they feed. ``_register_deferred_backend`` falls back to an eager load for the
+            # categories that have no safe trigger (see _BACKEND_REGISTRY_MODULES), so reaching
+            # "defer" here never means "this plugin will not load".
+            if manifest.kind == "platform":
+                self._register_deferred_platform(manifest)
+            else:
+                self._register_deferred_backend(manifest)
         else:
             self._plugins[manifest_key(manifest)] = LoadedPlugin(
                 manifest=manifest, enabled=verdict.enabled, error=verdict.error)

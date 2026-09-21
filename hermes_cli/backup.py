@@ -105,7 +105,11 @@ _SQLITE_SIDECAR_SUFFIXES = (".db-wal", ".db-shm", ".db-journal")
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", *_SQLITE_SIDECAR_SUFFIXES)
 
 # File names to skip (runtime state that's meaningless on another machine)
-_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "interrupted_turns.json"}
+# ``interrupted_turns.json`` is the TUI/desktop in-flight turn marker: it exists only while a
+# turn is running (or after a process death) and is unlinked by ``clear_turn_marker`` when the
+# turn concludes. Picked up by the scan and gone before ``_write_zip_entries()`` reads it, it
+# would fail an otherwise complete archive with exit 1 (#118062).
 
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;

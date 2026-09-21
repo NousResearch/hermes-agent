@@ -206,12 +206,37 @@ class TestShouldExclude:
         # Other .bak files are user data and stay.
         assert not _should_exclude(Path("config.yaml.bak"))
 
+    def test_excludes_in_flight_turn_marker(self):
+        """The TUI/desktop turn marker is runtime state: it exists only while a turn is
+        running and is unlinked when the turn concludes. If the scan selects it and the
+        turn ends before the write, the read raises ENOENT and an otherwise complete,
+        restorable archive is reported incomplete with exit 1 (#118062)."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("desktop/interrupted_turns.json"))
+        assert _should_exclude(Path("profiles/coder/desktop/interrupted_turns.json"))
+
 
 # ---------------------------------------------------------------------------
 # _iter_backup_files tests
 # ---------------------------------------------------------------------------
 
 class TestIterBackupFiles:
+    def test_in_flight_turn_marker_never_selected(self, tmp_path):
+        """The walk must never select the TUI/desktop turn marker, so a turn ending
+        between the scan and the write cannot fail the archive (#118062)."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        (root / "desktop").mkdir(parents=True)
+        (root / "desktop" / "interrupted_turns.json").write_text("{}", encoding="utf-8")
+        keep = root / "notes.txt"
+        keep.write_text("data", encoding="utf-8")
+
+        files = {rel for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+
+        assert Path("notes.txt") in files
+        assert Path("desktop/interrupted_turns.json") not in files
+
     def test_manual_and_automatic_paths_share_one_walk(self, tmp_path):
         """Both backup entry points must select the identical file set.
 

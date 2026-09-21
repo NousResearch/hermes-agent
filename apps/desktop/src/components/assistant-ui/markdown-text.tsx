@@ -8,14 +8,16 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
+import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -33,15 +35,19 @@ import {
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from '@/lib/media'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
+import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
-import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
+import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
+
+const onboardingEnabled = isOnboardingEnabled()
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -214,7 +220,7 @@ function MediaAttachment({ path }: { path: string }) {
     return (
       <span className="my-3 block max-w-2xl rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <video
+        <TranscriptVideo
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
           onError={() => setFailed(true)}
@@ -263,6 +269,16 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // rendered/source toggle) instead of the download-link fallback that
     // `mediaKind() === 'file'` would produce. (#84951)
     if (isMarkdownDocumentPath(mediaPath)) {
+      return <PreviewAttachment source="tool-result" target={mediaPath} />
+    }
+
+    // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
+    // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
+    // "Open <name>" anchor). Route through the preview pipeline instead —
+    // the same file card + "Open preview" the bare-path markdown-link
+    // branch below produces — so MEDIA: uniformly delivers the richest
+    // rendering for every file type.
+    if (mediaKind(mediaPath) === 'file') {
       return <PreviewAttachment source="tool-result" target={mediaPath} />
     }
 
@@ -436,9 +452,22 @@ interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
+  /** This text is the model's private scratchpad (reasoning), so nothing in it
+   *  may be promoted into app chrome: no artifact cards from fenced blocks (a
+   *  draft must not register artifact versions), and no transcript directives
+   *  (a `::onboarding{step="look"}` the model was only reminding itself about
+   *  otherwise mounted a live accent picker inside the thinking block). */
+  scratchpad?: boolean
   /** Disable artifact-card promotion for fenced blocks (reasoning text — a
    *  model's scratchpad draft must not register artifact versions). */
   disableArtifacts?: boolean
+  /** Foreign history must not load images or mount live transcript directives. */
+  previewOnly?: boolean
+  /** Re-render the direct text nodes of paragraph-level containers (p / li /
+   *  td) — a transcript surface styles its own inline tokens (a Bot Mode room's
+   *  routed @mentions) without owning the Markdown pipeline. Nested inline
+   *  markup and code are left as rendered. */
+  decorateText?: (children: ReactNode) => ReactNode
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -503,21 +532,49 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
 function MarkdownParagraph({
   children,
   className,
+  scratchpad,
   streaming,
   ...props
-}: ComponentProps<'p'> & { streaming?: boolean }) {
+}: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
   const plain = paragraphPlainText(children)
-  const claimed = useIsClaimedDirective(plain)
+  const resolved = useResolvedParagraph(scratchpad ? null : plain)
 
-  if (claimed && plain !== null) {
-    return <TranscriptDirectiveLeaf streaming={streaming} text={plain} />
+  // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which must
+  // out-specify Tailwind Typography's `prose` margins — so no `my-*` here.
+  const paragraphClass = cn('wrap-anywhere leading-(--dt-line-height)', className)
+
+  // A paragraph that is one directive renders as the card alone; one that
+  // ends in a directive renders as its sentence followed by the card.
+  if (resolved) {
+    return (
+      <>
+        {resolved.map((segment, index) =>
+          segment.kind === 'directive' ? (
+            <TranscriptDirectiveLeaf key={index} streaming={streaming} text={segment.source} />
+          ) : (
+            <p className={paragraphClass} key={index} {...props}>
+              {segment.text.trim()}
+            </p>
+          )
+        )}
+      </>
+    )
+  }
+
+  // Directive-in-progress: while the message is still streaming, a paragraph
+  // that begins with `::` is a directive whose closing shape hasn't fully
+  // arrived (directives always sit alone in their own paragraph — FLOW.md),
+  // so it can't be claimed yet. Rendering the plain <p> here is the raw-text
+  // flash (`::ask{question="Wha…`) that snaps into a card on settle — hold
+  // the slot empty instead. Once streaming ends this branch is dead, so a
+  // SETTLED malformed/unclaimed directive still shows as prose (an authoring
+  // bug the user should see).
+  if (onboardingEnabled && streaming && plain !== null && isDirectiveInProgress(plain)) {
+    return null
   }
 
   return (
-    // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
-    // must out-specify Tailwind Typography's `prose` margins — so no
-    // `my-*` here on purpose.
-    <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
+    <p className={paragraphClass} {...props}>
       {children}
     </p>
   )
@@ -526,8 +583,11 @@ function MarkdownParagraph({
 function MarkdownTextSurface({
   containerClassName,
   containerProps,
+  decorateText,
   defer,
-  disableArtifacts
+  disableArtifacts,
+  previewOnly,
+  scratchpad
 }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
@@ -554,8 +614,15 @@ function MarkdownTextSurface({
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: (props: ComponentProps<'p'>) => <MarkdownParagraph {...props} streaming={isStreaming} />,
-        a: MarkdownLink,
+        p: ({ children, ...props }: ComponentProps<'p'>) =>
+          previewOnly ? (
+            <p {...props}>{decorateText ? decorateText(children) : children}</p>
+          ) : (
+            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming}>
+              {decorateText ? decorateText(children) : children}
+            </MarkdownParagraph>
+          ),
+        a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the
@@ -600,8 +667,10 @@ function MarkdownTextSurface({
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
           <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
-        li: ({ className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props} />
+        li: ({ children, className, ...props }: ComponentProps<'li'>) => (
+          <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+            {decorateText ? decorateText(children) : children}
+          </li>
         ),
         // Columns are drag-resizable; the widths live outside the transcript
         // (see markdown-table-widths.ts) so a new turn or a session switch
@@ -611,16 +680,19 @@ function MarkdownTextSurface({
           <thead className={cn('m-0 bg-muted/35 text-muted-foreground', className)} {...props} />
         ),
         th: ResizableMarkdownTh,
-        td: ({ className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
+        td: ({ children, className, ...props }: ComponentProps<'td'>) => (
+          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props}>
+            {decorateText ? decorateText(children) : children}
+          </td>
         ),
-        img: MarkdownImage,
+        img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; substantial
         // html/svg/code fences promote to an artifact card that opens in the
         // right rail; every other language falls back to the Shiki-highlighted
         // code block.
         SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
-          const artifact = disableArtifacts ? null : detectArtifact(props.language, props.code)
+          const artifact =
+            disableArtifacts || previewOnly || scratchpad ? null : detectArtifact(props.language, props.code)
 
           if (artifact) {
             return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
@@ -636,7 +708,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [disableArtifacts, isStreaming]
+    [decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -690,6 +762,30 @@ function MarkdownTextSurface({
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
   isRunning: boolean
   text: string
+}
+
+/** Render raw assistant-style message text through the complete Desktop text
+ * pipeline. `MEDIA:` directives must be transformed before Markdown rendering
+ * so the canonical link component can route them to inline players/previews.
+ * Fenced blocks stay plain code (`disableArtifacts`): a transcript rendered
+ * outside a session — a Bot Mode group room — has no session to own artifact
+ * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
+ * against the ACTIVE gateway, so a message written on another machine (a
+ * Connections Bot in a cross-machine room) must not have its path read here —
+ * that is a broken image at best and a same-path local file at worst. */
+export function MessageTextContent({
+  decorateText,
+  media = true,
+  text
+}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+  return (
+    <MarkdownTextContent
+      decorateText={decorateText}
+      disableArtifacts
+      isRunning={false}
+      text={media ? renderMediaTags(text) : text}
+    />
+  )
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {

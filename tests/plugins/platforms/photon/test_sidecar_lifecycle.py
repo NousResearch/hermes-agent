@@ -15,6 +15,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
+from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -23,6 +24,21 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)
+
+
+def test_read_receipts_is_behavioral_config_with_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    monkeypatch.setenv("PHOTON_READ_RECEIPTS", "true")
+    configured = PhotonAdapter(
+        PlatformConfig(enabled=True, token="", extra={"read_receipts": False})
+    )
+    assert configured._read_receipts is False
+
+    env_only = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={}))
+    assert env_only._read_receipts is True
 
 
 class _ProbeClient:
@@ -86,7 +102,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
     hidden_flags = 0x08000000
@@ -137,6 +153,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+    assert kwargs["env"]["PHOTON_READ_RECEIPTS"] == "true"
     assert spawned["patch_kwargs"]["creationflags"] == hidden_flags
     assert kwargs["creationflags"] == hidden_flags
 

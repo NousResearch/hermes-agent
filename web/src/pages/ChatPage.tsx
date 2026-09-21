@@ -39,6 +39,7 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -77,37 +78,15 @@ import {
   uploadChatImage,
 } from "@/lib/chatImagePaste";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
+import { ptyAttachToken } from "@/lib/pty-attach-token";
+import { loseWebglContexts } from "@/lib/xterm-webgl-release";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 
-// Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
-// Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
-// instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
-// ``rotate`` mints a new token — used when the user explicitly starts a fresh
-// session so the old keep-alive PTY is NOT reattached (the registry reaps it).
-const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
-function ptyAttachToken(rotate = false): string {
-  let t = "";
-  if (!rotate) {
-    try {
-      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
-    } catch {
-      /* private mode / storage blocked */
-    }
-  }
-  if (!t) {
-    const a = new Uint8Array(16);
-    crypto.getRandomValues(a);
-    t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
-    try {
-      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
-    } catch {
-      /* ignore */
-    }
-  }
-  return t;
-}
+// Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
+// second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
+// taking over this one. See #115304.
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
@@ -296,6 +275,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer, searchParams, setSearchParams]);
+  // Clear mobile-input tracking refs when the tab is hidden so stale state
+  // from a previous /chat visit doesn't cause the mobile-replacement logic
+  // to misfire on the next activation (#106403: repeated last character).
+  useEffect(() => {
+    if (!isActive) {
+      ptyInputLineRef.current = "";
+      mobileReplacementInputUntilRef.current = 0;
+    }
+  }, [isActive]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -1167,7 +1155,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      params.attach = await ptyAttachToken(forceFresh);
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -1478,7 +1466,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
         }
-        forwardPtyData(data);
+        // A mobile IME can re-emit just-committed composition text through
+        // onData; only the part that is not an echo of that commit is real.
+        const unechoed = compositionForwarder.filterTerminalData(data);
+        if (unechoed) {
+          forwardPtyData(unechoed);
+        }
       });
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {
@@ -1535,6 +1528,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       wsRef.current?.close();
       wsRef.current = null;
       host.removeEventListener("keydown", _imeCompositionGuard, true);
+      loseWebglContexts(host);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -1610,16 +1604,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
         syncMetricsRef.current?.();
-        const host = hostRef.current;
         const active = typeof document !== "undefined"
           ? document.activeElement
           : null;
-        const focusIsElsewhereInChatPage =
-          active !== null &&
-          active !== document.body &&
-          host !== null &&
-          !host.contains(active);
-        if (!focusIsElsewhereInChatPage) {
+        if (shouldRestoreTerminalFocus(active, hostRef.current)) {
           termRef.current?.focus();
         }
       });
@@ -1628,6 +1616,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (raf1) cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
     };
+  }, [isActive]);
+
+  // Returning from another OS app (alt-tab to copy text, then back) lands
+  // browser focus on <body>, not on the xterm textarea, so the next Ctrl+V
+  // goes nowhere. Pull focus back into the terminal under the same
+  // ownership rule as tab activation above. This listener must not touch
+  // the PTY connection — the resume/reconnect path is separate.
+  useEffect(() => {
+    if (!isActive || typeof window === "undefined") return;
+    const onWindowFocus = () => {
+      if (shouldRestoreTerminalFocus(document.activeElement, hostRef.current)) {
+        termRef.current?.focus();
+      }
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => window.removeEventListener("focus", onWindowFocus);
   }, [isActive]);
 
   const maybeReconnectOnPageResume = useCallback(() => {
@@ -1744,7 +1748,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "border-l border-current/20 text-midground",
             "bg-background-base/95",
             "transition-transform duration-200 ease-out",
-            "[background:var(--component-sidebar-background)]",
+            "[background:var(--component-sidebar-background,var(--background-base))]",
             "[clip-path:var(--component-sidebar-clip-path)]",
             "[border-image:var(--component-sidebar-border-image)]",
             mobilePanelOpen

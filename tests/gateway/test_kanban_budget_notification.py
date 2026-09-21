@@ -1,4 +1,8 @@
-from gateway.kanban_watchers import _format_gave_up_notification
+"""Regression coverage for truthful Kanban budget-exhaustion notifications."""
+
+from __future__ import annotations
+
+from gateway.kanban_watchers_notifier import _format_gave_up_notification
 
 
 def test_budget_exhaustion_is_not_described_as_a_spawn_failure():
@@ -10,7 +14,7 @@ def test_budget_exhaustion_is_not_described_as_a_spawn_failure():
             "trigger_outcome": "timed_out",
             "budget_used": 18,
             "budget_max": 18,
-            "error": "Iteration budget exhausted (18/18)",
+            "error": "Iteration budget exhausted (18/18) — task could not complete",
         },
     )
 

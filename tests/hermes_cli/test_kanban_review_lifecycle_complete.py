@@ -10,6 +10,7 @@ These tests cover the two review models that must coexist:
 """
 
 from __future__ import annotations
+from hermes_cli import kanban_db_dispatch as dispatch_impl
 
 import time
 from pathlib import Path
@@ -17,12 +18,14 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 
 
 @pytest.fixture
 def conn(tmp_path: Path):
-    db = kb.connect(tmp_path / "kanban.db")
+    db = kbc.connect(tmp_path / "kanban.db")
     try:
         yield db
     finally:
@@ -149,6 +152,76 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed.block_recurrences == 0
 
 
+def test_review_approval_privately_recognizes_original_implementer(conn):
+    task_id = kb.create_task(conn, title="Implement safe export", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        summary="Implementation and focused tests are ready.",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+    assert kb.complete_task(
+        conn,
+        task_id,
+        summary="Approved after independent verification.",
+        expected_run_id=review.current_run_id,
+    )
+
+    recognition = _event(kb.list_events(conn, task_id), "private_recognition")
+    assert recognition.payload == {
+        "basis": "independent_review_approved",
+        "message": (
+            "Strong work: your work passed independent review. "
+            "Carry forward the same evidence-first, tightly scoped approach."
+        ),
+        "recipient_profile": "builder",
+    }
+
+def test_unreviewed_completion_does_not_earn_private_recognition(conn):
+    task_id = kb.create_task(conn, title="Self-completed task", assignee="builder")
+    assert kb.complete_task(conn, task_id, summary="Done with self-reported tests.")
+
+    assert not any(
+        event.kind == "private_recognition" for event in kb.list_events(conn, task_id)
+    )
+
+
+def test_next_task_context_shows_only_its_assignees_private_recognition(conn):
+    reviewed_task = kb.create_task(conn, title="Reviewed work", assignee="reviewer")
+    with kb.write_txn(conn):
+        kb._append_event(
+            conn,
+            reviewed_task,
+            "private_recognition",
+            {
+                "basis": "independent_review_approved",
+                "message": "Strong work: your work passed independent review.",
+                "recipient_profile": "builder",
+            },
+        )
+
+    next_builder_task = kb.create_task(
+        conn,
+        title="Implement another safe export",
+        assignee="builder",
+    )
+    builder_context = kb.build_worker_context(conn, next_builder_task)
+    assert "## Private recognition" in builder_context
+    assert "Strong work: your work passed independent review." in builder_context
+    assert "encouragement only" in builder_context
+
+    reviewer_task = kb.create_task(
+        conn, title="Review another export", assignee="reviewer"
+    )
+    reviewer_context = kb.build_worker_context(conn, reviewer_task)
+    assert "## Private recognition" not in reviewer_context
+
+
 @pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])
 def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     conn,
@@ -214,7 +287,7 @@ def test_review_changes_reapply_parent_gate(conn):
 
     # Move the task through review while its parent is temporarily terminal,
     # then make the parent non-terminal again before changes are requested.
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
     assert kb.request_review(
@@ -242,7 +315,7 @@ def test_review_changes_reapply_parent_gate(conn):
 
 def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     parent_id = kb.create_task(conn, title="Parent", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     task_id = kb.create_task(
         conn,
         title="Implementation with reopened parent",
@@ -262,7 +335,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     still_running = kb.get_task(conn, task_id)
     assert still_running is not None
     assert still_running.status == "running"
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     assert kb.request_review(
         conn,
         task_id,
@@ -310,8 +383,13 @@ def test_request_changes_fails_closed_on_malformed_review_provenance(
     assert task.current_run_id == review.current_run_id
 
 
-def test_reclaim_fails_safe_on_non_object_claim_provenance(conn) -> None:
+def test_reclaim_fails_safe_on_non_object_claim_provenance(
+    conn,
+    monkeypatch,
+) -> None:
     task_id, _review = _claimed_review(conn, "Non-object claimed payload")
+    dispatch_impl._set_worker_pid(conn, task_id, 999_999)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     with kb.write_txn(conn):
         conn.execute(
             "UPDATE task_events SET payload = '[]' "
@@ -331,6 +409,7 @@ def test_reclaim_fails_safe_on_non_object_claim_provenance(conn) -> None:
 )
 def test_interrupted_review_runs_retry_in_review_phase(
     conn,
+    monkeypatch,
     reclaim_kind: str,
 ) -> None:
     task_id, review = _claimed_review(
@@ -340,11 +419,14 @@ def test_interrupted_review_runs_retry_in_review_phase(
     )
 
     if reclaim_kind == "spawn_failure":
-        assert not kb._record_spawn_failure(
+        assert not kbd._record_task_failure(
             conn,
             task_id,
             "reviewer process failed to spawn",
+            outcome="spawn_failed",
             failure_limit=3,
+            release_claim=True,
+            end_run=True,
         )
     elif reclaim_kind == "expired_claim":
         with kb.write_txn(conn):
@@ -354,6 +436,8 @@ def test_interrupted_review_runs_retry_in_review_phase(
             )
         assert kb.release_stale_claims(conn) == 1
     elif reclaim_kind == "manual_reclaim":
+        dispatch_impl._set_worker_pid(conn, task_id, 999_999)
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
         assert kb.reclaim_task(conn, task_id, reason="operator retry")
     else:
         old = int(time.time()) - 1_000
@@ -367,7 +451,7 @@ def test_interrupted_review_runs_retry_in_review_phase(
                 "UPDATE task_runs SET started_at = ? WHERE id = ?",
                 (old, review.current_run_id),
             )
-        assert kb.detect_stale_running(conn, stale_timeout_seconds=1) == [task_id]
+        assert kbd.detect_stale_running(conn, stale_timeout_seconds=1) == [task_id]
 
     retried = kb.get_task(conn, task_id)
     assert retried is not None
@@ -380,11 +464,14 @@ def test_interrupted_review_runs_retry_in_review_phase(
 
 def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     task_id, _review = _claimed_review(conn, "Reviewer repeatedly fails")
-    assert kb._record_spawn_failure(
+    assert kbd._record_task_failure(
         conn,
         task_id,
         "reviewer cannot start",
+        outcome="spawn_failed",
         failure_limit=1,
+        release_claim=True,
+        end_run=True,
     )
     blocked = kb.get_task(conn, task_id)
     assert blocked is not None
@@ -418,7 +505,7 @@ def test_review_escalation_unblocks_back_to_review(conn) -> None:
 
 def test_review_dependency_wait_reenters_review_after_parent_finishes(conn) -> None:
     parent_id = kb.create_task(conn, title="Parent", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     task_id = kb.create_task(
         conn,
         title="Review after dependency refresh",
@@ -448,7 +535,7 @@ def test_review_dependency_wait_reenters_review_after_parent_finishes(conn) -> N
     waiting = kb.get_task(conn, task_id)
     assert waiting is not None
     assert waiting.status == "todo"
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     resumed = kb.get_task(conn, task_id)
     assert resumed is not None
     assert resumed.status == "review"
@@ -459,7 +546,7 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
-    monkeypatch.setattr(kb, "_classify_worker_exit", lambda _pid: ("nonzero_exit", 1))
+    monkeypatch.setattr(kbd, "_classify_worker_exit", lambda _pid: ("nonzero_exit", 1))
     old = int(time.time()) - 1_000
 
     timed_out_id, timed_out_run = _claimed_review(
@@ -476,7 +563,7 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
             "UPDATE task_runs SET worker_pid = ?, started_at = ? WHERE id = ?",
             (999_998, old, timed_out_run.current_run_id),
         )
-    assert timed_out_id in kb.enforce_max_runtime(conn, signal_fn=lambda *_: None)
+    assert timed_out_id in kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None)
     timed_out = kb.get_task(conn, timed_out_id)
     assert timed_out is not None
     assert timed_out.status == "review"
@@ -491,7 +578,7 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
             "UPDATE task_runs SET worker_pid = ?, started_at = ? WHERE id = ?",
             (999_999, old, crashed_run.current_run_id),
         )
-    assert crashed_id in kb.detect_crashed_workers(conn)
+    assert crashed_id in kbd.detect_crashed_workers(conn)
     crashed = kb.get_task(conn, crashed_id)
     assert crashed is not None
     assert crashed.status == "review"
@@ -691,7 +778,7 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
     # A crash now increments 1 -> 2 and trips a failure_limit=2 breaker —
     # the counter accumulated across the review cycle instead of being
     # amnesia-reset back to 0.
-    tripped = kb._record_task_failure(
+    tripped = kbd._record_task_failure(
         conn, task_id, "worker crashed", outcome="crashed", failure_limit=2,
     )
     assert tripped is True
@@ -707,3 +794,26 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
         )
     assert kb.complete_task(conn, ok_id, summary="done")
     assert _failures(conn, ok_id) == 0
+
+
+def test_failure_recording_ignores_stale_worker_fence(conn) -> None:
+    """A replaced worker cannot record a failure against the newer run."""
+    task_id, review = _claimed_review(conn, "Stale guardrail worker")
+    assert review.current_run_id is not None
+    assert review.claim_lock
+
+    assert not kbd._record_task_failure(
+        conn,
+        task_id,
+        "stale worker halted",
+        outcome="crashed",
+        release_claim=True,
+        end_run=True,
+        expected_run_id=review.current_run_id + 1,
+        expected_claim_lock=review.claim_lock,
+    )
+
+    current = kb.get_task(conn, task_id)
+    assert current is not None
+    assert current.status == "running"
+    assert current.current_run_id == review.current_run_id

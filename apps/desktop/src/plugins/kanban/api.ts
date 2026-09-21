@@ -11,6 +11,7 @@
 
 import {
   atom,
+  host,
   type PluginOs,
   type PluginRestOptions,
   type PluginStorage,
@@ -21,6 +22,8 @@ import {
 // Native completion notification.
 import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
+  BoardExportResult,
+  BoardImportResult,
   BoardMeta,
   BoardsResponse,
   KanbanBoard,
@@ -37,6 +40,7 @@ type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
 
 let rest: null | Rest = null
+let os: null | PluginOs = null
 
 /** Selected board slug ('' = the server's current board). Persisted. */
 export const $boardSlug = atom<string>('')
@@ -57,27 +61,84 @@ const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
 
-/** One live `task_events` frame → precise cache invalidation: the board, plus
- *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
- *  fallback — the socket just makes the board feel instant. */
-function onEventsFrame(slug: string, data: unknown): void {
+/** Worker heartbeats only advance liveness. Reloading the full board for them
+ *  is both unnecessary and expensive: GET /board computes diagnostics from
+ *  every active task's event/run history. */
+export function eventsNeedBoardRefresh(events: CompletionEvent[]): boolean {
+  return events.some(event => event.kind !== 'heartbeat' && event.kind !== 'respawn_guarded')
+}
+
+export function applyHeartbeatEvents(board: KanbanBoard, events: CompletionEvent[]): KanbanBoard {
+  const heartbeats = new Map<string, number>()
+  let latestEventId = board.latest_event_id
+  let now = board.now
+
+  for (const event of events) {
+    if (event.kind !== 'heartbeat' || !event.task_id || typeof event.created_at !== 'number') {
+      continue
+    }
+
+    heartbeats.set(event.task_id, Math.max(heartbeats.get(event.task_id) ?? 0, event.created_at))
+
+    if (typeof event.id === 'number') {
+      latestEventId = Math.max(latestEventId, event.id)
+    }
+
+    now = Math.max(now, event.created_at)
+  }
+
+  if (heartbeats.size === 0) {
+    return board
+  }
+
+  return {
+    ...board,
+    columns: board.columns.map(column => ({
+      ...column,
+      tasks: column.tasks.map(task => {
+        const heartbeat = heartbeats.get(task.id)
+
+        return heartbeat === undefined ? task : { ...task, last_heartbeat_at: heartbeat }
+      })
+    })),
+    latest_event_id: latestEventId,
+    now
+  }
+}
+
+/** One live `task_events` frame → cache-local heartbeat updates plus one
+ *  coalesced refresh for events that can actually change board state. */
+function activeSourceKey(): string {
+  return `${host.state.connectionId.get() ?? 'local'}::${host.state.profile.get() || 'default'}`
+}
+
+function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => void, sourceKey: string): void {
   const events = (data as { events?: CompletionEvent[] })?.events
 
   if (!events?.length) {
     return
   }
 
-  void queryClient.invalidateQueries({ queryKey: ['kanban', 'board'] })
-  // Any event can change a board's card count — keep the switcher badge honest.
-  void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
+  queryClient.setQueriesData<KanbanBoard>({ queryKey: ['kanban', 'board', slug] }, cached =>
+    cached ? applyHeartbeatEvents(cached, events) : cached
+  )
 
-  for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
+  if (eventsNeedBoardRefresh(events)) {
+    scheduleBoardRefresh()
+  }
+
+  const changedTaskIds = events
+    .filter(event => event.kind !== 'heartbeat' && event.kind !== 'respawn_guarded')
+    .map(event => event.task_id)
+    .filter(Boolean)
+
+  for (const taskId of new Set(changedTaskIds)) {
     void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
   }
 
   // Completion notification (after invalidation so notify failure
   // never interferes with cache invalidation).
-  void onKanbanEventsFrame(slug, events).catch(() => undefined)
+  void onKanbanEventsFrame(slug, events, sourceKey).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -99,6 +160,7 @@ export function bindApi(
   notifyDoors?: { os?: PluginOs; t?: PluginTranslate }
 ): () => void {
   rest = r
+  os = notifyDoors?.os ?? null
   bindCompletionNotify(r, notifyDoors?.t, notifyDoors?.os)
   const unsubs: Array<() => void> = []
 
@@ -113,22 +175,65 @@ export function bindApi(
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
+  let socketGeneration = 0
   let close: (() => void) | null = null
+  let boardRefreshTimer: null | ReturnType<typeof setTimeout> = null
+
+  const scheduleBoardRefresh = () => {
+    if (boardRefreshTimer !== null) {
+      return
+    }
+
+    boardRefreshTimer = setTimeout(() => {
+      boardRefreshTimer = null
+      void queryClient.invalidateQueries({ queryKey: ['kanban', 'board', $boardSlug.get()] })
+      void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
+    }, 500)
+  }
 
   const open = (slug: string) => {
     close?.()
-    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
+
+    if (boardRefreshTimer !== null) {
+      clearTimeout(boardRefreshTimer)
+      boardRefreshTimer = null
+    }
+
+    const sourceKey = activeSourceKey()
+    const generation = ++socketGeneration
+    const path = slug ? `/events?board=${encodeURIComponent(slug)}` : '/events'
+
+    close = socket(path, data => {
+      // A closed socket can still deliver queued frames. They belong to its
+      // original source and must not update the current cache or cursor.
+      if (generation === socketGeneration && sourceKey === activeSourceKey()) {
+        onEventsFrame(slug, data, scheduleBoardRefresh, sourceKey)
+      }
+    })
   }
 
   open($boardSlug.get())
   unsubs.push($boardSlug.listen(open))
+  unsubs.push(host.state.connectionId.listen(() => open($boardSlug.get())))
+  unsubs.push(host.state.profile.listen(() => open($boardSlug.get())))
 
   return () => {
+    socketGeneration += 1
     unsubs.forEach(unsub => unsub())
     close?.()
+
+    if (boardRefreshTimer !== null) {
+      clearTimeout(boardRefreshTimer)
+      boardRefreshTimer = null
+    }
     rest = null
+    os = null
   }
 }
+
+/** The plugin's OS door, for components too deep to be handed `ctx`. Null
+ *  before `bindApi` and after unload. */
+export const pluginOs = (): null | PluginOs => os
 
 function call<T>(path: string, opts?: PluginRestOptions): Promise<T> {
   return rest ? rest<T>(path, opts) : Promise.reject(new Error('kanban api not ready'))
@@ -256,6 +361,22 @@ export const estimateNew = (title: string, body: string) =>
  *  `default_workdir: ''` to clear it. Slug is immutable. */
 export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
   call<{ board: BoardMeta }>(`/boards/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch })
+
+/** Archive a board to `boards/_archived/` — recoverable, and the backend
+ *  refuses to touch `default`. (`?delete=true` hard-deletes; no caller yet.) */
+export const deleteBoard = (slug: string) =>
+  call<{ result: { action: string; new_path: string }; current: string }>(`/boards/${encodeURIComponent(slug)}`, {
+    method: 'DELETE'
+  })
+
+// Board transfer exchanges filesystem paths, not bytes — the picker runs on
+// the machine hosting the backend, so the backend reads and writes the file.
+
+export const exportBoard = (slug: string, output: string) =>
+  call<BoardExportResult>(`/boards/${encodeURIComponent(slug)}/export`, { method: 'POST', body: { output } })
+
+export const importBoard = (archive: string) =>
+  call<BoardImportResult>('/boards/import', { method: 'POST', body: { archive } })
 
 export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 

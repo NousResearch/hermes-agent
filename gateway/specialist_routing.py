@@ -19,24 +19,6 @@ from typing import Awaitable, Callable, Optional, Protocol
 from gateway.capability_registry import CapabilitySignature, RegistryResolution
 
 
-SPECIALIST_PROFILES: dict[str, str] = {
-    "task-orchestrator": "broad actionable work needing a plan, specialist handoffs, and final verification",
-    "burndown-patch-steward": "exception burndowns and narrow corrective patches",
-    "acceptance-gate-verifier": "acceptance evidence and release-gate verification",
-    "paper-safety-guardian": "paper-trading safety and live-boundary review",
-    "market-data-authority-auditor": "market-data authority, freshness, and provenance",
-    "route-execution-boundary-auditor": "route and execution-boundary verification",
-    "dependency-tooling-health-sentinel": "dependency and development-tooling health",
-    "copilot-learning-steward": "governed Luna copilot learning and memory",
-    "mission-control-ux-auditor": "Mission Control operator UX evidence",
-    "research-scout": "read-only research and evidence gathering",
-    "performance-sentinel": "performance and latency diagnostics",
-}
-
-# Classifier output chooses only from ``SPECIALIST_PROFILES``. This separately
-# maps each fixed profile to an explicit, read-only capability signature for
-# the local registry lookup; no model-provided domain, action, or permission
-# becomes part of the lookup.
 _FIXED_PROFILE_CAPABILITIES: dict[str, tuple[str, tuple[str, ...], str]] = {
     "task-orchestrator": (
         "repository-evidence",
@@ -95,6 +77,21 @@ _FIXED_PROFILE_CAPABILITIES: dict[str, tuple[str, tuple[str, ...], str]] = {
     ),
 }
 
+
+SPECIALIST_PROFILES: dict[str, str] = {
+    "task-orchestrator": "broad actionable work needing a plan, specialist handoffs, and final verification",
+    "burndown-patch-steward": "exception burndowns and narrow corrective patches",
+    "acceptance-gate-verifier": "acceptance evidence and release-gate verification",
+    "paper-safety-guardian": "paper-trading safety and live-boundary review",
+    "market-data-authority-auditor": "market-data authority, freshness, and provenance",
+    "route-execution-boundary-auditor": "route and execution-boundary verification",
+    "dependency-tooling-health-sentinel": "dependency and development-tooling health",
+    "copilot-learning-steward": "governed Luna copilot learning and memory",
+    "mission-control-ux-auditor": "Mission Control operator UX evidence",
+    "research-scout": "read-only research and evidence gathering",
+    "performance-sentinel": "performance and latency diagnostics",
+}
+
 _RESPONSE_FIELDS = frozenset({"kind", "profile", "confidence", "reason", "title"})
 _MAX_REQUEST_CHARS = 4_000
 _MAX_REASON_CHARS = 500
@@ -123,17 +120,8 @@ class SpecialistRouteDecision:
         return self.kind is RouteKind.SPECIALIST and self.profile is not None
 
 
-def _general(audit_reason: str) -> SpecialistRouteDecision:
-    return SpecialistRouteDecision(kind=RouteKind.GENERAL, audit_reason=audit_reason)
-
-
 def capability_signature_for_profile(profile: str | None) -> CapabilitySignature | None:
-    """Return the fixed local lookup scope for one classifier-approved profile.
-
-    The mapping is intentionally closed over ``SPECIALIST_PROFILES``. Unknown
-    or generated profile names therefore cannot smuggle a scope, permission,
-    or registry lookup through the Discord ingress.
-    """
+    """Return the fixed local lookup scope for one known specialist profile."""
     if not isinstance(profile, str):
         return None
     capability = _FIXED_PROFILE_CAPABILITIES.get(profile)
@@ -146,6 +134,16 @@ def capability_signature_for_profile(profile: str | None) -> CapabilitySignature
         evidence_class="diagnostic-only",
         requested_permissions=(permission,),
     )
+
+
+def _general(audit_reason: str) -> SpecialistRouteDecision:
+    return SpecialistRouteDecision(kind=RouteKind.GENERAL, audit_reason=audit_reason)
+
+
+_NEGATION_RE = re.compile(
+    r"\b(?:do\s*not|don'?t|never|stop|avoid|shouldn'?t|should\s*not|won'?t|will\s*not|"
+    r"no\s+need\s+to|please\s+don'?t|didn'?t|hasn'?t|has\s*not|isn'?t)\b"
+)
 
 
 def classify_explicit_burndown_patch_request(request: str) -> Optional[SpecialistRouteDecision]:
@@ -161,11 +159,13 @@ def classify_explicit_burndown_patch_request(request: str) -> Optional[Specialis
     if not isinstance(request, str):
         return None
     normalized = " ".join(request.casefold().split())
-    if (
-        "exception" not in normalized
-        or "burndown" not in normalized
-        or re.search(r"\bpatch(?:es|ed|ing)?\b", normalized) is None
-    ):
+    patch_match = re.search(r"\bpatch(?:es|ed|ing)?\b", normalized)
+    if "exception" not in normalized or "burndown" not in normalized or patch_match is None:
+        return None
+    # A question or a negation preceding the patch verb ("Do not patch...",
+    # "Why hasn't this been patched?") is not an affirmative work request;
+    # leave it to the classifier or normal chat instead of misfiring here.
+    if normalized.endswith("?") or _NEGATION_RE.search(normalized[: patch_match.start()]):
         return None
     return SpecialistRouteDecision(
         kind=RouteKind.SPECIALIST,
@@ -203,7 +203,11 @@ def build_classifier_messages(request: str) -> list[dict[str, str]]:
 
 
 def parse_specialist_response(
-    raw: str, *, threshold: float = 0.80, fallback_title: str = ""
+    raw: str,
+    *,
+    threshold: float = 0.80,
+    fallback_title: str = "",
+    registry: "CapabilityRegistry | None" = None,
 ) -> SpecialistRouteDecision:
     """Validate an untrusted classifier answer without repair or coercion."""
     if not isinstance(raw, str):
@@ -240,6 +244,8 @@ def parse_specialist_response(
     if kind is RouteKind.SPECIALIST:
         if not isinstance(profile, str) or profile not in SPECIALIST_PROFILES:
             return _general("unknown_profile")
+        if registry is not None and not registry.is_profile_declared(profile):
+            return _general("registry_unresolved")
         if not title.strip():
             title = " ".join(fallback_title.split())[:_MAX_TITLE_CHARS]
             if not title:
@@ -271,7 +277,7 @@ ClassifierCall = Callable[[list[dict[str, str]]], Awaitable[str]]
 class CapabilityResolver(Protocol):
     """Minimal local registry dependency for active-profile routing."""
 
-    def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
+    def resolve(self, signature: CapabilitySignature, *, profile_id: str | None = None) -> RegistryResolution:
         """Return the locally verified resolution for one exact signature."""
 
 
@@ -298,14 +304,7 @@ def _active_registry_decision(
 def apply_registry_resolution(
     resolution: RegistryResolution, *, fallback: SpecialistRouteDecision | None = None
 ) -> SpecialistRouteDecision:
-    """Compose one trusted local resolution with an optional classifier fallback.
-
-    Only an ``active_match`` can select a profile outside the fixed baseline.
-    A no-match or ambiguity preserves a fixed-profile classifier result so the
-    handoff owner can open the inert Task-3 candidate request and use the
-    existing orchestrator fallback. Candidate names and malformed registry
-    output are never dispatchable.
-    """
+    """Compose a trusted local resolution with an optional classifier fallback."""
     if not isinstance(resolution, RegistryResolution):
         return _general("registry_unavailable")
     if resolution.status == "active_match":
@@ -322,15 +321,23 @@ def apply_registry_resolution(
 
 
 def resolve_registry(
-    signature: CapabilitySignature, registry: CapabilityResolver
+    signature: CapabilitySignature,
+    registry: CapabilityResolver | None,
+    *,
+    profile_id: str | None = None,
 ) -> RegistryResolution:
     """Resolve locally and turn registry faults into a typed no-dispatch result."""
-    if not isinstance(signature, CapabilitySignature) or not hasattr(registry, "resolve"):
+    if not isinstance(signature, CapabilitySignature) or registry is None or not hasattr(registry, "resolve"):
         return RegistryResolution(
             status="unavailable", profile=None, reason="local capability registry is unavailable"
         )
     try:
-        resolution = registry.resolve(signature)
+        try:
+            resolution = registry.resolve(signature, profile_id=profile_id)
+        except TypeError:
+            # Keep small test doubles and older external registry adapters
+            # compatible while the concrete registry gains profile identity.
+            resolution = registry.resolve(signature)
     except Exception:
         return RegistryResolution(
             status="unavailable", profile=None, reason="local capability registry is unavailable"
@@ -348,12 +355,11 @@ def resolve_route(
     *,
     fallback: SpecialistRouteDecision | None = None,
 ) -> SpecialistRouteDecision:
-    """Resolve an active specialist before using the fixed classifier baseline.
-
-    This function owns no provider call and cannot activate profiles. It only
-    composes an already-local capability lookup into a typed route decision.
-    """
-    return apply_registry_resolution(resolve_registry(signature, registry), fallback=fallback)
+    """Resolve an active specialist before using a fixed classifier fallback."""
+    return apply_registry_resolution(
+        resolve_registry(signature, registry, profile_id=fallback.profile if fallback else None),
+        fallback=fallback,
+    )
 
 
 async def classify_specialist_request(
@@ -362,12 +368,15 @@ async def classify_specialist_request(
     *,
     threshold: float = 0.80,
     timeout: float = 12.0,
+    registry: "CapabilityRegistry | None" = None,
 ) -> SpecialistRouteDecision:
     """Run one bounded classifier call and turn every failure into fallback."""
     if not isinstance(request, str) or not request.strip():
         return _general("empty_request")
     explicit_burndown = classify_explicit_burndown_patch_request(request)
     if explicit_burndown is not None:
+        if registry is not None and not registry.is_profile_declared(explicit_burndown.profile or ""):
+            return _general("registry_unresolved")
         return explicit_burndown
     if not callable(classifier):
         return _general("classifier_unavailable")
@@ -382,4 +391,4 @@ async def classify_specialist_request(
         return _general("classifier_error")
     if not isinstance(raw, str):
         return _general("invalid_classifier_output")
-    return parse_specialist_response(raw, threshold=threshold, fallback_title=request)
+    return parse_specialist_response(raw, threshold=threshold, fallback_title=request, registry=registry)

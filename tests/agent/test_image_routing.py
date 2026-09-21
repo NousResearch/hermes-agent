@@ -64,13 +64,27 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
-    def test_auto_prefers_native_for_vision_capable_main_model_even_with_aux_configured(self):
-        """Regression #29135: vision-capable main model wins over aux fallback.
-
-        Auxiliary.vision is a fallback for text-only main models; it must
-        not preempt native vision on a vision-capable main model.
-        """
+    def test_auto_explicit_aux_backend_is_the_defacto_route(self):
+        """Maintainer decision (2026-08-28, reverses #29135): a user who
+        NAMED a dedicated vision backend wants it used — even when the
+        main model has native vision. Config that only takes effect when
+        the main model gets worse is a trap, not a setting."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+
+    def test_auto_unset_aux_backend_native_remains_default(self):
+        """No configured aux backend -> native for vision-capable mains
+        (the unconfigured-install default is unchanged)."""
+        for cfg in ({}, {"auxiliary": {}}, {"auxiliary": {"vision": {"provider": "auto"}}}):
+            with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+                assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
+
+    def test_image_input_mode_native_overrides_aux_backend(self):
+        """agent.image_input_mode: native stays the absolute escape hatch —
+        forces native attach even with an explicit aux backend."""
+        cfg = {"agent": {"image_input_mode": "native"},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
@@ -143,6 +157,11 @@ class TestLookupSupportsVisionOverride:
         fake_caps = type("Caps", (), {"supports_vision": True})()
         with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
             assert _lookup_supports_vision("anthropic", "claude-sonnet-4", {}) is True
+
+    def test_models_dev_unknown_capability_stays_fail_open(self):
+        fake_caps = type("Caps", (), {"supports_vision": None})()
+        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+            assert _lookup_supports_vision("custom-gateway", "upstream-model", {}) is None
 
 
     def test_ollama_probe_when_models_dev_missing(self):
@@ -651,3 +670,26 @@ class TestProbeApiKeyForwarding:
         ) as detect:
             _lookup_supports_vision("custom", "llava", {"model": {"api_key": key}})
         assert detect.call_args.kwargs.get("api_key") == key
+
+
+class TestCodexContextVariantVisionLookup:
+    """Issue #102189: a VALID Codex ``-900k`` picker variant is an alias of its base slug, so the
+    vision-capability lookup must key on the base while ineligible ``-900k`` strings gain nothing."""
+
+    def test_valid_variant_resolves_against_base_slug(self, monkeypatch):
+        from types import SimpleNamespace
+        import agent.models_dev as models_dev
+        import agent.image_routing as image_routing
+
+        seen = []
+
+        def fake_caps(provider, model, allow_network=False):
+            seen.append(model)
+            return SimpleNamespace(supports_vision=True) if model == "gpt-5.6-sol" else None
+
+        monkeypatch.setattr(models_dev, "get_model_capabilities", fake_caps)
+        assert image_routing._probe_models_dev("openai-codex", "gpt-5.6-sol-900k", {}) is True
+        assert seen == ["gpt-5.6-sol"]
+        # Ineligible alias: looked up verbatim, no capability gained.
+        assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
+        assert seen[-1] == "gpt-5.5-900k"

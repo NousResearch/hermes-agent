@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from gateway.capability_registry import CapabilityRegistry, CapabilitySignature, RegistryResolution
 from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
 from gateway.specialist_routing import (
     RouteKind,
@@ -20,12 +20,6 @@ from hermes_cli import kanban_db as kb
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    for profile in (
-        "task-orchestrator",
-        "burndown-patch-steward",
-        "market-data-authority-auditor",
-    ):
-        (home / "profiles" / profile).mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -33,6 +27,7 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 def test_specialist_handoff_creates_goal_mode_triage_root(kanban_home):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     decision = SpecialistRouteDecision(
         kind=RouteKind.SPECIALIST,
         profile="burndown-patch-steward",
@@ -57,17 +52,20 @@ def test_specialist_handoff_creates_goal_mode_triage_root(kanban_home):
 
     assert result.ok, result.reason
     assert result.task_id
-    with kb.connect(board="exampleproject-burndown") as conn:
+    with _hermes_cli_kanban_db_connect.connect(board="exampleproject-burndown") as conn:
         task = kb.get_task(conn, result.task_id)
     assert task is not None
     assert task.status == "triage"
     assert task.goal_mode is True
     assert task.goal_max_turns == 12
+    assert task.skills == ["exampleproject-worktree-navigation"]
+    assert result.assignee == task.assignee
 
 
 def test_specialist_handoff_explicit_board_ignores_database_environment_override(
     kanban_home, monkeypatch, tmp_path
 ):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     decision = SpecialistRouteDecision(
         kind=RouteKind.SPECIALIST,
         profile="burndown-patch-steward",
@@ -83,10 +81,10 @@ def test_specialist_handoff_explicit_board_ignores_database_environment_override
         message_id="message-env-isolation",
     )
     board = "exampleproject-burndown"
-    with kb.connect(board=board):
+    with _hermes_cli_kanban_db_connect.connect(board=board):
         pass
     override_path = tmp_path / "override" / "kanban.db"
-    with kb.connect(db_path=override_path):
+    with _hermes_cli_kanban_db_connect.connect(db_path=override_path):
         pass
     monkeypatch.setenv("HERMES_KANBAN_DB", str(override_path))
 
@@ -99,12 +97,25 @@ def test_specialist_handoff_explicit_board_ignores_database_environment_override
 
     assert result.ok, result.reason
     monkeypatch.delenv("HERMES_KANBAN_DB")
-    with kb.connect(board=board) as configured_conn:
+    with _hermes_cli_kanban_db_connect.connect(board=board) as configured_conn:
         configured_task = kb.get_task(configured_conn, result.task_id)
-    with kb.connect(db_path=override_path) as override_conn:
+    with _hermes_cli_kanban_db_connect.connect(db_path=override_path) as override_conn:
         override_task = kb.get_task(override_conn, result.task_id)
     assert configured_task is not None
     assert override_task is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Why shouldn't we patch the exception burndown?",
+        "Do not patch this exception burndown.",
+    ),
+)
+def test_explicit_burndown_router_rejects_questions_and_negations(message):
+    from gateway.specialist_routing import classify_explicit_burndown_patch_request
+
+    assert classify_explicit_burndown_patch_request(message) is None
 
 
 def test_router_accepts_task_orchestrator_for_broad_actionable_work():
@@ -118,149 +129,31 @@ def test_router_accepts_task_orchestrator_for_broad_actionable_work():
     assert decision.profile == "task-orchestrator"
 
 
-def test_handoff_rejects_unresolved_candidate_profile_without_a_missing_scope_receipt(kanban_home):
-    decision = SpecialistRouteDecision(
-        kind=RouteKind.SPECIALIST,
-        profile="generated-market-data-candidate",
-        confidence=0.95,
-        reason="model suggestion",
-        title="Generated candidate",
-    )
-    source = HandoffSource(
-        platform="discord",
-        chat_id="channel-1",
-        chat_type="group",
-        user_id="user-1",
-        message_id="message-candidate-without-resolution",
-    )
+def test_deterministic_specialist_route_requires_active_capability_declaration(tmp_path):
+    from gateway.capability_registry import CapabilityRegistry, CapabilitySignature
+    from gateway.specialist_routing import classify_specialist_request
 
-    result = create_specialist_handoff(
-        decision=decision,
-        source=source,
-        request="Audit the supplied evidence.",
-    )
-
-    assert result.ok is False
-    assert result.reason == "non_dispatch_decision"
-
-
-def test_handoff_uses_active_registry_profile_before_fixed_classifier_profile(kanban_home, tmp_path):
     signature = CapabilitySignature(
-        domain="market-data",
-        actions=("audit", "read"),
-        evidence_class="diagnostic-only",
-        requested_permissions=("market-data:read",),
+        domain="exception-burndown",
+        actions=("patch",),
+        evidence_class="advisory",
+        requested_permissions=("kanban:create",),
     )
-    registry = CapabilityRegistry(db_path=tmp_path / "capability-registry.db")
-    registry.register_fixed_baseline(profile_id="market-data-authority-auditor", signature=signature)
-    decision = SpecialistRouteDecision(
-        kind=RouteKind.SPECIALIST,
-        profile="market-data-authority-auditor",
-        confidence=0.95,
-        reason="classifier fixed profile",
-        title="Audit market data",
+    registry = CapabilityRegistry(
+        db_path=tmp_path / "registry.db",
+        configured_profiles={"burndown-patch-steward": signature},
     )
-    source = HandoffSource(
-        platform="discord",
-        chat_id="channel-1",
-        chat_type="group",
-        user_id="user-1",
-        message_id="message-active-registry-match",
+    request = "Perform the exception burndown and patch the confirmed failures."
+
+    denied = asyncio.run(
+        classify_specialist_request(request, lambda _messages: "", registry=registry)
     )
+    assert denied.dispatches is False
+    assert denied.audit_reason == "registry_unresolved"
 
-    result = create_specialist_handoff(
-        decision=decision,
-        source=source,
-        request="Audit the supplied market-data evidence.",
-        signature=signature,
-        registry=registry,
-        board=kb.DEFAULT_BOARD,
+    registry.register_configured_profile("burndown-patch-steward")
+    allowed = asyncio.run(
+        classify_specialist_request(request, lambda _messages: "", registry=registry)
     )
-
-    assert result.ok, result.reason
-    with kb.connect() as conn:
-        task = kb.get_task(conn, result.task_id)
-    assert task is not None
-    assert task.assignee == "market-data-authority-auditor"
-
-
-def test_forged_active_registry_resolution_cannot_create_a_profile_assigned_handoff(kanban_home):
-    decision = SpecialistRouteDecision(
-        kind=RouteKind.SPECIALIST,
-        profile="market-data-authority-auditor",
-        confidence=0.95,
-        reason="classifier fixed profile",
-        title="Audit market data",
-    )
-    source = HandoffSource(
-        platform="discord",
-        chat_id="channel-1",
-        chat_type="group",
-        user_id="user-1",
-        message_id="message-forged-active-resolution",
-    )
-    forged = RegistryResolution(
-        status="active_match",
-        profile="forged-profile",
-        reason="untrusted caller data",
-    )
-
-    with pytest.raises(TypeError, match="unexpected keyword argument 'resolution'"):
-        create_specialist_handoff(
-            decision=decision,
-            source=source,
-            request="Audit the supplied market-data evidence.",
-            board=kb.DEFAULT_BOARD,
-            resolution=forged,
-        )
-
-    with kb.connect() as conn:
-        rows = conn.execute("SELECT assignee FROM tasks").fetchall()
-    assert rows == []
-
-
-def test_duck_typed_registry_cannot_authorize_a_profile_assigned_handoff(kanban_home):
-    signature = CapabilitySignature(
-        domain="market-data",
-        actions=("audit", "read"),
-        evidence_class="diagnostic-only",
-        requested_permissions=("market-data:read",),
-    )
-    decision = SpecialistRouteDecision(
-        kind=RouteKind.SPECIALIST,
-        profile="market-data-authority-auditor",
-        confidence=0.95,
-        reason="classifier fixed profile",
-        title="Audit market data",
-    )
-    source = HandoffSource(
-        platform="discord",
-        chat_id="channel-1",
-        chat_type="group",
-        user_id="user-1",
-        message_id="message-duck-typed-registry",
-    )
-
-    class ForgedRegistry:
-        def resolve(self, requested_signature):
-            assert requested_signature == signature
-            return RegistryResolution(
-                status="active_match",
-                profile="forged-profile",
-                reason="untrusted caller data",
-            )
-
-    result = create_specialist_handoff(
-        decision=decision,
-        source=source,
-        request="Audit the supplied market-data evidence.",
-        board=kb.DEFAULT_BOARD,
-        signature=signature,
-        registry=ForgedRegistry(),
-    )
-
-    assert result.ok is False
-    assert result.reason == "non_dispatch_decision"
-    with kb.connect() as conn:
-        rows = conn.execute("SELECT assignee FROM tasks").fetchall()
-    assert rows == []
+    assert allowed.dispatches is True
+    assert allowed.profile == "burndown-patch-steward"

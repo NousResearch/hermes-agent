@@ -46,8 +46,8 @@
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
 // exiting. Logs go to stderr; Python supervises restart.
 //
-// Requires spectrum-ts 8.x — pinned exactly in package.json because the SDK
-// ships breaking majors; see README "Upgrading spectrum-ts".
+// Requires a pinned spectrum-ts version — the SDK ships breaking majors; see
+// README "Upgrading spectrum-ts".
 //
 // Env vars (required):
 //   PHOTON_PROJECT_ID      (== the project's spectrumProjectId)
@@ -67,8 +67,8 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { probeUpstream as probeUpstreamWithSdk } from "./upstream-probe.mjs";
 import {
-  classifyProbeRejection,
   shouldProbe,
   isZombieSuspect,
 } from "./stream-staleness.mjs";
@@ -267,7 +267,7 @@ console.log = (...args) => {
 // half-open ("zombie") one. `space.get` is purely local in shared/dedicated
 // mode (no chat is created or messaged); only the message read hits the wire.
 const PROBE_SPACE_ID = process.env.PHOTON_PROBE_SPACE_ID || "any;-;+10000000000";
-const PROBE_MSG_PREFIX = "hermes-liveness-probe-";
+
 
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
@@ -545,6 +545,17 @@ async function normalizeContent(content) {
     }
     return { type: "group", items };
   }
+  if (content.type === "read") {
+    // spectrum-ts v12.5+ surfaces an inbound read receipt only after it has
+    // verified that the target is one of our outbound messages. Keep the
+    // receipt lightweight: Python records it as telemetry, never as an agent
+    // prompt.
+    return {
+      type: "read",
+      targetMessageId: content.target?.id ?? null,
+      targetDirection: content.target?.direction ?? null,
+    };
+  }
   if (content.type === "reaction") {
     const target = content.target;
     return {
@@ -584,6 +595,32 @@ async function normalizeContent(content) {
     };
   }
   return { type: content.type || "unknown" };
+}
+
+// The iMessage SDK exposes `message.read()` for inbound messages. Mark after
+// the event has crossed the sidecar boundary: this means the gateway has
+// actually received it, while a transient agent/tool delay does not leave the
+// sender staring at Delivered. Receipt events themselves must never recurse.
+const readReceiptsEnabled =
+  (process.env.PHOTON_READ_RECEIPTS || "true").trim().toLowerCase() !==
+  "false";
+
+async function acknowledgeInboundRead(message) {
+  if (!readReceiptsEnabled) return;
+  if (
+    message?.content?.type === "read" ||
+    message?.content?.type === "read_receipt"
+  ) return;
+  if (typeof message?.read !== "function") return;
+  try {
+    await message.read();
+  } catch (error) {
+    // Read receipts are presence polish, not a delivery dependency.
+    console.warn(
+      "photon-sidecar: failed to mark inbound message read: " +
+        (error?.message || String(error))
+    );
+  }
 }
 
 async function normalizeEvent(space, message) {
@@ -659,6 +696,7 @@ function inboundStreamErrorMessage(e) {
         const event = await normalizeEvent(space, message);
         if (!event) continue;
         await deliver(JSON.stringify(event));
+        await acknowledgeInboundRead(message);
       }
       console.error("photon-sidecar: inbound stream ended — re-subscribing");
       markStreamRecovering("inbound stream ended");
@@ -692,37 +730,13 @@ function inboundStreamErrorMessage(e) {
 //     shared lines can be legitimately quiet for hours.
 
 async function probeUpstream() {
-  if (typeof app?.stop !== "function") {
-    return { alive: false, hung: false, reason: "spectrum app not constructed" };
-  }
-  const probeId =
-    PROBE_MSG_PREFIX + Date.now() + "-" + Math.random().toString(36).slice(2);
-  let timer = null;
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(
-      () => resolve({ alive: false, hung: true, reason: "probe timed out" }),
-      STREAM_PROBE_TIMEOUT_MS
-    );
-    timer.unref();
+  return probeUpstreamWithSdk({
+    app,
+    imessage,
+    spaceId: PROBE_SPACE_ID,
+    timeoutMs: STREAM_PROBE_TIMEOUT_MS,
+    staleness,
   });
-  const attempt = (async () => {
-    try {
-      const im = imessage(app);
-      const space = await im.space.get(PROBE_SPACE_ID);
-      await space.getMessage(probeId);
-      // Resolving for a synthetic id is unexpected but is still a completed
-      // round-trip: the channel is alive.
-      return { alive: true, hung: false, reason: "round-trip completed" };
-    } catch (e) {
-      const verdict = classifyProbeRejection(e);
-      return { alive: verdict.alive, hung: false, reason: verdict.reason };
-    }
-  })();
-  const outcome = await Promise.race([attempt, timeout]);
-  if (timer) clearTimeout(timer);
-  staleness.lastProbeAt = Date.now();
-  staleness.lastProbeOutcome = outcome.alive ? "alive" : "inconclusive";
-  return outcome;
 }
 
 let watchdogProbeInFlight = false;

@@ -3,7 +3,7 @@
 Hermes Agent saves conversation trajectories in ShareGPT-compatible JSONL format
 for use as training data, debugging artifacts, and reinforcement learning datasets.
 
-Source files: `agent/trajectory.py`, `run_agent.py` (search for `_save_trajectory`), `batch_runner.py`
+Source files: `agent/trajectory.py`, `agent/session_persistence.py` (search for `_save_trajectory`), `batch_runner.py`
 
 
 ## File Naming Convention
@@ -12,8 +12,8 @@ Trajectories are written to files in the current working directory:
 
 | File | When |
 |------|------|
-| `trajectory_samples.jsonl` | Conversations that completed successfully (`completed=True`) |
-| `failed_trajectories.jsonl` | Conversations that failed or were interrupted (`completed=False`) |
+| `trajectory_samples.jsonl.gz` | Conversations that completed successfully (`completed=True`), gzip-compressed JSONL |
+| `failed_trajectories.jsonl.gz` | Conversations that failed or were interrupted (`completed=False`), gzip-compressed JSONL |
 
 The batch runner (`batch_runner.py`) writes to a custom output file per batch
 (e.g., `batch_001_output.jsonl`) with additional metadata fields.
@@ -178,7 +178,7 @@ Tool definitions include `name`, `description`, `parameters`, and `required`
 
 ## Loading Trajectories
 
-Trajectories are standard JSONL — load with any JSON-lines reader:
+Trajectories are gzip-compressed JSONL by default. Open them with a gzip-aware JSON-lines reader:
 
 ```python
 import json
@@ -186,7 +186,9 @@ import json
 def load_trajectories(path: str):
     """Load trajectory entries from a JSONL file."""
     entries = []
-    with open(path, "r", encoding="utf-8") as f:
+    import gzip
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -194,7 +196,7 @@ def load_trajectories(path: str):
     return entries
 
 # Filter to successful completions only
-successful = [e for e in load_trajectories("trajectory_samples.jsonl")
+successful = [e for e in load_trajectories("trajectory_samples.jsonl.gz")
               if e.get("completed")]
 
 # Extract just the conversations for training
@@ -206,7 +208,7 @@ training_data = [e["conversations"] for e in successful]
 ```python
 from datasets import load_dataset
 
-ds = load_dataset("json", data_files="trajectory_samples.jsonl")
+ds = load_dataset("json", data_files="trajectory_samples.jsonl.gz")
 ```
 
 The normalized `tool_stats` schema ensures all entries have the same columns,

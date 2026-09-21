@@ -32,6 +32,18 @@ def _force_local_terminal(monkeypatch):
     ensures each test starts (and ends) with the correct value.
     """
     monkeypatch.setenv("TERMINAL_ENV", "local")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_kernel_registry():
+    """Session kernels are always on: dispose them per-test so a lingering
+    kernel child can't outlive the run (hangs pytest at exit) or leak one
+    test's interpreter state into the next."""
+    from tools.code_kernel import shutdown_all_kernels
+
+    shutdown_all_kernels()
+    yield
+    shutdown_all_kernels()
 import sys
 import threading
 import unittest
@@ -175,9 +187,14 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["stdout_truncated"])
         self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
-        mkdir_cmd = env.commands[1][0]
+        # The session-kernel path runs first and fails open on this fake env
+        # (no PID from nohup), so search for the per-call sandbox commands
+        # rather than pinning positions.
+        mkdir_cmd = next(cmd for cmd, _, _ in env.commands
+                         if "mkdir -p" in cmd and "hermes_exec_" in cmd)
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
-        cleanup_cmd = env.commands[-1][0]
+        cleanup_cmd = next(cmd for cmd, _, _ in env.commands
+                           if "rm -rf" in cmd and "hermes_exec_" in cmd)
         self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
         self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
@@ -225,13 +242,42 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                       "TZ value must be wrapped in single quotes by shlex.quote()")
 
 
+class TestToolCallLimit(unittest.TestCase):
+    def test_zero_disables_tool_call_limit(self):
+        from tools.code_execution_tool import _tool_call_limit_reached
+
+        self.assertFalse(_tool_call_limit_reached(100_000, 0))
+
+    def test_positive_limit_is_enforced(self):
+        from tools.code_execution_tool import _tool_call_limit_reached
+
+        self.assertFalse(_tool_call_limit_reached(4, 5))
+        self.assertTrue(_tool_call_limit_reached(5, 5))
+
+    def test_negative_limit_disables_it_same_as_zero(self):
+        """The documented contract (cli-config.yaml.example) is `<= 0 = unlimited`,
+        and _tool_call_limit_reached already treats every non-positive value as
+        unbounded -- the config validator must not reject exactly the values the
+        adjacent limit predicate treats as valid."""
+        from tools.code_execution_tool import _configured_max_tool_calls, _tool_call_limit_reached
+
+        self.assertEqual(_configured_max_tool_calls({"max_tool_calls": -1}), -1)
+        self.assertFalse(_tool_call_limit_reached(100_000, -1))
+
+    def test_non_integer_limit_is_rejected(self):
+        from tools.code_execution_tool import _configured_max_tool_calls
+
+        with self.assertRaisesRegex(ValueError, "must be an integer"):
+            _configured_max_tool_calls({"max_tool_calls": "unlimited"})
+
+
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):
     """Integration tests using the mock dispatcher."""
 
     def _run(self, code, enabled_tools=None):
         """Helper: run code with mocked handle_function_call."""
-        with patch("tools.code_execution_tool._rpc_server_loop") as mock_rpc:
+        with patch("tools.code_execution_rpc._rpc_server_loop") as mock_rpc:
             # Use real execution but mock the tool dispatcher
             pass
         # Actually run with full integration, mocking at the model_tools level
@@ -277,6 +323,24 @@ print(result.get("output", ""))
         self.assertEqual(result["status"], "success")
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
+
+    def test_zero_limit_allows_more_than_legacy_default_through_rpc(self):
+        """The real sandbox/RPC path honors zero as unlimited past 50 calls."""
+        code = """
+from hermes_tools import terminal
+for i in range(51):
+    terminal(f"echo {i}")
+print("completed-51")
+"""
+        with patch(
+            "tools.code_execution_tool._load_config",
+            return_value={"timeout": 30, "max_tool_calls": 0},
+        ):
+            result = self._run(code)
+
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("completed-51", result["output"])
+        self.assertEqual(result["tool_calls_made"], 51)
 
 
     def test_concurrent_tool_calls_match_responses(self):
@@ -411,7 +475,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
@@ -424,7 +488,7 @@ class TestStubSchemaDrift(unittest.TestCase):
         import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
         import tools.web_tools  # noqa: F401 - registers web_search, web_extract
 
-        for tool_name, (func_name, sig, doc, args_expr) in _TOOL_STUBS.items():
+        for tool_name, (sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)
             if not entry:
                 # Tool might not be registered yet (e.g., terminal uses a
@@ -458,10 +522,11 @@ class TestStubSchemaDrift(unittest.TestCase):
         compile(src, "hermes_tools.py", "exec")
 
         # Verify specific parameter signatures are in the source
-        # search_files must accept context, offset, output_mode
+        # search_files must accept its pagination, output, and ordering controls
         self.assertIn("context", src)
         self.assertIn("offset", src)
         self.assertIn("output_mode", src)
+        self.assertIn("order", src)
 
         # patch must accept mode and patch params
         self.assertIn("mode", src)
@@ -529,8 +594,13 @@ class TestEnvVarFiltering(unittest.TestCase):
             with patch("model_tools.handle_function_call", return_value='{}'), \
                  patch("tools.code_execution_tool._load_config",
                        return_value={"timeout": 10, "max_tool_calls": 50}):
+                # reset=True: a session kernel's env is frozen at spawn, so
+                # env-building rules are only observable on a FRESH kernel —
+                # a reused one would (correctly) show the env from whenever
+                # it was first spawned, not this test's os.environ tweaks.
                 raw = execute_code(code, task_id="test-env",
-                                   enabled_tools=list(SANDBOX_ALLOWED_TOOLS))
+                                   enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                                   reset=True)
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
@@ -570,7 +640,12 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             os.environ["HERMES_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
-            self.assertEqual(child_env.get("TZ"), "America/New_York")
+            if sys.platform == "win32":
+                # The MSVC runtime only parses POSIX-form TZ; an IANA name yields a wrong
+                # offset (#112233), so Windows children keep the OS zone instead.
+                self.assertNotIn("TZ", child_env)
+            else:
+                self.assertEqual(child_env.get("TZ"), "America/New_York")
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
@@ -615,6 +690,20 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("'code' parameter", result["error"])
         self.assertIn("execute_code(code=...)", result["error"])
         self.assertIn("terminal(command=...)", result["error"])
+        self.assertNotIn("NoneType", result["error"])
+
+    def test_terminal_command_class_argument_names_schema_error(self):
+        """Do not execute an unrecognized command list; explain the schema."""
+        from tools.terminal_tool import _handle_terminal
+
+        result = json.loads(
+            _handle_terminal({"command_class": ["pytest"]}, task_id="test")
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("'command_class' parameter", result["error"])
+        self.assertIn("terminal(command=\"...\")", result["error"])
+        self.assertIn("string", result["error"])
         self.assertNotIn("NoneType", result["error"])
 
     def test_empty_code_explains_required_parameter(self):
@@ -692,7 +781,7 @@ class TestLoadConfig(unittest.TestCase):
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
         with patch.dict("sys.modules", {"cli": mock_cli}), \
-             patch("hermes_cli.config.read_raw_config", return_value={}):
+             patch("hermes_cli.config.load_config_readonly", return_value={}):
             result = _load_config()
         self.assertEqual(result, {})
 
@@ -788,7 +877,15 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertIn("TAIL", result["output"])
         self.assertGreater(result["stdout_bytes_total"], result["stdout_bytes_captured"])
         self.assertGreater(result["stdout_bytes_omitted"], 0)
+        # Spillover (#96997-adjacent): the warning now points at the saved
+        # full-output file instead of advising a narrower re-run.
         self.assertIn("execute_code stdout was truncated", result["warning"])
+        self.assertIn("read_file", result["warning"])
+        self.assertIn("stdout_spill_path", result)
+        with open(result["stdout_spill_path"], encoding="utf-8") as f:
+            body = f.read()
+        self.assertIn("HEAD", body)
+        self.assertIn("TAIL", body)
 
 
 class TestRpcTokenAuthorization(unittest.TestCase):
@@ -806,7 +903,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         Sends each dict in *requests* as a newline-delimited JSON message
         and returns the list of decoded JSON responses.
         """
-        from tools.code_execution_tool import _rpc_server_loop
+        from tools.code_execution_rpc import _rpc_server_loop
 
         # socketpair gives us a connected client end and a "server" end we
         # can hand to accept() by wrapping it in a tiny listener shim.

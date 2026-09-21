@@ -23,7 +23,6 @@ duplicate the user turn (#860 / #42039). This test locks in:
 3. The gateway resolution expression preserves standard-runtime behaviour.
 """
 
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -51,6 +50,7 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
     agent._codex_session = MagicMock()
     agent._codex_session.run_turn.return_value = _make_turn()
+    agent._codex_session_prompt = None  # seeded session: no recorded composition to compare
     agent.tool_progress_callback = None
     agent._iters_since_skill = 0
     agent._skill_nudge_interval = 0
@@ -105,12 +105,15 @@ def test_codex_user_interrupt_is_reported_and_cleared():
     assert agent._interrupt_requested is False
 
 
-def test_codex_turn_persists_each_message_exactly_once():
+def test_codex_turn_persists_each_message_exactly_once(tmp_path):
     """The user turn (flushed at turn start) must not be duplicated; the
     projected assistant message must land once.  Uses a real SessionDB and the
     real AIAgent._flush_messages_to_session_db to prove no #860/#42039
     duplicate-write regression on the codex path."""
-    tmp = tempfile.mkdtemp(prefix="codex_persist_")
+    tmp = tmp_path / "codex_persist"
+    tmp.mkdir()
+    db = None
+    agent = None
     try:
         db = SessionDB(Path(tmp) / "state.db")
         sid = "sess-codex-once"
@@ -161,9 +164,10 @@ def test_codex_turn_persists_each_message_exactly_once():
         hits = {r["session_id"] for r in db.search_messages("CODEX_ASSISTANT")}
         assert sid in hits
     finally:
-        import shutil
-
-        shutil.rmtree(tmp)
+        if agent is not None:
+            agent.close()
+        elif db is not None:
+            db.close()
 
 
 class TestGatewayPersistedResolution:

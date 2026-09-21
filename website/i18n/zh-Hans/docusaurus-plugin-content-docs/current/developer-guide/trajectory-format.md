@@ -11,13 +11,13 @@ Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训�
 
 | 文件 | 时机 |
 |------|------|
-| `trajectory_samples.jsonl` | 成功完成的对话（`completed=True`） |
-| `failed_trajectories.jsonl` | 失败或被中断的对话（`completed=False`） |
+| `trajectory_samples.jsonl.gz` | 成功完成的对话（`completed=True`），gzip 压缩的 JSONL |
+| `failed_trajectories.jsonl.gz` | 失败或被中断的对话（`completed=False`），gzip 压缩的 JSONL |
 
 批量运行器（`batch_runner.py`）按批次写入自定义输出文件
 （例如 `batch_001_output.jsonl`），并附带额外的元数据字段。
 
-可通过 `save_trajectory()` 的 `filename` 参数覆盖文件名。
+默认轨迹是 gzip 压缩的 JSONL。可通过 `save_trajectory()` 的 `filename` 参数覆盖文件名。
 
 
 ## JSONL 条目格式
@@ -168,7 +168,7 @@ API 格式的工具调用（含 `tool_call_id`、函数名、JSON 字符串形�
 
 ## 加载轨迹
 
-轨迹为标准 JSONL 格式——可用任意 JSON lines 读取器加载：
+轨迹默认为 gzip 压缩的 JSONL 格式：
 
 ```python
 import json
@@ -176,7 +176,9 @@ import json
 def load_trajectories(path: str):
     """Load trajectory entries from a JSONL file."""
     entries = []
-    with open(path, "r", encoding="utf-8") as f:
+    import gzip
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -184,7 +186,7 @@ def load_trajectories(path: str):
     return entries
 
 # Filter to successful completions only
-successful = [e for e in load_trajectories("trajectory_samples.jsonl")
+successful = [e for e in load_trajectories("trajectory_samples.jsonl.gz")
               if e.get("completed")]
 
 # Extract just the conversations for training
@@ -196,7 +198,7 @@ training_data = [e["conversations"] for e in successful]
 ```python
 from datasets import load_dataset
 
-ds = load_dataset("json", data_files="trajectory_samples.jsonl")
+ds = load_dataset("json", data_files="trajectory_samples.jsonl.gz")
 ```
 
 规范化的 `tool_stats` schema 确保所有条目具有相同的列，

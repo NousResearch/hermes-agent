@@ -3,6 +3,7 @@ import type {
   ActionStatusResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
+  AudioTtsLeaseResponse,
   BackendUpdateCheckResponse,
   CuratorStatusResponse,
   DebugShareResponse,
@@ -12,7 +13,7 @@ import type {
   MemoryStatusResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
+import { capabilityScoped, hermesApi, type OwnerScope, ownerScoped, type ProfileScope, profileScoped } from './client'
 
 export const AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS = 180_000
 export const AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS = 600_000
@@ -183,9 +184,11 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
   })
 }
 
-export function speakText(text: string): Promise<AudioSpeakResponse> {
+// `owner` = the speaking session's (connection, profile) — a Bot's own TTS
+// voice on its own gateway; omitted halves → the active scope.
+export function speakText(text: string, owner?: OwnerScope): Promise<AudioSpeakResponse> {
   return hermesApi<AudioSpeakResponse>({
-    ...profileScoped(),
+    ...ownerScoped(owner),
     path: '/api/audio/speak',
     method: 'POST',
     body: { text },
@@ -193,6 +196,26 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
     // finish. Remote providers and large messages regularly exceed the
     // default 15s Electron backend timeout.
     timeoutMs: audioSpeakRequestTimeoutMs(text)
+  })
+}
+
+// Acquiring a lease pre-loads the configured TTS engine. For local engines
+// that is a model load and, on a fresh install, a voice download — well past
+// the default 15s Electron backend timeout.
+export const AUDIO_TTS_LEASE_REQUEST_TIMEOUT_MS = 180_000
+
+/**
+ * Tell the backend a speech-output toggle flipped so it can warm the TTS engine
+ * (`active: true`) or release it once no surface needs it (`active: false`).
+ * `lease` names the toggle — `desktop:read-aloud`, `desktop:conversation`.
+ */
+export function setTtsLease(lease: string, active: boolean): Promise<AudioTtsLeaseResponse> {
+  return hermesApi<AudioTtsLeaseResponse>({
+    ...profileScoped(),
+    path: '/api/audio/tts-lease',
+    method: 'POST',
+    body: { active, lease },
+    timeoutMs: AUDIO_TTS_LEASE_REQUEST_TIMEOUT_MS
   })
 }
 

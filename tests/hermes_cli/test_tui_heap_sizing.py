@@ -12,6 +12,7 @@ import io
 from unittest import mock
 
 import hermes_cli.main as m
+from hermes_cli import main_tui_launch
 
 V2 = "/sys/fs/cgroup/memory.max"
 V1 = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
@@ -35,7 +36,7 @@ def _fake_open(files: dict):
 
 def _read(files: dict):
     with mock.patch.object(builtins, "open", _fake_open(files)):
-        return m._read_cgroup_memory_limit()
+        return main_tui_launch._read_cgroup_memory_limit()
 
 
 class TestReadCgroupMemoryLimit:
@@ -45,8 +46,8 @@ class TestReadCgroupMemoryLimit:
 
 class TestResolveTuiHeapMb:
     def _resolve(self, limit_bytes):
-        with mock.patch.object(m, "_read_cgroup_memory_limit", return_value=limit_bytes):
-            return m._resolve_tui_heap_mb()
+        with mock.patch.object(main_tui_launch, "_read_cgroup_memory_limit", return_value=limit_bytes):
+            return main_tui_launch._resolve_tui_heap_mb()
 
     def test_unconstrained_uses_default(self):
         assert self._resolve(None) == 8192
@@ -57,10 +58,10 @@ class TestNodeOptionsTokenMerge:
     already supplied one, and must preserve unrelated NODE_OPTIONS flags."""
 
     def _merge(self, node_options, limit_bytes):
-        with mock.patch.object(m, "_read_cgroup_memory_limit", return_value=limit_bytes):
+        with mock.patch.object(main_tui_launch, "_read_cgroup_memory_limit", return_value=limit_bytes):
             tokens = node_options.split()
             if not any(t.startswith("--max-old-space-size=") for t in tokens):
-                tokens.append(f"--max-old-space-size={m._resolve_tui_heap_mb()}")
+                tokens.append(f"--max-old-space-size={main_tui_launch._resolve_tui_heap_mb()}")
             return " ".join(tokens)
 
     def test_unconstrained_empty(self):

@@ -49,6 +49,13 @@ class TestParseResponse:
         )
         assert r == {"action": "block", "message": "nope"}
 
+    def test_pre_kanban_invalid_decision_is_preserved_for_validation(self):
+        r = shell_hooks._parse_response(
+            "pre_kanban_complete",
+            '{"action": "blok"}',
+        )
+        assert r == {"action": "blok"}
+
 
 
     def test_empty_stdout_returns_none(self):
@@ -200,6 +207,34 @@ class TestCallbackSubprocess:
             args={"command": "rm"},
         )
         assert msg == "blocked-by-shell"
+
+    def test_completion_hook_spawn_error_fails_closed_by_default(self, tmp_path, monkeypatch):
+        """Completion gates must not disappear when their command cannot spawn."""
+        from hermes_cli import plugins
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        plugins._plugin_manager = plugins.PluginManager()
+
+        missing = tmp_path / "missing-hook"
+        registered = shell_hooks.register_from_config(
+            {"hooks": {"pre_kanban_complete": [{"command": str(missing)}]}},
+            accept_hooks=True,
+        )
+        assert len(registered) == 1
+
+        results = plugins.invoke_hook("pre_kanban_complete", task_id="task-1")
+
+        assert results == [{"action": "block", "message": f"hook {missing} failed closed: command not found"}]
+
+    def test_completion_hook_timeout_fails_closed_by_default(self):
+        spec = shell_hooks.ShellHookSpec(event="pre_kanban_complete", command="/tmp/hook.sh")
+
+        result = shell_hooks._evaluate_result(spec, _spawn_result(timed_out=True))
+
+        assert result is not None
+        assert result["action"] == "block"
+        assert "failed closed" in result["message"]
 
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""
@@ -452,14 +487,15 @@ class TestAllowlistConcurrency:
         p.parent.mkdir(parents=True, exist_ok=True)
 
         tmp_paths_seen: list = []
-        real_mkstemp = shell_hooks.tempfile.mkstemp
+        import utils
+        real_mkstemp = utils.tempfile.mkstemp
 
         def spying_mkstemp(*args, **kwargs):
             fd, path = real_mkstemp(*args, **kwargs)
             tmp_paths_seen.append(path)
             return fd, path
 
-        monkeypatch.setattr(shell_hooks.tempfile, "mkstemp", spying_mkstemp)
+        monkeypatch.setattr(utils.tempfile, "mkstemp", spying_mkstemp)
 
         shell_hooks.save_allowlist({"approvals": [{"event": "a", "command": "x"}]})
         shell_hooks.save_allowlist({"approvals": [{"event": "b", "command": "y"}]})
@@ -658,11 +694,12 @@ class TestEvaluateResult:
         )
         assert r is None
 
-    def test_empty_stdout_passes_fail_closed(self):
+    def test_completion_empty_stdout_fails_closed_with_missing_decision(self):
         r = shell_hooks._evaluate_result(
-            self._spec(fail_closed=True), _spawn_result(stdout=""),
+            self._spec(event="pre_kanban_complete"), _spawn_result(stdout=""),
         )
-        assert r is None
+        assert r["action"] == "block"
+        assert "missing decision" in r["message"]
 
     def test_fail_closed_on_non_blocking_event_still_fails_open(self):
         """Defense in depth: even if a spec sneaks past parsing with
@@ -737,3 +774,76 @@ class TestFailSemanticsEndToEnd:
         assert result["timed_out"] is True
         assert result["parsed"]["action"] == "block"
         assert "failed closed" in result["parsed"]["message"]
+
+
+# ── multiplexed profiles ──────────────────────────────────────────────────
+
+
+class TestRoutedProfileEnv:
+    @pytest.mark.linux_only
+    def test_hook_child_sees_routed_profile_home_and_no_default_secrets(self, tmp_path, monkeypatch):
+        """Under multiplexing the child gets the ROUTED HERMES_HOME, the default profile's secrets
+        stay out of its env, and the payload names the firing profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        launch, routed = tmp_path / "launch", tmp_path / "routed"
+        launch.mkdir(); routed.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-default-profile")
+        monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+        script = _write_script(
+            tmp_path, "env_dump.sh",
+            "#!/usr/bin/env bash\ncat > /dev/null\n"
+            'printf \'{"home": "%s", "key": "%s"}\\n\' "$HERMES_HOME" "${OPENAI_API_KEY:-}"\n',
+        )
+        spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+        token = set_hermes_home_override(str(routed))
+        try:
+            result = shell_hooks._spawn(spec, shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+            payload = json.loads(shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+        finally:
+            reset_hermes_home_override(token)
+        seen = json.loads(result["stdout"])
+        assert seen["home"] == str(routed)
+        assert seen["key"] == ""
+        assert "profile" in payload
+
+
+# ── bare script paths on native Windows ─────────────────────────────────
+# Real subprocesses, no mocked spawn: the failure being guarded is CreateProcess rejecting a text
+# file, which only exists on the host it happens on. Marked per the root AGENTS.md rule against
+# faking ``sys.platform``.
+
+
+@pytest.mark.windows_only
+def test_bare_script_hook_path_executes_on_windows(tmp_path):
+    """A hook whose command is a bare script path — the shape every example in
+    ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
+    kernel's shebang handling; CreateProcess has no equivalent, so the same config failed on
+    Windows while working everywhere else. A path that is not a file must still be reported as
+    missing rather than laundered through an interpreter."""
+    script = _write_script(tmp_path, "hook.sh", '#!/usr/bin/env bash\necho "ran" >&2\nexit 7\n')
+
+    def spec(command):
+        return shell_hooks.ShellHookSpec(event="pre_tool_call", command=command)
+
+    result = shell_hooks._spawn(spec(str(script)), "{}")
+    assert result["error"] is None, result["error"]
+    assert result["returncode"] == 7, "the script's own exit code must reach a fail_closed gate"
+    assert "ran" in result["stderr"]
+
+    missing = shell_hooks._spawn(spec(str(tmp_path / "gone.sh")), "{}")
+    assert missing["error"] == "command not found"
+
+
+@pytest.mark.windows_only
+def test_unroutable_script_hook_names_the_remediation(tmp_path):
+    """A suffix we deliberately do not route still fails, but the diagnostic has to say what to do:
+    the raw WinError text is localized, so a non-English Windows install could not act on it."""
+    script = _write_script(tmp_path, "hook.zsh", "#!/bin/zsh\necho hi\n")
+    spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+
+    result = shell_hooks._spawn(spec, "{}")
+
+    assert result["returncode"] is None
+    assert "interpreter" in result["error"] and "bash" in result["error"]

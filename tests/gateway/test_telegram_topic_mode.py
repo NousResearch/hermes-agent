@@ -19,7 +19,7 @@ from agent.context_compressor import (
 )
 from hermes_state import SessionDB
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -111,7 +111,8 @@ def _make_runner(session_db=None):
     # Default switch_session impl: returns a SessionEntry carrying the target
     # session_id. Mirrors SessionStore.switch_session semantics for tests that
     # exercise Telegram topic binding rebinds without a real store.
-    def _switch_session(session_key, target_session_id):
+    def _switch_session(session_key, target_session_id, *, expected_session_id=None,
+                        conversation_kind="interactive", persisted_cwd=None):
         return SessionEntry(
             session_key=session_key,
             session_id=target_session_id,
@@ -120,6 +121,8 @@ def _make_runner(session_db=None):
             platform=Platform.TELEGRAM,
             chat_type="dm",
             origin=None,
+            cwd=persisted_cwd,
+            conversation_worktree={},
         )
     runner.session_store.switch_session = MagicMock(side_effect=_switch_session)
     runner._running_agents = {}
@@ -384,7 +387,9 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 
     assert "Started a new Hermes session in this topic" not in result
     assert "parallel work" not in result
-    runner.session_store.reset_session.assert_called_once_with(group_key)
+    runner.session_store.reset_session.assert_called_once_with(
+        group_key, conversation_kind="interactive"
+    )
 
 
 @pytest.mark.asyncio
@@ -493,7 +498,7 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     # requested; capture the requested id for assertion.
     switched_to: dict = {}
 
-    def fake_switch(_key, new_session_id):
+    def fake_switch(_key, new_session_id, *, expected_session_id=None):
         switched_to["id"] = new_session_id
         return SessionEntry(
             session_key=topic_key,
@@ -530,6 +535,34 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     )
     assert refreshed is not None
     assert refreshed["session_id"] == "child-session"
+
+
+@pytest.mark.asyncio
+async def test_topic_binding_heal_switches_with_cas_on_snapshot_session(tmp_path):
+    """The topic-binding heal repoints the route as a compare-and-swap on the session it resolved.
+
+    ``_hmwa_heal_telegram_topic_binding`` awaits two DB lookups between reading the route and
+    calling ``switch_session``; a /new or /resume that lands in that window must win, so the
+    switch is pinned to the snapshot ``session_entry.session_id`` via ``expected_session_id=``.
+    """
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(session_id="bound-session", source="telegram", user_id="208214988")
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988",
+        session_key=topic_key, session_id="bound-session",
+    )
+    runner = _make_runner(session_db=session_db)
+    snapshot = runner.session_store.get_or_create_session(topic_source)
+    assert snapshot.session_id != "bound-session"
+
+    await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
+
+    runner.session_store.switch_session.assert_called_once_with(
+        topic_key, "bound-session", expected_session_id=snapshot.session_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -645,16 +678,31 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
         return "handoff ok"
 
     runner._handle_message = AsyncMock(side_effect=fake_handle_message)
+    cli_workspace = tmp_path / "cli-worktree"
+    cli_workspace.mkdir()
+    runner.session_store.resolve_task_owned_workspace.return_value = (
+        str(cli_workspace),
+        {},
+    )
 
     await runner._process_handoff({
         "id": "cli-session",
         "title": "CLI work",
         "handoff_platform": "telegram",
+        "cwd": str(cli_workspace),
     })
 
     expected_source = _make_source(thread_id="17585")
     expected_key = build_session_key(expected_source)
-    runner.session_store.switch_session.assert_called_once_with(expected_key, "cli-session")
+    runner.session_store.get_or_create_session.assert_called_once_with(
+        captured["source"], conversation_kind="task"
+    )
+    runner.session_store.switch_session.assert_called_once_with(
+        expected_key,
+        "cli-session",
+        conversation_kind="task",
+        persisted_cwd=str(cli_workspace),
+    )
     assert captured["source"].chat_type == "dm"
     assert captured["source"].user_id == "208214988"
     assert captured["source"].thread_id == "17585"
@@ -829,4 +877,3 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
 # ---------------------------------------------------------------------------
 # Test for session-split thread_id recovery (issue #27166)
 # ---------------------------------------------------------------------------
-

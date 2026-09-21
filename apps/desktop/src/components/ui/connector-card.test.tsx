@@ -1,230 +1,103 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  ConnectorCard,
-  type ConnectorCardCopy,
-  type ConnectorCardProps,
-  type ConnectorCardSubject
-} from './connector-card'
+import { ConnectorCard, ConnectorRow, type ConnectorRowProps } from './connector-card'
 import { connectorLogoSource } from './connector-logo'
+import { SetupFormDialog } from './setup-form-dialog'
 
 afterEach(cleanup)
 
-const COPY: ConnectorCardCopy = {
-  connectAction: 'Connect',
-  decline: 'Not now',
-  envRequired: 'Fill in the required credentials first',
-  grantAction: 'Grant access',
-  retryAction: 'Retry',
-  stateConnected: 'Connected',
-  stateDeclined: 'Skipped',
-  stateDisabled: 'currently off',
-  stateFailed: 'Failed',
-  stateNeedsAuth: 'signed out',
-  toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
-  trustCommunity: 'unreviewed',
-  trustCommunityTip: host => `Nobody has verified who runs ${host}`,
-  trustVerified: publisher => `verified · ${publisher}`,
-  trustVerifiedTip: publisher => `The publisher proved it owns ${publisher}`
-}
+const LINEAR = { homepage: 'https://linear.app', name: 'linear', title: 'Linear' }
 
-const LINEAR: ConnectorCardSubject = {
-  description: 'Issues and projects.',
-  homepage: 'https://linear.app',
-  name: 'linear',
-  title: 'Linear',
-  trust: 'catalog'
-}
-
-function renderCard(overrides: Partial<ConnectorCardProps> = {}) {
-  const onConnect = vi.fn()
-  const onDismiss = vi.fn()
-
+function renderRow(overrides: Partial<ConnectorRowProps> = {}) {
   render(
-    <ConnectorCard
-      connector={LINEAR}
-      copy={COPY}
-      onConnect={onConnect}
-      onDismiss={onDismiss}
-      state="not_configured"
-      {...overrides}
-    />
+    <ConnectorCard title="Connect your apps">
+      <ConnectorRow connector={LINEAR} mark="idle" markLabel="Not connected" {...overrides} />
+    </ConnectorCard>
   )
-
-  return { onConnect, onDismiss }
 }
 
-describe('the resting offer', () => {
-  it('leads with what the thing is, not with a question about it', () => {
-    renderCard()
+describe('a row in the card', () => {
+  it('offers exactly one verb and gives no reason', () => {
+    const onClick = vi.fn()
 
-    // Scoped to a span: the brand glyph is an <svg> carrying its own
-    // <title>Linear</title>, which is the mark's accessible name rather than
-    // the card's copy.
+    renderRow({ action: { label: 'Connect', onClick } })
+
+    expect(screen.getByText('Connect your apps')).toBeTruthy()
+    // Scoped to a span: the brand glyph is an <svg> carrying its own <title>.
     expect(screen.getByText('Linear', { selector: 'span' })).toBeTruthy()
-    expect(screen.getByText('Issues and projects.')).toBeTruthy()
-  })
-
-  it('offers a connect and a way out', () => {
-    const { onConnect, onDismiss } = renderCard()
+    expect(screen.getAllByRole('button')).toHaveLength(1)
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
-    expect(onConnect).toHaveBeenCalledOnce()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Not now' }))
-    expect(onDismiss).toHaveBeenCalledOnce()
+    expect(onClick).toHaveBeenCalledOnce()
   })
 
-  it('says how a configured connector currently stands', () => {
-    renderCard({ state: 'needs_auth' })
+  it('says how it stands through the mark, so the verb never has to', () => {
+    renderRow({
+      action: { label: 'Connect', onClick: vi.fn() },
+      cue: 'Waiting for your browser…',
+      mark: 'waiting',
+      markLabel: 'Waiting for your browser…'
+    })
 
-    expect(screen.getByText('signed out')).toBeTruthy()
-  })
-})
+    const announced = screen.getByRole('status')
 
-describe('while it is working', () => {
-  it('shows the phase instead of the resting state, because the browser tab that just took focus is otherwise unexplained', () => {
-    renderCard({ phase: 'Signing in…', state: 'needs_auth' })
-
-    expect(screen.getByText('Signing in…')).toBeTruthy()
-    expect(screen.queryByText('signed out')).toBeNull()
-  })
-
-  it('holds its own action but never the way out', () => {
-    // While a connect is in flight, decline is the escape from a stuck
-    // sign-in tab or a hung install.
-    renderCard({ phase: 'Installing…' })
-
-    expect(screen.getByRole('button', { name: 'Not now' }).hasAttribute('disabled')).toBe(false)
+    // A row that flips while the user reads the card has to be heard, not just seen.
+    expect(announced.getAttribute('aria-live')).toBe('polite')
+    // The cue repeats the mark's own word here; it is announced once.
+    expect(announced.textContent).toBe('Waiting for your browser…')
+    expect(screen.getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(false)
   })
 
-  it('holds its action while a sibling is mid-flight, so two sign-in tabs never race for focus', () => {
-    renderCard({ otherBusy: true })
+  it('holds its verb while it runs', () => {
+    renderRow({ action: { busy: true, label: 'Try again', onClick: vi.fn() } })
 
-    expect(screen.getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(true)
-    expect(screen.getByRole('button', { name: 'Not now' }).hasAttribute('disabled')).toBe(false)
-  })
-})
+    const button = screen.getByRole('button')
 
-describe('once it is answered', () => {
-  it('collapses to a single line reporting what came of it', () => {
-    renderCard({ outcome: { status: 'connected', tools: ['a', 'b', 'c'] } })
-
-    expect(screen.getByText('Connected · 3 tools')).toBeTruthy()
-    // The offer is spent; the space belongs to whatever is still asking.
-    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull()
+    expect(button.getAttribute('aria-busy')).toBe('true')
+    expect(button.hasAttribute('disabled')).toBe(true)
   })
 
-  it('collapses the same way when waved off, still naming the thing', () => {
-    renderCard({ dismissed: true })
+  it('has nothing to press once it is done', () => {
+    renderRow({ mark: 'connected', markLabel: 'Connected' })
 
-    expect(screen.getByText('Linear', { selector: 'span' })).toBeTruthy()
-    expect(screen.getByText('Skipped')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
-  })
-
-  it('does not claim a tool count it does not have', () => {
-    renderCard({ outcome: { status: 'connected' } })
-
-    expect(screen.getByText('Connected')).toBeTruthy()
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+    expect(screen.getByRole('status').textContent).toBe('Connected')
   })
 })
 
-describe('after a failure', () => {
-  it('stays live with the reason and a retry', () => {
-    renderCard({ outcome: { detail: 'Connection refused', status: 'error' } })
-
-    expect(screen.getByText('Connection refused')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
-  })
-
-  it('asks for access rather than a retry when the credential was refused', () => {
-    // Repeating a refused grant just gets refused again; the fix is to ask.
-    renderCard({ outcome: { detail: 'insufficient scope', needsAuth: true, status: 'error' } })
-
-    expect(screen.getByRole('button', { name: 'Grant access' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
-  })
-
-  it('brings the setup steps back, because the failure was usually caused by one of them', () => {
-    const withSetup: ConnectorCardSubject = { ...LINEAR, setup: ['Enable the API'] }
-
-    renderCard({ connector: withSetup, outcome: { status: 'error' }, state: 'connected' })
-
-    expect(screen.getByText('Enable the API')).toBeTruthy()
-  })
-})
-
-describe('the work only the user can do', () => {
-  it('numbers the steps, because their order matters', () => {
-    renderCard({ connector: { ...LINEAR, setup: ['Create a project', 'Enable the API'] } })
-
-    expect(screen.getByText('1.')).toBeTruthy()
-    expect(screen.getByText('2.')).toBeTruthy()
-  })
-
-  it('turns a markdown link into a real link, because the whole cost of a step is finding the page', () => {
-    renderCard({ connector: { ...LINEAR, setup: ['Create a token at [Settings](https://linear.app/settings/api)'] } })
-
-    const link = screen.getByRole('link', { name: 'Settings' })
-
-    expect(link.getAttribute('href')).toBe('https://linear.app/settings/api')
-  })
-
-  it('does not repeat console instructions at a connector that already works', () => {
-    renderCard({ connector: { ...LINEAR, setup: ['Enable the API'] }, state: 'disabled' })
-
-    expect(screen.queryByText('Enable the API')).toBeNull()
-  })
-})
-
-describe('credentials', () => {
-  const withEnv: ConnectorCardSubject = {
-    ...LINEAR,
-    requiredEnv: [{ name: 'LINEAR_API_KEY', prompt: 'API key', required: true }]
+describe('credentials under a row', () => {
+  const fields = [
+    { default: 'https://api.linear.app', name: 'LINEAR_URL', prompt: 'API URL', required: true, secret: false },
+    { default: '', name: 'LINEAR_API_KEY', prompt: 'API key', required: true, secret: true }
+  ]
+  const copy = {
+    cancel: 'Cancel',
+    connect: 'Connect',
+    openInBrowser: 'Open in browser',
+    setup: (server: string) => `Set up ${server}`
   }
 
-  it('stays out of the way until the card asks for it', () => {
-    renderCard({ connector: withEnv })
+  it('stay out of the way until the row asks for them', () => {
+    render(<SetupFormDialog copy={copy} fields={fields} onCancel={vi.fn()} onConnect={vi.fn()} onOpenBrowser={vi.fn()} open={false} pending={false} server="Linear" status="pending" />)
 
-    expect(screen.queryByText('API key *')).toBeNull()
+    expect(screen.queryByLabelText('API key')).toBeNull()
   })
 
-  it('reports each keystroke so the caller owns the draft', () => {
-    const onEnvChange = vi.fn()
+  it('renders plain and masked inputs, prefills plain defaults, and reports the complete draft', () => {
+    const onConnect = vi.fn()
 
-    renderCard({ connector: withEnv, envOpen: true, onEnvChange })
+    render(<SetupFormDialog copy={copy} fields={fields} onCancel={vi.fn()} onConnect={onConnect} onOpenBrowser={vi.fn()} open pending={false} server="Linear" status="pending" />)
 
-    fireEvent.change(screen.getByLabelText('API key *'), { target: { value: 'lin_abc' } })
-    expect(onEnvChange).toHaveBeenCalledWith('LINEAR_API_KEY', 'lin_abc')
-  })
+    const plain = screen.getByLabelText('API URL')
+    const secret = screen.getByLabelText('API key')
 
-  it('masks the value, since these are secrets', () => {
-    renderCard({ connector: withEnv, envOpen: true })
-
-    expect(screen.getByLabelText('API key *').getAttribute('type')).toBe('password')
-  })
-})
-
-describe('how much the source vouches for it', () => {
-  it('says nothing for a reviewed source, so the badge that matters is not trained away', () => {
-    renderCard()
-
-    expect(screen.queryByText('unreviewed')).toBeNull()
-    expect(screen.queryByText(/verified/)).toBeNull()
-  })
-
-  it('names the domain a publisher proved it owns, rather than claiming trust', () => {
-    renderCard({ connector: { ...LINEAR, publisher: 'notion.com', trust: 'verified' } })
-
-    expect(screen.getByText('verified · notion.com')).toBeTruthy()
-  })
-
-  it('flags a publisher nobody has vouched for', () => {
-    renderCard({ connector: { ...LINEAR, trust: 'community', url: 'https://random.test/mcp' } })
-
-    expect(screen.getByText('unreviewed')).toBeTruthy()
+    expect(plain.getAttribute('type')).toBe('text')
+    expect(plain.getAttribute('value')).toBe('https://api.linear.app')
+    expect(secret.getAttribute('type')).toBe('password')
+    fireEvent.change(secret, { target: { value: 'lin_abc' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(onConnect).toHaveBeenCalledWith({ LINEAR_API_KEY: 'lin_abc', LINEAR_URL: 'https://api.linear.app' })
   })
 })
 

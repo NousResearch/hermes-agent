@@ -67,6 +67,21 @@ class TestSessionCwdOverride:
         finally:
             rt._SESSION_CWD.reset(token)
 
+    def test_kanban_workspace_overrides_stale_session_context(self, monkeypatch, tmp_path):
+        stable = tmp_path / "stable-base"
+        workspace = tmp_path / "task-worktree"
+        stable.mkdir()
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_workspace")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        token = set_session_cwd(str(stable))
+        try:
+            assert resolve_agent_cwd() == workspace
+            assert resolve_context_cwd() == workspace
+        finally:
+            rt._SESSION_CWD.reset(token)
+
 
     def test_clear_session_cwd_restores_terminal_cwd(self, monkeypatch, tmp_path):
         other = tmp_path / "other"
@@ -78,4 +93,3 @@ class TestSessionCwdOverride:
             assert resolve_agent_cwd() == tmp_path
         finally:
             rt._SESSION_CWD.reset(token)
-

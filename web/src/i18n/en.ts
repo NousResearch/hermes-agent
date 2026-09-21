@@ -63,7 +63,9 @@ export const en: Translations = {
     activeSessionsLabel: "Active Sessions:",
     gatewayStatusLabel: "Gateway Status:",
     gatewayStrip: {
+      degraded: "Degraded",
       failed: "Start failed",
+      heartbeatStale: "Heartbeat stale",
       off: "Off",
       running: "Running",
       starting: "Starting",
@@ -299,6 +301,10 @@ export const en: Translations = {
     noJobs: "No cron jobs configured. Create one above.",
     last: "Last",
     next: "Next",
+    /** Replaces `next` when the stored next_run_at is already past the scheduler grace. */
+    overdueSince: "Overdue since",
+    /** Banner when the ticker heartbeat is stale; {when} is a relative time such as "7h ago". */
+    schedulerLastTicked: "Scheduler last ticked {when} — jobs that came due since then have not fired",
     pause: "Pause",
     resume: "Resume",
     triggerNow: "Trigger now",
@@ -418,6 +424,21 @@ export const en: Translations = {
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
+    catalogHeading: "Plugin catalog",
+    catalogHint:
+      "Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
+    catalogSearchPlaceholder: "Search catalog...",
+    catalogEmpty: "No catalog entries match.",
+    catalogEmptyDocsLink: "Learn about Hermes plugins",
+    catalogInstallBtn: "Install",
+    catalogInstalledBadge: "Installed ✓",
+    catalogUpdateBtn: "Update available",
+    catalogRemovedBadge: "Removed",
+    catalogConfirmTitle: "Install this plugin?",
+    catalogConfirmInstallNote:
+      "Plugins install disabled; enable it after install to activate.",
+    catalogRequiresEnv: "Requires env",
+    removedFromCatalog: "Removed from catalog",
   },
 
   skills: {
@@ -534,6 +555,8 @@ export const en: Translations = {
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",
     sessionExpires: "Session expires in {time}",
+    sessionExpiredNoError:
+      "Sign-in expired without reaching the provider. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then click Retry. If it keeps failing, use an API key or the CLI fallback instead.",
     initiatingLogin: "Initiating login flow…",
     exchangingCode: "Exchanging code for tokens…",
     connectedClosing: "Connected! Closing…",

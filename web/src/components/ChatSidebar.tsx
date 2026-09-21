@@ -57,7 +57,7 @@ interface SessionInfo {
   cwd?: string;
   model?: string;
   provider?: string;
-  credential_warning?: string;
+  credential_warning?: string | null;
   title?: string;
 }
 
@@ -194,13 +194,13 @@ export function ChatSidebar({
     });
     const offState = gw.onState(setState);
 
-    const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
+    const offSessionInfo = gw.on("session.info", (ev) => {
       if (ev.payload) {
         setInfo((prev) => ({ ...prev, ...ev.payload }));
       }
     });
 
-    const offError = gw.on<{ message?: string }>("error", (ev) => {
+    const offError = gw.on("error", (ev) => {
       const message = ev.payload?.message;
 
       if (message) {

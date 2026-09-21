@@ -19,6 +19,7 @@ from gateway.capability_registry import CapabilityRegistry, CapabilitySignature,
 from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
 from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 NO_MATCH = CapabilitySignature(
@@ -35,6 +36,12 @@ WRITE_CAPABILITY = CapabilitySignature(
 )
 NO_MATCH_RESOLUTION = RegistryResolution(
     status="no_match", profile=None, reason="no active profile"
+)
+ORCHESTRATOR_CAPABILITY = CapabilitySignature(
+    domain="repository-evidence",
+    actions=("audit", "read"),
+    evidence_class="diagnostic-only",
+    requested_permissions=("repository-evidence:read",),
 )
 
 
@@ -78,7 +85,7 @@ def test_forged_no_match_cannot_create_candidate_when_local_registry_matches(tmp
 
     assert result.status == "rejected"
     assert result.request_id == ""
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         rows = conn.execute("SELECT request_id FROM candidate_profile_requests").fetchall()
     assert rows == []
 
@@ -151,7 +158,7 @@ def test_later_terminal_state_supersedes_an_older_candidate(tmp_path):
     candidate = requests.open_or_reuse(
         NO_MATCH, source_key="discord:terminal-state", resolution=NO_MATCH_RESOLUTION
     )
-    with kb.connect_closing(requests._db_path) as conn:
+    with kbc.connect_closing(requests._db_path) as conn:
         request_hash = conn.execute(
             "SELECT request_hash FROM candidate_profile_requests WHERE request_id = ?",
             (candidate.request_id,),
@@ -251,7 +258,7 @@ def test_unsanitized_evidence_is_rejected_and_not_persisted(requests):
 
     assert result.status == "rejected"
     assert "sanitized" in result.reason
-    with kb.connect_closing(requests._db_path) as conn:
+    with kbc.connect_closing(requests._db_path) as conn:
         stored = conn.execute(
             "SELECT evidence_ref_hashes_json FROM candidate_profile_requests"
         ).fetchone()
@@ -273,7 +280,7 @@ def test_candidate_ledger_never_persists_rejected_private_scope_or_plaintext_evi
         envelope=SanitizedTaskEnvelope(evidence_refs=("https://private.example/evidence",)),
     )
 
-    with kb.connect_closing(requests._db_path) as conn:
+    with kbc.connect_closing(requests._db_path) as conn:
         stored = conn.execute("SELECT * FROM candidate_profile_requests").fetchone()
     persisted = " ".join(str(stored[column]) for column in stored.keys())
     for forbidden in (
@@ -290,7 +297,7 @@ def test_candidate_request_rows_are_append_only(requests):
         NO_MATCH, source_key="discord:append-only", resolution=NO_MATCH_RESOLUTION
     )
 
-    with kb.connect_closing(requests._db_path) as conn:
+    with kbc.connect_closing(requests._db_path) as conn:
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             conn.execute(
                 "UPDATE candidate_profile_requests SET lifecycle_status = 'active' WHERE request_id = ?",
@@ -308,7 +315,7 @@ def test_candidate_request_migration_is_idempotent(tmp_path):
     kb.init_db(db_path)
     kb.init_db(db_path)
 
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(candidate_profile_requests)")
         }
@@ -325,10 +332,66 @@ def test_candidate_request_migration_is_idempotent(tmp_path):
     }
 
 
+def test_legacy_generation_backfill_runs_through_init_db_with_append_only_trigger(
+    tmp_path,
+):
+    """The real connect/init path must migrate a populated pre-generation ledger."""
+    db_path = tmp_path / "legacy-generation.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE candidate_profile_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL UNIQUE,
+                request_hash TEXT NOT NULL,
+                signature_hash TEXT NOT NULL,
+                permissions_hash TEXT NOT NULL,
+                source_key_hash TEXT NOT NULL,
+                policy_digest TEXT NOT NULL,
+                evidence_ref_hashes_json TEXT NOT NULL,
+                lifecycle_status TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                cooldown_until INTEGER,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TRIGGER candidate_profile_requests_no_update
+            BEFORE UPDATE ON candidate_profile_requests BEGIN
+                SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+            END;
+            CREATE TRIGGER candidate_profile_requests_no_delete
+            BEFORE DELETE ON candidate_profile_requests BEGIN
+                SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+            END;
+            INSERT INTO candidate_profile_requests (
+                request_id, request_hash, signature_hash, permissions_hash,
+                source_key_hash, policy_digest, evidence_ref_hashes_json,
+                lifecycle_status, reason_code, cooldown_until, created_at
+            ) VALUES (
+                'legacy-generation', 'a', 'b', 'c', 'd', 'e', '[]',
+                'candidate', 'candidate_opened', NULL, 1
+            );
+            """
+        )
+
+    kb.init_db(db_path)
+
+    with kbc.connect_closing(db_path) as conn:
+        row = conn.execute(
+            "SELECT generation_id FROM candidate_profile_requests "
+            "WHERE request_id = 'legacy-generation'"
+        ).fetchone()
+        assert row["generation_id"] == "legacy-generation"
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute(
+                "UPDATE candidate_profile_requests SET reason_code = 'changed' "
+                "WHERE request_id = 'legacy-generation'"
+            )
+
+
 def test_legacy_plaintext_candidate_ledger_is_replaced_before_opening_requests(tmp_path):
     db_path = tmp_path / "legacy-candidate-requests.db"
     kb.init_db(db_path)
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         conn.execute("DROP TABLE candidate_profile_requests")
         conn.execute(
             """
@@ -390,7 +453,7 @@ def test_legacy_plaintext_candidate_ledger_is_replaced_before_opening_requests(t
 
     assert result.status == "candidate"
     kb.init_db(db_path)
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(candidate_profile_requests)")
         }
@@ -427,7 +490,7 @@ def test_legacy_plaintext_candidate_ledger_is_replaced_before_opening_requests(t
 def test_hybrid_candidate_ledger_is_replaced_before_opening_requests(tmp_path):
     db_path = tmp_path / "hybrid-candidate-requests.db"
     kb.init_db(db_path)
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         conn.execute("ALTER TABLE candidate_profile_requests ADD COLUMN domain TEXT")
         conn.execute(
             """
@@ -463,7 +526,7 @@ def test_hybrid_candidate_ledger_is_replaced_before_opening_requests(tmp_path):
     )
 
     assert result.status == "candidate"
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(candidate_profile_requests)")}
         rows = conn.execute("SELECT * FROM candidate_profile_requests").fetchall()
     assert "domain" not in columns
@@ -477,7 +540,9 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     for profile in ("task-orchestrator", "market-data-authority-auditor"):
-        (home / "profiles" / profile).mkdir(parents=True)
+        profile_home = home / "profiles" / profile
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text("model:\n  default: test-model\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -499,12 +564,17 @@ def test_no_match_handoff_uses_existing_orchestrator_and_preserves_source_idempo
         reason="request requires a local capability",
         title="Audit market data",
     )
+    registry = CapabilityRegistry(
+        board=kb.DEFAULT_BOARD,
+        configured_profiles={"task-orchestrator": ORCHESTRATOR_CAPABILITY},
+    )
+    registry.register_configured_profile("task-orchestrator")
     kwargs = {
         "decision": decision,
         "source": source,
         "request": "Audit the supplied market-data evidence.",
         "signature": NO_MATCH,
-        "registry": CapabilityRegistry(board=kb.DEFAULT_BOARD),
+        "registry": registry,
         "board": kb.DEFAULT_BOARD,
     }
 
@@ -516,17 +586,173 @@ def test_no_match_handoff_uses_existing_orchestrator_and_preserves_source_idempo
     assert first.created is True
     assert repeated.created is False
     assert first.task_id == repeated.task_id
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, first.task_id)
         subscriptions = conn.execute(
             "SELECT COUNT(*) AS count FROM kanban_notify_subs WHERE task_id = ?", (first.task_id,)
         ).fetchone()
         candidate_rows = conn.execute(
-            "SELECT request_hash, lifecycle_status FROM candidate_profile_requests"
+            "SELECT request_hash, requested_profile_id, lifecycle_status "
+            "FROM candidate_profile_requests"
         ).fetchall()
     assert task is not None
     assert task.assignee == "task-orchestrator"
     assert json.loads(task.body)["candidate_request_id"] == first.candidate_request_id
     assert subscriptions["count"] == 1
     assert len(candidate_rows) == 1
+    assert candidate_rows[0]["requested_profile_id"] == "generated-market-data-candidate"
     assert candidate_rows[0]["lifecycle_status"] == "candidate"
+
+
+def test_no_match_handoff_rejects_inactive_orchestrator_fallback(kanban_home):
+    source = HandoffSource(
+        platform="discord",
+        chat_id="channel-inactive-fallback",
+        chat_type="group",
+        user_id="user-1",
+        message_id="message-inactive-fallback",
+    )
+    decision = SpecialistRouteDecision(
+        kind=RouteKind.SPECIALIST,
+        profile="generated-market-data-candidate",
+        confidence=1.0,
+        reason="request requires a local capability",
+        title="Audit market data",
+    )
+
+    result = create_specialist_handoff(
+        decision=decision,
+        source=source,
+        request="Audit the supplied market-data evidence.",
+        signature=NO_MATCH,
+        registry=CapabilityRegistry(board=kb.DEFAULT_BOARD),
+        board=kb.DEFAULT_BOARD,
+    )
+
+    assert result.ok is False
+    assert result.reason == "inactive_fallback"
+    with kbc.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"] == 0
+
+
+def test_handoff_rechecks_registry_inside_transaction_before_candidate_fallback(
+    kanban_home, monkeypatch
+):
+    registry = CapabilityRegistry(
+        board=kb.DEFAULT_BOARD,
+        configured_profiles={"market-data-authority-auditor": NO_MATCH},
+    )
+    original_resolve = registry.resolve
+    calls = 0
+
+    def resolve_with_activation(signature, *, profile_id=None, connection=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            registry.register_fixed_baseline(
+                profile_id="market-data-authority-auditor", signature=NO_MATCH
+            )
+            return NO_MATCH_RESOLUTION
+        return original_resolve(
+            signature, profile_id=profile_id, connection=connection
+        )
+
+    monkeypatch.setattr(registry, "resolve", resolve_with_activation)
+    source = HandoffSource(
+        platform="discord",
+        chat_id="channel-transaction-race",
+        chat_type="group",
+        user_id="user-1",
+        message_id="message-transaction-race",
+    )
+    decision = SpecialistRouteDecision(
+        kind=RouteKind.SPECIALIST,
+        profile="generated-market-data-candidate",
+        confidence=1.0,
+        reason="request requires a local capability",
+        title="Audit market data",
+    )
+
+    result = create_specialist_handoff(
+        decision=decision,
+        source=source,
+        request="Audit the supplied market-data evidence.",
+        signature=NO_MATCH,
+        registry=registry,
+        board=kb.DEFAULT_BOARD,
+    )
+
+    assert result.ok, result.reason
+    assert calls == 2
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, result.task_id)
+        candidate_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM candidate_profile_requests"
+        ).fetchone()["count"]
+    assert task is not None
+    assert task.assignee == "market-data-authority-auditor"
+    assert result.candidate_request_id is None
+    assert candidate_count == 0
+
+
+def test_handoff_does_not_dispatch_route_revoked_before_transaction(
+    kanban_home, monkeypatch
+):
+    registry = CapabilityRegistry(
+        board=kb.DEFAULT_BOARD,
+        configured_profiles={"market-data-authority-auditor": NO_MATCH},
+    )
+    declaration_id = registry.register_fixed_baseline(
+        profile_id="market-data-authority-auditor", signature=NO_MATCH
+    )
+    original_resolve = registry.resolve
+    calls = 0
+
+    def resolve_with_revocation(signature, *, profile_id=None, connection=None):
+        nonlocal calls
+        calls += 1
+        resolution = original_resolve(
+            signature, profile_id=profile_id, connection=connection
+        )
+        if calls == 1:
+            registry.revoke(
+                declaration_id=declaration_id,
+                profile_id="market-data-authority-auditor",
+                signature=NO_MATCH,
+                reason_code="test_revoked",
+            )
+        return resolution
+
+    monkeypatch.setattr(registry, "resolve", resolve_with_revocation)
+    source = HandoffSource(
+        platform="discord",
+        chat_id="channel-revoked-route",
+        chat_type="group",
+        user_id="user-1",
+        message_id="message-revoked-route",
+    )
+    decision = SpecialistRouteDecision(
+        kind=RouteKind.SPECIALIST,
+        profile="market-data-authority-auditor",
+        confidence=1.0,
+        reason="request requires a local capability",
+        title="Audit market data",
+    )
+
+    result = create_specialist_handoff(
+        decision=decision,
+        source=source,
+        request="Audit the supplied market-data evidence.",
+        signature=NO_MATCH,
+        registry=registry,
+        board=kb.DEFAULT_BOARD,
+    )
+
+    assert not result.ok
+    assert result.reason == "registry_no_match"
+    assert calls == 2
+    with kbc.connect() as conn:
+        task_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM tasks"
+        ).fetchone()["count"]
+    assert task_count == 0

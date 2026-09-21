@@ -7,12 +7,35 @@ import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 
-const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
+// Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus desktop-only
+// `scratchpad`/`analysis`.
+const REASONING_TAGS = 'think|thinking|reasoning|thought|reasoning_scratchpad|scratchpad|analysis'
+// A run of adjacent closed blocks is one match, so the seam check below sees the
+// prose on either side of the whole run rather than the previous block's `>`.
+const REASONING_BLOCK_RE = new RegExp(`(?:<(${REASONING_TAGS})>[\\s\\S]*?<\\/\\1>\\s*)+`, 'gi')
+// An open tag that starts its own block with no close tag yet. The block-boundary
+// requirement is what lets a real reasoning preamble (always its own block) vanish
+// while prose that merely mentions `<thinking>` mid-sentence survives — the same
+// line agent/think_scrubber.py draws.
+const OPEN_REASONING_BLOCK_RE = new RegExp(`(^|\\n)[ \\t]*<(${REASONING_TAGS})>[\\s\\S]*$`, 'i')
+
+// A half-arrived open tag (`<thin`) at a block boundary is not a tag yet, so the
+// pass above lets it paint as prose for one frame and then erase it — the same
+// paint/un-paint class as #62774, one frame long. Hold it back the way
+// agent/think_scrubber.py `_hold_partial`/`_max_partial_suffix` does, but only
+// for prefixes of the known tag names so `<div` at a line start still renders.
+const REASONING_TAG_PREFIXES = Array.from(
+  new Set(
+    REASONING_TAGS.split('|').flatMap((tag) => Array.from({ length: tag.length }, (_, i) => tag.slice(0, i + 1))),
+  ),
+).join('|')
+
+const PARTIAL_OPEN_REASONING_TAG_RE = new RegExp(`(^|\\n)[ \\t]*<(?:${REASONING_TAG_PREFIXES})?$`, 'i')
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
-const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
+const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~|$))/g
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // Math spans as remark-math will see them: a `$$…$$` block, which may span
 // lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
@@ -55,6 +78,15 @@ const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*
 // image syntax (`![alt](path)`) on its existing inline pipeline. The target
 // char class excludes `)`/whitespace, matching how LLMs actually emit these.
 const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target><?(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*>?)\)/gi
+
+// A transcript directive on its own line: `::name{...}`. Attribute values are
+// prose the model wrote (a task brief, a question) and read as markdown to the
+// parser — `*by week*` becomes <em>, `a_b c_d` becomes <em>, `~/x` opens
+// strikethrough. Any of those splits the paragraph into element children, the
+// directive stops being text-only, and the raw line paints as the user's
+// message. Same shape as lib/transcript-directives.ts DIRECTIVE_RE.
+const DIRECTIVE_LINE_RE = /^([ \t]*)(::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\})[ \t]*$/gm
+const MARKDOWN_INLINE_META_RE = /[\\`*_~[\]<>]/g
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
@@ -150,6 +182,24 @@ function scrubBacktickNoise(text: string): string {
   return out
 }
 
+// Runs on the ACCUMULATED text every streaming flush, so an unterminated block
+// must already be hidden here: otherwise the chain of thought paints as prose
+// until the close tag lands and then the whole span vanishes in one frame
+// (#62774). Removing a closed block between two words keeps one space so `no` +
+// `Hermes` does not fuse into `noHermes`. The seam check reads the two chars at
+// the match edges rather than slicing the accumulated text, which would copy
+// O(n) per closed block on every flush.
+function stripReasoningBlocks(text: string): string {
+  const closed = text.replace(REASONING_BLOCK_RE, (match: string, _tag: string, offset: number, whole: string) => {
+    const prev = whole[offset - 1]
+    const next = whole[offset + match.length]
+
+    return prev && next && !/\s/.test(prev) && !/\s/.test(next) ? ' ' : ''
+  })
+
+  return closed.replace(OPEN_REASONING_BLOCK_RE, '$1').replace(PARTIAL_OPEN_REASONING_TAG_RE, '$1')
+}
+
 function stripEmptyFenceBlocks(text: string): string {
   return text.replace(EMPTY_FENCE_BLOCK_RE, '$1')
 }
@@ -204,6 +254,22 @@ function rewriteProseSegment(segment: string): string {
 }
 
 /**
+ * Backslash-escape markdown inline syntax inside directive lines so the parser
+ * yields one text node. The escapes are consumed by the parser, so the
+ * directive the renderer sees is byte-for-byte what the model wrote.
+ */
+export function shieldDirectiveLines(text: string): string {
+  if (!text.includes('::')) {
+    return text
+  }
+
+  return text.replace(
+    DIRECTIVE_LINE_RE,
+    (_match, indent: string, directive: string) => indent + directive.replace(MARKDOWN_INLINE_META_RE, '\\$&')
+  )
+}
+
+/**
  * Apply the prose rewrites to visible prose only.
  *
  * Inline code has always been shielded here. Math has to be shielded for the
@@ -238,6 +304,33 @@ function isEscapedAt(text: string, index: number): boolean {
   }
 
   return slashCount % 2 === 1
+}
+
+/**
+ * True when the `$` at `index` opens a currency amount rather than math.
+ *
+ * Two shapes, and the second is why this helper exists. The US shape `$5`
+ * hugs its digits, so "followed by a digit" identifies it. Most of the rest
+ * of the world writes a currency PREFIX plus a space — `R$ 12.345` (BRL),
+ * `US$ 1,200`, `AU$ 40`. Treating only the hugging shape as currency left
+ * `R$ 12.345 … R$ 98.765` with two bare dollars on one line, so remark-math
+ * (`singleDollarTextMath: true`) paired them and painted the whole sentence
+ * between two prices as an equation.
+ *
+ * The spaced shape additionally requires a letter immediately before the `$`
+ * — that prefix is what makes it a currency symbol. A bare `$ 5` keeps its
+ * old behavior, so spaced inline math like `$ x^2 $` is untouched.
+ */
+function isCurrencyOpenerAt(text: string, index: number): boolean {
+  if (text[index] !== '$' || isEscapedAt(text, index) || text[index - 1] === '$' || text[index + 1] === '$') {
+    return false
+  }
+
+  if (/\d/u.test(text[index + 1] || '')) {
+    return true
+  }
+
+  return /^[ \u00a0]\d/u.test(text.slice(index + 1, index + 3)) && /^[A-Za-z]$/u.test(text[index - 1] || '')
 }
 
 function findClosingSingleDollar(text: string, openingIndex: number): number {
@@ -314,12 +407,7 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
   let copiedThrough = 0
 
   for (let cursor = 0; cursor < text.length; cursor += 1) {
-    if (
-      text[cursor] !== '$' ||
-      !/\d/u.test(text[cursor + 1] || '') ||
-      text[cursor - 1] === '$' ||
-      isEscapedAt(text, cursor)
-    ) {
+    if (!isCurrencyOpenerAt(text, cursor)) {
       continue
     }
 
@@ -327,6 +415,10 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
 
     if (
       closingIndex !== -1 &&
+      // A second amount on the same line is the NEXT opener, never this
+      // span's closer: `R$ 12.345 … R$ 98.765` is two prices, not one
+      // equation wrapping the prose between them.
+      !isCurrencyOpenerAt(text, closingIndex) &&
       !opensCompleteInlineMath(text, closingIndex) &&
       isLikelyNumericInlineMath(text.slice(cursor + 1, closingIndex), text[closingIndex + 1] || '')
     ) {
@@ -624,7 +716,7 @@ function normalizeFenceBlocks(text: string): string {
 }
 
 export function preprocessMarkdown(text: string): string {
-  const cleaned = text.replace(REASONING_BLOCK_RE, '').replace(PREVIEW_MARKER_RE, '')
+  const cleaned = stripReasoningBlocks(text).replace(PREVIEW_MARKER_RE, '')
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
@@ -637,34 +729,17 @@ export function preprocessMarkdown(text: string): string {
         return part
       }
 
-      // Whitespace-only segments (e.g. the `\n\n` between two adjacent
-      // fences) must NOT go through stripPreviewTargets — its internal
-      // .trim() would collapse them to '' and glue the surrounding
-      // fences together, producing things like ``````math which the
-      // markdown parser then reads as a single 6-backtick block.
-      if (!part.trim()) {
-        return part
-      }
-
-      // Preserve leading/trailing whitespace around the prose body so
-      // that fence-prose-fence sequences keep their blank-line gaps.
-      // stripPreviewTargets internally calls .trim() on its result for
-      // the benefit of its other (single-segment) callers; here we're
-      // operating on a SEGMENT of a larger document where outer
-      // whitespace is structural and must survive.
-      const leading = part.match(/^\s*/)?.[0] ?? ''
-      const trailing = part.match(/\s*$/)?.[0] ?? ''
-
       // Run only on prose segments so `$5` literals and `\(` inside code
       // blocks stay intact. The HTML-depth clamp belongs here for the same
       // reason: a fenced block renders as code and never reaches rehype-raw,
       // so escaping tags inside one would corrupt the listing for nothing.
-      const transformed = clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
-
-      return leading + transformed + trailing
+      // Directive lines are shielded last, after the prose rewrites have had
+      // their look, so nothing re-introduces markdown into them.
+      return shieldDirectiveLines(
+        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
+      )
     })
     .join('')
-    .replace(/[ \t]+\n/g, '\n')
 }
 
 /**

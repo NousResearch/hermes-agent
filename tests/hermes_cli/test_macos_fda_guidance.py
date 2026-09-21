@@ -11,7 +11,9 @@ import io
 import contextlib
 
 import hermes_cli.doctor as doctor_mod
-from hermes_cli.setup import _print_macos_fda_tip
+import pathlib
+from hermes_cli.setup_quick import _print_macos_fda_tip
+from hermes_cli import doctor_platform
 
 
 def _capture(fn):
@@ -24,15 +26,15 @@ def _capture(fn):
 class TestDoctorFdaCheck:
     def test_silent_on_non_macos(self, monkeypatch):
         monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
-        out = _capture(doctor_mod.check_macos_full_disk_access)
+        out = _capture(doctor_platform.check_macos_full_disk_access)
         assert out == ""
 
     def test_granted_reports_ok(self, monkeypatch, tmp_path):
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         tcc = tmp_path / "Library" / "Application Support" / "com.apple.TCC"
         tcc.mkdir(parents=True)
-        monkeypatch.setattr(doctor_mod.Path, "home", classmethod(lambda cls: tmp_path))
-        out = _capture(doctor_mod.check_macos_full_disk_access)
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+        out = _capture(doctor_platform.check_macos_full_disk_access)
         assert "Full Disk Access granted" in out
         assert "Privacy_AllFiles" not in out
 
@@ -40,13 +42,13 @@ class TestDoctorFdaCheck:
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
         tcc = tmp_path / "Library" / "Application Support" / "com.apple.TCC"
         tcc.mkdir(parents=True)
-        monkeypatch.setattr(doctor_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
 
         def _eperm(path):
             raise PermissionError(13, "Operation not permitted", str(path))
 
         monkeypatch.setattr(doctor_mod.os, "listdir", _eperm)
-        out = _capture(doctor_mod.check_macos_full_disk_access)
+        out = _capture(doctor_platform.check_macos_full_disk_access)
         assert "Full Disk Access" in out
         assert "Privacy_AllFiles" in out
         assert "System Settings" in out
@@ -54,10 +56,10 @@ class TestDoctorFdaCheck:
     def test_indeterminate_probe_is_silent(self, monkeypatch, tmp_path):
         """Missing TCC dir (weird install) must not nag."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
-        monkeypatch.setattr(doctor_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
         # tmp_path has no Library/Application Support/com.apple.TCC →
         # FileNotFoundError (an OSError that is not PermissionError).
-        out = _capture(doctor_mod.check_macos_full_disk_access)
+        out = _capture(doctor_platform.check_macos_full_disk_access)
         assert out == ""
 
 

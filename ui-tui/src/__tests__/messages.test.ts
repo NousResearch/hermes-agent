@@ -1,6 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
@@ -8,7 +9,6 @@ import { fmtMsgTimestamp, MessageLine } from '../components/messageLine.js'
 import { MAX_HISTORY } from '../config/limits.js'
 import { toTranscriptMessages } from '../domain/messages.js'
 import { appendTranscriptMessage, capTranscriptHistory, upsert } from '../lib/messages.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 describe('toTranscriptMessages', () => {
@@ -75,6 +75,18 @@ describe('toTranscriptMessages', () => {
       ['event', '3 background agents finished'],
       [undefined, 'merged']
     ])
+  })
+
+  it('uses the display-only completion title without exposing the model payload', () => {
+    const text = '[ASYNC DELEGATION BATCH COMPLETE — private]\nFull result evidence'
+    const title = 'Subagent Task Failed: Review changes'
+
+    const [message] = toTranscriptMessages([
+      { role: 'user', text, display_kind: 'async_delegation_complete', display_metadata: { display_text: title } }
+    ])
+
+    expect(message).toMatchObject({ kind: 'event', role: 'system', text: title })
+    expect(toTranscriptMessages([{ role: 'user', text }])[0]?.text).toBe(text)
   })
 
   it('projects async_delegation_complete without metadata as generic text', () => {

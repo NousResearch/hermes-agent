@@ -330,6 +330,34 @@ def test_native_client_accepts_injected_http_client():
     assert client._http is injected
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, "https://generativelanguage.googleapis.com/v1beta"),
+        ("https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta"),
+        ("http://localhost:4000/gemini///", "http://localhost:4000/gemini/v1beta"),
+        ("https://proxy.example/gemini/v1alpha/", "https://proxy.example/gemini/v1alpha"),
+        ("https://proxy.example/v1", "https://proxy.example/v1"),
+        ("https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta"),
+    ],
+)
+def test_normalize_gemini_base_url_guarantees_version_segment(configured, expected):
+    """Host roots (how Google's own client is configured) gain ``/v1beta``; versioned URLs and the
+    ``/openai`` strip are unchanged, so ``{base}/models/{model}:generateContent`` never 404s."""
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+
+    assert normalize_gemini_base_url(configured) == expected
+
+
+def test_native_client_appends_v1beta_to_host_root_base_url():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(
+        api_key="AIza-test", base_url="https://generativelanguage.googleapis.com", http_client=SimpleNamespace(close=lambda: None)
+    )
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+
 def test_native_client_rejects_empty_api_key_with_actionable_message():
     """Empty/whitespace api_key must raise at construction, not produce a cryptic
     Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
@@ -398,6 +426,54 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
     assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""
     assert first[-1].choices[0].finish_reason == "tool_calls"
+
+
+def _fc_event(name, args, call_id=None, finish=None):
+    fc = {"name": name, "args": args}
+    if call_id:
+        fc["id"] = call_id
+    cand = {"content": {"parts": [{"functionCall": fc}]}}
+    if finish:
+        cand["finishReason"] = finish
+    return {"candidates": [cand]}
+
+
+def _tool_call_deltas(chunks):
+    return [(tc.index, tc.function.arguments) for c in chunks for tc in (c.choices[0].delta.tool_calls or [])]
+
+
+def test_distinct_same_tool_calls_in_separate_events_get_their_own_slots():
+    """Gemini 2.5 (no call id) streams each parallel call as parts[0] of its own event; two
+    different calls to one tool must not share a slot, and a resend of the second must land on
+    the slot it opened instead of concatenating onto the first."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = []
+    for args in ({"q": "A"}, {"q": "B"}, {"q": "B"}):
+        out += translate_stream_event(_fc_event("search", args), model="gemini-2.5-flash", tool_call_indices=slots)
+
+    assert _tool_call_deltas(out) == [(0, '{"q": "A"}'), (1, '{"q": "B"}'), (1, "")]
+    for (_, arguments) in _tool_call_deltas(out)[:2]:
+        json.loads(arguments)
+
+
+def test_provider_call_id_is_the_slot_identity():
+    """Gemini 3 ids two calls with identical name and args as two calls; the same id across events
+    (with drifting part_index / signature) is one call."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c1"), model="gemini-3-pro", tool_call_indices=slots)
+    out += translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c2"), model="gemini-3-pro", tool_call_indices=slots)
+    resend = {"candidates": [{"content": {"parts": [{"text": "x"}, {"functionCall": {"name": "search", "args": {"q": "A"}, "id": "c1"},
+                                                        "thoughtSignature": "sig"}]}}]}
+    out += translate_stream_event(resend, model="gemini-3-pro", tool_call_indices=slots)
+
+    deltas = _tool_call_deltas(out)
+    assert deltas == [(0, '{"q": "A"}'), (1, '{"q": "A"}'), (0, "")]
+    ids = [tc.id for c in out for tc in (c.choices[0].delta.tool_calls or [])]
+    assert ids == ["c1", "c2", "c1"]
 
 
 def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
@@ -567,3 +643,193 @@ class TestGemini3ToolCallIds:
         result = translate_gemini_response(resp, model="gemini-2.5-flash")
         tool_calls = result.choices[0].message.tool_calls
         assert tool_calls[0].id.startswith("call_")
+
+
+# ---------------------------------------------------------------------------
+# Multimodal tool results: image embedding in functionResponse.parts
+# ---------------------------------------------------------------------------
+
+_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _vision_tool_messages():
+    """Assistant tool_call + tool result carrying a text part and an image part."""
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "vision_analyze", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "vision_analyze",
+            "content": [
+                {"type": "text", "text": "a red pixel"},
+                {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+)
+def test_gemini_3x_embeds_image_in_function_response_parts(model):
+    """Gemini 3.x multimodal tool results embed inlineData inside functionResponse.parts."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=_vision_tool_messages(),
+        model=model,
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" in fr, "Gemini 3.x must embed image inlineData in functionResponse.parts"
+    assert fr["parts"][0]["inlineData"]["mimeType"] == "image/png"
+    assert fr["parts"][0]["inlineData"]["data"]
+
+
+def test_gemini_2x_does_not_embed_image_parts():
+    """Gemini 2.x rejects functionResponse.parts — tool result stays text-only."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=_vision_tool_messages(),
+        model="gemini-2.5-flash",
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" not in fr
+
+
+def test_text_only_tool_result_has_no_parts():
+    """Text-only Gemini 3.x tool result does not add empty parts."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "read_file",
+            "content": "file contents here",
+        },
+    ]
+    request = build_gemini_request(
+        messages=messages,
+        model="gemini-3.6-flash",
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" not in fr
+
+
+class _FakeStreamResponse:
+    """Minimal httpx.Response stand-in for _iter_sse_events: text chunks only."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def iter_text(self):
+        yield from self._chunks
+
+
+def test_iter_sse_events_flushes_residual_buffer_after_eof():
+    """A final SSE frame without a trailing newline must not be dropped (pi#8997 class)."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\n',
+        'data: {"candidates": [2]}',  # no newline, then EOF
+    ])
+    events = list(_iter_sse_events(resp))
+    assert events == [{"candidates": [1]}, {"candidates": [2]}]
+
+
+def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
+    """[DONE] terminates iteration even when more frames follow; a residual
+    [DONE] in the leftover buffer is not yielded as data."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\ndata: [DONE]\ndata: {"candidates": [3]}\n',
+    ])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+    resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+
+@pytest.mark.parametrize(
+    "api_key, configured, expected_prefix",
+    [
+        # AQ. keys exist for BOTH AI Studio and Vertex express mode (#115306): the prefix never
+        # reroutes, so an AI-Studio AQ. key keeps working on the default Studio host.
+        ("AQ.studio-key", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # Control: legacy AIza Studio key keeps the Studio host too.
+        ("AIza-test", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # An explicit aiplatform base (host root or versioned) is completed to the publishers form —
+        # the express key's only route to aiplatform now that the prefix no longer reroutes.
+        ("AQ.express-key", "https://aiplatform.googleapis.com", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        ("AIza-test", "https://aiplatform.googleapis.com/v1beta1", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # An explicit proxy is never overridden by the key shape.
+        ("AQ.studio-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
+    ],
+)
+def test_native_client_never_reroutes_aq_keys_off_the_configured_surface(api_key, configured, expected_prefix):
+    """Google issues ``AQ.`` keys for both AI Studio and Vertex express mode, so the key prefix must
+    not decide the surface (#115306): the default (or explicitly configured) base is used verbatim,
+    and an explicit aiplatform base is completed to ``…/publishers/google/models/…``."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    seen = []
+
+    class _HTTP:
+        def post(self, url, **_):
+            seen.append(url)
+            return SimpleNamespace(status_code=200, json=lambda: {"candidates": [
+                {"content": {"role": "model", "parts": [{"text": "ok"}]}, "finishReason": "STOP"}]})
+
+    client = GeminiNativeClient(api_key=api_key, base_url=configured, http_client=_HTTP())
+    client.chat.completions.create(model="gemini-3.7-flash", messages=[{"role": "user", "content": "hi"}])
+    assert seen == [f"{expected_prefix}gemini-3.7-flash:generateContent"]
+
+
+def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
+    """The express base is native Gemini; the OAuth Vertex provider's OpenAI-compatible
+    ``…/endpoints/openapi`` base must NOT be captured by the native adapter."""
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1beta1/publishers/google")
+    assert not is_native_gemini_base_url(
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    )

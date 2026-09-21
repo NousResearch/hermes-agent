@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,8 +18,9 @@ import pytest
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _reset_backend():
-    """Tear down the cached backend between tests."""
+def _reset_backend(grant_computer_use_approvals):
+    """Tear down the cached backend between tests; destructive actions get an interactive "once"
+    through the shared approval gate (the tool fails closed with nobody to ask)."""
     from tools.computer_use.tool import reset_backend_for_tests
     reset_backend_for_tests()
     # Force the noop backend.
@@ -72,6 +73,7 @@ class TestRegistration:
 
     def test_cua_driver_cmd_env_override_is_resolved_dynamically(self, tmp_path, monkeypatch):
         from tools.computer_use import cua_backend
+        from tools.computer_use import cua_backend_driver
 
         driver = tmp_path / "custom-cua-driver"
         driver.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -80,7 +82,7 @@ class TestRegistration:
         monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(driver))
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        assert cua_backend.resolve_cua_driver_cmd() == str(driver)
+        assert cua_backend_driver.resolve_cua_driver_cmd() == str(driver)
         assert cua_backend.cua_driver_binary_available() is True
 
 
@@ -123,6 +125,18 @@ class TestDispatch:
         drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
         assert drag_kw["from_element"] == 1
         assert drag_kw["to_element"] == 5
+
+    def test_scroll_coordinate_axes_are_independent(self, noop_backend):
+        """scroll forwards each coordinate axis on its own (main parity):
+        ``coordinate=[null, 100]`` scrolls at y=100 with x=None, whereas
+        click treats a coordinate without x as no point at all."""
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "scroll", "coordinate": [None, 100]})
+        scroll_kw = next(c[1] for c in noop_backend.calls if c[0] == "scroll")
+        assert (scroll_kw["x"], scroll_kw["y"]) == (None, 100)
+        handle_computer_use({"action": "click", "coordinate": [None, 100]})
+        click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
+        assert (click_kw["x"], click_kw["y"]) == (None, None)
 
 
     def test_capture_forwards_exact_pid_window_target(self, noop_backend):
@@ -379,7 +393,7 @@ class TestCaptureResponse:
 
 class TestCuaCaptureImageDimensions:
     def test_png_dimensions_are_sniffed_from_image_bytes(self):
-        from tools.computer_use.cua_backend import _image_dimensions_from_bytes
+        from tools.computer_use.cua_backend_parse import _image_dimensions_from_bytes
 
         raw_png = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
@@ -394,7 +408,7 @@ class TestCuaCaptureImageDimensions:
 
 class TestAnthropicAdapterMultimodal:
     def test_multimodal_envelope_becomes_tool_result_with_image_block(self):
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         fake_png = "iVBORw0KGgo="
         messages = [
@@ -434,7 +448,7 @@ class TestAnthropicAdapterMultimodal:
 
     def test_old_screenshots_are_evicted_beyond_max_keep(self):
         """Image blocks in old tool_results get replaced with placeholders."""
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         fake_png = "iVBORw0KGgo="
 
@@ -453,9 +467,13 @@ class TestAnthropicAdapterMultimodal:
                 },
             }
 
-        # Build 5 screenshots interleaved with assistant messages.
+        # Build screenshots interleaved with assistant messages. The eviction frontier
+        # advances in whole batches, so use a count that lands exactly on one advance.
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+
+        total = OUTBOUND_IMAGE_LIMIT + 1
         messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
-        for i in range(5):
+        for i in range(total):
             messages.append({
                 "role": "assistant", "content": "",
                 "tool_calls": [{
@@ -469,8 +487,7 @@ class TestAnthropicAdapterMultimodal:
 
         _, anthropic_msgs = convert_messages_to_anthropic(messages)
 
-        # Walk tool_result blocks in order; the OLDEST (5 - 3) = 2 should be
-        # text-only placeholders, newest 3 should still carry image blocks.
+        # One batch retires; everything newer keeps its image payload.
         tool_results = []
         for m in anthropic_msgs:
             if m["role"] != "user" or not isinstance(m["content"], list):
@@ -479,7 +496,7 @@ class TestAnthropicAdapterMultimodal:
                 if b.get("type") == "tool_result":
                     tool_results.append(b)
 
-        assert len(tool_results) == 5
+        assert len(tool_results) == total
         with_images = [
             b for b in tool_results
             if isinstance(b.get("content"), list)
@@ -494,8 +511,133 @@ class TestAnthropicAdapterMultimodal:
                 for x in b["content"]
             )
         ]
-        assert len(with_images) == 3
-        assert len(placeholders) == 2
+        assert len(placeholders) == IMAGE_EVICTION_BATCH
+        assert len(with_images) == total - IMAGE_EVICTION_BATCH
+
+    def test_parallel_batch_retires_the_oldest_siblings_first(self):
+        """Sibling tool_results in one user message are oldest-first; eviction must not
+        retire the newest of them (#103217)."""
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        n = OUTBOUND_IMAGE_LIMIT + 1
+        result = [{
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": [dict(img)]}
+                for i in range(n)
+            ],
+        }]
+        _evict_old_screenshots(result)
+        survivors = [
+            b["tool_use_id"] for b in result[0]["content"]
+            if any(x.get("type") == "image" for x in b["content"])
+        ]
+        assert survivors == [f"t{i}" for i in range(IMAGE_EVICTION_BATCH, n)]
+
+    def test_floor_yields_when_one_carrier_breaches_the_block_limit(self):
+        """The keep floor shelters only breaches eviction cannot fix.
+
+        One tool_result carrying more image blocks than the ceiling is a single carrier;
+        a floor of three counted in carriers would retire nothing and ship a request the
+        API rejects. With no reserved uploads the breach is fixable, so it must be fixed.
+        """
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        result = [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result", "tool_use_id": "t0",
+                "content": [dict(img) for _ in range(OUTBOUND_IMAGE_LIMIT + 5)],
+            }],
+        }]
+        _evict_old_screenshots(result)
+        assert not any(x.get("type") == "image" for x in result[0]["content"][0]["content"])
+
+    def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
+        """Fifteen reserved uploads plus six one-frame tool_results: one eight-wide batch would
+        retire every frame although keeping the newest three already clears the ceiling."""
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        result = [{"role": "user", "content": [dict(img) for _ in range(OUTBOUND_IMAGE_LIMIT - 5)]}]
+        for i in range(6):
+            result.append({"role": "assistant", "content": [{"type": "tool_use", "id": f"t{i}", "name": "s", "input": {}}]})
+            result.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": [dict(img)]}]})
+        _evict_old_screenshots(result)
+        kept = [
+            b["tool_use_id"] for m in result for b in m["content"]
+            if b.get("type") == "tool_result" and any(x.get("type") == "image" for x in b["content"])
+        ]
+        assert kept[-3:] == ["t3", "t4", "t5"]
+        assert OUTBOUND_IMAGE_LIMIT - 5 + len(kept) <= OUTBOUND_IMAGE_LIMIT
+
+    def test_eviction_frontier_holds_between_batch_advances(self):
+        """Screenshot eviction must not rewrite a new block on every capture.
+
+        The Anthropic prompt cache keys on an exact byte prefix. A frontier that
+        advances one block per screenshot edits an already-cached block every turn,
+        forcing a full-prefix re-write that costs far more than the image tokens it
+        reclaims.
+        """
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+
+        fake_png = "iVBORw0KGgo="
+
+        def placeholder_count(n: int) -> int:
+            messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
+            for i in range(n):
+                messages.append({
+                    "role": "assistant", "content": "",
+                    "tool_calls": [{
+                        "id": f"call_{i}",
+                        "type": "function",
+                        "function": {"name": "computer_use", "arguments": "{}"},
+                    }],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": {
+                        "_multimodal": True,
+                        "content": [
+                            {"type": "text", "text": f"cap {i}"},
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:image/png;base64,{fake_png}"}},
+                        ],
+                        "text_summary": f"cap {i}",
+                    },
+                })
+            _, out = convert_messages_to_anthropic(messages)
+            return sum(
+                1
+                for m in out
+                if isinstance(m.get("content"), list)
+                for b in m["content"]
+                if b.get("type") == "tool_result"
+                and isinstance(b.get("content"), list)
+                and any(
+                    x.get("type") == "text" and "screenshot removed" in x.get("text", "")
+                    for x in b["content"]
+                )
+            )
+
+        # Span three batch windows. The placeholder count must step once per batch (a
+        # one-step frontier fails the plateau check) AND the surviving image count must
+        # never exceed the limit (a fixed one-batch retire fails that after window one).
+        span = range(OUTBOUND_IMAGE_LIMIT - 2, OUTBOUND_IMAGE_LIMIT + 3 * IMAGE_EVICTION_BATCH)
+        counts = [placeholder_count(n) for n in span]
+        assert all(n - c <= OUTBOUND_IMAGE_LIMIT for n, c in zip(span, counts)), counts
+        steps = sum(a != b for a, b in zip(counts, counts[1:]))
+        assert steps == 3, (
+            f"eviction frontier moved {steps} times over {len(span)} screenshots (counts={counts}); "
+            "each step invalidates the cached prefix"
+        )
 
 # ---------------------------------------------------------------------------
 # Context compressor: screenshot-aware pruning
@@ -590,7 +732,7 @@ class TestImageAwareTokenEstimator:
 class TestRunAgentMultimodalHelpers:
 
     def test_append_subdir_hint_to_multimodal_appends_to_text_part(self):
-        from run_agent import _append_subdir_hint_to_multimodal
+        from agent.tool_dispatch_helpers import _append_subdir_hint_to_multimodal
         env = {
             "_multimodal": True,
             "content": [
@@ -655,7 +797,7 @@ class TestElementLabelParsing:
     """
 
     def test_classic_quoted_label_format(self):
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_tree
         tree = (
             '  - [14] AXButton "One"\n'
             '  - [15] AXButton "Two"\n'
@@ -671,7 +813,7 @@ class TestElementLabelParsing:
 
     def test_new_id_eq_format(self):
         """cua-driver v0.1.6 format: [N] AXRole (order) id=Label"""
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_tree
         tree = (
             "[14] AXButton (1) id=One\n"
             "[15] AXButton (2) id=Two\n"
@@ -693,7 +835,7 @@ class TestElementLabelParsing:
         the regex only matched the quoted and id= forms. A pure-digit (N) is an
         order number, not a label, and must be skipped in favour of id=.
         """
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_tree
         tree = (
             '- [77] AXButton (Auto) [help="..." actions=[press]]\n'
             '- [78] AXButton (Light) [help="..." actions=[press]]\n'
@@ -729,7 +871,7 @@ class TestUpdateCheck:
         # The update check now short-circuits to None when no driver
         # resolves; CI has none installed, so pin a resolved path.
         with patch(
-            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
             return_value="/usr/local/bin/cua-driver",
         ):
             yield
@@ -742,9 +884,10 @@ class TestUpdateCheck:
 
     def test_update_available(self):
         from tools.computer_use import cua_backend
+        from tools.computer_use import cua_backend_driver
         payload = '{"current_version":"0.3.1","latest_version":"0.3.2","update_available":true}'
         with self._run_returning(payload):
-            st = cua_backend.cua_driver_update_check()
+            st = cua_backend_driver.cua_driver_update_check()
             assert st is not None and st["update_available"] is True
             msg = cua_backend.cua_driver_update_nudge()
         assert msg is not None
@@ -752,9 +895,10 @@ class TestUpdateCheck:
 
     def test_error_payload_is_indeterminate(self):
         from tools.computer_use import cua_backend
+        from tools.computer_use import cua_backend_driver
         payload = '{"current_version":"0.3.2","update_available":false,"error":"github 503"}'
         with self._run_returning(payload):
-            assert cua_backend.cua_driver_update_check() is None
+            assert cua_backend_driver.cua_driver_update_check() is None
             assert cua_backend.cua_driver_update_nudge() is None
 
 class TestLazyMcpInstall:
@@ -1142,7 +1286,7 @@ def _make_cua_backend_with_tool_result(result: Dict[str, Any]):
 
 class TestCuaDriverWindowResultShapes:
     def test_extracts_windows_from_structured_content(self):
-        from tools.computer_use.cua_backend import _windows_from_tool_result
+        from tools.computer_use.cua_backend_parse import _windows_from_tool_result
 
         windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
 
@@ -1183,7 +1327,7 @@ class TestCuaDriverSessionReconnect:
     def _make_session(self, bridge):
         import threading
         from typing import Any, cast
-        from tools.computer_use.cua_backend import _CuaDriverSession
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
         session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
         session._bridge = bridge
         session._session = object()
@@ -1390,10 +1534,10 @@ class TestCuaDriverSessionReconnect:
         (screenshot_out_file path) when no inline base64 is present."""
         import base64 as _b64
         from typing import Any, cast
-        from tools.computer_use.cua_backend import _CuaDriverSession
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
 
         monkeypatch.setattr(
-            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
             lambda: "/resolved/cua-driver",
         )
 
@@ -1516,7 +1660,8 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid is None
         assert backend._active_window_id is None
 
-    def test_linux_default_capture_skips_gnome_shell_helper(self):
+    def test_linux_default_capture_skips_gnome_shell_helper(self, monkeypatch):
+        monkeypatch.setattr("tools.computer_use.cua_backend.sys.platform", "linux")
         windows = [
             {"app_name": "", "pid": 100, "window_id": 1,
              "is_on_screen": None, "title": "@!1921,0;BDHF", "z_index": 0},
@@ -1645,7 +1790,7 @@ class TestCuaEnvironmentScrubbing:
         to StdioServerParameters, and asserts the scrub contract.
         """
         from unittest.mock import MagicMock, patch, AsyncMock
-        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+        from tools.computer_use.cua_backend_session import _CuaDriverSession, _AsyncBridge
         import asyncio
 
         bridge = _AsyncBridge()
@@ -1669,9 +1814,9 @@ class TestCuaEnvironmentScrubbing:
                 return MagicMock()
 
             with patch.dict(os.environ, test_env, clear=True), \
-                 patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                 patch("tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
                        return_value="cua-driver"), \
-                 patch("tools.computer_use.cua_backend._resolve_mcp_invocation",
+                 patch("tools.computer_use.cua_backend_driver._resolve_mcp_invocation",
                        return_value=("cua-driver", ["mcp"])), \
                  patch("mcp.StdioServerParameters", side_effect=capture_env), \
                  patch("mcp.client.stdio.stdio_client") as mock_stdio, \
@@ -1737,12 +1882,12 @@ class TestCuaCliFallbackResolution:
         ``~/.local/bin``. Falling back to the bare ``cua-driver`` command
         would reintroduce the original bug at runtime.
         """
-        from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
+        from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
         proc = MagicMock(stdout="{}", stderr="", returncode=0)
         session = _CuaDriverSession(_AsyncBridge())
         with patch(
-            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
             return_value="/Users/example/.local/bin/cua-driver",
         ), patch("subprocess.run", return_value=proc) as run:
             session._call_tool_via_cli("click", {"x": 1, "y": 2}, timeout=0.1)
@@ -1913,7 +2058,7 @@ class TestZIndexSorting:
         """Wayland may return z_index: null. _ingest_windows must coerce
         it to 0 (backmost) so it doesn't crash the sort or get selected
         over real foreground windows."""
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         raw = [
             {"app_name": "Desktop", "pid": 300, "window_id": 3,
@@ -1938,7 +2083,7 @@ class TestImageMimeTypePropagation:
 
     def test_extract_tool_result_captures_mime_alongside_image(self):
         from unittest.mock import MagicMock
-        from tools.computer_use.cua_backend import _extract_tool_result
+        from tools.computer_use.cua_backend_parse import _extract_tool_result
 
         image_part = MagicMock()
         image_part.type = "image"
@@ -2007,7 +2152,7 @@ class TestMcpInvocationResolution:
 
     def test_manifest_with_invocation_block_drives_subcommand(self):
         from unittest.mock import patch
-        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
 
         manifest = (
             '{"schema_version":"1",'
@@ -2022,7 +2167,7 @@ class TestMcpInvocationResolution:
         """If the manifest knows the args but not the command, keep our
         resolved driver path (so HERMES_CUA_DRIVER_CMD still wins)."""
         from unittest.mock import patch
-        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
 
         manifest = '{"mcp_invocation":{"args":["mcp"]}}'
         with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
@@ -2035,7 +2180,7 @@ class TestMcpInvocationResolution:
         a string instead of a list, etc.), we still fall back rather than
         passing junk to subprocess.Popen."""
         from unittest.mock import patch
-        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
 
         manifest = (
             '{"mcp_invocation":'
@@ -2051,12 +2196,12 @@ class TestStructuredElementsConsumption:
     `structuredContent.elements` part of every `get_window_state` MCP
     response. The wrapper used to parse the markdown AX tree with a
     regex — lossy because bounds always came back (0,0,0,0). The
-    structured path preserves real frames, so UIElement.center() works
-    against pixel coordinates instead of just an index lookup.
+    structured path preserves real frames, so UIElement.bounds carries
+    pixel coordinates instead of just an index lookup.
     """
 
     def test_structured_parser_reads_frames(self):
-        from tools.computer_use.cua_backend import _parse_elements_from_structured
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_structured
 
         raw = [
             {"element_index": 1, "role": "AXButton", "label": "OK",
@@ -2132,7 +2277,7 @@ class TestCapabilityDiscovery:
     """
 
     def test_supports_capability_global_match_any_tool(self):
-        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+        from tools.computer_use.cua_backend_session import _CuaDriverSession, _AsyncBridge
 
         session = _CuaDriverSession(_AsyncBridge())
         session._capabilities = {
@@ -2146,7 +2291,7 @@ class TestCapabilityDiscovery:
         assert session.supports_capability("never.heard.of.it") is False
 
     def test_supports_capability_scoped_to_specific_tool(self):
-        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+        from tools.computer_use.cua_backend_session import _CuaDriverSession, _AsyncBridge
 
         session = _CuaDriverSession(_AsyncBridge())
         session._capabilities = {
@@ -2211,6 +2356,17 @@ class TestElementTokenAttachment:
         assert args["element_index"] == 5
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
+
+    def test_token_attached_when_only_input_schema_advertises_it(self):
+        """cua-driver >= 0.21 dropped the per-tool `capabilities[]` array from tools/list but advertises
+        `element_token` in `click`'s inputSchema and REFUSES a bare element_index (`snapshot_id_required`).
+        The token must ride along from the live schema alone, or every element click is refused."""
+        backend = self._backend_with_session({})  # no capabilities[] at all — the modern shape
+        backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
+        backend._snapshot_tokens = {5: "s00000001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s00000001:5"
 
 
     def test_capture_refreshes_snapshot_tokens(self):
@@ -2391,7 +2547,7 @@ class TestStartupTimeoutPhaseDetail:
         import threading
         from typing import Any, cast
         from unittest.mock import MagicMock, patch as _patch
-        from tools.computer_use.cua_backend import _CuaDriverSession
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
 
         session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
         session._lock = threading.Lock()
@@ -2515,59 +2671,6 @@ class TestBoundsSpaceNote:
                           bounds=(0, 0, 0, 0), app="")]
         assert _bounds_space_note(zero, 1455, 791) is None
         assert _bounds_space_note(zero, 0, 0) is None
-
-
-class TestEscalationEnrichment:
-    """Browser-class background_unavailable refusals gain a typed-page hint."""
-
-    def _refusal(self, **overrides):
-        from tools.computer_use.backend import ActionResult
-
-        kw = dict(
-            ok=False, action="type_text", message="refused",
-            code="background_unavailable",
-            escalation={"recommended": "foreground", "reason": "dropped"},
-            meta={"event_kind": "text_input",
-                  "target_class": "Chrome_WidgetWin_1"},
-        )
-        kw.update(overrides)
-        return ActionResult(**kw)
-
-    def test_browser_text_refusal_gains_page_alternative(self):
-        from tools.computer_use.tool import _enrich_escalation
-
-        enriched = _enrich_escalation(self._refusal())
-        # Driver's recommendation is never overridden — only augmented.
-        assert enriched["recommended"] == "foreground"
-        assert enriched["alternative"] == "page"
-        assert "cua_browser_type" in enriched["alternative_hint"]
-
-    def test_non_browser_target_untouched(self):
-        from tools.computer_use.tool import _enrich_escalation
-
-        res = self._refusal(meta={"event_kind": "text_input",
-                                  "target_class": "Notepad"})
-        assert "alternative" not in _enrich_escalation(res)
-
-    def test_non_foreground_recommendation_untouched(self):
-        from tools.computer_use.tool import _enrich_escalation
-
-        res = self._refusal(escalation={"recommended": "px"})
-        assert "alternative" not in _enrich_escalation(res)
-
-    def test_missing_escalation_passthrough(self):
-        from tools.computer_use.backend import ActionResult
-        from tools.computer_use.tool import _enrich_escalation
-
-        assert _enrich_escalation(
-            ActionResult(ok=True, action="click", message="ok")) is None
-
-    def test_enrichment_survives_action_payload(self):
-        from tools.computer_use.tool import _action_payload
-
-        payload = _action_payload(self._refusal())
-        assert payload["escalation"]["alternative"] == "page"
-        assert payload["verdict"]["decision"] == "escalate"
 
 
 class TestElementSpillFile:

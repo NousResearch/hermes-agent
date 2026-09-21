@@ -1,212 +1,343 @@
-"""Contract tests for the local specialist capability registry."""
+"""Behavior contracts for the local specialist capability registry."""
 
 from __future__ import annotations
 
 import sqlite3
-import json
-import time
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
-from gateway.capability_registry import CapabilityRegistry, CapabilitySignature
-from hermes_cli import kanban_db as kb
+
+def _registry_api():
+    try:
+        from gateway.capability_registry import CapabilityRegistry, CapabilitySignature
+    except ImportError as exc:  # RED: the clean replacement starts without this capability.
+        pytest.fail(f"specialist capability registry is unavailable: {exc}")
+    return CapabilityRegistry, CapabilitySignature
 
 
-MARKET_DATA = CapabilitySignature(
-    domain="market-data",
-    actions=("audit", "read"),
-    evidence_class="diagnostic-only",
-    requested_permissions=("market-data:read",),
-)
+def _kanban_db():
+    from hermes_cli import kanban_db_connect
+
+    return kanban_db_connect
 
 
-@pytest.fixture
-def registry(tmp_path):
-    return CapabilityRegistry(db_path=tmp_path / "capabilities.db")
+def _repository_read_signature():
+    _, CapabilitySignature = _registry_api()
+    return CapabilitySignature(
+        domain="repository-evidence",
+        actions=("read", "review"),
+        evidence_class="diagnostic-only",
+        requested_permissions=("repository-evidence:read",),
+    )
 
 
-def test_resolve_returns_only_unexpired_exact_scope_active_profile(registry):
-    registry.register_fixed_baseline(profile_id="market-data-authority-auditor", signature=MARKET_DATA)
+def test_configured_profile_resolves_only_its_exact_active_scope(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    registry = CapabilityRegistry(
+        db_path=tmp_path / "registry.db",
+        configured_profiles={"repository-reviewer": signature},
+    )
 
-    resolution = registry.resolve(MARKET_DATA)
+    registry.register_configured_profile("repository-reviewer")
 
+    resolution = registry.resolve(signature)
     assert resolution.status == "active_match"
-    assert resolution.profile == "market-data-authority-auditor"
+    assert resolution.profile == "repository-reviewer"
 
 
-def test_resolve_rejects_expired_or_permission_expanding_profile(registry):
-    registry.register_fixed_baseline(
-        profile_id="market-data-authority-auditor",
-        signature=MARKET_DATA,
+def test_unconfigured_profile_cannot_use_direct_activation_api(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    registry = CapabilityRegistry(db_path=tmp_path / "registry.db")
+
+    with pytest.raises(ValueError, match="configured"):
+        registry.register_configured_profile("undeclared")
+    with pytest.raises(ValueError, match="direct arbitrary"):
+        registry.add_active(profile_id="undeclared", signature=signature)
+
+    assert registry.resolve(signature).status == "no_match"
+
+
+def test_persisted_profile_is_not_declared_by_a_registry_without_current_configuration(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    db_path = tmp_path / "registry.db"
+    configured = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": signature},
+    )
+    configured.register_configured_profile("repository-reviewer")
+
+    current = CapabilityRegistry(db_path=db_path, configured_profiles={})
+
+    assert current.is_profile_declared("repository-reviewer") is False
+
+
+def test_expired_profile_does_not_resolve(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    registry = CapabilityRegistry(
+        db_path=tmp_path / "registry.db",
+        configured_profiles={"repository-reviewer": signature},
+    )
+    registry.register_configured_profile(
+        "repository-reviewer",
         expires_at=datetime.now(UTC) - timedelta(seconds=1),
     )
 
-    with pytest.raises(ValueError, match="direct arbitrary"):
-        registry.add_active(
-            profile_id="permission-expanding",
-            signature=CapabilitySignature(
-                domain=MARKET_DATA.domain,
-                actions=MARKET_DATA.actions,
-                evidence_class=MARKET_DATA.evidence_class,
-                requested_permissions=("market-data:read", "market-data:write"),
-            ),
-        )
-
-    resolution = registry.resolve(MARKET_DATA)
-
-    assert resolution.status == "no_match"
-    assert resolution.profile is None
+    assert registry.resolve(signature).status == "no_match"
 
 
-def test_resolve_returns_ambiguous_instead_of_choosing_between_profiles(registry):
-    with kb.connect_closing(registry._db_path) as conn:
-        for profile_id in ("one", "two"):
-            conn.execute(
-                """
-                INSERT INTO capability_profiles (
-                    profile_id, signature_hash, permissions_hash,
-                    model_receipt_hash, verification_receipt_hash,
-                    domain, actions_json, evidence_class, requested_permissions_json,
-                    expires_at, status, created_at
-                ) VALUES (?, ?, ?, '', '', ?, ?, ?, ?, NULL, 'active', ?)
-                """,
-                (
-                    profile_id,
-                    MARKET_DATA.signature_hash,
-                    MARKET_DATA.permissions_hash,
-                    MARKET_DATA.domain,
-                    json.dumps(MARKET_DATA.actions),
-                    MARKET_DATA.evidence_class,
-                    json.dumps(MARKET_DATA.requested_permissions),
-                    int(time.time()),
-                ),
-            )
+def test_multiple_exact_profiles_fail_closed_as_ambiguous(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    registry = CapabilityRegistry(
+        db_path=tmp_path / "registry.db",
+        configured_profiles={"reviewer-one": signature, "reviewer-two": signature},
+    )
+    registry.register_configured_profile("reviewer-one")
+    registry.register_configured_profile("reviewer-two")
 
-    resolution = registry.resolve(MARKET_DATA)
-
+    resolution = registry.resolve(signature)
     assert resolution.status == "ambiguous"
     assert resolution.profile is None
 
 
-def test_migration_is_idempotent_and_creates_append_only_registry_table(tmp_path):
-    db_path = tmp_path / "capabilities.db"
+def test_expired_configured_profile_can_append_one_unambiguous_renewal(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    registry = CapabilityRegistry(
+        db_path=tmp_path / "registry.db",
+        configured_profiles={"repository-reviewer": signature},
+    )
+    registry.register_configured_profile(
+        "repository-reviewer",
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
 
-    kb.init_db(db_path)
-    kb.init_db(db_path)
+    registry.register_configured_profile(
+        "repository-reviewer",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
 
-    with kb.connect_closing(db_path) as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(capability_profiles)")}
-
-    assert {
-        "profile_id",
-        "signature_hash",
-        "permissions_hash",
-        "model_receipt_hash",
-        "verification_receipt_hash",
-        "expires_at",
-        "status",
-    } <= columns
-
-
-def test_public_direct_active_registration_cannot_bypass_promotion_gates(registry):
-    with pytest.raises(ValueError, match="direct arbitrary"):
-        registry.add_active(
-            profile_id="generated-bypass",
-            signature=MARKET_DATA,
-            model_receipt_hash="a" * 64,
-            verification_receipt_hash="b" * 64,
-        )
-
-    assert registry.resolve(MARKET_DATA).status == "no_match"
+    resolution = registry.resolve(signature)
+    assert resolution.status == "active_match"
+    assert resolution.profile == "repository-reviewer"
 
 
-def test_capability_profiles_reject_direct_update_and_delete(registry):
-    registry.register_fixed_baseline(profile_id="market-data-authority-auditor", signature=MARKET_DATA)
+def test_registry_rows_are_append_only_and_revocation_hides_profile(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    registry = CapabilityRegistry(
+        db_path=tmp_path / "registry.db",
+        configured_profiles={"repository-reviewer": signature},
+    )
+    declaration_id = registry.register_configured_profile("repository-reviewer")
 
-    with kb.connect_closing(registry._db_path) as conn:
+    with _kanban_db().connect_closing(tmp_path / "registry.db") as conn:
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             conn.execute(
-                "UPDATE capability_profiles SET status = 'inactive' WHERE profile_id = 'market-data-authority-auditor'"
+                "UPDATE capability_profiles SET status = 'inactive' "
+                "WHERE profile_id = 'repository-reviewer'"
             )
-        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
-            conn.execute("DELETE FROM capability_profiles WHERE profile_id = 'market-data-authority-auditor'")
 
-    resolution = registry.resolve(MARKET_DATA)
+    receipt = registry.revoke(
+        declaration_id=declaration_id,
+        profile_id="repository-reviewer",
+        signature=signature,
+        reason_code="operator_revoked",
+    )
+
+    assert len(receipt) == 64
+    assert registry.resolve(signature).status == "no_match"
+
+
+def test_trusted_reregistration_after_revocation_creates_one_new_generation(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    db_path = tmp_path / "registry.db"
+    registry = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": signature},
+    )
+    first_declaration_id = registry.register_configured_profile("repository-reviewer")
+    registry.revoke(
+        declaration_id=first_declaration_id,
+        profile_id="repository-reviewer",
+        signature=signature,
+        reason_code="operator_revoked",
+    )
+
+    renewed_declaration_id = registry.register_configured_profile("repository-reviewer")
+    duplicate_declaration_id = registry.register_configured_profile("repository-reviewer")
+
+    resolution = registry.resolve(signature)
     assert resolution.status == "active_match"
-    assert resolution.profile == "market-data-authority-auditor"
+    assert resolution.profile == "repository-reviewer"
+    assert renewed_declaration_id != first_declaration_id
+    assert duplicate_declaration_id == renewed_declaration_id
+    with _kanban_db().connect_closing(db_path) as conn:
+        profile_rows = conn.execute(
+            "SELECT COUNT(*) FROM capability_profiles WHERE profile_id = ?",
+            ("repository-reviewer",),
+        ).fetchone()[0]
+        revocation_rows = conn.execute(
+            "SELECT COUNT(*) FROM specialist_profile_revocations WHERE profile_id = ?",
+            ("repository-reviewer",),
+        ).fetchone()[0]
+    assert profile_rows == 2
+    assert revocation_rows == 1
 
 
-def test_migration_restores_capability_profile_immutability_triggers(tmp_path):
-    db_path = tmp_path / "capabilities.db"
-    kb.init_db(db_path)
+def test_permission_variant_registration_is_not_hidden_by_revoked_version(tmp_path):
+    CapabilityRegistry, CapabilitySignature = _registry_api()
+    original = _repository_read_signature()
+    expanded = CapabilitySignature(
+        domain=original.domain,
+        actions=original.actions,
+        evidence_class=original.evidence_class,
+        requested_permissions=(
+            "repository-evidence:metadata",
+            "repository-evidence:read",
+        ),
+    )
+    db_path = tmp_path / "registry.db"
+    original_registry = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": original},
+    )
+    original_declaration_id = original_registry.register_configured_profile(
+        "repository-reviewer"
+    )
+    original_registry.revoke(
+        declaration_id=original_declaration_id,
+        profile_id="repository-reviewer",
+        signature=original,
+        reason_code="permission_version_revoked",
+    )
 
-    with kb.connect_closing(db_path) as conn:
-        conn.execute("DROP TRIGGER capability_profiles_no_update")
-        conn.execute("DROP TRIGGER capability_profiles_no_delete")
+    renewed_registry = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": expanded},
+    )
+    renewed_declaration_id = renewed_registry.register_configured_profile(
+        "repository-reviewer"
+    )
 
-    kb.init_db(db_path)
-
-    with kb.connect_closing(db_path) as conn:
-        triggers = {
-            row["name"]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'capability_profiles'"
-            )
-        }
-
-    assert triggers == {"capability_profiles_no_delete", "capability_profiles_no_update"}
+    assert renewed_registry.resolve(original).status == "no_match"
+    resolution = renewed_registry.resolve(expanded)
+    assert resolution.status == "active_match"
+    assert resolution.profile == "repository-reviewer"
+    assert renewed_declaration_id != original_declaration_id
 
 
-def test_resolve_rejects_malformed_persisted_expiry(registry):
-    with kb.connect_closing(registry._db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO capability_profiles (
-                profile_id, signature_hash, permissions_hash,
-                model_receipt_hash, verification_receipt_hash,
-                domain, actions_json, evidence_class, requested_permissions_json,
-                expires_at, status, created_at
-            ) VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, 'active', ?)
-            """,
-            (
-                "malformed-expiry",
-                MARKET_DATA.signature_hash,
-                MARKET_DATA.permissions_hash,
-                MARKET_DATA.domain,
-                json.dumps(MARKET_DATA.actions),
-                MARKET_DATA.evidence_class,
-                json.dumps(MARKET_DATA.requested_permissions),
-                "invalid-time",
-                int(time.time()),
-            ),
-        )
+def test_unregistered_permission_expansion_does_not_reuse_narrow_declaration(tmp_path):
+    CapabilityRegistry, CapabilitySignature = _registry_api()
+    original = _repository_read_signature()
+    db_path = tmp_path / "registry.db"
+    CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": original},
+    ).register_configured_profile("repository-reviewer")
+    expanded = CapabilitySignature(
+        domain=original.domain,
+        actions=original.actions,
+        evidence_class=original.evidence_class,
+        requested_permissions=(
+            "repository-evidence:metadata",
+            "repository-evidence:read",
+        ),
+    )
 
-    resolution = registry.resolve(MARKET_DATA)
+    resolution = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": expanded},
+    ).resolve(expanded)
 
     assert resolution.status == "no_match"
     assert resolution.profile is None
 
 
-def test_hash_only_promotion_cannot_create_an_active_profile(registry):
-    with pytest.raises(ValueError, match="hash-only promotion is disabled"):
-        registry.add_active_from_promotion(
-            profile_id="forged-promotion",
-            signature=MARKET_DATA,
-            benchmark_receipt_hash="a" * 64,
-            verification_receipt_hash="b" * 64,
-        )
+def test_import_before_hermes_home_does_not_pin_kanban_paths(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    late_home = tmp_path / "late-home"
+    code = """
+import os
+import sys
 
-    assert registry.resolve(MARKET_DATA).status == "no_match"
+os.environ.pop("HERMES_HOME", None)
+import gateway.capability_registry as registry_module
+assert "hermes_cli.kanban_db" not in sys.modules
+os.environ["HERMES_HOME"] = sys.argv[1]
+signature = registry_module.CapabilitySignature(
+    domain="repository-evidence",
+    actions=("read",),
+    evidence_class="diagnostic-only",
+    requested_permissions=("repository-evidence:read",),
+)
+registry = registry_module.CapabilityRegistry(
+    configured_profiles={"reviewer": signature},
+)
+registry.register_configured_profile("reviewer")
+assert registry.resolve(signature).status == "active_match"
+"""
+    env = os.environ.copy()
+    env.pop("HERMES_HOME", None)
+    env["PYTHONPATH"] = str(repo)
+
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(late_home)],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (late_home / "kanban.db").is_file()
 
 
-def test_durable_looking_generated_promotion_still_fails_without_authenticated_approval_authority(registry):
-    with pytest.raises(ValueError, match="authenticated operator approval authority"):
-        registry.add_active_from_durable_promotion(
-            profile_id="generated-profile",
-            signature=MARKET_DATA,
-            candidate_id="cpr_1234567890abcdef12345678_12345678",
-            promotion_proof_hash="a" * 64,
-        )
+def test_each_revocation_binds_the_latest_unrevoked_generation(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    db_path = tmp_path / "registry.db"
+    registry = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": signature},
+    )
+    first_declaration_id = registry.register_configured_profile("repository-reviewer")
+    first_receipt = registry.revoke(
+        declaration_id=first_declaration_id,
+        profile_id="repository-reviewer",
+        signature=signature,
+        reason_code="operator_revoked",
+    )
+    second_declaration_id = registry.register_configured_profile("repository-reviewer")
 
-    assert registry.resolve(MARKET_DATA).status == "no_match"
+    second_receipt = registry.revoke(
+        declaration_id=second_declaration_id,
+        profile_id="repository-reviewer",
+        signature=signature,
+        reason_code="operator_revoked",
+    )
+
+    assert second_receipt != first_receipt
+    assert registry.resolve(signature).status == "no_match"
+    with _kanban_db().connect_closing(db_path) as conn:
+        declaration_ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT capability_profile_id FROM specialist_profile_revocations "
+                "ORDER BY capability_profile_id"
+            ).fetchall()
+        ]
+    assert len(declaration_ids) == 2
+    assert len(set(declaration_ids)) == 2

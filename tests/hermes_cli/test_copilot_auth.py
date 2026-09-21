@@ -1,5 +1,8 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
+from io import BytesIO
+from urllib.error import HTTPError
+
 import pytest
 from unittest.mock import patch
 
@@ -13,6 +16,52 @@ class TestTokenValidation:
         assert valid is False
         assert "Classic Personal Access Tokens" in msg
         assert "ghp_" in msg
+
+    @pytest.mark.parametrize("token", ["gho_abcdefghijklmnop1234", "github_pat_abcdefghijklmnop1234", "ghu_abcdefghijklmnop1234"])
+    def test_supported_token_families_accepted(self, token):
+        from hermes_cli.copilot_auth import validate_copilot_token
+        assert validate_copilot_token(token) == (True, "OK")
+
+    def test_arbitrary_string_rejected(self):
+        """A non-GitHub value in GITHUB_TOKEN must fail validation instead of reaching the API (#12650)."""
+        from hermes_cli.copilot_auth import validate_copilot_token
+        valid, msg = validate_copilot_token("not_a_github_token")
+        assert valid is False
+        assert "Supported token prefixes" in msg
+
+
+class TestDeviceCodeLogin:
+    """Device-code failures must not turn into repeated authorization polls."""
+
+    def test_rate_limited_poll_stops_and_reports_wait_time(self, monkeypatch, capsys):
+        """A GitHub rate-limit response ends the current flow without another poll."""
+        from hermes_cli import copilot_auth
+
+        response = type(
+            "Response",
+            (),
+            {
+                "read": lambda self: b'{"device_code":"device","user_code":"CODE","interval":1}',
+                "__enter__": lambda self: self,
+                "__exit__": lambda self, *_: None,
+            },
+        )()
+        rate_limited = HTTPError(
+            "https://github.com/login/oauth/access_token",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "120"},
+            BytesIO(b'{"error":"slow_down"}'),
+        )
+        monotonic_values = iter((0.0, 0.0, 301.0))
+        monkeypatch.setattr(copilot_auth.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr(copilot_auth.time, "sleep", lambda _: None)
+
+        with patch("urllib.request.urlopen", side_effect=[response, rate_limited]) as urlopen:
+            assert copilot_auth.copilot_device_code_login() is None
+
+        assert urlopen.call_count == 2
+        assert "rate limited" in capsys.readouterr().out.lower()
 
 
 class TestResolveToken:
@@ -37,7 +86,7 @@ class TestResolveToken:
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="ghp_classic"):
-            with pytest.raises(ValueError, match="classic PAT"):
+            with pytest.raises(ValueError, match="Classic Personal Access Tokens"):
                 resolve_copilot_token()
 
     def test_invalid_env_var_skips_gh_cli_fallback(self, monkeypatch):
@@ -191,4 +240,3 @@ class TestEnvVarOrder:
         assert "COPILOT_GITHUB_TOKEN" in copilot.api_key_env_vars
         # COPILOT_GITHUB_TOKEN should be first
         assert copilot.api_key_env_vars[0] == "COPILOT_GITHUB_TOKEN"
-

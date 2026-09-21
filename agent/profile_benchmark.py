@@ -14,14 +14,16 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Callable, Literal
+from urllib.parse import quote, unquote
 
 from gateway.candidate_profile_requests import CandidateLifecycleSnapshot, CandidateProfileRequests
 from gateway.capability_registry import CapabilityRegistry, CapabilitySignature
-from hermes_cli import kanban_db
+from hermes_cli import kanban_db_connect as kanban_db
 
 
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+_MAX_OPERATOR_IDENTITY_CHARS = 512
 _MAX_RECEIPT_LIFETIME_SECONDS = 86_400
 
 
@@ -42,6 +44,21 @@ def _require_hash(value: object, *, field: str) -> str:
 def _require_identity(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not _IDENTITY_RE.fullmatch(value):
         raise ValueError(f"{field} must be a bounded canonical identity")
+    return value
+
+
+def _require_operator_identity(value: object) -> str:
+    """Accept legacy receipt identities and bounded, reversible dashboard subjects."""
+    if isinstance(value, str) and _IDENTITY_RE.fullmatch(value):
+        return value
+    if not isinstance(value, str) or len(value) > _MAX_OPERATOR_IDENTITY_CHARS:
+        raise ValueError("operator_identity must be a bounded canonical identity")
+    prefix, separator, components = value.partition(":")
+    provider, separator, user_id = components.partition(":")
+    if prefix != "dashboard" or not separator or not provider or not user_id:
+        raise ValueError("operator_identity must be a bounded canonical identity")
+    if quote(unquote(provider), safe="") != provider or quote(unquote(user_id), safe="") != user_id:
+        raise ValueError("operator_identity must use canonical percent encoding")
     return value
 
 
@@ -262,8 +279,9 @@ class OperatorApproval:
     issued_at: int
 
     def __post_init__(self) -> None:
-        for field in ("candidate_id", "approval_id", "operator_identity"):
+        for field in ("candidate_id", "approval_id"):
             _require_identity(getattr(self, field), field=field)
+        _require_operator_identity(self.operator_identity)
         _require_hash(self.verification_result_hash, field="verification_result_hash")
         if self.target_state not in {"staged", "active"}:
             raise ValueError("operator approval target must be staged or active")

@@ -11,11 +11,12 @@ active operator approval.
 
 Hermes now recognizes an approval only when it is submitted through the gated
 dashboard by an OAuth-authenticated session whose exact
-`<provider>:<user_id>` subject is in
+`dashboard:<provider>:<user_id>` subject is in
 `kanban.specialist_operator_approvals.allowed_subjects`.  The allowlist is
 empty by default, and loopback dashboard session tokens are deliberately not
-an operator identity. `operator_identity` text supplied by a worker, model,
-or API body is not authority.
+an operator identity. Provider and user ID components use percent encoding, so
+literal colons appear as `%3A`. `operator_identity` text supplied by a worker,
+model, or API body is not authority.
 
 Configure the intended operator before using this feature:
 
@@ -23,7 +24,7 @@ Configure the intended operator before using this feature:
 kanban:
   specialist_operator_approvals:
     allowed_subjects:
-      - "portal:YOUR_AUTHENTICATED_USER_ID"
+      - "dashboard:portal:YOUR_AUTHENTICATED_USER_ID"
 ```
 
 The authenticated dashboard can then POST the exact candidate ID, durable

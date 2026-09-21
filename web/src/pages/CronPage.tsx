@@ -21,7 +21,11 @@ import type {
 import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
+  cronAgoLabel,
+  cronNextRunOverdueMs,
+  cronSchedulerStaleAgeS,
   cronJobFormFromJob,
+  cronLastResult,
   type CronJobFormState,
 } from "@/lib/cron-job";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -525,6 +529,8 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
+  const [jobsLoadError, setJobsLoadError] = useState<string | null>(null);
+  const schedulerStaleAgeS = cronSchedulerStaleAgeS(jobs);
   const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -627,13 +633,17 @@ export default function CronPage() {
         if (
           jobsRequestGenerationRef.current === generation &&
           selectedProfileRef.current === profile
-        ) setJobs(nextJobs);
+        ) {
+          setJobs(nextJobs);
+          setJobsLoadError(null);
+        }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (
           jobsRequestGenerationRef.current === generation &&
           selectedProfileRef.current === profile
         ) {
+          setJobsLoadError(error instanceof Error ? error.message : String(error));
           showToast(t.common.loading, "error");
         }
       })
@@ -869,6 +879,24 @@ export default function CronPage() {
       <PluginSlot name="cron:top" />
       <Toast toast={toast} />
 
+      {jobsLoadError && (
+        <div role="alert" className="rounded-md border border-destructive/40 p-3 text-sm">
+          <p>Could not load cron jobs: {jobsLoadError}</p>
+          <Button size="sm" onClick={() => loadJobs(selectedProfile)}>
+            Retry
+          </Button>
+        </div>
+      )}
+
+      {schedulerStaleAgeS !== null && (
+        <p className="text-sm text-warning font-medium" data-testid="cron-scheduler-stale">
+          {(t.cron.schedulerLastTicked ?? "Scheduler last ticked {when}").replace(
+            "{when}",
+            cronAgoLabel(schedulerStaleAgeS),
+          )}
+        </p>
+      )}
+
       <Segmented
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
@@ -1100,18 +1128,28 @@ export default function CronPage() {
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];
+          const lastResult = cronLastResult(job);
 
           return (
             <Card key={jobKey}>
               <CardContent className="flex items-start gap-4 py-4">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <span className="font-medium text-sm truncate min-w-0">
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>
                       {state}
                     </Badge>
+                    {lastResult && lastResult.status !== "ok" && (
+                      <Badge
+                        tone={lastResult.tone}
+                        title={lastResult.detail ?? undefined}
+                        data-testid="cron-last-result"
+                      >
+                        {lastResult.status}
+                      </Badge>
+                    )}
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
                     {deliver && deliver !== "local" && (
                       <Badge tone="outline">{deliver}</Badge>
@@ -1150,9 +1188,18 @@ export default function CronPage() {
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>
-                    <span>
-                      {t.cron.next}: {formatTime(job.next_run_at)}
-                    </span>
+                    {cronNextRunOverdueMs(job) === null ? (
+                      <span>
+                        {t.cron.next}: {formatTime(job.next_run_at)}
+                      </span>
+                    ) : (
+                      <span
+                        className="text-warning font-medium"
+                        data-testid="cron-next-run-overdue"
+                      >
+                        {t.cron.overdueSince ?? "Overdue since"}: {formatTime(job.next_run_at)}
+                      </span>
+                    )}
                   </div>
                   {job.last_delivery_error && (
                     <p className="text-xs text-destructive mt-1">

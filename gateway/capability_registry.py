@@ -1,7 +1,7 @@
-"""Local, fail-closed storage for specialist capability declarations.
+"""Local, fail-closed specialist capability declarations.
 
-This module deliberately does not route, dispatch, or invoke model providers.
-It only persists locally verified declarations and resolves a supplied scope.
+The registry stores configured declarations and resolves exact advisory scope.
+It does not route work, create profiles, invoke models, or contact providers.
 """
 
 from __future__ import annotations
@@ -10,38 +10,117 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from hermes_cli import kanban_db
+_MAX_EXPIRY_TIMESTAMP = 253402300799
+_PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,95}$")
+_REASON_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
-
-_MAX_EXPIRY_TIMESTAMP = 253402300799  # 9999-12-31T23:59:59Z
-_RECEIPT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
-
-# Fixed baseline profiles are deployed configuration, not candidate output.
-# Keep their permitted diagnostic-only scope in this module so the registry can
-# validate registration without importing the router (which imports this
-# module).  Every generated profile must use durable-promotion evidence.
-_FIXED_BASELINE_SCOPES = {
-    "task-orchestrator": ("repository-evidence", ("audit", "inspect", "read", "review", "validate"), "repository-evidence:read"),
-    "burndown-patch-steward": ("repository-evidence", ("audit", "inspect", "read", "review", "validate"), "repository-evidence:read"),
-    "acceptance-gate-verifier": ("repository-evidence", ("audit", "inspect", "read", "review", "validate"), "repository-evidence:read"),
-    "paper-safety-guardian": ("financial-analysis", ("audit", "inspect", "read", "review", "validate"), "financial-analysis:read"),
-    "market-data-authority-auditor": ("market-data", ("audit", "inspect", "read", "review", "validate"), "market-data:read"),
-    "route-execution-boundary-auditor": ("repository-evidence", ("audit", "inspect", "read", "review", "validate"), "repository-evidence:read"),
-    "dependency-tooling-health-sentinel": ("repository-evidence", ("audit", "inspect", "read", "review", "validate"), "repository-evidence:read"),
-    "copilot-learning-steward": ("repository-evidence", ("audit", "inspect", "read", "review", "validate"), "repository-evidence:read"),
-    "mission-control-ux-auditor": ("repository-evidence", ("audit", "inspect", "read", "review", "validate"), "repository-evidence:read"),
-    "research-scout": ("research", ("audit", "read", "research", "review"), "research:read"),
-    "performance-sentinel": ("repository-evidence", ("audit", "inspect", "read", "review", "validate"), "repository-evidence:read"),
+_FIXED_BASELINE_SCOPES: dict[str, tuple[str, frozenset[str], str]] = {
+    "task-orchestrator": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "burndown-patch-steward": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "acceptance-gate-verifier": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "paper-safety-guardian": (
+        "financial-analysis", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "financial-analysis:read",
+    ),
+    "market-data-authority-auditor": (
+        "market-data", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "market-data:read",
+    ),
+    "route-execution-boundary-auditor": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "dependency-tooling-health-sentinel": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "copilot-learning-steward": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "mission-control-ux-auditor": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "research-scout": (
+        "research", frozenset({"audit", "read", "research", "review"}), "research:read"
+    ),
+    "performance-sentinel": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
 }
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS capability_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id TEXT NOT NULL,
+    signature_hash TEXT NOT NULL,
+    permissions_hash TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    actions_json TEXT NOT NULL,
+    evidence_class TEXT NOT NULL,
+    requested_permissions_json TEXT NOT NULL,
+    expires_at INTEGER,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_capability_profile_resolution
+ON capability_profiles(signature_hash, evidence_class, status);
+
+CREATE TABLE IF NOT EXISTS specialist_profile_revocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    revocation_hash TEXT NOT NULL UNIQUE,
+    capability_profile_id INTEGER NOT NULL UNIQUE,
+    profile_id TEXT NOT NULL,
+    signature_hash TEXT NOT NULL,
+    permissions_hash TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_specialist_profile_revocation
+ON specialist_profile_revocations(
+    capability_profile_id, profile_id, signature_hash, permissions_hash
+);
+
+CREATE TRIGGER IF NOT EXISTS capability_profiles_no_update
+BEFORE UPDATE ON capability_profiles BEGIN
+    SELECT RAISE(ABORT, 'capability_profiles is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS capability_profiles_no_delete
+BEFORE DELETE ON capability_profiles BEGIN
+    SELECT RAISE(ABORT, 'capability_profiles is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS specialist_profile_revocations_no_update
+BEFORE UPDATE ON specialist_profile_revocations BEGIN
+    SELECT RAISE(ABORT, 'specialist_profile_revocations is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS specialist_profile_revocations_no_delete
+BEFORE DELETE ON specialist_profile_revocations BEGIN
+    SELECT RAISE(ABORT, 'specialist_profile_revocations is append-only');
+END;
+"""
 
 
 def _canonical_tokens(values: tuple[str, ...], *, field: str) -> tuple[str, ...]:
-    if isinstance(values, str):
+    if isinstance(values, str) or not isinstance(values, tuple):
         raise TypeError(f"{field} must be a tuple of strings")
     if any(not isinstance(value, str) or not value.strip() for value in values):
         raise ValueError(f"{field} must contain only non-empty strings")
@@ -53,9 +132,45 @@ def _hash_payload(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _connect_closing():
+    """Load the canonical Kanban connection helper only when registry I/O begins."""
+    from hermes_cli.kanban_db_connect import connect_closing
+
+    return connect_closing
+
+
+def _write_txn():
+    """Load the canonical Kanban transaction helper only when needed."""
+    from hermes_cli.kanban_db_connect import write_txn
+
+    return write_txn
+
+
+def _expiry_timestamp(expires_at: datetime | int | float | None) -> int | None:
+    if expires_at is None:
+        return None
+    if isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            raise ValueError("expires_at datetime must be timezone-aware")
+        value = int(expires_at.timestamp())
+    elif isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+        raise TypeError("expires_at must be a timestamp or timezone-aware datetime")
+    else:
+        value = int(expires_at)
+    if value > _MAX_EXPIRY_TIMESTAMP:
+        raise ValueError("expires_at is outside the supported range")
+    return value
+
+
+def _unexpired(expires_at: object, *, now: int) -> bool:
+    if expires_at is None:
+        return True
+    return isinstance(expires_at, int) and not isinstance(expires_at, bool) and now < expires_at <= _MAX_EXPIRY_TIMESTAMP
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilitySignature:
-    """Canonical scope that a specialist profile is allowed to advise on."""
+    """Canonical advisory scope declared by a specialist profile."""
 
     domain: str
     actions: tuple[str, ...]
@@ -91,50 +206,37 @@ class CapabilitySignature:
 
 @dataclass(frozen=True, slots=True)
 class RegistryResolution:
-    """A fail-closed registry result; only ``active_match`` has a profile."""
+    """Fail-closed resolution; only ``active_match`` carries a profile."""
 
     status: Literal["active_match", "no_match", "ambiguous", "unavailable"]
     profile: str | None
     reason: str
 
 
-def _expires_at_timestamp(expires_at: datetime | int | float | None) -> int | None:
-    if expires_at is None:
-        return None
-    if isinstance(expires_at, datetime):
-        if expires_at.tzinfo is None:
-            raise ValueError("expires_at datetime must be timezone-aware")
-        return int(expires_at.timestamp())
-    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
-        raise TypeError("expires_at must be a timestamp or timezone-aware datetime")
-    return int(expires_at)
-
-
-def _is_unexpired_stored_timestamp(expires_at: object, *, now: int) -> bool:
-    """Return false for malformed SQLite expiry metadata rather than coercing it."""
-    if expires_at is None:
-        return True
-    if isinstance(expires_at, bool) or not isinstance(expires_at, int):
-        return False
-    return now < expires_at <= _MAX_EXPIRY_TIMESTAMP
-
-
-def _authenticated_operator_approval_authority_available() -> bool:
-    """Whether a separately verified operator-approval integration is wired.
-
-    Phase 0 has no such integration.  Keep this explicit predicate so a future
-    authenticated authority must change a narrow, reviewable boundary rather
-    than silently trusting the descriptive ``operator_identity`` field.
-    """
-    return False
-
-
 class CapabilityRegistry:
-    """Persist and resolve capability records in the local Kanban SQLite DB."""
+    """Persist and resolve configured specialist capability declarations."""
 
-    def __init__(self, *, db_path: Path | None = None, board: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        db_path: Path | None = None,
+        board: str | None = None,
+        configured_profiles: Mapping[str, CapabilitySignature] | None = None,
+    ) -> None:
+        declarations = dict(configured_profiles or {})
+        for profile_id, signature in declarations.items():
+            self._validate_profile_id(profile_id)
+            if not isinstance(signature, CapabilitySignature):
+                raise TypeError("configured profile declarations must be CapabilitySignature values")
         self._db_path = db_path
         self._board = board
+        self._configured_profiles = declarations
+
+    @staticmethod
+    def _validate_profile_id(profile_id: object) -> str:
+        if not isinstance(profile_id, str) or not _PROFILE_ID_RE.fullmatch(profile_id):
+            raise ValueError("profile_id must be a bounded canonical identifier")
+        return profile_id
 
     def register_fixed_baseline(
         self,
@@ -142,14 +244,9 @@ class CapabilityRegistry:
         profile_id: str,
         signature: CapabilitySignature,
         expires_at: datetime | int | float | None = None,
-    ) -> None:
-        """Register one closed, configured baseline specialist declaration.
-
-        This is intentionally not a generic profile-registration API.  It
-        accepts only a profile and exact scope compiled into the fixed routing
-        baseline; generated profiles can only reach active state through
-        :meth:`add_active_from_durable_promotion`.
-        """
+    ) -> int:
+        """Register one closed baseline declaration for compatibility with the router."""
+        self._validate_profile_id(profile_id)
         fixed_scope = _FIXED_BASELINE_SCOPES.get(profile_id)
         if fixed_scope is None:
             raise ValueError("profile_id is not a fixed baseline specialist")
@@ -160,55 +257,83 @@ class CapabilityRegistry:
             signature.domain != domain
             or signature.evidence_class != "diagnostic-only"
             or not signature.actions
-            or not set(signature.actions) <= set(allowed_actions)
+            or not set(signature.actions) <= allowed_actions
             or not signature.requested_permissions
             or not set(signature.requested_permissions) <= {permission}
         ):
             raise ValueError("fixed baseline profile scope does not match its closed declaration")
-        self._append_active(
-            profile_id=profile_id,
-            signature=signature,
-            model_receipt_hash="",
-            verification_receipt_hash="",
-            expires_at=expires_at,
-        )
+        configured = self._configured_profiles.get(profile_id)
+        if configured is not None and configured != signature:
+            raise ValueError("fixed baseline profile scope conflicts with configured declaration")
+        self._configured_profiles[profile_id] = signature
+        return self.register_configured_profile(profile_id, expires_at=expires_at)
 
-    def add_active(self, **_: object) -> None:
-        """Reject the former public arbitrary-profile activation API."""
-        raise ValueError(
-            "direct arbitrary active profile registration is disabled; use fixed baseline or durable promotion"
-        )
+    @contextmanager
+    def _connection(self) -> Iterator[object]:
+        """Open the board-local registry connection after idempotent schema setup."""
+        with _connect_closing()(self._db_path, board=self._board) as conn:
+            conn.executescript(_SCHEMA)
+            yield conn
 
-    def _append_active(
+    def register_configured_profile(
         self,
-        *,
         profile_id: str,
-        signature: CapabilitySignature,
-        model_receipt_hash: str,
-        verification_receipt_hash: str,
-        expires_at: datetime | int | float | None,
-    ) -> None:
-        """Internal persistence primitive reached only by closed gate paths."""
+        *,
+        expires_at: datetime | int | float | None = None,
+    ) -> int:
+        """Return one active row for the exact trusted declaration generation.
 
-        expires_at_timestamp = _expires_at_timestamp(expires_at)
+        A revocation permanently hides only its immutable row. Calling this
+        trusted registration boundary again after revocation appends a new
+        generation; repeated calls then reuse that unrevoked generation.
+        """
+        self._validate_profile_id(profile_id)
+        signature = self._configured_profiles.get(profile_id)
+        if signature is None:
+            raise ValueError("profile_id is not present in configured specialist declarations")
         created_at = int(time.time())
-        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
-            with kanban_db.write_txn(conn):
-                conn.execute(
+        expires_at_timestamp = _expiry_timestamp(expires_at)
+        with self._connection() as conn:
+            with _write_txn()(conn):
+                existing = conn.execute(
                     """
-                    INSERT INTO capability_profiles (
-                        profile_id, signature_hash, permissions_hash,
-                        model_receipt_hash, verification_receipt_hash,
-                        domain, actions_json, evidence_class, requested_permissions_json,
-                        expires_at, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                    SELECT profiles.id FROM capability_profiles AS profiles
+                    WHERE profiles.profile_id = ?
+                      AND profiles.signature_hash = ?
+                      AND profiles.permissions_hash = ?
+                      AND profiles.status = 'active'
+                      AND profiles.expires_at IS ?
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM specialist_profile_revocations AS revocations
+                          WHERE revocations.capability_profile_id = profiles.id
+                            AND revocations.profile_id = profiles.profile_id
+                            AND revocations.signature_hash = profiles.signature_hash
+                            AND revocations.permissions_hash = profiles.permissions_hash
+                      )
+                    LIMIT 1
                     """,
                     (
                         profile_id,
                         signature.signature_hash,
                         signature.permissions_hash,
-                        model_receipt_hash,
-                        verification_receipt_hash,
+                        expires_at_timestamp,
+                    ),
+                ).fetchone()
+                if existing is not None:
+                    return int(existing["id"])
+                cursor = conn.execute(
+                    """
+                    INSERT INTO capability_profiles (
+                        profile_id, signature_hash, permissions_hash, domain,
+                        actions_json, evidence_class, requested_permissions_json,
+                        expires_at, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                    """,
+                    (
+                        profile_id,
+                        signature.signature_hash,
+                        signature.permissions_hash,
                         signature.domain,
                         json.dumps(signature.actions, separators=(",", ":")),
                         signature.evidence_class,
@@ -217,196 +342,194 @@ class CapabilityRegistry:
                         created_at,
                     ),
                 )
+                return int(cursor.lastrowid)
 
-    def add_active_from_promotion(
-        self,
-        *,
-        profile_id: str,
-        signature: CapabilitySignature,
-        benchmark_receipt_hash: str,
-        verification_receipt_hash: str,
-        expires_at: datetime | int | float | None = None,
-    ) -> None:
-        """Disabled unsafe compatibility entry point.
-
-        Hash-shaped strings alone are not authorization.  The only promotion
-        entry point is :meth:`add_active_from_durable_promotion`, which reads
-        and validates immutable board-local proof, receipt, sandbox, and
-        approval rows before delegating to the fixed-profile append path.
-        """
-        del profile_id, signature, benchmark_receipt_hash, verification_receipt_hash, expires_at
-        raise ValueError("hash-only promotion is disabled; use durable promotion proof")
-
-    def add_active_from_durable_promotion(
-        self,
-        *,
-        profile_id: str,
-        signature: CapabilitySignature,
-        candidate_id: str,
-        promotion_proof_hash: str,
-        expires_at: datetime | int | float | None = None,
-        now: int | None = None,
-    ) -> None:
-        """Derive an active profile from a stored active-promotion proof only."""
-        if not isinstance(candidate_id, str) or not candidate_id:
-            raise ValueError("candidate_id must be a non-empty string")
-        if not isinstance(promotion_proof_hash, str) or not _RECEIPT_HASH_RE.fullmatch(promotion_proof_hash):
-            raise ValueError("promotion_proof_hash must be a SHA-256 hex digest")
-        # No authenticated, operator-controlled approval authority is wired in
-        # this integration.  Refuse even a durable-looking legacy proof rather
-        # than treating a historical identity string as authorization.
-        if not _authenticated_operator_approval_authority_available():
-            raise ValueError("authenticated operator approval authority is unavailable")
-        # The durable validation below is retained as the future gate once an
-        # authenticated approval authority is separately integrated.
-        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
-            proof = conn.execute(
-                """
-                SELECT benchmark_result_hash, verification_result_hash, approval_hash
-                FROM specialist_promotion_proofs
-                WHERE proof_hash = ? AND candidate_id = ? AND target_state = 'active'
-                  AND profile_id = ? AND signature_hash = ? AND permissions_hash = ?
-                """,
-                (promotion_proof_hash, candidate_id, profile_id, signature.signature_hash, signature.permissions_hash),
-            ).fetchone()
-            if proof is None:
-                raise ValueError("no durable authorized active-promotion proof")
-            benchmark = conn.execute(
-                """
-                SELECT proposal_author, sol_reviewer, scorer_model, status, expires_at
-                FROM specialist_benchmark_receipts
-                WHERE result_hash = ? AND candidate_id = ?
-                """,
-                (proof["benchmark_result_hash"], candidate_id),
-            ).fetchone()
-            verification = conn.execute(
-                """
-                SELECT verifier_identity, sandbox_id, status, expires_at
-                FROM specialist_verification_receipts
-                WHERE result_hash = ? AND candidate_id = ? AND benchmark_result_hash = ?
-                """,
-                (proof["verification_result_hash"], candidate_id, proof["benchmark_result_hash"]),
-            ).fetchone()
-            now = int(time.time()) if now is None else now
-            if isinstance(now, bool) or not isinstance(now, int):
-                raise ValueError("now must be an integer timestamp")
-            if (
-                benchmark is None
-                or verification is None
-                or benchmark["status"] != "passed"
-                or verification["status"] != "verified"
-                or not _is_unexpired_stored_timestamp(benchmark["expires_at"], now=now)
-                or not _is_unexpired_stored_timestamp(verification["expires_at"], now=now)
-                or benchmark["scorer_model"] in {benchmark["proposal_author"], benchmark["sol_reviewer"]}
-                or verification["verifier_identity"]
-                in {benchmark["proposal_author"], benchmark["sol_reviewer"], benchmark["scorer_model"]}
-            ):
-                raise ValueError("durable benchmark or independent verification is invalid")
-            sandbox = conn.execute(
-                """
-                SELECT 1 FROM specialist_sandbox_runs
-                WHERE sandbox_id = ? AND candidate_id = ? AND benchmark_result_hash = ?
-                  AND disposable = 1 AND task_count = 1
-                """,
-                (verification["sandbox_id"], candidate_id, proof["benchmark_result_hash"]),
-            ).fetchone()
-            if sandbox is None:
-                raise ValueError("durable disposable sandbox record is missing")
-            approval = conn.execute(
-                """
-                SELECT 1 FROM specialist_operator_approvals
-                WHERE approval_hash = ? AND candidate_id = ? AND target_state = 'active'
-                  AND verification_result_hash = ? AND approved = 1
-                """,
-                (proof["approval_hash"], candidate_id, proof["verification_result_hash"]),
-            ).fetchone()
-            if approval is None:
-                raise ValueError("durable active approval is missing")
-            canary = conn.execute(
-                """
-                SELECT 1 FROM specialist_canary_receipts
-                WHERE candidate_id = ? AND verification_result_hash = ?
-                  AND mode = 'local-no-send' AND status = 'passed'
-                """,
-                (candidate_id, proof["verification_result_hash"]),
-            ).fetchone()
-            if canary is None:
-                raise ValueError("durable local no-send canary is missing")
-        self._append_active(
-            profile_id=profile_id,
-            signature=signature,
-            model_receipt_hash=proof["benchmark_result_hash"],
-            verification_receipt_hash=proof["verification_result_hash"],
-            expires_at=expires_at,
-        )
+    def add_active(self, **_: object) -> None:
+        """Reject the former arbitrary active-profile entry point."""
+        raise ValueError("direct arbitrary active profile registration is disabled; use configured declarations")
 
     def revoke(
         self,
         *,
+        declaration_id: int,
         profile_id: str,
         signature: CapabilitySignature,
         reason_code: str,
         now: int | None = None,
     ) -> str:
-        """Append a local rollback receipt that immediately removes a profile.
-
-        Revocation is deliberately a separate immutable record rather than an
-        update to ``capability_profiles``.  It performs no dispatch, adapter,
-        model, or external action; callers must explicitly issue it.
-        """
-        if not isinstance(profile_id, str) or not profile_id.strip():
-            raise ValueError("profile_id must be a non-empty string")
+        """Append an immutable revocation for one exact declaration row."""
+        if isinstance(declaration_id, bool) or not isinstance(declaration_id, int) or declaration_id <= 0:
+            raise ValueError("declaration_id must be a positive integer")
+        self._validate_profile_id(profile_id)
         if not isinstance(signature, CapabilitySignature):
             raise TypeError("signature must be a CapabilitySignature")
-        if not isinstance(reason_code, str) or not re.fullmatch(r"[a-z0-9_]{1,64}", reason_code):
+        if not isinstance(reason_code, str) or not _REASON_CODE_RE.fullmatch(reason_code):
             raise ValueError("reason_code must be a bounded canonical code")
         created_at = int(time.time()) if now is None else now
         if isinstance(created_at, bool) or not isinstance(created_at, int):
             raise ValueError("now must be an integer timestamp")
-        revocation_hash = _hash_payload(
-            {
-                "profile_id": profile_id,
-                "reason_code": reason_code,
-                "signature_hash": signature.signature_hash,
-            }
-        )
-        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
-            with kanban_db.write_txn(conn):
+        with self._connection() as conn:
+            with _write_txn()(conn):
+                declaration = conn.execute(
+                    """
+                    SELECT profiles.id, revocations.revocation_hash
+                    FROM capability_profiles AS profiles
+                    LEFT JOIN specialist_profile_revocations AS revocations
+                      ON revocations.capability_profile_id = profiles.id
+                     AND revocations.profile_id = profiles.profile_id
+                     AND revocations.signature_hash = profiles.signature_hash
+                     AND revocations.permissions_hash = profiles.permissions_hash
+                    WHERE profiles.id = ?
+                      AND profiles.profile_id = ?
+                      AND profiles.signature_hash = ?
+                      AND profiles.permissions_hash = ?
+                      AND profiles.status = 'active'
+                    LIMIT 1
+                    """,
+                    (
+                        declaration_id,
+                        profile_id,
+                        signature.signature_hash,
+                        signature.permissions_hash,
+                    ),
+                ).fetchone()
+                if declaration is None:
+                    raise ValueError("declaration_id does not match the exact active capability declaration")
+                if declaration["revocation_hash"] is not None:
+                    return str(declaration["revocation_hash"])
+                receipt = _hash_payload(
+                    {
+                        "capability_profile_id": declaration_id,
+                        "permissions_hash": signature.permissions_hash,
+                        "profile_id": profile_id,
+                        "reason_code": reason_code,
+                        "signature_hash": signature.signature_hash,
+                    }
+                )
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO specialist_profile_revocations (
-                        revocation_hash, profile_id, signature_hash, reason_code, created_at
-                    ) VALUES (?, ?, ?, ?, ?)
+                        revocation_hash, capability_profile_id, profile_id,
+                        signature_hash, permissions_hash, reason_code, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (revocation_hash, profile_id, signature.signature_hash, reason_code, created_at),
+                    (
+                        receipt,
+                        declaration_id,
+                        profile_id,
+                        signature.signature_hash,
+                        signature.permissions_hash,
+                        reason_code,
+                        created_at,
+                    ),
                 )
-        return revocation_hash
+        return receipt
 
-    def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
+    def is_profile_declared(self, profile_id: str) -> bool:
+        """Return True iff this profile_id has at least one active, unexpired, non-revoked declaration.
+
+        Use this as a fast gate before routing: if it returns False, the profile has
+        no operator-approved capability on record and routing must fall back to general chat.
+        """
+        try:
+            self._validate_profile_id(profile_id)
+        except ValueError:
+            return False
+        if profile_id not in self._configured_profiles:
+            return False
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT profiles.id, profiles.expires_at
+                    FROM capability_profiles AS profiles
+                    WHERE profiles.profile_id = ? AND profiles.status = 'active'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM specialist_profile_revocations AS revocations
+                          WHERE revocations.capability_profile_id = profiles.id
+                            AND revocations.profile_id = profiles.profile_id
+                            AND revocations.signature_hash = profiles.signature_hash
+                            AND revocations.permissions_hash = profiles.permissions_hash
+                      )
+                    ORDER BY profiles.id DESC LIMIT 1
+                    """,
+                    (profile_id,),
+                ).fetchone()
+        except Exception:
+            return False
+        if row is None:
+            return False
+        return _unexpired(row["expires_at"], now=int(time.time()))
+
+    def has_configured_profile(self, profile_id: str) -> bool:
+        """Return whether the caller supplied a declaration for this profile."""
+        try:
+            self._validate_profile_id(profile_id)
+        except ValueError:
+            return False
+        return profile_id in self._configured_profiles
+
+    def configured_signature(self, profile_id: str) -> CapabilitySignature | None:
+        """Return the current operator declaration for one profile, if present."""
+        try:
+            self._validate_profile_id(profile_id)
+        except ValueError:
+            return None
+        return self._configured_profiles.get(profile_id)
+
+    def ensure_schema(self) -> None:
+        """Create the append-only registry tables before a shared transaction."""
+        with self._connection():
+            pass
+
+    def resolve(
+        self,
+        signature: CapabilitySignature,
+        *,
+        profile_id: str | None = None,
+        connection: object | None = None,
+    ) -> RegistryResolution:
         """Resolve exactly one active, unexpired, non-expanding local profile."""
         if not isinstance(signature, CapabilitySignature):
             raise TypeError("signature must be a CapabilitySignature")
-
-        try:
-            now = int(time.time())
-            with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
-                rows = conn.execute(
+        if profile_id is not None:
+            self._validate_profile_id(profile_id)
+        def _read_rows(conn: object):
+            return conn.execute(
                     """
                     SELECT profile_id, signature_hash, permissions_hash, domain,
                            actions_json, evidence_class, requested_permissions_json, expires_at
                     FROM capability_profiles AS profiles
-                    WHERE status = 'active'
-                      AND signature_hash = ?
-                      AND evidence_class = ?
+                    WHERE status = 'active' AND signature_hash = ?
+                      AND permissions_hash = ? AND evidence_class = ?
+                      AND (? IS NULL OR profile_id = ?)
                       AND NOT EXISTS (
                           SELECT 1 FROM specialist_profile_revocations AS revocations
-                          WHERE revocations.profile_id = profiles.profile_id
+                          WHERE revocations.capability_profile_id = profiles.id
+                            AND revocations.profile_id = profiles.profile_id
                             AND revocations.signature_hash = profiles.signature_hash
+                            AND revocations.permissions_hash = profiles.permissions_hash
                       )
                     ORDER BY profile_id, id
                     """,
-                    (signature.signature_hash, signature.evidence_class),
-                ).fetchall()
+                    (
+                        signature.signature_hash,
+                        signature.permissions_hash,
+                        signature.evidence_class,
+                        profile_id,
+                        profile_id,
+                    ),
+            ).fetchall()
+
+        try:
+            if connection is not None:
+                # Handoff callers already hold the authoritative Kanban write
+                # transaction. Opening a second connection here would wait on
+                # that transaction's RESERVED lock and eventually time out.
+                rows = _read_rows(connection)
+            else:
+                with self._connection() as conn:
+                    rows = _read_rows(conn)
         except Exception as exc:
             return RegistryResolution(
                 status="unavailable",
@@ -414,13 +537,13 @@ class CapabilityRegistry:
                 reason=f"local capability registry unavailable: {type(exc).__name__}",
             )
 
-        matches: list[str] = []
-        requested_permissions = set(signature.requested_permissions)
+        now = int(time.time())
+        matches: set[str] = set()
         for row in rows:
-            if not _is_unexpired_stored_timestamp(row["expires_at"], now=now):
+            if not _unexpired(row["expires_at"], now=now):
                 continue
             try:
-                stored_signature = CapabilitySignature(
+                stored = CapabilitySignature(
                     domain=row["domain"],
                     actions=tuple(json.loads(row["actions_json"])),
                     evidence_class=row["evidence_class"],
@@ -429,29 +552,21 @@ class CapabilityRegistry:
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             if (
-                stored_signature.signature_hash != row["signature_hash"]
-                or stored_signature.permissions_hash != row["permissions_hash"]
-                or stored_signature.domain != signature.domain
-                or stored_signature.actions != signature.actions
-                or not set(stored_signature.requested_permissions) <= requested_permissions
+                stored.signature_hash != row["signature_hash"]
+                or stored.permissions_hash != row["permissions_hash"]
+                or stored.domain != signature.domain
+                or stored.actions != signature.actions
+                or stored.requested_permissions != signature.requested_permissions
             ):
                 continue
-            matches.append(row["profile_id"])
+            matches.add(row["profile_id"])
 
         if len(matches) == 1:
             return RegistryResolution(
-                status="active_match",
-                profile=matches[0],
-                reason="exact active capability profile matched locally",
+                "active_match",
+                next(iter(matches)),
+                "exact active capability profile matched locally",
             )
         if len(matches) > 1:
-            return RegistryResolution(
-                status="ambiguous",
-                profile=None,
-                reason="multiple active capability profiles matched the requested scope",
-            )
-        return RegistryResolution(
-            status="no_match",
-            profile=None,
-            reason="no active unexpired profile matched the requested scope",
-        )
+            return RegistryResolution("ambiguous", None, "multiple active capability profiles matched the requested scope")
+        return RegistryResolution("no_match", None, "no active unexpired profile matched the requested scope")

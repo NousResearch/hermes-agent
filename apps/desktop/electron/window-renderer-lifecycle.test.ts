@@ -446,6 +446,7 @@ test('shouldReloadAfterFailedLoad surfaces a visible error once the budget is ex
 
 test('installWindowRendererLifecycle auto-reloads main-frame load failures when enabled', async () => {
   const win = makeFakeWindow()
+
   const { logs, options } = makeOptions(win, 'main', {
     reloadOnFailedLoad: true,
     reloadWindowMs: 60_000,
@@ -503,6 +504,7 @@ test('installWindowRendererLifecycle surfaces the error page after the reload bu
 
 test('load-failure reloads share the crash-loop budget with render-process-gone', async () => {
   const win = makeFakeWindow()
+
   const { options } = makeOptions(win, 'main', {
     reloadOnFailedLoad: true,
     reloadWindowMs: 60_000,
@@ -525,6 +527,7 @@ test('load-failure reloads share the crash-loop budget with render-process-gone'
 
 test('ERR_ABORTED does not consume the load-failure budget', async () => {
   const win = makeFakeWindow()
+
   const { options } = makeOptions(win, 'main', {
     reloadOnFailedLoad: true,
     reloadWindowMs: 60_000,
@@ -541,4 +544,52 @@ test('ERR_ABORTED does not consume the load-failure budget', async () => {
   win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
   await flushDeferred()
   assert.equal(win.reloadCalls.length, 1)
+})
+
+test('onRendererTerminated surfaces an external kill on a live window, never a reload or teardown', async () => {
+  const terminated: any[] = []
+  const win = makeFakeWindow()
+
+  const { options } = makeOptions(win, 'main', {
+    callbacks: {
+      log: () => undefined,
+      reload: () => win.webContents.reload(),
+      onRendererTerminated: (details: any) => {
+        terminated.push(details)
+      }
+    }
+  })
+
+  installWindowRendererLifecycle(win, options)
+
+  // Live window killed externally (OS reclaim / SIGKILL) → surfaced, never reloaded.
+  win.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 })
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 0)
+  assert.deepEqual(terminated, [{ reason: 'killed', exitCode: 9 }])
+
+  // A recoverable crash reloads and must NOT surface the termination page.
+  win.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 3 })
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
+  assert.equal(terminated.length, 1)
+
+  // Expected teardown (window destroyed) is neither reloaded nor surfaced.
+  const closing = makeFakeWindow({ destroyed: true })
+
+  const closingOptions = makeOptions(closing, 'main', {
+    callbacks: {
+      log: () => undefined,
+      reload: () => closing.webContents.reload(),
+      onRendererTerminated: (details: any) => {
+        terminated.push(details)
+      }
+    }
+  })
+
+  installWindowRendererLifecycle(closing, closingOptions.options)
+  closing.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 })
+  await flushDeferred()
+  assert.equal(closing.reloadCalls.length, 0)
+  assert.equal(terminated.length, 1)
 })

@@ -19,8 +19,10 @@ Key invariants covered by these tests:
 
 from __future__ import annotations
 
+import errno
 import io
 import os
+import socket
 import subprocess
 import sys
 import textwrap
@@ -120,6 +122,7 @@ class TestUserOptOut:
 
 
 
+@pytest.mark.linux_only
 class TestPosixNoOp:
     """POSIX: zero behavior change.  We don't touch LANG, LC_*, or any
     stdio.  The goal is that Linux/macOS behave identically before and
@@ -314,6 +317,31 @@ class TestHardenImportPath:
         # but only AFTER the Hermes root.
         assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
 
+    def test_import_applies_guard_before_foreign_utils_can_shadow(self, tmp_path):
+        foreign_repo = tmp_path / "foreign-repo"
+        foreign_repo.mkdir()
+        (foreign_repo / "utils.py").write_text(
+            "raise RuntimeError('foreign utils imported')\n"
+        )
+        repo_root = Path(__file__).resolve().parents[1]
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(repo_root)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import hermes_bootstrap; import utils; print(utils.__file__)",
+            ],
+            cwd=foreign_repo,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()).resolve() == repo_root / "utils.py"
+
 
     def test_env_var_used_when_no_arg(self):
         hb = _fresh_import()
@@ -336,6 +364,7 @@ class TestHardenImportPath:
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 
+    @pytest.mark.linux_only
     def test_noop_on_posix(self):
         import platform
         hb = _fresh_import()
@@ -365,3 +394,120 @@ class TestSuppressPlatformVerConsole:
             if original is not None:
                 platform._syscmd_ver = original
 
+
+class TestHappyEyeballsSocketConnect:
+    """Importing the bootstrap races IPv6/IPv4 for every sync connect in the process (#114265)."""
+
+    def test_import_routes_http_client_and_urllib3_connects_through_the_racer(self):
+        import http.client
+
+        import urllib3
+        import urllib3.util.connection as urllib3_connection
+
+        hb = _fresh_import()
+        assert socket.create_connection.__module__ == hb.__name__
+        # urllib3 keeps its own serial connect walker; it is patched once imported (lazily).
+        assert getattr(urllib3_connection.create_connection, "_hermes_happy_eyeballs", False)
+        # Re-importing the bootstrap (or importing it after urllib3) never wraps the racer twice.
+        racer = socket.create_connection
+        _fresh_import()
+        assert socket.create_connection is racer
+        # The bootstrap must not pay urllib3's import (~50 ms) on every process start: a fresh
+        # interpreter gets the patch the moment urllib3 loads, not before.
+        subprocess.run([sys.executable, "-c", textwrap.dedent("""
+            import sys, hermes_bootstrap
+            assert "urllib3" not in sys.modules, "bootstrap imported urllib3 eagerly"
+            import urllib3.util.connection as c
+            assert c.create_connection._hermes_happy_eyeballs
+        """)], check=True, cwd=str(Path(hb.__file__).parent), timeout=60)
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        port = listener.getsockname()[1]
+        http_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        urllib3_conn = urllib3.connection.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            http_conn.connect()
+            urllib3_conn.connect()  # exercises the socket_options kwarg of the urllib3 racer
+            assert http_conn.sock.getpeername()[1] == port
+            assert urllib3_conn.sock.getpeername()[1] == port
+        finally:
+            http_conn.close()
+            urllib3_conn.close()
+            listener.close()
+
+    def test_installed_racer_wins_ipv4_while_ipv6_hangs(self, monkeypatch):
+        hb = _fresh_import()
+        clock = [0.0]
+        sockets = []
+
+        class FakeSocket:
+            def __init__(self, family, socktype, proto):
+                self.family = family
+                self.closed = False
+                self.timeout = None
+                sockets.append(self)
+
+            def setsockopt(self, *_args):
+                pass
+
+            def setblocking(self, _blocking):
+                pass
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def connect_ex(self, _address):
+                return errno.EINPROGRESS if self.family == socket.AF_INET6 else 0
+
+            def close(self):
+                self.closed = True
+
+        class FakeSelector:
+            def register(self, *_args):
+                pass
+
+            def unregister(self, *_args):
+                pass
+
+            def select(self, timeout):
+                clock[0] += timeout or 0.0  # the v6 attempt never completes
+                return []
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(hb.socket, "getaddrinfo", lambda *_a, **_k: [
+            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2001:db8::1", 443, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 443)),
+        ])
+        monkeypatch.setattr(hb.socket, "socket", FakeSocket)
+        monkeypatch.setattr(hb.selectors, "DefaultSelector", FakeSelector)
+        monkeypatch.setattr(hb.time, "monotonic", lambda: clock[0])
+
+        # http.client passes the module timeout sentinel through positionally.
+        winner = socket.create_connection(("example.com", 443), socket._GLOBAL_DEFAULT_TIMEOUT, None)
+
+        assert winner.family == socket.AF_INET
+        assert winner.timeout is None  # sentinel resolves to the process default, like stock
+        assert clock[0] == hb._HAPPY_EYEBALLS_DELAY_SECONDS
+        assert sockets[0].closed is True and sockets[1] is winner
+
+    def test_racer_bug_raises_instead_of_falling_back_to_the_serial_walk(self, monkeypatch):
+        """A non-OSError from the racer is a bug in the racer, not a network outcome: it must
+        surface, never silently reroute the connect through the serial stock walker (which
+        would reintroduce the exact stall the racer exists to remove). OSError still means
+        "every candidate failed" and propagates unchanged."""
+        import urllib3.util.connection as urllib3_connection
+
+        _fresh_import()
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("racer bug")
+
+        for racer in (socket.create_connection, urllib3_connection.create_connection):
+            assert getattr(racer, "_hermes_happy_eyeballs", False)
+            monkeypatch.setitem(racer.__globals__, "_happy_eyeballs_create_connection", boom)
+            with pytest.raises(RuntimeError, match="racer bug"):
+                racer(("127.0.0.1", 1), 1.0)

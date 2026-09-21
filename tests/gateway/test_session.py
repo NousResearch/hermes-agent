@@ -1,5 +1,7 @@
 """Tests for gateway session management."""
 import json
+import logging
+import time
 import pytest
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -7,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from hermes_state import SessionDB
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionEntry,
     SessionSource,
@@ -35,6 +37,7 @@ class TestSessionSourceRoundtrip:
             user_id="99",
             user_name="alice",
             thread_id="t1",
+            _session_key_lane="discord-voice:dedicated-room",
         )
         d = source.to_dict()
         restored = SessionSource.from_dict(d)
@@ -46,6 +49,7 @@ class TestSessionSourceRoundtrip:
         assert restored.user_id == "99"
         assert restored.user_name == "alice"
         assert restored.thread_id == "t1"
+        assert restored._session_key_lane == "discord-voice:dedicated-room"
 
 
     def test_minimal_roundtrip(self):
@@ -87,6 +91,20 @@ class TestLocalCliFactory:
 
 
 class TestBuildSessionContextPrompt:
+    def test_prompt_identifies_certified_conversation_worktree(self):
+        config = GatewayConfig()
+        source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
+        entry = SessionEntry(
+            session_key="local", session_id="session", created_at=datetime.now(),
+            updated_at=datetime.now(), origin=source, platform=Platform.LOCAL,
+            conversation_worktree={"worktree_path": "/repo/.worktrees/session"},
+        )
+
+        prompt = build_session_context_prompt(build_session_context(source, config, entry))
+
+        assert "certified worktree" in prompt
+        assert "/repo/.worktrees/session" in prompt
+
     def test_telegram_prompt_contains_platform_and_chat(self):
         config = GatewayConfig(
             platforms={
@@ -193,6 +211,7 @@ class TestBuildSessionContextPrompt:
         from unittest.mock import patch
         from gateway.session import _slack_tools_loaded
         import tools.mcp_tool as _mcp_tool_mod
+        from tools import mcp_tool_registration as _mcp_registration
 
         # No native slack toolset / token configured.
         with patch.dict(_os.environ, {}, clear=False):
@@ -202,14 +221,14 @@ class TestBuildSessionContextPrompt:
             # registered a real tool, via the actual tracking function used
             # by the live registration path (tools/mcp_tool.py:_track_mcp_tool_server),
             # not a mock of the capability check.
-            _mcp_tool_mod._track_mcp_tool_server("mcp-company-slack_post_message", "company-slack")
+            _mcp_registration._track_mcp_tool_server("mcp-company-slack_post_message", "company-slack")
             try:
                 assert _slack_tools_loaded() is True, (
                     "A connected MCP server with 'slack' in its name and "
                     "registered tools must be detected as Slack capability"
                 )
             finally:
-                _mcp_tool_mod._forget_mcp_tool_server("mcp-company-slack_post_message")
+                _mcp_registration._forget_mcp_tool_server("mcp-company-slack_post_message")
 
 
     def test_shared_slack_prompt_warns_against_guessed_self_mentions(self):
@@ -491,6 +510,21 @@ class TestSessionStoreSwitchSession:
         assert resumed["end_reason"] is None
         db.close()
 
+    def test_switch_session_expected_session_id_refuses_moved_route(self, tmp_path):
+        """With ``expected_session_id`` the repoint is a CAS: a route that moved past the caller's
+        snapshot is left alone (None), while a matching snapshot still switches."""
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        store._loaded = True
+        source = SessionSource(platform=Platform.FEISHU, chat_id="chat-2", chat_type="dm", user_id="user-2")
+        entry = store.get_or_create_session(source)
+
+        assert store.switch_session(entry.session_key, "target", expected_session_id="someone-else") is None
+        assert store.lookup_by_session_key(entry.session_key).session_id == entry.session_id
+
+        switched = store.switch_session(entry.session_key, "target", expected_session_id=entry.session_id)
+        assert switched is not None and switched.session_id == "target"
+
     def test_switch_session_rebinds_full_compression_lineage(self, tmp_path):
         from hermes_state import SessionDB
 
@@ -578,6 +612,38 @@ class TestSessionStoreLookup:
         assert store.lookup_by_session_key(entry.session_key) is entry
         assert store.lookup_by_session_key("agent:main:telegram:dm:missing") is None
         assert store.lookup_by_session_key("") is None
+
+    def test_private_voice_lane_never_recovers_peer_transcript(self, store):
+        """A same-chat fallback must not erase an intentional voice boundary."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="voice-text-channel",
+            chat_type="channel",
+            user_id="voice-user",
+        )
+        source._session_key_lane = "discord-voice:dedicated-room"
+        store._db = MagicMock()
+        store._db.get_compression_tip.side_effect = lambda session_id: session_id
+
+        def _find(**kwargs):
+            # Model the real DB: the old session is discoverable only through
+            # the platform/chat peer fallback, not by the new lane key.
+            if kwargs["chat_id"] is not None:
+                return {
+                    "id": "legacy-voice-session",
+                    "started_at": datetime.now().timestamp(),
+                    "last_activity_at": datetime.now().timestamp(),
+                }
+            return None
+
+        store._db.find_latest_gateway_session_for_peer.side_effect = _find
+
+        entry = store.get_or_create_session(source)
+
+        assert entry.session_id != "legacy-voice-session"
+        call = store._db.find_latest_gateway_session_for_peer.call_args
+        assert call.kwargs["chat_id"] is None
+        assert call.kwargs["chat_type"] is None
 
 
 class TestSlackWorkspaceSessionIsolation:
@@ -1386,7 +1452,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "parent", {"role": "assistant", "content": "routed to child"}
@@ -1425,7 +1491,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "root", {"role": "assistant", "content": "routed to tip"}
@@ -1461,7 +1527,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "root", {"role": "assistant", "content": "must not land"}
@@ -1474,7 +1540,7 @@ class TestGatewaySessionDbRecovery:
     def test_transcript_reroute_migrates_remaining_backlog_to_child(self):
         import threading
         from types import SimpleNamespace
-        from hermes_state import CompressionSessionClosedError
+        from hermes_state_errors import CompressionSessionClosedError
 
         class FakeDb:
             def get_compression_tip(self, session_id):
@@ -1497,8 +1563,10 @@ class TestGatewaySessionDbRecovery:
                 {"role": "assistant", "content": "old-2"},
             ]
         }
-        store._transcript_append_failures = {"parent": 2}
-        store._fts_rebuild_attempted = True
+        # One short of the escalation threshold: the migrated backlog must stay in memory here
+        # (at the threshold the stalled-session path spools it to disk instead).
+        store._transcript_append_failures = {"parent": 1}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
         child_attempts = []
         failed_old_2 = False
 
@@ -1541,14 +1609,28 @@ class TestGatewaySessionDbRecovery:
         assert "child" not in store._dirty_transcripts
 
 
-    def test_fts_corruption_error_does_not_match_false_positives(self):
-        """_is_fts_corruption_error must not match unrelated error strings
+    def test_fts_corruption_error_requires_fts_provenance(self):
+        """_is_fts_corruption_error must not treat a generic malformed-image
+        error as FTS-scoped (#97940): bare SQLITE_CORRUPT can mean canonical
+        B-tree damage. It must also not match unrelated error strings
         containing 'fts' as a substring (e.g. 'shifts', 'gifts')."""
-        assert SessionStore._is_fts_corruption_error(
+        import sqlite3
+
+        # Generic structural corruption: no FTS provenance -> fail closed.
+        assert not SessionStore._is_fts_corruption_error(
             RuntimeError("database disk image is malformed")
         )
+        assert not SessionStore._is_fts_corruption_error(
+            sqlite3.DatabaseError("database disk image is malformed")
+        )
+        # FTS-scoped errors remain eligible for the one-shot rebuild.
         assert SessionStore._is_fts_corruption_error(
             RuntimeError("no such table: messages_fts")
+        )
+        assert SessionStore._is_fts_corruption_error(
+            sqlite3.DatabaseError(
+                'fts5: corrupt structure record for table "messages_fts"'
+            )
         )
         assert not SessionStore._is_fts_corruption_error(
             RuntimeError("shifts were applied")
@@ -1556,6 +1638,125 @@ class TestGatewaySessionDbRecovery:
         assert not SessionStore._is_fts_corruption_error(
             RuntimeError("gifts received")
         )
+
+    def test_rebuild_fts_once_retries_after_cooldown(self, monkeypatch):
+        """A deferred/failed rebuild must not disable recovery for the process lifetime
+        (#114266): blocked inside the cooldown, retried once it elapses. A call with no usable
+        DB attempts nothing and so must not start the cooldown."""
+        from types import SimpleNamespace
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+        rebuild_calls = []
+        store = object.__new__(SessionStore)
+        store._fts_rebuild_last_attempt_at = None
+        store._db = None
+        assert store._rebuild_fts_once() is False
+        assert store._fts_rebuild_last_attempt_at is None  # no attempt, no cooldown
+
+        store._db = SimpleNamespace(rebuild_fts=lambda: rebuild_calls.append(clock["now"]) or 0)
+        assert store._rebuild_fts_once() is False  # deferred (0 indexes rebuilt)
+        clock["now"] += store._FTS_REBUILD_COOLDOWN_SECONDS - 1
+        assert store._rebuild_fts_once() is False
+        assert len(rebuild_calls) == 1  # still cooling down: no second attempt
+        clock["now"] += 2
+        store._db = SimpleNamespace(rebuild_fts=lambda: rebuild_calls.append(clock["now"]) or 1)
+        assert store._rebuild_fts_once() is True
+        assert len(rebuild_calls) == 2
+
+    def test_transcript_append_failures_escalate_to_error(self, caplog):
+        """Repeated append failures on one session escalate WARNING -> ERROR at the threshold so a
+        multi-day write outage is not a wall of identical warnings (#114266)."""
+        import threading
+        from types import SimpleNamespace
+
+        def _fail(**kwargs):
+            raise RuntimeError("database disk image is malformed")
+
+        store = object.__new__(SessionStore)
+        store._db = SimpleNamespace(append_message=_fail)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
+            for i in range(threshold):
+                store.append_to_transcript("s-esc", {"role": "user", "content": f"m{i}"})
+        levels = [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()]
+        assert levels == [logging.WARNING] * (threshold - 1) + [logging.ERROR]
+        assert store._transcript_append_failures["s-esc"] == threshold
+
+    def test_no_usable_db_counts_failures_and_spools_backlog_before_cap(
+        self, caplog, tmp_path, monkeypatch
+    ):
+        """The reporter's outage shape (#114266): ``SessionStore._db is None`` used to early-return
+        silently — no counter, no log, turns held in memory until a crash. Now each append counts
+        toward the same ERROR escalation and, once the session is stalled, the backlog is spooled
+        to disk (long before the 200-message cap) and replayed in order on recovery."""
+        import threading
+        from types import SimpleNamespace
+        import hermes_constants
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+        store = object.__new__(SessionStore)
+        store._db = None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
+            for i in range(threshold):
+                store.append_to_transcript("s-dead", {"role": "user", "content": f"m{i}"})
+        assert store._transcript_append_failures["s-dead"] == threshold
+        assert [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()][-1] == logging.ERROR
+        spooled = sorted(json.loads(p.read_text())["data"]["message"]["content"]
+                         for p in (tmp_path / "pending_messages").glob("pending-*.json"))
+        assert spooled == [f"m{i}" for i in range(threshold)]  # durable before the cap
+        assert "s-dead" not in store._dirty_transcripts
+
+        rows = []
+        store._db = SimpleNamespace(append_message=lambda **kw: rows.append(kw["content"]))
+        store.append_to_transcript("s-dead", {"role": "assistant", "content": "recovered"})
+        assert rows == [f"m{i}" for i in range(threshold)] + ["recovered"]  # replayed in order
+        assert list((tmp_path / "pending_messages").glob("pending-*.json")) == []
+
+    def test_stalled_session_spool_replay_does_not_warn_per_append(self, caplog, tmp_path, monkeypatch):
+        """Live finding on #114266: once a stalled session's backlog is spooled, the pre-write
+        replay probe on a still-dead DB must not add a shutdown_flush WARNING per append — the
+        per-append ERROR escalation already covers the outage. Recovery still replays in order."""
+        import threading
+        from types import SimpleNamespace
+        import hermes_constants
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+        def _fail(**kwargs):
+            raise RuntimeError("disk I/O error")
+
+        store = object.__new__(SessionStore)
+        store._db = SimpleNamespace(append_message=_fail)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        n_appends = threshold + 3
+        with caplog.at_level(logging.DEBUG):
+            for i in range(n_appends):
+                store.append_to_transcript("s-stall", {"role": "user", "content": f"m{i}"})
+        errors = [r for r in caplog.records if "session is stalled" in r.getMessage()]
+        assert len(errors) == n_appends - threshold + 1 and {r.levelno for r in errors} == {logging.ERROR}
+        replay_failed = [r for r in caplog.records if "Replay of spooled transcript message" in r.getMessage()]
+        assert replay_failed, "spool replay was attempted before each write"
+        assert [r.levelno for r in replay_failed if r.levelno >= logging.WARNING] == []
+
+        rows = []
+        store._db = SimpleNamespace(append_message=lambda **kw: rows.append(kw["content"]))
+        store.append_to_transcript("s-stall", {"role": "assistant", "content": "recovered"})
+        assert rows == [f"m{i}" for i in range(n_appends)] + ["recovered"]
 
     def test_pending_queue_caps_at_max(self):
         """Pending queue should drop oldest messages when exceeding the cap
@@ -1578,7 +1779,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = True
+        store._fts_rebuild_last_attempt_at = time.monotonic()
 
         # Fill beyond the cap
         for i in range(store._MAX_PENDING_PER_SESSION + 10):
@@ -1642,5 +1843,3 @@ class TestGatewayRoutingTable:
         recovered = restarted.get_or_create_session(self._source())
         assert recovered.session_id == entry.session_id
         restarted._db.close()
-
-

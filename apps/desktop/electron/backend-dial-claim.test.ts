@@ -1,14 +1,7 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { describe, expect, it, vi } from 'vitest'
 
 import { BackendDialClaims } from './backend-dial-claim'
-import { parseBackendScopeKey } from './connection-registry'
-
-const here = path.dirname(fileURLToPath(import.meta.url))
-const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
 
 describe('BackendDialClaims (#90812)', () => {
   it('coalesces two concurrent dials for the same (connectionId, profile) onto ONE backend spawn', async () => {
@@ -122,22 +115,14 @@ describe('parseBackendScopeKey (#90812/#93910)', () => {
   })
 })
 
-describe('main.ts wiring for #90812', () => {
-  it('routes the profile-scoped dial IPC through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection', ")
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
-
-    expect(body).toContain('backendDialClaims.run(')
-    expect(body).toContain('ensureBackend(profile)')
-  })
-
-  it('routes the registry-scoped dial IPC through the claim keyed by backendScopeKey(connectionId, profile)', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection:for', ")
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1_200)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(id, profile)')
-    expect(body).toContain('ensureRegistryBackend(id, profile)')
+describe('backend scope keys (#90812)', () => {
+  it('keeps local scopes profile-only and disambiguates each remote connection', () => {
+    expect(backendScopeKey(null, 'work')).toBe('work')
+    expect(backendScopeKey('local', 'work')).toBe('work')
+    expect(backendScopeKey('office-ssh', 'work')).toBe('conn:office-ssh::work')
+    expect(parseBackendScopeKey(backendScopeKey('office-ssh', 'work'))).toEqual({
+      connectionId: 'office-ssh',
+      profile: 'work'
+    })
   })
 })

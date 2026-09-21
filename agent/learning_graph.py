@@ -251,6 +251,80 @@ def _skill_roots() -> list[tuple[str, Path]]:
     return [("base", repo / "skills"), ("profile", home_skills)]
 
 
+def _shared_catalog_config() -> tuple[bool, Path | None, list[str]]:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        learning = config.get("learning") or {}
+        if not isinstance(learning, dict) or not bool(
+            learning.get("shared_catalog_enabled")
+        ):
+            return False, None, []
+        raw_vault = str(learning.get("vault_dir") or "").strip()
+        if not raw_vault:
+            return True, None, ["vault_dir_required"]
+        vault = Path(raw_vault).expanduser()
+        if not vault.is_absolute():
+            return True, None, ["vault_dir_not_absolute"]
+        return True, vault, []
+    except Exception:
+        return True, None, ["shared_catalog_config_unreadable"]
+
+
+def _shared_catalog():
+    enabled, vault, diagnostics = _shared_catalog_config()
+    if not enabled:
+        return False, [], diagnostics
+    if vault is None:
+        return True, [], diagnostics
+    try:
+        from agent.learning_vault import read_vault_learning
+
+        nodes, read_diagnostics = read_vault_learning(vault)
+        diagnostics.extend(item.reason_code for item in read_diagnostics[:100])
+        return True, nodes, diagnostics
+    except Exception:
+        diagnostics.append("shared_catalog_unreadable")
+        return True, [], diagnostics
+
+
+def _vault_node_id(node) -> str:
+    prefix = "vault-skill" if node.kind == "skill-reference" else "vault-memory"
+    return f"{prefix}:{node.record_id}"
+
+
+def _shared_edges(
+    shared_nodes, learned_skills: dict[str, SkillNode]
+) -> list[tuple[str, str]]:
+    ids = {node.record_id: _vault_node_id(node) for node in shared_nodes}
+    edges: set[tuple[str, str]] = set()
+    for node in shared_nodes:
+        source = ids[node.record_id]
+        for related_id in node.related_record_ids:
+            target = ids.get(related_id)
+            if target and target != source:
+                edges.add((source, target))
+
+    skill_meta = [
+        (skill.name, _tokenize(skill.name), skill.name.lower())
+        for skill in learned_skills.values()
+    ]
+    for node in shared_nodes:
+        if node.kind != "shared-memory":
+            continue
+        text = f"{node.label}\n{node.summary}".lower()
+        tokens = _tokenize(text)
+        scored: list[tuple[int, str]] = []
+        for name, skill_tokens, lower_name in skill_meta:
+            score = (6 if lower_name in text else 0) + len(tokens & skill_tokens)
+            if score > 0:
+                scored.append((score, name))
+        for _, name in sorted(scored, key=lambda item: (-item[0], item[1]))[:2]:
+            edges.add((_vault_node_id(node), name))
+    return sorted(edges)
+
+
 def build_learning_graph() -> dict[str, Any]:
     """Full payload for the desktop learning panel.
 
@@ -268,13 +342,21 @@ def build_learning_graph() -> dict[str, Any]:
     skill_edges = build_edges(learned_skills)
     memory_cards = _memory_cards()
     memory_edges = _memory_skill_edges(memory_cards, list(learned_skills.values()))
+    shared_enabled, shared_nodes, shared_diagnostics = _shared_catalog()
+    shared_edges = _shared_edges(shared_nodes, learned_skills)
 
-    edges = skill_edges + memory_edges
+    edges = skill_edges + memory_edges + shared_edges
     clusters: dict[str, int] = {}
     for node in learned_skills.values():
         clusters[node.category] = clusters.get(node.category, 0) + 1
     if memory_cards:
         clusters["memory"] = len(memory_cards)
+    for node in shared_nodes:
+        clusters[f"shared:{node.area}"] = clusters.get(f"shared:{node.area}", 0) + 1
+        origin = f"shared-origin:{node.origin_agent}"
+        clusters[origin] = clusters.get(origin, 0) + 1
+        status = f"shared-status:{node.status}"
+        clusters[status] = clusters.get(status, 0) + 1
 
     graph_nodes = [
         {
@@ -305,8 +387,24 @@ def build_learning_graph() -> dict[str, Any]:
                 "pinned": False,
             }
         )
+    for node in shared_nodes:
+        graph_nodes.append({
+            "id": _vault_node_id(node),
+            "label": node.label,
+            "kind": node.kind,
+            "originAgent": node.origin_agent,
+            "area": node.area,
+            "status": node.status,
+            "executionStatus": node.execution_status,
+            "timestamp": node.timestamp,
+            "category": f"shared:{node.area}",
+            "useCount": 0,
+            "state": "active",
+            "createdBy": node.origin_agent,
+            "pinned": False,
+        })
 
-    return {
+    payload = {
         "nodes": graph_nodes,
         "edges": [{"source": a, "target": b} for a, b in edges],
         "clusters": [
@@ -321,6 +419,29 @@ def build_learning_graph() -> dict[str, Any]:
             "learned_skills": len(learned_skills),
         },
     }
+    if shared_enabled:
+        by_origin: dict[str, int] = {}
+        by_area: dict[str, int] = {}
+        by_status: dict[str, int] = {}
+        by_kind: dict[str, int] = {}
+        for node in shared_nodes:
+            for counts, key in (
+                (by_origin, node.origin_agent),
+                (by_area, node.area),
+                (by_status, node.status),
+                (by_kind, node.kind),
+            ):
+                counts[key] = counts.get(key, 0) + 1
+        payload["shared_catalog"] = {
+            "nodes": len(shared_nodes),
+            "edges": len(shared_edges),
+            "byOrigin": by_origin,
+            "byArea": by_area,
+            "byStatus": by_status,
+            "byKind": by_kind,
+            "diagnostics": shared_diagnostics,
+        }
+    return payload
 
 
 if __name__ == "__main__":

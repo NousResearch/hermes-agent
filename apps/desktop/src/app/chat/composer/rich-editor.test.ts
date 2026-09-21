@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
@@ -6,12 +8,24 @@ import {
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
+  placeCaretEnd,
   refChipElement,
   renderComposerContents,
   replaceBeforeCaret,
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { placeCaretAtEnd } from './test-utils'
+
+beforeEach(() => {
+  rememberDesktopCommandsCatalog({
+    commands: { '/goal': { argument_mode: 'mixed', desktop: null } }
+  })
+})
+
+afterEach(() => {
+  rememberDesktopCommandsCatalog(undefined)
+})
 
 describe('renderComposerContents', () => {
   it('renders refs and raw text without interpreting user text as HTML', () => {
@@ -369,5 +383,29 @@ describe('deleteSelectionInEditor', () => {
     expect(deleteSelectionInEditor(editor)).toBe(false)
 
     editor.remove()
+  })
+})
+
+describe('caret placement on a detached editor', () => {
+  it('leaves the document selection alone instead of selecting into a detached node', () => {
+    const attached = document.createElement('div')
+    attached.textContent = 'visible composer'
+    document.body.append(attached)
+    placeCaretAtEnd(attached)
+
+    const detached = document.createElement('div')
+    detached.dataset.slot = RICH_INPUT_SLOT
+    detached.textContent = 'unmounted composer'
+
+    const selection = window.getSelection()
+    const before = selection?.getRangeAt(0).startContainer
+
+    expect(() => placeCaretEnd(detached)).not.toThrow()
+    expect(() => placeCaretAtOffset(detached, 3)).not.toThrow()
+    expect(selection?.rangeCount).toBe(1)
+    expect(selection?.getRangeAt(0).startContainer).toBe(before)
+    expect(detached.contains(selection?.anchorNode ?? null)).toBe(false)
+
+    attached.remove()
   })
 })

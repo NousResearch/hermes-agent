@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -82,6 +85,39 @@ def test_quick_snapshot_is_published_with_manifest(tmp_path, monkeypatch) -> Non
     assert manifest["files"] == {"config.yaml": 10}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_quick_snapshot_tree_is_owner_only_under_permissive_umask(tmp_path) -> None:
+    """Recovery snapshots must never inherit world-readable default modes.
+
+    A normal 0022 umask creates SQLite databases and JSON files as 0644 and
+    directories as 0755.  Quick snapshots contain session state, credentials,
+    pairing records, and cron data, so every published file must be 0600 and
+    every directory 0700 regardless of the caller's umask or source modes.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    with sqlite3.connect(home / "state.db") as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+
+    old_umask = os.umask(0o022)
+    try:
+        snapshot_id = create_quick_snapshot(hermes_home=home)
+    finally:
+        os.umask(old_umask)
+
+    assert snapshot_id is not None
+    root = home / "state-snapshots"
+    snapshot = root / snapshot_id
+    directories = [root, snapshot, *(p for p in snapshot.rglob("*") if p.is_dir())]
+    files = [p for p in snapshot.rglob("*") if p.is_file()]
+
+    assert directories
+    assert files
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o700 for path in directories)
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in files)
+
+
 def test_quick_snapshot_listing_ignores_partial_directories(tmp_path) -> None:
     home = tmp_path / ".hermes"
     partial = home / "state-snapshots" / ".unfinished.1.partial"
@@ -103,3 +139,41 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"
     assert list(tmp_path.glob(".*.partial")) == []
+
+
+def test_full_zip_backup_streams_scan_into_archive(tmp_path, monkeypatch) -> None:
+    """The automatic backup must not materialize the whole tree before writing."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "first.txt").write_text("first")
+    (home / "second.txt").write_text("second")
+    archive = tmp_path / "automatic.zip"
+    events: list[str] = []
+
+    from hermes_cli import backup
+
+    def walk(_root, followlinks=False):
+        assert followlinks is False
+        events.append("first-batch")
+        yield str(home), [], ["first.txt"]
+        events.append("second-batch")
+        yield str(home), [], ["second.txt"]
+
+    monkeypatch.setattr(backup.os, "walk", walk)
+    real_write = backup.zipfile.ZipFile.write
+    written: list[str] = []
+
+    def write(self, *args, **kwargs):
+        if not written:
+            assert events == ["first-batch"], "second batch was scanned before first archive write"
+        arcname = kwargs.get("arcname")
+        if arcname is None and len(args) > 1:
+            arcname = args[1]
+        written.append(str(arcname))
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(backup.zipfile.ZipFile, "write", write)
+
+    assert backup._write_full_zip_backup(archive, home) == archive
+    assert written == ["first.txt", "second.txt"]
+    assert events == ["first-batch", "second-batch"]

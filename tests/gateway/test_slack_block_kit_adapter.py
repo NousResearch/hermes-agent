@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from gateway.config import PlatformConfig
 from plugins.platforms.slack import adapter as slack_module
 from plugins.platforms.slack.adapter import SlackAdapter
@@ -65,6 +68,20 @@ class TestSendMessageBlocks:
         kwargs = client.chat_postMessage.await_args.kwargs
         assert "blocks" not in kwargs
         assert kwargs["text"]  # plain text still sent
+
+    @pytest.mark.asyncio
+    async def test_unfurl_config_suppresses_previews_without_changing_link_text(self):
+        adapter, client = _make_adapter(
+            {"unfurl_links": False, "unfurl_media": False}
+        )
+        content = "[Hermes](https://example.com/hermes)"
+
+        await adapter.send("C1", content)
+
+        kwargs = client.chat_postMessage.await_args.kwargs
+        assert kwargs["text"] == "<https://example.com/hermes|Hermes>"
+        assert kwargs["unfurl_links"] is False
+        assert kwargs["unfurl_media"] is False
 
 
     @pytest.mark.asyncio

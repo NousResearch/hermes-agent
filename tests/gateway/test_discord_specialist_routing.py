@@ -4,15 +4,26 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
-
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
-@pytest.fixture
-def adapter(monkeypatch):
+def _event(text: str = "Patch the confirmed failure") -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        message_id="message-1",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="project-updates",
+            chat_type="group",
+            user_id="operator-1",
+        ),
+    )
+
+
+def _adapter(monkeypatch):
     import plugins.platforms.discord.adapter as discord_platform
     from plugins.platforms.discord.adapter import DiscordAdapter
 
@@ -30,9 +41,13 @@ def adapter(monkeypatch):
                 "specialist_routing": {
                     "enabled": True,
                     "board": "project-maintenance",
-                    "profiles": {
-                        "task-orchestrator": "broad coordinated work",
-                        "patch-steward": "narrow corrective patches",
+                    "capabilities": {
+                        "burndown-patch-steward": {
+                            "domain": "repository-evidence",
+                            "actions": ["audit", "inspect", "read", "review", "validate"],
+                            "evidence_class": "diagnostic-only",
+                            "requested_permissions": ["repository-evidence:read"],
+                        }
                     },
                 }
             },
@@ -43,93 +58,60 @@ def adapter(monkeypatch):
     return value
 
 
-def _event(text="Patch the confirmed failure"):
-    return MessageEvent(
-        text=text,
-        message_type=MessageType.TEXT,
-        message_id="message-1",
-        source=SessionSource(
-            platform=Platform.DISCORD,
-            chat_id="project-updates",
-            chat_type="group",
-            user_id="operator-1",
-        ),
-    )
-
-
-def test_settings_keep_only_bounded_explicit_profile_descriptions(adapter):
-    settings = adapter._specialist_routing_settings()
-
-    assert settings["enabled"] is True
-    assert settings["profiles"] == {
-        "task-orchestrator": "broad coordinated work",
-        "patch-steward": "narrow corrective patches",
-    }
-
-
-def test_empty_profile_map_disables_routing(adapter):
-    adapter.config.extra["specialist_routing"]["profiles"] = {}
-
-    assert adapter._specialist_routing_settings() == {"enabled": False}
-
-
-def test_config_bridges_discord_specialist_routing(monkeypatch, tmp_path):
-    from gateway.config import load_gateway_config
-
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        "discord:\n"
-        "  specialist_routing:\n"
-        "    enabled: true\n"
-        "    board: project-maintenance\n"
-        "    profiles:\n"
-        "      patch-steward: narrow corrective patches\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    config = load_gateway_config()
-
-    assert config.platforms[Platform.DISCORD].extra["specialist_routing"][
-        "profiles"
-    ] == {"patch-steward": "narrow corrective patches"}
-
-
-def test_specialist_route_creates_one_handoff_and_acknowledges(adapter, monkeypatch):
-    from gateway.specialist_handoff import HandoffResult
+def test_specialist_route_creates_one_handoff_and_acknowledges(monkeypatch, tmp_path):
+    import json
+    from pathlib import Path
+    from gateway.configured_board import configured_board_db_path
     from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
+    from hermes_cli.kanban_db_connect import connect_closing
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    profile_dir = tmp_path / ".hermes" / "profiles" / "task-orchestrator"
+    profile_dir.mkdir(parents=True)
+    # Create identity markers so named_profile_has_identity returns True
+    (profile_dir / "config.yaml").write_text("")
+    (profile_dir / "identity.json").write_text("{}")
+    adapter = _adapter(monkeypatch)
+    settings = adapter._specialist_routing_settings()
+    settings["capabilities"]["task-orchestrator"] = dict(
+        settings["capabilities"]["burndown-patch-steward"])
+    registry = adapter._specialist_capability_registry(settings)
+    registry.register_configured_profile("task-orchestrator")
+    import threading
+    loop_thread = threading.get_ident()
+    registry_threads = []
+    original_registry = adapter._specialist_capability_registry
+
+    def tracked_registry(settings):
+        registry_threads.append(threading.get_ident())
+        return original_registry(settings)
+
+    monkeypatch.setattr(adapter, "_specialist_capability_registry", tracked_registry)
     adapter._classify_specialist_event = AsyncMock(
         return_value=SpecialistRouteDecision(
-            kind=RouteKind.SPECIALIST,
-            profile="patch-steward",
-            confidence=0.95,
-            reason="bounded patch",
-            title="Patch confirmed failure",
+            kind=RouteKind.SPECIALIST, profile="burndown-patch-steward",
+            confidence=0.95, reason="bounded patch", title="Patch confirmed failure",
         )
     )
-    create = AsyncMock(return_value=HandoffResult(True, task_id="t_abc", created=True))
-
-    async def fake_to_thread(func, **kwargs):
-        return await create(**kwargs)
-
-    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
-
-    handled = asyncio.run(adapter._maybe_route_specialist_event(_event()))
-
-    assert handled is True
-    create.assert_awaited_once()
-    adapter.send.assert_awaited_once_with(
-        "project-updates",
-        content="Planning `t_abc` with `patch-steward`.",
-        reply_to="message-1",
-    )
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is True
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is True
+    with connect_closing(configured_board_db_path(settings["board"]), board=settings["board"]) as conn:
+        tasks = conn.execute("SELECT body, assignee FROM tasks").fetchall()
+        candidates = conn.execute("SELECT request_id, requested_profile_id FROM candidate_profile_requests").fetchall()
+    assert registry_threads and all(thread != loop_thread for thread in registry_threads)
+    assert len(tasks) == len(candidates) == 1
+    assert tasks[0]["assignee"] == "task-orchestrator"
+    assert json.loads(tasks[0]["body"])["candidate_request_id"] == candidates[0]["request_id"]
+    assert candidates[0]["requested_profile_id"] == "burndown-patch-steward"
+    signature = registry.configured_signature("burndown-patch-steward")
+    assert registry.resolve(signature, profile_id="burndown-patch-steward").status == "no_match"
 
 
-def test_general_route_preserves_normal_chat_path(adapter):
+def test_general_route_preserves_normal_chat_path(monkeypatch):
     from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
 
+    adapter = _adapter(monkeypatch)
     adapter._classify_specialist_event = AsyncMock(
         return_value=SpecialistRouteDecision(
             kind=RouteKind.GENERAL,
@@ -141,3 +123,69 @@ def test_general_route_preserves_normal_chat_path(adapter):
 
     assert asyncio.run(adapter._maybe_route_specialist_event(_event("Hello"))) is False
     adapter.send.assert_not_awaited()
+
+
+def test_route_omitted_from_configured_capabilities_cannot_handoff(monkeypatch):
+    from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
+
+    adapter = _adapter(monkeypatch)
+    adapter._classify_specialist_event = AsyncMock(
+        return_value=SpecialistRouteDecision(
+            kind=RouteKind.SPECIALIST,
+            profile="task-orchestrator",
+            confidence=0.95,
+            reason="broad work",
+            title="Plan the task",
+        )
+    )
+
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is False
+    adapter.send.assert_not_awaited()
+
+
+def test_empty_configured_capabilities_disable_handoffs(monkeypatch):
+    from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
+
+    adapter = _adapter(monkeypatch)
+    adapter.config.extra["specialist_routing"]["capabilities"] = {}
+    adapter._classify_specialist_event = AsyncMock(
+        return_value=SpecialistRouteDecision(
+            kind=RouteKind.SPECIALIST,
+            profile="burndown-patch-steward",
+            confidence=0.95,
+            reason="bounded patch",
+            title="Patch the issue",
+        )
+    )
+
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is False
+    adapter.send.assert_not_awaited()
+
+
+def test_handoff_acknowledges_the_effective_assignee(monkeypatch):
+    from gateway.specialist_handoff import HandoffResult
+    from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
+    import gateway.specialist_handoff as specialist_handoff
+
+    adapter = _adapter(monkeypatch)
+    adapter._classify_specialist_event = AsyncMock(
+        return_value=SpecialistRouteDecision(
+            kind=RouteKind.SPECIALIST,
+            profile="burndown-patch-steward",
+            confidence=0.95,
+            reason="bounded patch",
+            title="Patch the issue",
+        )
+    )
+    monkeypatch.setattr(
+        specialist_handoff,
+        "create_specialist_handoff",
+        lambda **_kwargs: HandoffResult(
+            True, task_id="task-42", created=True, assignee="acceptance-gate-verifier"
+        ),
+    )
+
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is True
+    content = adapter.send.await_args.kwargs["content"]
+    assert "`acceptance-gate-verifier`" in content
+    assert "task orchestrator" not in content

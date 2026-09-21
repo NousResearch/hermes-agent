@@ -5,15 +5,17 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import importlib.util
 import json
 import os
 import re
 import stat
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -31,8 +33,9 @@ from plugins.memory.hindsight import (
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
-    _sanitize_bank_segment,
+    _WRITER_SENTINEL,
 )
+from plugins.memory.hindsight.settings import _sanitize_bank_segment
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +61,30 @@ def _clean_env(tmp_path, monkeypatch):
     # Patch the actual API and keep all legacy profile writes in tmp_path.
     isolated_home = tmp_path / "user-home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: isolated_home))
+
+    # These tests provide client doubles, so they must not attempt a network
+    # install merely because the optional SDK is absent from the test env.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    # The retain-operation path imports this exception solely to classify a
+    # fake client's response. Supply the smallest matching SDK surface so the
+    # mocked tests remain runnable without the optional Hindsight extra.
+    # Only when the real SDK is absent: shadowing an installed SDK with a
+    # fake (no ``__path__``) breaks ``import hindsight_client`` and turns the
+    # pinned-client test into a permanent skip.
+    if importlib.util.find_spec("hindsight_client_api") is not None:
+        return
+    client_api = ModuleType("hindsight_client_api")
+    exceptions = ModuleType("hindsight_client_api.exceptions")
+
+    class NotFoundException(Exception):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args)
+
+    exceptions.NotFoundException = NotFoundException
+    client_api.exceptions = exceptions
+    monkeypatch.setitem(sys.modules, "hindsight_client_api", client_api)
+    monkeypatch.setitem(sys.modules, "hindsight_client_api.exceptions", exceptions)
 
 
 def _make_mock_client():
@@ -780,7 +807,11 @@ class TestPrefetchServerRetainVisibility:
 
     def test_operation_notfound_treated_as_complete(self, provider):
         """A NotFound (completed+evicted) op is treated as done, not pending."""
-        from hindsight_client_api.exceptions import NotFoundException
+        exceptions = pytest.importorskip(
+            "hindsight_client_api.exceptions",
+            reason="Hindsight SDK is not installed",
+        )
+        NotFoundException = exceptions.NotFoundException
 
         client = _make_mock_client()
         client.operations = MagicMock()
@@ -1411,7 +1442,7 @@ class TestAvailability:
             )
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
+            "importlib.import_module",
             _raise,
         )
         p = HindsightMemoryProvider()
@@ -1430,7 +1461,7 @@ class TestAvailability:
             raise RuntimeError("x86_64-v2 unsupported")
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
+            "importlib.import_module",
             _raise,
         )
 
@@ -1538,6 +1569,23 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
 
 
+def test_load_config_corrupt_profile_file_falls_through_to_env(tmp_path, monkeypatch):
+    """A corrupt $HERMES_HOME/hindsight/config.json is not the config: the loader falls through
+    (legacy file, then env) instead of returning an empty, silently-unconfigured mapping."""
+    home = tmp_path / "home"
+    (home / "hindsight").mkdir(parents=True)
+    (home / "hindsight" / "config.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setenv("HINDSIGHT_MODE", "local")
+    monkeypatch.setenv("HINDSIGHT_BANK_ID", "from-env")
+
+    cfg = _load_config()
+
+    assert cfg["mode"] == "local"
+    assert cfg["banks"]["hermes"]["bankId"] == "from-env"
+
+
 class TestLoadSimpleEnv:
     def test_bom_first_key_is_recognized(self, tmp_path):
         """A Notepad-edited .env carries a BOM; the first key must still parse
@@ -1643,3 +1691,89 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         assert len(calls) == 1  # attempted exactly once, init still completed
         assert any("runtime installs are disabled" in r.getMessage()
                    for r in caplog.records)
+
+
+
+class TestMultiplexBackgroundScope:
+    """Under multiplex_profiles get_secret fails closed on an unscoped thread;
+    the writer / daemon-start threads are spawned from a scoped context and
+    must carry it along (#92608, #94933)."""
+
+    @pytest.fixture()
+    def scoped_embedded(self, tmp_path, monkeypatch):
+        from agent.secret_scope import (
+            build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope,
+        )
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        created = []
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                created.append(kwargs["llm_api_key"])
+                self._manager = SimpleNamespace(is_running=lambda profile: False, stop=lambda profile: None)
+                self._ensure_started = lambda: None
+
+        dem = SimpleNamespace(console=None)
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setitem(sys.modules, "hindsight_embed", SimpleNamespace(daemon_embed_manager=dem))
+        monkeypatch.setitem(sys.modules, "hindsight_embed.daemon_embed_manager", dem)
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        home = tmp_path / "profiles" / "p1"
+        (home / "hindsight").mkdir(parents=True)
+        (home / ".env").write_text("HINDSIGHT_LLM_API_KEY=p1-secret\n")
+        (home / "hindsight" / "config.json").write_text(json.dumps(
+            {"mode": "local_embedded", "llm_provider": "openai", "llm_model": "m", "memory_mode": "hybrid"}
+        ))
+        # Enter the profile scope the way gateway _profile_runtime_scope does.
+        set_multiplex_active(True)
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: home)
+        home_tok = set_hermes_home_override(str(home))
+        scope_tok = set_secret_scope(build_profile_secret_scope(home))
+        yield created, home
+        set_multiplex_active(False)
+        reset_secret_scope(scope_tok)
+        reset_hermes_home_override(home_tok)
+
+    def test_writer_thread_resolves_profile_secret(self, scoped_embedded):
+        created, home = scoped_embedded
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {"profile": "hermes", "llm_provider": "openai", "llm_model": "m"}
+        p._ensure_writer()
+        p._retain_queue.put(p._get_client)   # real body: get_secret(HINDSIGHT_LLM_API_KEY)
+        p._retain_queue.put(_WRITER_SENTINEL)
+        p._writer_thread.join(timeout=5)
+        assert created == ["p1-secret"]
+
+    def test_daemon_start_thread_resolves_profile_secret(self, scoped_embedded):
+        created, home = scoped_embedded
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="s1", hermes_home=str(home), platform="cli")
+        for t in threading.enumerate():
+            if t.name == "hindsight-daemon-start":
+                t.join(timeout=5)
+        assert created == ["p1-secret"]
+        assert "Daemon started successfully" in (home / "logs" / "hindsight-embed.log").read_text()
+
+
+def test_append_mode_trims_retained_turns_without_dropping_any(provider, monkeypatch):
+    """Append retains ship only the delta, so retained turns leave `_session_turns` (a never-ending
+    session no longer pins every turn) while every turn is still shipped exactly once."""
+    provider._auto_retain = True
+    provider._retain_every_n_turns = 3
+    monkeypatch.setattr(provider, "_ensure_writer", lambda: None)
+    monkeypatch.setattr(provider, "_register_atexit", lambda: None)
+    monkeypatch.setattr(provider, "_resolve_retain_target", lambda doc: ("doc", "append"))
+    shipped: list[str] = []
+    monkeypatch.setattr(provider, "_make_turn_retain_job",
+                        lambda turns, **kw: (lambda: shipped.extend(turns)))
+    provider._retain_queue = MagicMock(put=lambda job: job())
+
+    for i in range(7):
+        provider.sync_turn(f"user {i}", f"assistant {i}")
+
+    assert len(provider._session_turns) == 1  # only the un-retained tail (turn 7)
+    assert provider._last_retained_turn_count == 0
+    assert len(shipped) == 6 and len(set(shipped)) == 6

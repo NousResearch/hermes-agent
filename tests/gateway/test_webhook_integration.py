@@ -14,6 +14,10 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -22,7 +26,8 @@ from gateway.config import (
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.base import MessageEvent, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 
@@ -232,6 +237,7 @@ class TestCrossPlatformDelivery:
 
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform.TELEGRAM: mock_tg_adapter}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config = GatewayConfig(
             platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
         )
@@ -315,7 +321,7 @@ class TestGitHubCommentDelivery:
         mock_result.stderr = ""
 
         with patch(
-            "gateway.platforms.webhook.subprocess.run",
+            "gateway.platforms.webhook.run_as_github_automation",
             return_value=mock_result,
         ) as mock_run:
             result = await adapter.send(
@@ -329,11 +335,8 @@ class TestGitHubCommentDelivery:
                 "--repo", "org/repo",
                 "--body", "LGTM! The code looks great.",
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=30,
+            environ=None,
         )
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).

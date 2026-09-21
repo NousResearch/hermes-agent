@@ -25,7 +25,7 @@ function createBootstrapCoordinator() {
   const drains = new Map<string, Promise<void>>()
   let shutdownRequested = false
 
-  function start(scope, fingerprint, run) {
+  function start(scope, fingerprint, run, metadata = null) {
     if (shutdownRequested) {
       const error: any = new Error('SSH bootstrap was cancelled because Desktop is quitting.')
       error.kind = 'superseded'
@@ -65,7 +65,7 @@ function createBootstrapCoordinator() {
 
     const drain = drains.get(scope) || Promise.resolve()
     const predecessor = current ? Promise.allSettled([current.promise, drain]) : drain
-    const entry: any = { controller, fingerprint, forceCleanups, generation, promise: null, scope }
+    const entry: any = { controller, fingerprint, forceCleanups, generation, metadata, promise: null, scope }
 
     const promise = predecessor
       .then(() => {
@@ -93,14 +93,26 @@ function createBootstrapCoordinator() {
     pending.get(scope)?.controller.abort()
   }
 
-  async function cancelAndWait(scope) {
+  async function cancelAndWait(scope, afterCancel?: () => Promise<void>) {
     let release
 
-    const barrier = new Promise<void>(resolve => {
+    const own = new Promise<void>(resolve => {
       release = resolve
     })
+    // Compose with any drain already in flight for this scope (a pool stop
+    // still tearing down SSH while a connection apply cancels the same scope):
+    // start() must wait for every active teardown, and the map entry is
+    // cleared only once the composed barrier settles.
+    const prior = drains.get(scope)
+    // Drain barriers never reject, so chaining is equivalent to allSettled.
+    const barrier = prior ? prior.then(() => own) : own
 
     drains.set(scope, barrier)
+    void barrier.finally(() => {
+      if (drains.get(scope) === barrier) {
+        drains.delete(scope)
+      }
+    })
     const entries = [...active].filter(entry => entry.scope === scope)
 
     for (const entry of entries) {
@@ -114,13 +126,18 @@ function createBootstrapCoordinator() {
       // drain barrier still prevents stale resurrection.
       await Promise.allSettled(entries.flatMap(entry => [...entry.forceCleanups]).map(cleanup => cleanup()))
       await Promise.allSettled(entries.map(entry => entry.promise))
-    } finally {
-      if (drains.get(scope) === barrier) {
-        drains.delete(scope)
+      // Keep the drain up through caller teardown (SSH keepalive / tunnel)
+      // so a replacement start() cannot publish before the old scope is gone.
+      if (afterCancel) {
+        await afterCancel()
       }
-
+    } finally {
       release()
     }
+
+    // "Cancel and wait" means the scope is drained: callers tear down SSH right
+    // after this returns, so wait for the composed barrier, not just our own.
+    await barrier
   }
 
   function cancelAll() {

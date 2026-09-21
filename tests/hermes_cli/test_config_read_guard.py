@@ -36,6 +36,9 @@ ALLOWLIST = {
     # Canonical loader owners.
     "hermes_cli/config.py",
     "gateway/config.py",
+    # load_gateway_config()'s config.yaml phase lives here (extracted from
+    # gateway/config.py); same owner, same managed-overlay contract.
+    "gateway/config_loader.py",
     # _load_gateway_config()'s fallback path for tests that monkeypatch
     # gateway.run._hermes_home (delegates to read_raw_config otherwise).
     "gateway/run.py",
@@ -44,6 +47,11 @@ ALLOWLIST = {
     "hermes_cli/managed_scope.py",
     # Parse-health probe: intentionally answers "does the raw file parse?".
     "gateway/readiness.py",
+    # Parse-health probe for an arbitrary (not-necessarily-active) profile's
+    # config.yaml: must distinguish "empty file" (None) from "not a mapping"
+    # (raise), a distinction read_user_config_raw() erases by coercing both
+    # to {}.
+    "hermes_cli/kanban_worker_environment.py",
 }
 
 # Directories that never count (tests may build fixture configs freely).

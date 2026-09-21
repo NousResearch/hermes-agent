@@ -117,7 +117,12 @@ class TestTurnRouting:
 
         assert assembled.activated
         assert mcp_name not in names
-        assert server._hud_surface_note(_session(tools=names, client_surface="hud")) == (
+        # Production computes the note from agent.valid_tool_names — the
+        # GRANTED set — not from the visible post-assembly schemas. Under
+        # #97979 the HUD kit (read_window_below, computer_use) is deferred
+        # behind the bridge yet still granted/callable, so the note must
+        # survive assembly unchanged.
+        assert server._hud_surface_note(_session(tools=FULL_KIT, client_surface="hud")) == (
             hud_surface_note(FULL_KIT)
         )
 
@@ -147,18 +152,23 @@ class TestSurfaceRecording:
     """``prompt.submit`` stamps the window each message was typed into."""
 
     @pytest.fixture
-    def busy_session(self):
-        # A running session takes the busy path, which returns before any of
-        # the agent/DB machinery — enough to observe what submit recorded.
-        session = _session(running=True)
+    def busy_session(self, monkeypatch):
+        session = _session()
         server._sessions["sid"] = session
+        monkeypatch.setattr(server, "_persist_session_row_for_submit", lambda *args: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
+        monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
+        monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: None)
         yield session
         server._sessions.pop("sid", None)
 
     def _submit(self, **params):
-        return server._methods["prompt.submit"](
+        response = server._methods["prompt.submit"](
             "r1", {"session_id": "sid", "text": "what is this?", "queued": True, **params}
         )
+        # The mocked turn worker does not clear the normal running flag.
+        server._sessions["sid"]["running"] = False
+        return response
 
     def test_hud_submit_is_recorded(self, busy_session):
         self._submit(surface="hud")
@@ -171,6 +181,13 @@ class TestSurfaceRecording:
         self._submit()
 
         assert busy_session["client_surface"] == ""
+
+    def test_busy_submit_does_not_overwrite_active_surface(self, busy_session):
+        self._submit(surface="hud")
+        busy_session["running"] = True
+        self._submit()
+
+        assert busy_session["client_surface"] == "hud"
 
     def test_an_unknown_surface_is_not_hud(self, busy_session):
         self._submit(surface="pet-overlay")

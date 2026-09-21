@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from gateway.capability_registry import CapabilityRegistry, CapabilitySignature, RegistryResolution
-from hermes_cli import kanban_db
+from hermes_cli import kanban_db_connect as kanban_db
 
 
 CandidateRequestStatus = Literal["candidate", "duplicate", "cooldown", "rejected"]
@@ -30,8 +30,10 @@ _ALLOWED_LIFECYCLE_TRANSITIONS = {
 }
 _DEFAULT_COOLDOWN_SECONDS = 3_600
 _MAX_SOURCE_KEY_CHARS = 512
+_MAX_PROFILE_ID_CHARS = 96
 _MAX_EVIDENCE_REFERENCES = 16
 _OPAQUE_REFERENCE_RE = re.compile(r"^[0-9a-f]{64}$")
+_PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,95}$")
 _REASON_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 _LOCAL_READ_ONLY_SCOPES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "financial-analysis": (
@@ -111,6 +113,8 @@ class CandidateLifecycleSnapshot:
     lifecycle_status: str
 
 
+
+
 def _capability_rejection_code(signature: CapabilitySignature) -> str | None:
     scope = _LOCAL_READ_ONLY_SCOPES.get(signature.domain)
     if scope is None or signature.evidence_class != "diagnostic-only":
@@ -177,6 +181,8 @@ class CandidateProfileRequests:
         resolution: RegistryResolution | None = None,
         envelope: SanitizedTaskEnvelope | None = None,
         policy_digest: str = DEFAULT_POLICY_DIGEST,
+        profile_id: str | None = None,
+        connection: object | None = None,
     ) -> CandidateProfileRequest:
         """Create or reuse a request only after a concrete local no-match lookup.
 
@@ -189,9 +195,15 @@ class CandidateProfileRequests:
             raise TypeError("signature must be a CapabilitySignature")
         if not isinstance(source_key, str) or not source_key.strip() or len(source_key) > _MAX_SOURCE_KEY_CHARS:
             raise ValueError("source_key must be a bounded non-empty string")
+        if profile_id is not None and (
+            not isinstance(profile_id, str)
+            or len(profile_id) > _MAX_PROFILE_ID_CHARS
+            or not _PROFILE_ID_RE.fullmatch(profile_id)
+        ):
+            raise ValueError("profile_id must be a bounded canonical identifier")
         local_resolution = CapabilityRegistry(
             db_path=self._db_path, board=self._board
-        ).resolve(signature)
+        ).resolve(signature, profile_id=profile_id, connection=connection)
         if local_resolution.status not in {"no_match", "ambiguous"}:
             return CandidateProfileRequest(
                 request_id="",
@@ -217,6 +229,7 @@ class CandidateProfileRequests:
                     "evidence_class": signature.evidence_class,
                     "requested_permissions": signature.requested_permissions,
                 },
+                "profile_id": profile_id,
                 "source_key": source_key,
             }
         )
@@ -226,7 +239,9 @@ class CandidateProfileRequests:
             source_key=source_key,
             policy_digest=stored_policy_digest,
             evidence_ref_hashes=evidence_refs or (),
+            requested_profile_id=profile_id,
             reason_code=reason_code,
+            connection=connection,
         )
 
     def _open_or_reuse_latest(
@@ -237,40 +252,80 @@ class CandidateProfileRequests:
         source_key: str,
         policy_digest: str,
         evidence_ref_hashes: tuple[str, ...],
+        requested_profile_id: str | None,
         reason_code: str | None,
+        connection: object | None = None,
     ) -> CandidateProfileRequest:
         now = int(self._clock())
+        if connection is not None:
+            return self._open_or_reuse_latest_in_transaction(
+                connection,
+                request_hash=request_hash,
+                signature=signature,
+                source_key=source_key,
+                policy_digest=policy_digest,
+                evidence_ref_hashes=evidence_ref_hashes,
+                requested_profile_id=requested_profile_id,
+                reason_code=reason_code,
+                now=now,
+            )
         with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
             with kanban_db.write_txn(conn):
-                row = conn.execute(
-                    """
-                    SELECT request_id, lifecycle_status, cooldown_until
-                    FROM candidate_profile_requests
-                    WHERE request_hash = ?
-                    ORDER BY id DESC LIMIT 1
-                    """,
-                    (request_hash,),
-                ).fetchone()
-                if row is not None and row["lifecycle_status"] in _LIFECYCLE_TERMINAL:
-                    if isinstance(row["cooldown_until"], int) and now < row["cooldown_until"]:
-                        return CandidateProfileRequest(
-                            request_id=row["request_id"], status="cooldown", profile_id=None,
-                            reason="repeated terminal candidate request is in bounded cooldown",
-                        )
-                elif row is not None and row["lifecycle_status"] in _LIFECYCLE_NONTERMINAL:
-                    return CandidateProfileRequest(
-                        request_id=row["request_id"], status="duplicate", profile_id=None,
-                        reason="reused existing nonterminal inert candidate request",
-                    )
-                lifecycle_status = "rejected" if reason_code else "candidate"
-                cooldown_until = now + self._cooldown_seconds if reason_code else None
-                stored_reason_code = reason_code or "candidate_opened"
-                request_id = self._insert(
-                    conn, request_hash=request_hash, signature=signature, source_key=source_key,
-                    policy_digest=policy_digest, evidence_ref_hashes=evidence_ref_hashes,
-                    lifecycle_status=lifecycle_status, reason_code=stored_reason_code,
-                    cooldown_until=cooldown_until, now=now,
+                return self._open_or_reuse_latest_in_transaction(
+                    conn,
+                    request_hash=request_hash,
+                    signature=signature,
+                    source_key=source_key,
+                    policy_digest=policy_digest,
+                    evidence_ref_hashes=evidence_ref_hashes,
+                    requested_profile_id=requested_profile_id,
+                    reason_code=reason_code,
+                    now=now,
                 )
+
+    def _open_or_reuse_latest_in_transaction(
+        self,
+        conn: object,
+        *,
+        request_hash: str,
+        signature: CapabilitySignature,
+        source_key: str,
+        policy_digest: str,
+        evidence_ref_hashes: tuple[str, ...],
+        requested_profile_id: str | None,
+        reason_code: str | None,
+        now: int,
+    ) -> CandidateProfileRequest:
+        row = conn.execute(
+            """
+            SELECT request_id, lifecycle_status, cooldown_until
+            FROM candidate_profile_requests
+            WHERE request_hash = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (request_hash,),
+        ).fetchone()
+        if row is not None and row["lifecycle_status"] in _LIFECYCLE_TERMINAL:
+            if isinstance(row["cooldown_until"], int) and now < row["cooldown_until"]:
+                return CandidateProfileRequest(
+                    request_id=row["request_id"], status="cooldown", profile_id=None,
+                    reason="repeated terminal candidate request is in bounded cooldown",
+                )
+        elif row is not None and row["lifecycle_status"] in _LIFECYCLE_NONTERMINAL:
+            return CandidateProfileRequest(
+                request_id=row["request_id"], status="duplicate", profile_id=None,
+                reason="reused existing nonterminal inert candidate request",
+            )
+        lifecycle_status = "rejected" if reason_code else "candidate"
+        cooldown_until = now + self._cooldown_seconds if reason_code else None
+        stored_reason_code = reason_code or "candidate_opened"
+        request_id = self._insert(
+            conn, request_hash=request_hash, signature=signature, source_key=source_key,
+            policy_digest=policy_digest, evidence_ref_hashes=evidence_ref_hashes,
+            requested_profile_id=requested_profile_id,
+            lifecycle_status=lifecycle_status, reason_code=stored_reason_code,
+            cooldown_until=cooldown_until, now=now,
+        )
         if reason_code:
             return CandidateProfileRequest(
                 request_id=request_id, status="rejected", profile_id=None,
@@ -281,13 +336,9 @@ class CandidateProfileRequests:
             reason="local no-match queued for bounded inert candidate review",
         )
 
-    def lifecycle_snapshot(self, candidate_id: str) -> CandidateLifecycleSnapshot | None:
-        """Read a candidate's latest state without treating a transition as mutable.
 
-        Lifecycle rows share the original request hash and are appended with a
-        derived request id.  The original candidate id remains the stable
-        receipt identity throughout promotion.
-        """
+    def lifecycle_snapshot(self, candidate_id: str) -> CandidateLifecycleSnapshot | None:
+        """Read a candidate's latest append-only lifecycle state."""
         if not isinstance(candidate_id, str) or not candidate_id:
             raise ValueError("candidate_id must be a non-empty string")
         with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
@@ -327,24 +378,21 @@ class CandidateProfileRequests:
         reason_code: str,
         receipt_hash: str,
     ) -> CandidateLifecycleSnapshot | None:
-        """Append one monotonic lifecycle observation, never update a candidate.
-
-        ``receipt_hash`` is intentionally opaque and only contributes to a
-        deterministic derived row id; it is not persisted as raw advisory or
-        benchmark content in the candidate ledger.
-        """
+        """Append one monotonic lifecycle observation; never update candidate rows."""
         if _ALLOWED_LIFECYCLE_TRANSITIONS.get(expected_status) != next_status:
             raise ValueError("candidate lifecycle transition is not permitted")
-        if not _REASON_CODE_RE.fullmatch(reason_code):
+        if not isinstance(reason_code, str) or not _REASON_CODE_RE.fullmatch(reason_code):
             raise ValueError("reason_code must be a bounded canonical code")
-        if not _OPAQUE_REFERENCE_RE.fullmatch(receipt_hash):
+        if not isinstance(receipt_hash, str) or not _OPAQUE_REFERENCE_RE.fullmatch(receipt_hash):
             raise ValueError("receipt_hash must be a SHA-256 hex digest")
+
         with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
             with kanban_db.write_txn(conn):
                 original = conn.execute(
                     """
-                    SELECT request_id, request_hash, signature_hash, permissions_hash, source_key_hash,
-                           policy_digest, evidence_ref_hashes_json
+                    SELECT request_id, request_hash, signature_hash, permissions_hash,
+                           source_key_hash, policy_digest, evidence_ref_hashes_json,
+                           generation_id, requested_profile_id
                     FROM candidate_profile_requests WHERE request_id = ?
                     """,
                     (candidate_id,),
@@ -360,6 +408,7 @@ class CandidateProfileRequests:
                 ).fetchone()
                 if latest is None or latest["lifecycle_status"] != expected_status:
                     return None
+
                 transition_id = (
                     f"cpr_{original['request_hash'][:24]}_"
                     f"{_hash((candidate_id, expected_status, next_status, receipt_hash))[:8]}"
@@ -367,17 +416,20 @@ class CandidateProfileRequests:
                 conn.execute(
                     """
                     INSERT INTO candidate_profile_requests (
-                        request_id, request_hash, signature_hash, permissions_hash, source_key_hash,
-                        policy_digest, evidence_ref_hashes_json, lifecycle_status, reason_code,
-                        cooldown_until, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                        request_id, generation_id, request_hash, signature_hash, permissions_hash,
+                        source_key_hash, requested_profile_id, policy_digest,
+                        evidence_ref_hashes_json, lifecycle_status, reason_code, cooldown_until,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                     """,
                     (
                         transition_id,
+                        original["generation_id"],
                         original["request_hash"],
                         original["signature_hash"],
                         original["permissions_hash"],
                         original["source_key_hash"],
+                        original["requested_profile_id"],
                         original["policy_digest"],
                         original["evidence_ref_hashes_json"],
                         next_status,
@@ -386,6 +438,8 @@ class CandidateProfileRequests:
                     ),
                 )
         return self.lifecycle_snapshot(candidate_id)
+
+
 
     @staticmethod
     def _insert(
@@ -400,6 +454,7 @@ class CandidateProfileRequests:
         reason_code: str,
         cooldown_until: int | None,
         now: int,
+        requested_profile_id: str | None = None,
     ) -> str:
         if not _OPAQUE_REFERENCE_RE.fullmatch(request_hash):
             raise ValueError("request_hash must be a SHA-256 hex digest")
@@ -415,14 +470,15 @@ class CandidateProfileRequests:
         conn.execute(
             """
             INSERT INTO candidate_profile_requests (
-                request_id, request_hash, signature_hash, permissions_hash, source_key_hash,
+                request_id, generation_id, request_hash, signature_hash, permissions_hash, source_key_hash,
+                requested_profile_id,
                 policy_digest, evidence_ref_hashes_json, lifecycle_status, reason_code,
                 cooldown_until, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                request_id, request_hash, signature.signature_hash, signature.permissions_hash,
-                _hash(source_key), policy_digest, _canonical_json(evidence_ref_hashes),
+                request_id, request_id, request_hash, signature.signature_hash, signature.permissions_hash,
+                _hash(source_key), requested_profile_id, policy_digest, _canonical_json(evidence_ref_hashes),
                 lifecycle_status, reason_code, cooldown_until, now,
             ),
         )

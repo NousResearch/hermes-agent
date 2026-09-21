@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -46,6 +47,7 @@ export function ComposerControls({
   hasComposerPayload,
   hideModelPill = false,
   minimal = false,
+  scheduleControl,
   state,
   voiceStatus,
   onDictate,
@@ -63,6 +65,9 @@ export function ComposerControls({
   hasComposerPayload: boolean
   hideModelPill?: boolean
   minimal?: boolean
+  /** "Schedule this draft" (#111873): rendered only while there is a payload to
+   *  defer, so the row never offers to schedule an empty composer. */
+  scheduleControl?: ReactNode
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -125,6 +130,7 @@ export function ComposerControls({
           {voiceControls}
         </>
       )}
+      {scheduleControl && hasComposerPayload && !disabled ? scheduleControl : null}
       {showQueueButton ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />} placement="control">
           <Button

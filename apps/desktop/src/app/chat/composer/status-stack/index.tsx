@@ -87,6 +87,8 @@ interface ComposerStatusStackProps {
   onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   /** The queue, built by the composer (it owns the queue's callbacks). */
   queue: ReactNode
+  /** Composer-scheduled messages (#111873): drafts the user deferred, with cancel. */
+  scheduled?: ReactNode
   sessionId: null | string
 }
 
@@ -95,7 +97,7 @@ interface ComposerStatusStackProps {
  * every session-scoped status — subagents, background tasks, queue — grouped by
  * type and separated by light dividers. Collapses to nothing when empty.
  */
-export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
+export function ComposerStatusStack({ onSubmit, queue, scheduled, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const storedSessionId = useStore(useSessionView().$storedId)
@@ -281,6 +283,12 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   if (queue) {
     sections.push({ key: 'queue', node: queue })
+  }
+
+  // Scheduled-but-not-sent drafts sit right above the queue: both are the user's
+  // own words waiting for a turn, and the sooner one is the closer to the composer.
+  if (scheduled) {
+    sections.push({ key: 'scheduled', node: scheduled })
   }
 
   // Artifact links stay visible at the bottom, nearest the composer, even when

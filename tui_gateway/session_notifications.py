@@ -705,7 +705,11 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
-            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+            # "scheduled message" rides the same idle poll: a composer message the user deferred
+            # (#111873) fires as a plain user turn through the same claim-then-submit path.
+            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick),
+                               ("heartbeat", _maybe_fire_tui_heartbeat_tick),
+                               ("scheduled message", _maybe_fire_tui_scheduled_message)):
                 try:
                     fire(sid, session)
                 except Exception as tick_exc:

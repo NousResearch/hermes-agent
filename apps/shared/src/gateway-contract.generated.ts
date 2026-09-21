@@ -2466,6 +2466,45 @@ export interface WakeFeedResult {
   reason?: string | null
   fed: boolean
 }
+/** ``due_at`` is epoch seconds, a millisecond epoch (above 1e11, i.e. JS ``Date.now()``), or an ISO 8601 timestamp; a naive timestamp is read as the user's local wall clock, which is what a ``datetime-local`` input means. No other field exists: scheduling a message configures nothing. */
+export interface ScheduledMessageCreateParams {
+  session_id: string
+  profile?: string | null
+  text: string
+  due_at: number | string
+}
+/** The list the client should render, plus the item that was just persisted. */
+export interface ScheduledMessageCreateResult {
+  message: ScheduledMessageView
+  messages?: ScheduledMessageView[]
+}
+/** One pending item as the composer panel renders it. ``due_at`` / ``created_at`` are epoch SECONDS (the backend's unit); the client converts to milliseconds and formats in the user's own timezone, so nothing stored can go stale across a DST shift or a machine move. ``display_text`` is the server-truncated preview. */
+export interface ScheduledMessageView {
+  id: string
+  text: string
+  display_text: string
+  due_at: number
+  created_at?: number
+  status?: string
+  overdue?: boolean
+}
+/** Every pending message bound to ``session_id``, soonest first. */
+export interface ScheduledMessageListParams {
+  session_id: string
+  profile?: string | null
+}
+export interface ScheduledMessageListResult {
+  messages?: ScheduledMessageView[]
+}
+export interface ScheduledMessageCancelParams {
+  session_id: string
+  profile?: string | null
+  message_id: string
+}
+export interface ScheduledMessageCancelResult {
+  cancelled: boolean
+  messages?: ScheduledMessageView[]
+}
 export interface SessionCreateParams {
   profile?: string | null
   cols?: number | null
@@ -4507,6 +4546,12 @@ export interface RpcMethods {
   'rollback.list': { params: RollbackListParams; result: RollbackListResult }
   /** Restore the working tree (or one file) to a checkpoint by hash or 1-based index. */
   'rollback.restore': { params: RollbackRestoreParams; result: RollbackRestoreResult }
+  /** Cancel a still-pending scheduled message; a fired one is history and is refused. */
+  'schedule.message.cancel': { params: ScheduledMessageCancelParams; result: ScheduledMessageCancelResult }
+  /** Persist a pending message for this session. Never sends it: it fires when it comes due. */
+  'schedule.message.create': { params: ScheduledMessageCreateParams; result: ScheduledMessageCreateResult }
+  /** Pending scheduled messages for this session (soonest due first). */
+  'schedule.message.list': { params: ScheduledMessageListParams; result: ScheduledMessageListResult }
   /** Attach the frontend to a live session without closing the previously focused one. */
   'session.activate': { params: SessionActivateParams; result: SessionActivateResult }
   /** Live sessions in this process, insertion order (not a DB browser). */
@@ -4801,6 +4846,9 @@ export const RPC_METHODS = [
   'rollback.diff',
   'rollback.list',
   'rollback.restore',
+  'schedule.message.cancel',
+  'schedule.message.create',
+  'schedule.message.list',
   'session.activate',
   'session.active_list',
   'session.branch',

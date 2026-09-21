@@ -2607,6 +2607,16 @@ export interface Translations {
     queueSend: string
     queueSteer: string
     queueDelete: string
+    /** Composer-scheduled messages (#111873): defer a draft as a future turn. */
+    schedule: string
+    scheduleTitle: string
+    scheduleDue: string
+    scheduleConfirm: string
+    scheduleInvalid: string
+    scheduled: (count: number) => string
+    scheduledCancel: string
+    scheduledCancelFailed: string
+    scheduledSendFailed: string
     queueResume: string
     queueResumeTip: string
     queueStuckTitle: string

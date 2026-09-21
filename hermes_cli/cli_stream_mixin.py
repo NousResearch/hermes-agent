@@ -303,6 +303,23 @@ class CLIStreamMixin:
             self._deferred_content = ""
             self._emit_stream_text(deferred)
 
+    def _on_interim_assistant(self, text: str, *, already_streamed: bool = False) -> None:
+        """Print mid-turn model commentary as an ordinary assistant line.
+
+        The TUI/gateway deliver this text as ``message.interim``; the interactive CLI installed no
+        ``interim_assistant_callback`` at all, so providers whose mid-turn narration rides the interim
+        path (Codex/Responses ``phase=commentary``) looked silent, while chat_completions providers
+        (DeepSeek, …) showed the same narration live through ``stream_delta_callback``. Text the stream
+        already painted is skipped, so nothing is printed twice.
+        """
+        if already_streamed:
+            return
+        visible = (text or "").strip()
+        if not visible:
+            return
+        from cli import _cprint
+        _cprint(visible)
+
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
 

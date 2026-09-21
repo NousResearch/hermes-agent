@@ -1269,6 +1269,7 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
         source = _resolve_session_platform()
         profile = _current_profile_name()
         browser_control_principal = browser_control_transport_family = ""
+        user_id = user_name = ""
         # Live conversation id for subprocess HERMES_SESSION_ID: an explicitly empty contextvar is authoritative
         # (no os.environ fallback), so never leave it "" — agent's durable session_id, then session_key.
         session_id = session_key
@@ -1277,12 +1278,21 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
             # App-global backends multiplex profiles: prefer the live session's own home.
             profile = profile_name_for_home(sess.get("profile_home")) or profile
             session_id = getattr(sess.get("agent"), "session_id", None) or session_key
+            # The login this record was admitted under — the SAME value _make_agent passes as the agent's
+            # runtime user_id, so a tool attributing work to a user (kanban, send_message, cron job args,
+            # background-watcher fields) names the person the agent itself was built for. An ungated
+            # gateway (and the PTY child's server-internal credential) names no login: both stay "".
+            user_id = _session_auth_user_id(sess) or ""
+            # The minted WS identity is only {user_id, provider} — no email or display name exists to bind,
+            # so the provider-scoped login id is the one human-facing label available.
+            user_name = user_id.split(":", 1)[1] if user_id else ""
             identity = getattr(sess.get("transport"), "auth_identity", None)
             if _methods_browser_control._is_authenticated_identity(identity):
                 browser_control_principal = _methods_browser_control._principal_digest(identity)
                 browser_control_transport_family = _methods_browser_control._CLOUD_TRANSPORT_FAMILY
         return set_session_vars(
             session_key=session_key, session_id=session_id, source=source,
+            user_id=user_id, user_name=user_name,
             profile=profile,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family, cwd=resolved,

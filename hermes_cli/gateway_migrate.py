@@ -1,8 +1,20 @@
-"""``hermes gateway migrate --multiplex`` / ``--standalone``: move a per-profile-gateway install onto one
-multiplexed default gateway (and back), with a table-driven preflight.
+"""``hermes gateway migrate --multiplex``: converge a per-profile-gateway install onto the ONE
+host gateway, with a table-driven preflight.
 
-Standalone per-profile gateways stay supported; this is a migration path, not a removal. The
-preflight reuses the gateway's own conflict logic (``GatewayRunner._adapter_credential_fingerprint``,
+Multiplex-only (Teknium ruling): exactly one ``hermes gateway run`` per host, serving every
+profile. This command is the supported convergence path, and it is defined by TOPOLOGY, not by a
+config flag — a host is converged when no secondary profile owns a gateway process or a supervisor
+unit any more. That makes it re-runnable: a half-migrated host (flag flipped, a unit left behind, a
+crash between the two) converges on the next run instead of being reported "already multiplexed".
+
+There is no ``--standalone`` rollback command: reinstalling per-profile services is no longer a
+supported topology. The rollback machinery survives as the COMPENSATOR inside a single failed
+apply (:func:`rollback_migration`) — which restores exactly ONE gateway, the default's, because
+the host gateway lock now refuses the fleet it used to rebuild — and the recorded manifest is what
+the next re-run resumes from. A manifest on disk outranks every preflight gate: a resume
+compensates an already-destructive state instead of initiating one.
+
+The preflight reuses the gateway's own conflict logic (``GatewayRunner._adapter_credential_fingerprint``,
 ``platform_binds_port``, the adapters' ``serves_profile_prefix`` declaration) so its verdict matches
 what the multiplexer would do at startup. ``hermes update`` calls :func:`maybe_auto_migrate_after_update`.
 """
@@ -75,7 +87,9 @@ class ProfileGateway:
 
 def _service_label(service: tuple[str, bool]) -> str:
     kind, system = service
-    return f"{kind} ({'system' if system else 'user'})" if kind == "systemd" else kind
+    if kind == "systemd":
+        return f"systemd ({'system' if system else 'user'})"
+    return "Windows scheduled task" if kind == "windows" else kind
 
 
 def _service_dict(service: tuple[str, bool]) -> dict:
@@ -88,6 +102,11 @@ class MigrationPlan:
     profiles: list[ProfileGateway]
     multiplex_flag_on: bool
     live_served: Optional[list[str]]  # served_profiles the live default gateway recorded, if any
+    # The migration manifest on disk, when one exists. Its PRESENCE is the "this host is already
+    # mid-migration, with units removed" signal that turns every later gate from a refusal into a
+    # finding (see :func:`apply_migration`): a resume compensates a destructive state, it never
+    # initiates one.
+    manifest: Optional[dict] = None
     # A manifest with the flag on and no LIVE default gateway: an earlier apply died between flipping
     # the flag and the multiplexer confirming it is up (#110850). An installed unit is not proof of
     # anything — `systemd_install` writes the unit before the start that can still fail or be killed.
@@ -106,7 +125,13 @@ class MigrationPlan:
 
     @property
     def already_multiplexed(self) -> bool:
-        if self.interrupted:
+        """Converged: nothing is left for this command to do.
+
+        TOPOLOGY, not the flag. A host whose flag is on while a secondary still owns a gateway
+        process or a supervisor unit is HALF-migrated; reporting that as "already multiplexed"
+        made the re-run a no-op on exactly the host that needed it most (#100896).
+        """
+        if self.interrupted or self.standalone_secondaries:
             return False
         return self.multiplex_flag_on or bool(self.live_served and len(self.live_served) > 1)
 
@@ -191,11 +216,44 @@ def _profile_homes() -> list[tuple[str, Path]]:
 
 
 def _live_gateway_pid(home: Path) -> Optional[int]:
-    """Verified PID of a standalone gateway owned by ``home``, else None (never raises: a probe
-    failure must not abort a migration plan)."""
+    """Verified PID of a gateway SERVING ``home``, else None (never raises: a probe failure must
+    not abort a migration plan).
+
+    Topology REPORTING, not ownership: ``live_gateway_pid_for_home`` deliberately answers with the
+    host multiplexer's PID for every home it serves (``gateway.status._host_gateway_serves_home``),
+    so "this profile is being served" reads as a live PID. Use :func:`_own_gateway_pid` for the
+    question this command acts on.
+    """
     from gateway.status import live_gateway_pid_for_home
     with contextlib.suppress(Exception):
         return live_gateway_pid_for_home(home)
+    return None
+
+
+def _host_gateway_owner():
+    """The ONE live host gateway (``gateway.host_attach.HostGateway``) or None. Never raises."""
+    with contextlib.suppress(Exception):
+        from gateway.host_attach import host_gateway
+        return host_gateway()
+    return None
+
+
+def _own_gateway_pid(home: Path, owner) -> Optional[int]:
+    """PID of a gateway ``home`` OWNS, else None.
+
+    Ownership is what this command may stop, and the host multiplexer is not owned by the profiles
+    it serves: it is one process, launched from one home. Deriving ownership from
+    :func:`_live_gateway_pid` made every secondary on a CONVERGED host report the host gateway's
+    PID, so the plan called the host half-migrated and each `hermes update` SIGTERMed the only
+    gateway it had. The host process counts only for the home it was actually launched from; every
+    other profile it serves owns nothing.
+    """
+    pid = _live_gateway_pid(home)
+    if pid is None or owner is None or pid != owner.pid:
+        return pid
+    with contextlib.suppress(Exception):
+        from gateway.status import _same_hermes_home
+        return pid if _same_hermes_home(Path(owner.home), Path(home)) else None
     return None
 
 
@@ -205,7 +263,7 @@ def _gateway_identity(home: Path, pid: Optional[int], services: list[tuple[str, 
 
 
 def _installed_services(home: Path) -> list[tuple[str, bool]]:
-    """Every installed service for ``home``'s gateway (units / plist on disk), user scope first."""
+    """Every installed service for ``home``'s gateway (units / plist / scheduled task), user scope first."""
     from hermes_cli import gateway as gw
     found: list[tuple[str, bool]] = []
     with _home_env(home):
@@ -213,7 +271,23 @@ def _installed_services(home: Path) -> list[tuple[str, bool]]:
             found.extend(("systemd", system) for system in (False, True) if gw.get_systemd_unit_path(system=system).exists())
         if gw.is_macos() and gw.get_launchd_plist_path().exists():
             found.append(("launchd", False))
+        if gw.is_windows() and _windows_task_installed():
+            found.append(("windows", False))
     return found
+
+
+def _windows_task_installed() -> bool:
+    """Is a per-profile Windows gateway installed for the ACTIVE ``HERMES_HOME``?
+
+    ``get_task_name()`` is home-suffixed, so this answers per profile exactly the way the systemd
+    unit path does. Either half counts: ``hermes gateway install`` falls back to a Startup-folder
+    entry when it cannot register a scheduled task, and a migration that removed only the task
+    would leave the fallback launching a second gateway at the next logon.
+    """
+    from hermes_cli import gateway_windows as gww
+    with contextlib.suppress(Exception):
+        return bool(gww.is_task_registered() or gww.is_startup_entry_installed())
+    return False
 
 
 def _systemd_service_user(home: Path, services: list[tuple[str, bool]]) -> Optional[str]:
@@ -232,6 +306,11 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
         if verb == "install":
             if kind == "launchd":
                 gw.launchd_install()
+            elif kind == "windows":
+                # Non-interactive: the migration already asked; prompting here would hang a
+                # supervised/`--yes` run on a console that has no operator.
+                from hermes_cli import gateway_windows as gww
+                gww.install(start_now=True, start_on_login=True)
             else:
                 gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
             return
@@ -408,7 +487,7 @@ def _check_secondary_port_binders(plan: MigrationPlan, configs: dict[str, object
                     f"Profile '{profile.name}' enables {platform.value}, which binds its own port and has no "
                     f"/p/{profile.name}/ ingress on the default listener yet; the multiplexer would skip "
                     f"the whole profile. Disable it there (platforms.{platform.value}.enabled: false) or "
-                    f"keep '{profile.name}' on a standalone gateway (hermes -p {profile.name} gateway start --force)."
+                    f"add a /p/<profile>/ ingress for it first."
                 )
 
 
@@ -430,12 +509,14 @@ def _load_profile_configs(plan: MigrationPlan) -> dict[str, object]:
 
 
 def build_migration_plan() -> MigrationPlan:
-    """Enumerate profiles + their gateway footprint, then run every preflight check."""
+    """Enumerate profiles + their OWN gateway footprint, then run every preflight check."""
     from hermes_cli.gateway_multiplex_served import recorded_served_profiles
     default_home = _default_home()
+    # Probed ONCE: every profile's ownership verdict is relative to the same host process.
+    owner = _host_gateway_owner()
     profiles = []
     for name, home in _profile_homes():
-        pid, services = _live_gateway_pid(home), _installed_services(home)
+        pid, services = _own_gateway_pid(home, owner), _installed_services(home)
         uid, runtime_home = _gateway_identity(home, pid, services)
         profiles.append(ProfileGateway(name=name, home=home, pid=pid, services=services,
                                        run_as_user=_systemd_service_user(home, services), uid=uid,
@@ -444,8 +525,9 @@ def build_migration_plan() -> MigrationPlan:
         default_home=default_home, profiles=profiles,
         multiplex_flag_on=_read_multiplex_flag(default_home),
         live_served=recorded_served_profiles(default_home),
+        manifest=_read_manifest(default_home),
     )
-    plan.interrupted = plan.multiplex_flag_on and _manifest_not_yet_served(_read_manifest(default_home), plan.live_served)
+    plan.interrupted = plan.multiplex_flag_on and _manifest_not_yet_served(plan.manifest, plan.live_served)
     if len(plan.profiles) < 2:
         plan.notices.append("Only one profile exists: nothing to multiplex.")
         return plan
@@ -471,6 +553,27 @@ def _print(lines: list[str]) -> None:
         print(line)
 
 
+def _signalled_gateways(plan: MigrationPlan) -> list[str]:
+    """Every RUNNING gateway process ``apply_migration`` will signal, in apply order.
+
+    Derived from the steps the apply actually takes, not from "secondaries that happen to expose a
+    PID". Two classes were silently missing and both killed live processes: a secondary with an
+    installed unit and no readable PID is stopped through ``_service_op`` (which SIGTERMs whatever
+    the supervisor is running), and the DEFAULT's own live gateway is replaced by
+    :func:`_restart_default`. A dry run that promises nothing will be stopped and then stops the
+    host's only gateway breaks the contract this block exists to keep.
+    """
+    def _who(p: ProfileGateway, suffix: str = "") -> str:
+        where = f"pid {p.pid}" if p.pid else f"supervised by {p.service_label()}"
+        return f"{p.name} ({where}{suffix})"
+
+    signalled = [_who(p) for p in plan.standalone_secondaries if p.pid or p.services]
+    default = plan.default
+    if default.services or default.pid:
+        signalled.append(_who(default, ", restarted onto the new flag"))
+    return signalled
+
+
 def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     head = "Migration plan (dry run — nothing changed)" if dry_run else "Migration plan"
     lines = [head, f"  default home: {plan.default_home}", "", "  profile      gateway pid   service"]
@@ -484,7 +587,11 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     if plan.interrupted:
         lines.append(f"  ↻ An earlier migration was interrupted before the default gateway came up "
                      f"(flag on, no live multiplexer; manifest {plan.default_home / MANIFEST_NAME}); this run resumes it.")
+    elif plan.multiplex_flag_on and plan.standalone_secondaries:
+        lines.append("  ↻ Half-migrated host: the flag is on, but the profile(s) below still own a "
+                     "gateway. This run converges them.")
     steps = []
+    signalled = _signalled_gateways(plan)
     for p in plan.standalone_secondaries:
         what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", f"uninstall {p.service_label()}" if p.services else "") if x)
         steps.append(f"  - {p.name}: {what}")
@@ -495,27 +602,42 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     else:
         lines += ["  Steps:", *steps]
     lines.append(f"  - default: set gateway.multiplex_profiles: true in {plan.default_home / 'config.yaml'}")
-    target = plan.target_service_kind()
+    # A resume installs through the units the MANIFEST recorded (the live ones are already gone),
+    # which is the mechanism ``apply_migration`` picks — printing this plan's guess contradicted it.
+    target = _resume_target(plan)[0] if plan.manifest is not None else plan.target_service_kind()
     lines.append(f"  - default: {'restart' if plan.default.has_gateway else 'start'} the gateway"
                  + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.profiles)} profiles")
-    lines.append(f"  - record the previous state in {plan.default_home / MANIFEST_NAME} (rollback: hermes gateway migrate --standalone)")
+    lines.append(f"  - record the previous state in {plan.default_home / MANIFEST_NAME} "
+                 f"(used to undo a FAILED apply, and to resume this command after a crash)")
+    if signalled:
+        # Never stop a running gateway without saying so first, and say it in the imperative
+        # tense the operator can still act on: this block prints BEFORE anything is signalled.
+        lines += ["",
+                  "  ⚠ This SIGTERMs running gateway process(es): " + ", ".join(signalled) + ".",
+                  "    They drain in-flight turns and exit; their profiles are served by the host "
+                  "gateway afterwards."]
     return lines + _plan_tail(plan)
 
 
 def _plan_tail(plan: MigrationPlan) -> list[str]:
     lines: list[str] = []
     if plan.blockers:
-        lines += ["", "  ✗ Blockers (fix these first, nothing will be changed):"]
+        if plan.manifest is None:
+            lines += ["", "  ✗ Blockers (fix these first, nothing will be changed):"]
+        else:
+            # This host is already mid-migration with units removed, so a blocker cannot be a
+            # refusal any more: refusing would leave it with nobody serving and no way forward.
+            lines += ["",
+                      f"  ⚠ Blockers found, but a migration is already in progress on this host "
+                      f"(manifest {_manifest_path(plan.default_home)}).",
+                      "    This run RESUMES it and converges anyway — refusing would strand the "
+                      "profiles whose",
+                      "    gateways an earlier attempt already removed. Fix these afterwards:"]
         lines += [f"    • {b}" for b in plan.blockers]
     if plan.notices:
         lines += ["", "  Notices:"]
         lines += [f"    • {n}" for n in plan.notices]
     return lines
-
-
-def _no_manifest_lines(default_home: Path) -> list[str]:
-    return [f"✗ No migration manifest at {_manifest_path(default_home)}; nothing to roll back.",
-            "  To leave multiplex mode by hand: hermes config set gateway.multiplex_profiles false && hermes gateway restart"]
 
 
 def _manifest_secondaries(manifest: dict) -> Optional[list[dict]]:
@@ -557,30 +679,6 @@ def _target_from_manifest(manifest: dict) -> tuple[Optional[tuple[str, bool]], O
 
 
 _NOTHING_RECORDED = "no gateway was recorded; nothing to restore"
-
-
-def format_rollback_plan(default_home: Path, manifest: dict, *, dry_run: bool) -> list[str]:
-    head = "Rollback plan (dry run — nothing changed)" if dry_run else "Rollback plan"
-    lines = [head, f"  default home: {default_home}", "", "  Steps:"]
-    lines.append("  - default: restore gateway.multiplex_profiles to its pre-migration value")
-    lines.append("  - default: clear multiplex-owned runtime status")
-    secondaries = _manifest_secondaries(manifest)
-    if secondaries is None:
-        return lines + [f"  ✗ malformed secondary records in {_manifest_path(default_home)}; fix or delete the manifest"]
-    for rec in secondaries:
-        services = _recorded_services(rec)
-        if services:
-            action = "reinstall and start its " + " + ".join(_service_label(s) for s in services) + " service"
-        elif rec.get("pid"):
-            action = "start its standalone gateway (detached)"
-        else:
-            action = _NOTHING_RECORDED
-        lines.append(f"  - {rec['profile']}: {action}")
-    lines += [
-        f"  - remove rollback manifest {_manifest_path(default_home)}",
-        "  - default: restart the standalone gateway last",
-    ]
-    return lines
 
 
 def format_update_warning(plan: MigrationPlan, auto_blockers: list[str]) -> list[str]:
@@ -732,6 +830,37 @@ def _preflight_apply(plan: MigrationPlan, target: Optional[tuple[str, bool]], ru
     return None
 
 
+def _resume_target(plan: MigrationPlan) -> tuple[Optional[tuple[str, bool]], Optional[str]]:
+    """Service manager + ``User=`` an apply will use: the manifest's record wins on a resume (the
+    live units it describes are already gone), else what the plan can still see."""
+    target, run_as_user = plan.target_service_kind(), plan.target_run_as_user()
+    if plan.manifest is None:
+        return target, run_as_user
+    m_target, m_user = _target_from_manifest(plan.manifest)
+    return m_target or target, m_user or run_as_user
+
+
+def _resume_findings(plan: MigrationPlan, target, run_as_user) -> list[str]:
+    """Safety checks re-run on a RESUME and reported as findings instead of refusals.
+
+    Both halves matter. Skipping them (the resume branch used to return before ``_preflight_apply``
+    ran at all) let a duplicate bot credential, a ``/p/`` ingress gap or an unresolvable service
+    user reach the multiplexer unannounced. Enforcing them as blockers is worse: a resume runs on
+    a host whose secondary units are ALREADY removed, so refusing does not prevent damage — it
+    makes the damage permanent, which is exactly how a stranded host lost its only documented
+    recovery. So: run every check, name every finding, converge anyway.
+    """
+    findings = [*plan.blockers]
+    apply_blocker = _preflight_apply(plan, target, run_as_user)
+    if apply_blocker is not None:
+        findings.append(apply_blocker)
+    if not findings:
+        return []
+    return ["  ⚠ Preflight findings — resuming anyway (this host is mid-migration; refusing would",
+            "    leave its profiles with no gateway at all). Fix these once it is converged:",
+            *[f"    • {f}" for f in findings]]
+
+
 def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SECONDS) -> bool:
     """Flip the flag, stop/uninstall every secondary gateway, bring up the multiplexer, verify.
     Returns True when the multiplexer verifiably serves every profile.
@@ -739,29 +868,32 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
     Every step after the manifest write is fallible (a config write, a secondary's stop or its
     unit's daemon-reload, a system unit that needs ``--run-as-user``, an unreachable user bus) and
     runs inside ONE compensating boundary: on failure the manifest written before the first
-    destructive step restores the flag and every recorded per-profile gateway (#110850), so the
-    fleet never ends half-migrated. The flag goes on first so an apply killed anywhere after it is
-    resumable from the manifest (flag on + manifest + no live multiplexer = interrupted)."""
-    if plan.blocked:
-        _print(["✗ Migration refused:", *[f"  • {b}" for b in plan.blockers]])
-        return False
+    destructive step brings ONE gateway back (:func:`rollback_migration`), so the host never ends
+    with nobody serving. The flag goes on first so an apply killed anywhere after it is resumable
+    from the manifest (flag on + manifest + no live multiplexer = interrupted).
+
+    **Resume beats preflight.** The manifest is read BEFORE the blocker gate: a manifest means an
+    earlier apply already removed units, so this run is a compensation, not an initiation, and a
+    gate that refuses it traps the host forever (no ``--standalone``, no rollback command). The
+    checks still run — as findings, see :func:`_resume_findings`. With no manifest nothing has been
+    destroyed yet and both gates refuse exactly as before.
+    """
     if plan.already_multiplexed:
         print("✓ Already multiplexed — nothing to do.")
         return True
-    target, run_as_user = plan.target_service_kind(), plan.target_run_as_user()
-    if plan.interrupted:
-        # An earlier apply flipped the flag (and removed some or all secondaries) but the default never
-        # came up; the manifest is the only record of the units that existed. Finish from it, don't rewrite it.
-        manifest = _read_manifest(plan.default_home) or {}
-        target, run_as_user = _target_from_manifest(manifest)
-        print(f"  ↻ resuming an interrupted migration recorded in {_manifest_path(plan.default_home)}")
-    elif _read_manifest(plan.default_home) is not None:
-        # Flag off + manifest present = a rollback (or an apply killed before its flag write) that did
-        # not finish. Overwriting the manifest would discard the only record of the units to restore.
-        _print([f"✗ A previous migration's manifest is still at {_manifest_path(plan.default_home)} (its rollback did not finish).",
-                "  Finish it with: hermes gateway migrate --standalone   (or delete the manifest to start over)"])
-        return False
+    target, run_as_user = _resume_target(plan)
+    manifest = plan.manifest
+    if manifest is not None:
+        # A manifest on disk means an earlier apply got past its first destructive step: it either
+        # died mid-way (``interrupted``) or its compensator did not finish. Either way the manifest
+        # is the ONLY record of the units that existed, so resume from it and never overwrite it.
+        # Re-running this command IS the recovery.
+        print(f"  ↻ resuming the migration recorded in {_manifest_path(plan.default_home)}")
+        _print(_resume_findings(plan, target, run_as_user))
     else:
+        if plan.blocked:
+            _print(["✗ Migration refused:", *[f"  • {b}" for b in plan.blockers]])
+            return False
         blocker = _preflight_apply(plan, target, run_as_user)
         if blocker is not None:
             _print(["✗ Migration refused before changing anything:", f"  • {blocker}"])
@@ -782,34 +914,74 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         print(f"  ✓ {_restart_default(plan.default, target, plan.default_home, run_as_user=run_as_user)}")
     except Exception as exc:
         _print([f"  ✗ migration failed ({exc})",
-                "  ↩ Rolling back to per-profile gateways so no profile is left without one..."])
+                "  ↩ Restoring one host gateway so this host is not left without one..."])
         rolled_back = rollback_migration(plan.default_home)
         if not rolled_back:
-            print(f"  Re-run {MIGRATE_COMMAND} to resume, or hermes gateway migrate --standalone to roll back.")
+            print(f"  Re-run {MIGRATE_COMMAND} to resume from the manifest.")
         return False
 
     expected = {p.name for p in plan.profiles}
     served = _wait_for_served(plan.default_home, expected, served_wait)
     if served is not None and expected <= set(served):
+        # Manifest present == migration UNFINISHED. That is the whole resume/half-migrated signal
+        # (`MigrationPlan.interrupted`), so a CONFIRMED convergence must clear it -- otherwise the
+        # host reports itself interrupted forever and never says "already multiplexing".
+        _manifest_path(plan.default_home).unlink(missing_ok=True)
         _print(["", f"✓ Migrated: the default gateway now serves {len(served)} profiles: {', '.join(served)}",
-                "  Rollback any time with: hermes gateway migrate --standalone",
                 *[f"  • {n}" for n in plan.notices]])
         return True
     missing = sorted(expected - set(served or []))
     _print(["", f"⚠ Migration applied, but the default gateway has not confirmed serving: {', '.join(missing)}",
             "  Check `hermes gateway status` and the gateway log; the flag and manifest are in place.",
-            "  Rollback: hermes gateway migrate --standalone"])
+            f"  Re-run {MIGRATE_COMMAND} once it is healthy — it resumes from the manifest."])
     return False
 
 
+_COMPENSATOR_WAIT_SECONDS = 30.0
+
+
+def _wait_for_live_gateway(home: Path, timeout: float) -> Optional[int]:
+    """Bounded wait for a gateway that is actually UP for ``home``; None on timeout.
+
+    A service-manager ``start`` that returns is not proof: systemd returns after its own start
+    timeout on a unit that keeps failing, and taking that for success is how the compensator
+    printed "✓ Restored" over a unit respawning every 5 s at ``ExecMainStatus=75``.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        pid = _live_gateway_pid(home)
+        if pid is not None:
+            return pid
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
 def rollback_migration(default_home: Optional[Path] = None) -> bool:
-    """``--standalone``: flag off, reinstall/start the recorded per-profile gateways, restart default."""
+    """COMPENSATOR for a failed apply: put ONE gateway back on this host.
+
+    Not a user-facing rollback and deliberately NOT a fleet restore. It used to reinstall and
+    start every recorded per-profile gateway, which the host gateway lock now forbids by
+    construction: this function clears the multiplex-owned served record first, so
+    ``gateway.host_attach`` tells each secondary to "start normally" and the flock loser exits 75
+    into a supervisor respawn loop (observed live: a secondary won the race while the default's
+    unit sat at ``NRestarts=38, ExecMainStatus=75``, respawning every 5 s — ``StartLimitIntervalSec=0``
+    defeats the limiter). Under multiplex-only a restored fleet is not a state we want to be able
+    to reach, so the compensation is the one gateway the topology allows: the DEFAULT's, on the
+    recorded flag. The secondaries whose units this attempt already removed are named in the
+    output and are served by that gateway as soon as it multiplexes (``flag_was`` is either unset
+    or the retired ``false``; both resolve to multiplex at boot once nothing blocks it).
+
+    Returns True only when a gateway is VERIFIABLY live again; the manifest is kept otherwise so
+    the next ``hermes gateway migrate --multiplex`` resumes.
+    """
     default_home = default_home or _default_home()
     manifest = _read_manifest(default_home)
     if manifest is None:
-        _print(_no_manifest_lines(default_home))
+        print(f"✗ No migration manifest at {_manifest_path(default_home)}; nothing to restore.")
         return False
-    incomplete = f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}."
+    incomplete = (f"⚠ Compensation incomplete; manifest kept at {_manifest_path(default_home)}.\n"
+                  f"  Re-run {MIGRATE_COMMAND} — it resumes from the manifest.")
     secondaries = _manifest_secondaries(manifest)
     if secondaries is None:
         # Refuse before touching anything: a hand-edited manifest is not a rollback authority.
@@ -825,90 +997,81 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
 
     default_rec = manifest.get("default")
     default_gw = ProfileGateway(
-        "default", default_home, pid=_live_gateway_pid(default_home),
+        "default", default_home, pid=_own_gateway_pid(default_home, _host_gateway_owner()),
         services=(_recorded_services(default_rec) if isinstance(default_rec, dict) else []) or _installed_services(default_home),
     )
-    # The live multiplexer's record still claims every secondary; a per-profile gateway started
-    # while it does is refused (exit 78, parked by RestartPreventExitStatus) — clear it FIRST.
+    names = [str(rec["profile"]) for rec in secondaries]
+    # The live multiplexer's record still claims every secondary, and every lifecycle verb reads it;
+    # clear it before the default comes back up on the restored flag.
     try:
-        _reconcile_standalone_runtime(default_home, {str(rec["profile"]) for rec in secondaries})
+        _reconcile_standalone_runtime(default_home, set(names))
         print("  ✓ default: cleared multiplex-owned runtime status")
     except Exception as exc:
         print(f"  ✗ default: could not clear multiplex-owned runtime status ({exc})")
         print(incomplete)
         return False
-    ok = True
-    for rec in secondaries:
-        name, home = str(rec["profile"]), Path(str(rec["home"]))
-        try:
-            services = _recorded_services(rec)
-            if services:
-                for kind, system in services:
-                    _service_op(kind, system, "install", home, run_as_user=_recorded_run_as_user(rec))
-                    _service_op(kind, system, "start", home)
-                    print(f"  ✓ {name}: reinstalled and started its {_service_label((kind, system))} service")
-            elif rec.get("pid"):
-                if _live_gateway_pid(home) is not None:  # re-run after a partial rollback
-                    print(f"  ✓ {name}: standalone gateway already running")
-                elif _spawn_detached_gateway(home):
-                    print(f"  ✓ {name}: started its standalone gateway (detached)")
-                else:
-                    ok = False
-                    print(f"  ✗ {name}: could not start its standalone gateway")
-            else:
-                print(f"  ✓ {name}: {_NOTHING_RECORDED}")
-        except Exception as exc:
-            ok = False
-            print(f"  ✗ {name}: {exc}")
-    if ok:
+
+    if not default_gw.has_gateway and not any(rec.get("pid") or _recorded_services(rec) for rec in secondaries):
         _manifest_path(default_home).unlink(missing_ok=True)
-    # The flag is already off, so the default must come back standalone even when a secondary
-    # failed (otherwise config and the live process disagree). The restart is LAST: from inside
-    # the gateway's cgroup a service-manager restart kills this process, so nothing after it runs.
-    if default_gw.has_gateway:
+        print(f"✓ Nothing was running before this attempt ({_NOTHING_RECORDED}); the flag is restored.")
+        return True
+
+    target, run_as_user = _target_from_manifest(manifest)
+    try:
+        print(f"  ✓ {_restart_default(default_gw, target, default_home, run_as_user=run_as_user)}")
+    except Exception as exc:
+        # The recorded service manager is exactly what the failed apply could not drive (a refused
+        # system-unit install, a read-only unit dir). Falling back to a detached gateway still
+        # honours one-gateway-per-host, and a host with a running gateway beats a correct unit.
+        print(f"  ✗ default: could not bring the host gateway back up via the recorded service "
+              f"manager ({exc}); falling back to a detached gateway")
         try:
-            print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
-        except Exception as exc:
-            if ok:
-                try:
-                    _write_manifest(default_home, manifest)
-                except Exception as manifest_exc:
-                    print(f"  ✗ default: could not restore rollback manifest ({manifest_exc})")
-            ok = False
-            print(f"  ✗ default: could not restart its standalone gateway ({exc})")
-            print("    The default gateway is still multiplexing; stop it by hand (hermes gateway stop) and re-run.")
-    if ok:
-        print("✓ Rolled back to per-profile gateways.")
-    else:
+            spawned = _spawn_detached_gateway(default_home)
+        except Exception as spawn_exc:
+            print(f"  ✗ default: the detached fallback also failed ({spawn_exc})")
+            spawned = False
+        if not spawned:
+            print(incomplete)
+            return False
+        print("  ✓ default: started the host gateway detached (no service manager)")
+    live = _wait_for_live_gateway(default_home, _COMPENSATOR_WAIT_SECONDS)
+    if live is None:
+        print(f"  ✗ default: no gateway confirmed serving this host within {_COMPENSATOR_WAIT_SECONDS:.0f}s "
+              f"(check `hermes gateway status` and the gateway log)")
         print(incomplete)
-    return ok
+        return False
+    _manifest_path(default_home).unlink(missing_ok=True)
+    print(f"✓ Compensated: one host gateway is running again (pid {live}) on the recorded flag.")
+    if names:
+        print(f"  Per-profile gateways this attempt had already removed: {', '.join(names)}. They are "
+              f"NOT reinstalled — one gateway per host is the only supported topology — and the host "
+              f"gateway serves them as soon as it multiplexes.\n"
+              f"  Run {MIGRATE_COMMAND} to finish converging.")
+    return True
 
 
 # --------------------------------------------------------------------------- CLI + update hook
 
 
 def _host_supports_migration() -> Optional[str]:
-    """Reason the host cannot be migrated by this command (s6 slots / Windows tasks), else None."""
+    """Reason the host cannot be converged by this command (s6 slots), else None.
+
+    Windows IS handled now: per-profile Scheduled Tasks (and the Startup-folder fallback) are
+    detected and removed like any other unit. s6 is not, and cannot be from here: the per-profile
+    gateways are slots the container image registers at boot
+    (``hermes_cli/container_boot.py::reconcile_profile_gateways``), so the convergence belongs to
+    the container's own boot, not to a process inside it.
+    """
     from hermes_cli import gateway as gw
     if gw._running_under_s6():
-        return "s6-supervised container: per-profile gateways are s6 slots; set gateway.multiplex_profiles on the default profile and restart the container instead."
-    if gw.is_windows():
-        return "Windows Scheduled Tasks are not migrated automatically; set gateway.multiplex_profiles true, stop the per-profile tasks, and `hermes gateway restart`."
+        return ("s6-supervised container: per-profile gateways are s6 slots registered by the "
+                "container's boot, not by this process. Restart the container so its boot "
+                "reconciles them; nothing on this host was changed.")
     return None
 
 
 def cmd_migrate(args) -> None:
-    """``hermes gateway migrate [--multiplex|--standalone] [--dry-run] [--yes]``."""
-    if getattr(args, "standalone", False):
-        if getattr(args, "dry_run", False):
-            default_home = _default_home()
-            manifest = _read_manifest(default_home)
-            if manifest is None:
-                _print(_no_manifest_lines(default_home))
-                sys.exit(1)
-            _print(format_rollback_plan(default_home, manifest, dry_run=True))
-            return
-        sys.exit(0 if rollback_migration() else 1)
+    """``hermes gateway migrate [--multiplex] [--dry-run] [--yes]``."""
     reason = _host_supports_migration()
     if reason:
         print(f"✗ {reason}")
@@ -920,7 +1083,10 @@ def cmd_migrate(args) -> None:
         return
     if plan.already_multiplexed:
         return
-    if plan.blocked or len(plan.profiles) < 2:
+    # A manifest means this host is already mid-migration with units removed: the blocked/too-few-
+    # profiles gates describe a migration that has not started yet, and applying them here is what
+    # left a stranded host refusing its own documented recovery forever.
+    if plan.manifest is None and (plan.blocked or len(plan.profiles) < 2):
         sys.exit(1 if plan.blocked else 0)
     # Zero standalone secondaries is still a migration when the user asks for it explicitly: the flag
     # goes on and the default gateway restarts (the update hook keeps treating that case as a no-op).
@@ -942,11 +1108,17 @@ def maybe_auto_migrate_after_update() -> None:
     if _host_supports_migration() is not None or auto_migration_opted_out(_default_home()):
         return
     plan = build_migration_plan()
-    if plan.already_multiplexed or len(plan.profiles) < 2 or not plan.standalone_secondaries:
+    if plan.already_multiplexed or len(plan.profiles) < 2:
+        return
+    # A stranded host (manifest on disk, units already removed, nobody serving) has no standalone
+    # secondaries left to find, so the "nothing to fold" exit skipped the one host that needs this
+    # most. A manifest makes the update hook a RESUME, and a resume is not gated on blockers.
+    resuming = plan.manifest is not None
+    if not plan.standalone_secondaries and not resuming:
         return
     print()
     auto_blockers = auto_migration_blockers(plan)
-    if plan.blocked or auto_blockers:
+    if not resuming and (plan.blocked or auto_blockers):
         _print(format_update_warning(plan, auto_blockers))
         return
     print("→ Migrating per-profile gateways onto one multiplexed default gateway...")

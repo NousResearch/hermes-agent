@@ -215,7 +215,7 @@ class GatewaySlashCommandsMixin(
         OWN transport (profile-aware, fail-closed) — ``self.adapters`` is the default profile's map."""
         if not event.source:
             return None, None
-        return self._adapter_for_source(event.source), self._session_key_for_source(event.source)
+        return self._delivery_adapter_for(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
         from gateway.run import _telegramize_command_mentions
@@ -259,7 +259,7 @@ class GatewaySlashCommandsMixin(
         (WeCom msgtype:"stream"), which need it sent directly with control-lane metadata (reliable
         proactive send, not the finalized reply stream). ``is not True``: mocks auto-create attrs."""
         source = event.source
-        adapter = self._adapter_for_source(source)  # the receiving bot, not the default profile's
+        adapter = self._delivery_adapter_for(source)  # the receiving bot, not the default profile's
         if adapter:
             adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
@@ -458,7 +458,13 @@ class GatewaySlashCommandsMixin(
                         reason, session_key, len(fallback_keys), ", ".join(fallback_keys))
             return EphemeralReply(t("gateway.stop.stopped"))
 
-        # No running agent anywhere for this scope. A platform status indicator can still be stuck —
+        # No running agent anywhere for this scope. Background delegations the session dispatched in an
+        # earlier turn still count as "active": stop them; each returns as an interrupted completion.
+        from tools.async_delegation import interrupt_for_session
+        if interrupt_for_session(session_key=session_key, reason="stop_command",
+                                 parent_session_id=str(getattr(session_entry, "session_id", "") or "")):
+            return EphemeralReply(t("gateway.stop.stopped"))
+        # A platform status indicator can still be stuck —
         # e.g. Slack's persistent assistant.threads.setStatus survives a gateway restart or a turn
         # that died without a final send.
         # Best-effort clear so /stop always dismisses a phantom "is thinking...". See #32295.
@@ -579,14 +585,29 @@ class GatewaySlashCommandsMixin(
         """Handle /version — show the running Hermes Agent version."""
         return _execute("version").text
 
+    def _catalog_options(self, event: MessageEvent) -> dict:
+        """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
+        the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
+        never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
+        from gateway.slash_access import policy_for_source
+        source = event.source
+        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
+        # no ``config``; policy_for_source treats None as ungated.
+        policy = policy_for_source(getattr(self, "config", None), source)
+        if policy.enabled and not policy.is_admin(source.user_id if source else None):
+            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
+        return {}
+
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
-        return self._telegramized_command_reply(event, _execute("help").text)
+        return self._telegramized_command_reply(
+            event, _execute("help", options=self._catalog_options(event)).text)
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         # Page size is a surface parameter (Telegram messages are shorter).
         page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
-        reply = _execute("commands", args=event.get_command_args(), options={"page_size": page_size})
+        options = {"page_size": page_size, **self._catalog_options(event)}
+        reply = _execute("commands", args=event.get_command_args(), options=options)
         return self._telegramized_command_reply(event, reply.text)
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
@@ -600,7 +621,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.set_home.save_failed", error="Missing logical platform")
         via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
         if via_relay:
-            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            adapter_for_source = getattr(self, "_intake_adapter_for", None)
             relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
             fronts_platform = getattr(relay_adapter, "fronts_platform", None)
             if (source.platform in {None, Platform.LOCAL, Platform.RELAY}
@@ -641,7 +662,7 @@ class GatewaySlashCommandsMixin(
         # independent /voice state.
         # See #75198.
         voice_key = self._voice_key_for_source(event.source)
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
 
         def _set_mode(mode: str) -> None:
             self._voice_mode[voice_key] = mode
@@ -839,7 +860,7 @@ class GatewaySlashCommandsMixin(
         except Exception:
             parent_agent = None
         _thread_metadata = self._reply_metadata(event)
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         preview = _preview(question)
 
         async def _run_side_question() -> None:
@@ -982,7 +1003,7 @@ class GatewaySlashCommandsMixin(
             # adapter refresh below doesn't keep a stale value and keep interrupting.
             self._busy_text_mode = self._load_busy_text_mode()
 
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if adapter is not None:
             adapter._busy_text_mode = self._effective_busy_text_mode(event.source)
         return EphemeralReply(

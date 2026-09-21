@@ -230,7 +230,15 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
         if extra_body:
             call_kwargs["extra_body"] = extra_body
 
-        client = openai.OpenAI(api_key=self._api_key(), base_url=self._base_url())
+        # Env-only-proxy httpx client: a macOS system proxy (ExceptionsList invisible to httpx)
+        # must not swallow a local/custom ``<NAME>_BASE_URL`` (#64888).
+        from agent.process_bootstrap import build_keepalive_http_client
+
+        client_kwargs: Dict[str, Any] = {"api_key": self._api_key(), "base_url": self._base_url()}
+        http_client = build_keepalive_http_client(client_kwargs["base_url"])
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
+        client = openai.OpenAI(**client_kwargs)
         try:
             try:
                 video = self._create_and_poll(client, call_kwargs)

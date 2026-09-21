@@ -3,45 +3,6 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
-  catalog: {
-    listView: '清單檢視',
-    cardView: '卡片檢視',
-    installTitle: (name: string) => `安裝「${name}」？`,
-    installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
-    installTo: '安裝至',
-    thisComputer: '這部電腦',
-    installing: '正在安裝…',
-    installComplete: (name: string) => `已安裝「${name}」`,
-    destinationChanged: '安裝目標已變更。請關閉此對話框並重新開啟安裝連結。',
-    browse: '瀏覽',
-    installed: '已安裝',
-    searchSkills: '搜尋技能',
-    searchPlugins: '搜尋外掛',
-    allSources: '所有來源',
-    allCategories: '所有分類',
-    about: '簡介',
-    author: '作者',
-    source: '來源',
-    category: '分類',
-    version: '版本',
-    platforms: '支援的平台',
-    requires: '相依項目',
-    tools: '工具',
-    hooks: '掛鉤',
-    repository: '程式碼儲存庫',
-    documentation: '文件',
-    noResults: '沒有符合的項目',
-    tryAnother: '請嘗試其他搜尋或清除篩選條件。',
-    clearFilters: '清除篩選條件',
-    loadFailed: '無法載入目錄',
-    retry: '再試一次',
-    more: '顯示更多',
-    pinned: '已審核的提交',
-    snapshotHint: '內容來自 Hermes 目錄。瀏覽時不會連線至來源程式碼儲存庫。',
-    installHint: '安裝前請檢查原始碼。變更將於新的工作階段生效。',
-    results: (count: number) => `${count.toLocaleString('zh-Hant')} 個結果`,
-    back: '返回結果'
-  },
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
@@ -90,6 +51,7 @@ export const zhHant = defineLocale({
     connect: '連線',
     connecting: '連線中',
     continue: '繼續',
+    bots: '機器人',
     copied: '已複製',
     copy: '複製',
     copyFailed: '複製失敗',
@@ -133,7 +95,8 @@ export const zhHant = defineLocale({
     renameLabel: '新名稱',
     deleteTitle: name => `刪除 ${name}？`,
     deleteBody: '將移至垃圾桶，你可以從那裡還原。',
-    pathCopied: '已複製路徑'
+    pathCopied: '已複製路徑',
+    revealMissing: '該資料夾不在這台電腦上'
   },
 
   boot: {
@@ -333,6 +296,57 @@ export const zhHant = defineLocale({
   },
 
   settings: {
+    subpages: {
+      appearanceTheme: '主題',
+      appearanceTypography: '字體與縮放',
+      appearanceWindowLayout: '視窗與佈局',
+      appearanceChatDisplay: '聊天顯示',
+      appearancePet: '寵物',
+      appearanceGeneral: '一般',
+      modelMain: '主要模型',
+      modelAuxiliary: '輔助模型',
+      modelMoa: '多代理協作',
+      modelFallbacks: '備用模型',
+      chatBehavior: '行為',
+      chatAttachments: '附件',
+      workspaceProjects: '專案與探索',
+      workspaceShell: 'Shell 環境',
+      workspaceFiles: '檔案與執行',
+      safetyApprovals: '核准',
+      safetyPrivacy: '隱私與網路',
+      safetyCheckpoints: '檢查點',
+      browserProfile: '瀏覽器設定檔',
+      browserNetwork: '本機與私人網址',
+      memoryPersistent: '持久記憶',
+      memoryContext: '上下文與壓縮',
+      voiceConversation: '語音對話',
+      voiceTranscription: '語音轉文字',
+      voiceSpeech: '文字轉語音',
+      advancedRuntime: '代理限制',
+      advancedTools: '工具存取',
+      advancedTerminal: '終端後端',
+      advancedOutput: '輸出限制',
+      advancedDelegation: '子代理',
+      advancedDesktop: '桌面與啟動',
+      gatewayConnection: '目前視窗',
+      gatewayDevices: '已儲存的連線',
+      gatewayManagedUpdates: '遠端更新',
+      gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
+      gatewayManagedUpdatesEmpty: '請在已儲存的連線中新增 SSH 連線，即可在此管理更新。',
+      keyboardShortcuts: '按鍵繫結',
+      hudGesture: 'HUD 手勢',
+      screenCapture: '螢幕擷取',
+      notificationAlerts: '桌面通知',
+      notificationSounds: '聲音',
+      archivedSessions: '封存與保留',
+      defaultDirectory: '預設專案資料夾',
+      vaultCredentials: '已儲存的憑證',
+      vaultSources: '密碼管理員',
+      appUpdates: '版本與更新',
+      uninstall: '解除安裝',
+      billingOverview: '概覽',
+      billingPlans: '方案'
+    },
     plugins: {
       installModal: {
         installFromGit: '從 Git 安裝',
@@ -512,6 +526,10 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      hideCodeDiffsTitle: '隱藏程式碼差異',
+      hideCodeDiffsDesc: '將檔案編輯顯示為附有新增和刪除行數的行內工具列，不顯示程式碼。',
+      hideThreadTimelineTitle: '隱藏對話時間軸列',
+      hideThreadTimelineDesc: '隱藏每個對話右側邊緣的導覽列。',
       reasoningCollapsedTitle: '預設摺疊推理過程',
       reasoningCollapsedDesc: '保留串流推理內容，但在您開啟前維持摺疊。',
       uiScaleTitle: '介面縮放',
@@ -646,7 +664,8 @@ export const zhHant = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
-      modelContextLength: '上下文視窗',
+      modelContextLength:
+        '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
       fallbackProviders: '備用模型',
       toolsets: '已啟用工具集',
       timezone: '時區',
@@ -806,6 +825,11 @@ export const zhHant = defineLocale({
         targetRatio: '壓縮目標',
         protectLastN: '保護最近訊息'
       },
+      auxiliary: {
+        compression: {
+          timeout: '壓縮模型逾時（秒）'
+        }
+      },
       delegation: {
         model: '子代理模型',
         provider: '子代理提供方',
@@ -869,6 +893,11 @@ export const zhHant = defineLocale({
       compression: {
         enabled: '對話變大時摘要較早的上下文。',
         codexGpt55Autoraise: '為支援的 ChatGPT Codex OAuth 模型將壓縮閾值提高到 85%。'
+      },
+      auxiliary: {
+        compression: {
+          timeout: '每次呼叫輔助壓縮模型的等待秒數（預設 120）。本機模型較慢時請調高。'
+        }
       },
       browser: {
         useRealProfile:
@@ -970,6 +999,10 @@ export const zhHant = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      minimizeToTrayTitle: '最小化至系統匣',
+      minimizeToTrayDesc:
+        '將最小化的視窗隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。關閉視窗、Alt+F4 和 Cmd+Q 的行為不變。預設關閉，僅適用於此裝置。',
+      minimizeToTrayUnavailable: '系統匣無法使用。視窗將正常最小化和關閉。關閉此選項後重新開啟即可重試。',
       none: '無',
       noneParen: '(無)',
       builtinOnly: '僅內建',
@@ -988,6 +1021,14 @@ export const zhHant = defineLocale({
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
       showOptions: '顯示選項'
+    },
+    hudModifier: {
+      title: '輕按叫出 HUD',
+      description:
+        '在 Mac 上按下並放開 ⌘ + Option，在 Windows/Linux 上按下並放開 Ctrl + Alt，即可從任何應用程式將 HUD 帶到前景。預設關閉，僅適用於此裝置。',
+      permission: '請在系統設定 → 隱私權與安全性 → 輸入監控中允許 Hermes，然後重試。此手勢不會記錄按鍵或擷取畫面。',
+      unavailable:
+        '此處無法使用這個手勢。Linux 需要 X11 工作階段；Wayland 不提供全域修飾鍵輕按事件。Hermes 內原有的 HUD 快速鍵仍可使用。'
     },
     screenshot: {
       enabledTitle: '螢幕截圖快速鍵',
@@ -1076,11 +1117,11 @@ export const zhHant = defineLocale({
       pasteSessionToken: '貼上工作階段 Token',
       plainTextConfirmTitle: '以純文字儲存閘道 Token？',
       plainTextConfirmDesc:
-        '在此裝置上找不到作業系統的金鑰環服務，因此 Token 將以未加密的純文字儲存在應用程式的連線設定檔中，以該使用者身分執行的任何處理程序皆可讀取。請安裝或啟用 GNOME Keyring 或 KWallet 以進行加密儲存。',
+        '在此裝置上找不到作業系統的金鑰環服務，因此 Token 將以未加密的純文字儲存在應用程式的連線設定檔中，以該使用者身分執行的任何處理程序皆可讀取。請安裝或啟用系統鑰匙圈（Linux 上為 GNOME Keyring 或 KWallet）以進行加密儲存。',
       plainTextConfirmAction: '以純文字儲存',
       plainTextStoredTitle: 'Token 以純文字儲存',
       plainTextStoredDesc:
-        '安全儲存無法使用，因此已儲存的 Token 以未加密方式儲存在此裝置上應用程式的連線設定檔中。請安裝或啟用 GNOME Keyring 或 KWallet 以將其加密。',
+        '安全儲存無法使用，因此已儲存的 Token 以未加密方式儲存在此裝置上應用程式的連線設定檔中。請安裝或啟用系統鑰匙圈（Linux 上為 GNOME Keyring 或 KWallet）以將其加密。',
       keychainEncryptionTitle: '使用系統鑰匙圈加密已儲存的機密',
       keychainEncryptionDesc:
         '預設關閉。開啟後，閘道 Token 與登入憑證將使用系統鑰匙圈（Keychain Access、GNOME Keyring 或 Windows DPAPI）加密——系統可能會要求授權或密碼。關閉時，它們以僅目前使用者可讀的一般檔案形式儲存。',
@@ -1483,8 +1524,10 @@ export const zhHant = defineLocale({
         failedSelect: backend => `選擇 ${backend} 失敗`,
         needsSetupHint: '此後端已選取但尚未完成設定——在設定完成前命令將會失敗。',
         needsSetupConfirmTitle: backend => `仍要選擇 ${backend} 嗎？`,
-        needsSetupConfirmDescription: detail => `${detail} 此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。`,
-        needsSetupConfirmDescriptionGeneric: '此後端尚未完成設定。此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。',
+        needsSetupConfirmDescription: detail =>
+          `${detail} 此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。`,
+        needsSetupConfirmDescriptionGeneric:
+          '此後端尚未完成設定。此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。',
         needsSetupConfirmAction: '仍然選擇'
       },
       browserRealProfile: {
@@ -1708,7 +1751,7 @@ export const zhHant = defineLocale({
     nav: {
       newChat: { title: '新工作階段', detail: '開始新的工作階段' },
       settings: { title: '設定', detail: '設定 Hermes 桌面端' },
-      skills: { title: '技能與工具', detail: '啟用技能、工具集和提供方' },
+      capabilities: { title: '技能與工具', detail: '啟用技能、工具集和提供方' },
       messaging: { title: '訊息平台', detail: '設定 Telegram、Slack、Discord 等' },
       artifacts: { title: '成品', detail: '瀏覽產生的輸出' }
     },
@@ -2048,21 +2091,18 @@ export const zhHant = defineLocale({
     failedRename: '重新命名設定檔失敗'
   },
 
+  modelAssignment: {
+    saveFailed: 'Hermes 未儲存該模型變更。',
+    confirmTitle: '模型選擇警告',
+    confirmDetail: '僅在你接受此權衡時確認。',
+    confirmAction: '確認',
+    declined: '已取消模型變更 — 你拒絕了資料訓練層級警告。'
+  },
+
   cron: {
     close: '關閉排程',
     title: '排程工作',
     count: count => `${count} 個工作`,
-    modelImpact: {
-      title: '排程工作將繼續使用原模型',
-      message: count => `${count} 個未固定的排程工作將繼續使用建立時的模型執行。固定它們或設定 cron.model 以遷移。`,
-      detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 個`,
-      review: '檢查排程工作',
-      saveFailed: 'Hermes 未儲存該模型變更。',
-      confirmTitle: '模型選擇警告',
-      confirmDetail: '僅在你接受此權衡時確認。',
-      confirmAction: '確認',
-      declined: '已取消模型變更 — 你拒絕了資料訓練層級警告。'
-    },
     search: '搜尋排程工作…',
     loading: '正在載入排程工作…',
     states: {
@@ -2263,7 +2303,7 @@ export const zhHant = defineLocale({
     },
     nav: {
       'new-session': '新工作階段',
-      skills: '技能與工具',
+      capabilities: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
       cron: '排程工作'
@@ -2275,6 +2315,10 @@ export const zhHant = defineLocale({
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',
+    terminal: '終端機',
+    files: '檔案',
+    review: '審查',
+    logs: '記錄',
     cronJobs: '排程任務',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
@@ -2502,6 +2546,8 @@ export const zhHant = defineLocale({
     attachments: count => `${count} 個附件`,
     editingInComposer: '在輸入框中編輯',
     editingQueuedInComposer: '在輸入框中編輯排隊回合',
+    restoredDraftNotice: '已還原你未送出的訊息',
+    restoredDraftUndo: '復原',
     queueEdit: '編輯',
     queueSendNext: '下一個',
     queueSteer: '引導 — 立即修正目前回合',
@@ -2556,6 +2602,8 @@ export const zhHant = defineLocale({
   },
 
   statusStack: {
+    hideStack: '隱藏狀態面板',
+    showStack: '顯示狀態面板',
     agents: '代理',
     background: count => `${count} 個背景任務`,
     goalActive: '目標進行中',
@@ -2980,6 +3028,7 @@ export const zhHant = defineLocale({
       xhigh: '極高',
       max: '最高',
       ultra: '超高',
+      sendsOnRoute: (level: string) => `此路由實際傳送 ${level}`,
       updateFailed: '模型選項更新失敗',
       fastFailed: '快速模式更新失敗'
     },
@@ -3330,6 +3379,10 @@ export const zhHant = defineLocale({
         streaming: '串流連線錯誤'
       },
       errorRetry: '重試',
+      errorLimitResets: time => `限額將於 ${time} 重設`,
+      errorRetryAtReset: time => `限額重設後重試（${time}）`,
+      errorRetryScheduled: (time, wait) => `將於 ${time} 重試 — 還剩 ${wait}`,
+      errorRetryScheduledCancel: '取消',
       errorStartNewSession: '開始新工作階段',
       errorSwitchProvider: '切換服務商',
       errorSignInAgain: provider => `重新登入 ${provider}`,
@@ -3426,6 +3479,7 @@ export const zhHant = defineLocale({
       statusRecovered: '已復原',
       statusDone: '完成',
       resultUnavailable: '結果無法使用',
+      resultInterrupted: '已中斷',
       memoryWriteNoted: '已記下記憶寫入',
       actions: {
         read: '已讀取',

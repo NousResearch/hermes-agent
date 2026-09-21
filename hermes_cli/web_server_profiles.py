@@ -46,6 +46,28 @@ def _hermes_home_scope(path) -> Any:
         reset_hermes_home_override(token)
 
 
+def serving_profile_name() -> str:
+    """This process's OWN profile name — but only when that name provably resolves back
+    to the process home.
+
+    The dashboard SPA needs an explicit scope for requests it fires before the profile
+    switcher has resolved: a destructive route now 400s on an unnamed profile as soon as
+    the host serves more than one, and "" would otherwise mean "whichever home this
+    process launched with" anyway. Naming it is only safe if the name cannot resolve
+    ELSEWHERE, so a custom HERMES_HOME outside ``profiles/`` (``get_active_profile_name()``
+    answers ``"custom"``) returns "" and keeps the old unnamed behaviour rather than
+    risking a wrong-profile write.
+    """
+    from hermes_cli import profiles as profiles_mod
+    try:
+        name = (profiles_mod.get_active_profile_name() or "").strip()
+        if not name or name == "custom":
+            return ""
+        return name if profiles_mod.profile_matches_home(name, get_process_hermes_home()) else ""
+    except Exception:
+        return ""
+
+
 def _is_other_profile(profile: Optional[str]) -> bool:
     """True when ``profile`` names a profile other than this process's own."""
     if _is_current_profile(profile):
@@ -81,9 +103,15 @@ def _broadcast_gateway_session_info() -> None:
         _log.exception("session.info broadcast after config save failed")
 
 
-def _parse_model_ids(resp: "Any") -> List[str]:
-    """Model ids from an OpenAI-compatible ``/v1/models`` response: ``{"data": [{"id": ..}]}``
-    or a bare ``{"data": ["id", ..]}``. ``[]`` on any parse/HTTP error so a slightly
+_MODEL_ENTRY_METADATA = ("canonical_model", "reasoning_effort")
+
+
+def _parse_model_entries(resp: "Any") -> List[Dict[str, str]]:
+    """Model rows from an OpenAI-compatible ``/v1/models`` response as ``{"id": ..}`` dicts,
+    keeping the alias metadata a gateway may advertise (``canonical_model``,
+    ``reasoning_effort``). Flattening to bare ids lost that, so Desktop stored a reasoning
+    alias as the literal upstream model (#93622). Accepts ``{"data": [{"id": ..}]}`` or a
+    bare ``{"data": ["id", ..]}``; ``[]`` on any parse/HTTP error so a slightly
     non-standard endpoint never hard-blocks."""
     try:
         if not resp.is_success:
@@ -94,8 +122,24 @@ def _parse_model_ids(resp: "Any") -> List[str]:
     data = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(data, list):
         return []
-    ids = [str((item.get("id") if isinstance(item, dict) else item) or "").strip() for item in data]
-    return [mid for mid in ids if mid]
+    entries: List[Dict[str, str]] = []
+    for item in data:
+        model_id = str((item.get("id") if isinstance(item, dict) else item) or "").strip()
+        if not model_id:
+            continue
+        entry = {"id": model_id}
+        if isinstance(item, dict):
+            for key in _MODEL_ENTRY_METADATA:
+                value = str(item.get(key) or "").strip()
+                if value:
+                    entry[key] = value
+        entries.append(entry)
+    return entries
+
+
+def _parse_model_ids(resp: "Any") -> List[str]:
+    """Bare model ids from a ``/v1/models`` response (see :func:`_parse_model_entries`)."""
+    return [entry["id"] for entry in _parse_model_entries(resp)]
 
 
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,

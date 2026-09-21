@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import (
-    get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
+    get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
 from agent.model_metadata import CHARS_PER_TOKEN
@@ -877,9 +877,11 @@ _WINDOWS_BASH_SHELL_HINT = (
     "MSYS-style paths like `/c/Users/<user>/...` work alongside native `C:\\Users\\<user>\\...` paths. PowerShell "
     "builtins (`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their POSIX equivalents (`ls`, "
     "`$FOO`, `grep`). Path arguments for NATIVE Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
+    # no-tmp: ok — illustrates the MSYS path that FAILS for native Windows tools
     "path conversion is disabled here, so `git -C /c/Users/x` or `node /tmp/a.js` fails with 'cannot change to'/'not "
     "found' even though `cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style forward-slash native paths to "
-    "native tools, and prefer `$LOCALAPPDATA/Temp` over `/tmp` for scratch files a native tool must read. When "
+    # no-tmp: ok — tells the model what NOT to use
+    "native tools, and prefer `$LOCALAPPDATA/Temp` (or `$TMPDIR`, which Hermes points at its own scratch dir) for scratch files a native tool must read — never a bare `/tmp`. When "
     "answering prompts in a pty background process, use process(submit) — never process(write) with a bare trailing "
     "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
     "` is not delivered as a line terminator, so the child's prompt silently never returns. When a CLI offers a "
@@ -902,10 +904,11 @@ def _tenv_read(name: str, default: str = "") -> str:
 _BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
 # (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
+# OS/kernel only: the sandbox's user, $HOME and cwd are user-identifying and nothing consumes
+# them — the model can `whoami && pwd` when a task actually needs them.
 _BACKEND_PROBE_CMD = (
-    "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
-    "\"$(uname -r 2>/dev/null || echo unknown)\" "
-    "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
+    "printf 'os=%s\\nkernel=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
+    "\"$(uname -r 2>/dev/null || echo unknown)\""
 )
 
 
@@ -948,11 +951,8 @@ def _format_backend_probe(output: str) -> str:
     """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
     parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
     known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None  # noqa: E731
-    fields = (
-        ("OS", " ".join(x for x in (known("os"), known("kernel")) if x)),
-        ("User", known("user")), ("Home", parsed.get("home")), ("Working directory", parsed.get("cwd")),
-    )
-    return "\n".join(f"  {label}: {value}" for label, value in fields if value)
+    os_line = " ".join(x for x in (known("os"), known("kernel")) if x)
+    return f"  OS: {os_line}" if os_line else ""
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
@@ -995,6 +995,13 @@ def _local_host_hints() -> list[str]:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
     except OSError:
         pass
+    # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
+    # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
+    try:
+        host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
+                          "and probes there, never under the system temp dir; entries are pruned after 72h)")
+    except OSError:
+        pass
     if not (sys.platform == "win32" and not is_wsl()):
         return ["\n".join(host_lines)]
     host_lines.append(
@@ -1013,7 +1020,9 @@ def _remote_backend_hint(backend: str) -> str:
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "
-            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}"
+            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}\n"
+            f"  The sandbox's current user, $HOME, and working directory are not listed here; if you need them, "
+            f"probe directly with a terminal call like `whoami && pwd`."
         )
     description = (
         _BACKEND_FALLBACK_DESCRIPTIONS.get(backend)
@@ -1022,7 +1031,7 @@ def _remote_backend_hint(backend: str) -> str:
     )
     return lead + (
         f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
-        f"prompt-build time, so the sandbox's current user, $HOME, and working directory are unknown from here. "
+        f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
         f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
     )
 
@@ -1354,6 +1363,13 @@ def _render_skills_index(
             if name not in seen:
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+    from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
+    if is_single_query_session():
+        return (
+            ONESHOT_SKILLS_LOAD_GUIDANCE
+            + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
+            + hidden_note
+        )
     return (
         "## Skills\n"
         "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
@@ -1377,6 +1393,11 @@ def _render_skills_index(
     )
 
 
+def _oneshot_prompt_variant() -> bool:
+    from agent.oneshot_footprint import is_single_query_session
+    return is_single_query_session()
+
+
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
@@ -1391,6 +1412,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _oneshot_prompt_variant(),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)

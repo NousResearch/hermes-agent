@@ -88,8 +88,8 @@ const RENDER_BUDGET = 600
 // over ALL of them — measured as the 4-zone collapse in the long-session
 // matrix (worst-second 8fps while 1-2 zones held 50+). Sharing the budget
 // keeps "screens of scrollback" constant instead of "turns per pane": a pane
-// a quarter the height gets a quarter the page, floored at a quarter budget
-// (MIN_VISIBLE_GROUPS still floors the turn count regardless of weight).
+// gets its proportional share of the page (MIN_VISIBLE_GROUPS still floors the
+// turn count regardless of weight).
 // Panes that already backfilled keep their mounted content when the count
 // changes — the share only caps where NEW backfills stop.
 const $mountedTranscriptPanes = atom(0)
@@ -118,9 +118,7 @@ const FIRST_PAINT_BUDGET = 20
 export const HIDDEN_TRANSCRIPT_RENDER_BUDGET = 40
 
 export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): number =>
-  hidden
-    ? HIDDEN_TRANSCRIPT_RENDER_BUDGET
-    : Math.max(Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes)), RENDER_BUDGET / 4)
+  hidden ? HIDDEN_TRANSCRIPT_RENDER_BUDGET : Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes))
 
 // "Show earlier" raises renderBudget ABOVE paneBudget (one pane page per click).
 // The render-phase cap must only snap a hot-hidden pane down to its retention
@@ -163,7 +161,37 @@ export const transcriptBackfillFrameCount = (
 // streamed content normally.
 const SCROLL_TARGET_EPSILON_PX = 0.5
 
+// True while the user holds a non-collapsed text selection inside the
+// transcript. use-stick-to-bottom only pauses for a selection while the mouse
+// button is still down — a selection that persists after mouse-up must also
+// pin the viewport, or streaming growth yanks it out from under the user
+// (#115464). A collapsed caret (or a selection outside the transcript, e.g.
+// in the composer) never pins.
+export function hasTranscriptTextSelection(scrollElement?: Element | null): boolean {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  const selection = document.getSelection()
+
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false
+  }
+
+  if (!scrollElement) {
+    return true
+  }
+
+  const { anchorNode, focusNode } = selection
+
+  return Boolean((anchorNode && scrollElement.contains(anchorNode)) || (focusNode && scrollElement.contains(focusNode)))
+}
+
 export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, { scrollElement }) => {
+  if (hasTranscriptTextSelection(scrollElement)) {
+    return scrollElement.scrollTop
+  }
+
   const currentScrollTop = scrollElement.scrollTop
   const remaining = targetScrollTop - currentScrollTop
 
@@ -471,6 +499,20 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     targetScrollTop: resolveThreadScrollTarget
   })
 
+  // #115464: explicit snaps go through the same selection pin as the resize
+  // follow above — without this a snap still flips isAtBottom and kicks an
+  // animation while the user is selecting transcript text.
+  const scrollToBottomUnlessSelecting = useCallback(
+    (...args: Parameters<typeof scrollToBottom>) => {
+      if (hasTranscriptTextSelection(scrollRef.current)) {
+        return undefined
+      }
+
+      return scrollToBottom(...args)
+    },
+    [scrollRef, scrollToBottom]
+  )
+
   const { olderAvailable, expandWindow, isHistorical, returnToLatest } = useTranscriptWindow()
 
   useEffect(() => {
@@ -490,7 +532,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Cut the budget during RENDER, not in the post-commit layout effect. An
   // effect-time cut is too late: React would first build the whole tree with
-  // the full budget (up to 300 cost units of markdown + syntax highlighting),
+  // the full budget (up to 600 cost units of markdown + syntax highlighting),
   // commit it, and only then re-render at the small budget. The render-phase
   // state adjustment restarts this component immediately — before any child
   // renders — so the heavy commit never happens.
@@ -695,15 +737,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(
     () =>
       onScrollToBottomRequest(() => {
-        if (isHistorical) {returnToLatest?.()}
+        if (isHistorical) {
+          returnToLatest?.()
+        }
 
         if (jumpRestoreRef.current) {
           jumpRestoreRef.current()
         } else {
-          void scrollToBottom()
+          void scrollToBottomUnlessSelecting()
         }
       }, scrollSessionId),
-    [scrollToBottom, scrollSessionId, isHistorical, returnToLatest]
+    [scrollToBottomUnlessSelecting, scrollSessionId, isHistorical, returnToLatest]
   )
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
@@ -719,9 +763,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     () =>
       subscribeToThreadForeground(
         () => isAtBottom,
-        () => void scrollToBottom()
+        () => void scrollToBottomUnlessSelecting()
       ),
-    [isAtBottom, scrollToBottom]
+    [isAtBottom, scrollToBottomUnlessSelecting]
   )
 
   const endEditHold = useCallback(() => {
@@ -751,7 +795,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const el = scrollRef.current
 
     if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
-      scrollToBottom()
+      scrollToBottomUnlessSelecting()
     }
   })
 
@@ -980,7 +1024,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         if (target.kind === 'bottom') {
           // Hand back to use-stick-to-bottom locked, so late async growth
           // (images, highlight) keeps following the bottom.
-          void scrollToBottom('instant')
+          void scrollToBottomUnlessSelecting('instant')
           loadSettledRef.current = true
         } else if (clamped) {
           // Content hasn't finished arriving (the backfill transition is still
@@ -1065,6 +1109,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const onWheel = (event: WheelEvent) => {
       resizeObserver.disconnect()
 
+      // A wheel/trackpad scroll-up is explicit reading intent. Break the
+      // bottom-follow synchronously, before a same-frame content resize can
+      // ask use-stick-to-bottom to re-pin while its delayed scroll handler
+      // still considers the thread locked.
+      if (event.deltaY < 0) {
+        stopScroll()
+      }
+
       if (event.deltaY !== 0) {
         cancelRestore()
       }
@@ -1101,7 +1153,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         resizeObserver.observe(contentRef.current)
       }
 
-      void scrollToBottom('instant')
+      void scrollToBottomUnlessSelecting('instant')
     }
 
     el.addEventListener('wheel', onWheel, { passive: true })
@@ -1121,7 +1173,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       cancelAnimationFrame(rafId)
       record()
     }
-  }, [contentRef, hasGroups, paneVisible, scrollRef, scrollStorageKey, scrollToBottom, sessionKey, stopScroll])
+  }, [
+    contentRef,
+    hasGroups,
+    paneVisible,
+    scrollRef,
+    scrollStorageKey,
+    scrollToBottomUnlessSelecting,
+    sessionKey,
+    stopScroll
+  ])
 
   // A thread can mount with a run already active, without a runStart event.
   useEffect(() => {

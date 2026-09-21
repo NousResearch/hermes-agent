@@ -47,6 +47,7 @@ The center of the app. You get:
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **Independent background drafts** — hidden chat tabs can update their drafts without moving the caret or selection in the visible composer.
+- **Unsent drafts survive a lost session** — a draft you typed into a chat whose session no longer exists (deleted elsewhere, or a stale tab after a profile rename or wiped backend) is carried into the fresh chat the app falls back to, with an inline **Restored your unsent message** strip above the input. **Undo** puts the text back where it was; nothing is sent, navigated, or focused on your behalf, and the strip appears once per lost draft.
 - **Directive chip actions** — hover an actionable reference (such as a URL) to reveal its action pill. A short grace period lets you move from the chip to the pill before it dismisses. The pill stays available while you move within it; after leaving, unrelated pointer movement does not delay dismissal. Clicking its action preserves the draft selection.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
 - **Hide vs. Close for stateful panes** — a zone holding a Browser (or HTML preview) or the Terminal pane offers **Hide** instead of Minimize. Hiding collapses the zone to its restore rail but keeps the pane's body mounted: a live page keeps its unsaved form input, timers, scroll position, and the agent's `drive_preview` automation target; a terminal keeps its running shell and scrollback; and **Restore** shows the same content without a reload. The hidden body is inert — it never takes keyboard shortcuts or steals composer focus. **Close** (the tab's ×) is what actually releases the page or shell.
@@ -66,7 +67,7 @@ The bar along the bottom of the chat shows live session state and exposes quick 
 - **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
 - **Context-usage meter** — a live "% full" meter of the session's context window. Click it to open the **Context Usage** popover with a token breakdown by category (system prompt, tool definitions, skills, memory, rules, MCP, subagent definitions, and the conversation itself) so you can see exactly what's eating the window before compression kicks in.
 - **Cache hit rate and tokens per second** — off by default; turn them on from the right-click menu. Cache hit rate is the share of this session's prompt tokens served from the provider's prompt cache (cached tokens cost less, so higher is cheaper — you can watch a session get cheaper as it warms up). Tokens per second is output throughput averaged over the last 10 model calls. Both update live during a turn.
-- **Customizable items** — right-click the status bar (**Show in status bar**) to choose what appears: the context meter, cache hit rate, tokens per second, workspace, model, approvals, turn/session timers, terminal, Command Center, backend version, and more — or hide the bar entirely (**Cmd/Ctrl+Shift+S** toggles it).
+- **Customizable items** — right-click the status bar (**Show in status bar**) to choose what appears: the context meter, cache hit rate, tokens per second, workspace, model, approvals, turn/session timers, terminal, Command Center, backend version, and more — or hide the bar entirely (**Cmd/Ctrl+Shift+S** toggles it). The workspace item's menu offers **Open containing folder** only when the focused session runs on this computer; a session on a remote gateway keeps its folder on that machine, so use **Reveal in filetree** instead. When the OS file manager cannot find a path, the app says so instead of doing nothing.
 
 Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
@@ -98,9 +99,9 @@ With **Group by → Projects**, each project row previews its three most recent 
 
 #### Choosing a model
 
-The model picker lives in the **composer**, just left of the microphone. Click it to switch the model; hover a model row for its options (thinking, effort, fast). Next to it, a **reasoning pill** shows the active model's effort level (`Med`, `High`, …) and opens the same options directly, so you can change effort without finding the model's row. The pill is hidden for models whose catalog reports no reasoning control. When the gateway flags a switch as risky (a large cached context, an expensive model, a data-training tier), the app asks first in a dialog: **Switch anyway** applies it, **Keep current model** (or Esc) leaves everything as it was.
+The model picker lives in the **composer**, just left of the microphone. Click it to switch the model; hover a model row for its options (thinking, effort, fast). Next to it, a **reasoning pill** shows the active model's effort level (`Med`, `High`, …) and opens the same options directly, so you can change effort without finding the model's row. The pill is hidden for models whose catalog reports no reasoning control. When the route clamps a Hermes-internal step (`ultra` is sent as the route's strongest level, e.g. `max`), the pill shows both ends (`Ultra→Max`) and its tooltip spells out the same wording as the CLI, `Ultra (sends Max on this route)`, so the level you see is the level that is sent. When the gateway flags a switch as risky (a large cached context, an expensive model, a data-training tier), the app asks first in a dialog: **Switch anyway** applies it, **Keep current model** (or Esc) leaves everything as it was.
 
-The **microphone** is dictation; hover it and the other voice toggles fan out above it — **Read replies aloud** and the **wake word** ear. A toggle that is on shows as a solid disc. Starting a full voice conversation stays on the primary button to the right. In the HUD and in narrow tiles the same controls fold into one menu behind the mic instead.
+The **microphone** is dictation; hover it and the other voice toggles fan out above it — **Read replies aloud** and the **wake word** ear. A toggle that is on shows as a solid disc. Starting a full voice conversation stays on the primary button to the right. In the HUD and in narrow tiles the same controls fold into one menu behind the mic instead. When dictation talks to the speech-to-text provider directly (client-direct voice), the request honours the same `stt.openai.timeout` budget (default 60 s) as the gateway's own transcription client, so a slow endpoint fails with "Transcription timed out" instead of leaving the mic stuck on transcribing.
 
 - **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
 - **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
@@ -113,6 +114,8 @@ Explore and preview the working directory without leaving the app — useful for
 
 ### Artifacts
 
+Preview links above the composer are session suggestions, not a task-completion checklist. Dismissing one keeps historical tool rows from bringing it back after navigation or reload. A new successful tool completion can offer the file again. Read-only file inspection and failed writes do not create suggestions. Files with the same name show enough directory context to distinguish them; dismissing a suggestion does not delete its file or transcript. Changing a `/goal` does not erase a conversation's artifacts.
+
 When connected to a remote gateway, opening a file artifact downloads it through that gateway, using the artifact’s originating profile and session. Relative paths resolve against the session’s saved working directory; home-relative paths use the gateway’s home, never the Desktop machine’s home. Windows-style relative paths are recognized alongside forward-slash paths, and file URIs retain drive and network-share information for the gateway to interpret. Missing sessions or working directories produce an error rather than selecting a different local file.
 
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
@@ -124,6 +127,14 @@ The app is built for working on several things at once:
 - **Tabs** — **Cmd/Ctrl+T** opens a new session tab; **Ctrl+Tab** / **Ctrl+Shift+Tab** cycle sessions, and **Ctrl+1…9** jump to a recent session by position. **Cmd/Ctrl+W** closes the focused tab and **Cmd/Ctrl+Shift+T** reopens the last closed one.
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
+
+#### Minimize to tray
+
+Enable **Settings → Appearance → Window layout → Minimize to tray** to hide minimized windows from the taskbar or Dock while their sessions keep running. The setting is off by default and applies only to this device.
+
+Use **Show Hermes** in the system tray (the menu bar on macOS) to restore the windows. **Quit Hermes** still uses the normal active-work confirmation. Closing a window, **Alt+F4**, and **Cmd+Q** keep their existing behavior; this setting does not turn Close into hide-to-tray.
+
+On macOS, the Dock icon hides only when no ordinary Hermes window remains visible. On Linux, a registered StatusNotifier tray host is required; desktops without one keep normal minimize behavior. If the host disappears, hidden windows are restored.
 
 ### Terminal
 
@@ -163,6 +174,7 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 - **Moving the bar** — on macOS and Windows, **press and hold** anywhere on the composer for a beat, then drag. On Linux/X11, hold **Ctrl** and drag with the primary mouse button for an immediate grab (including over selected text); press-and-hold remains available too. Keep the grab held while invoking your desktop switch shortcut to carry the HUD onto another virtual desktop. On native Wayland the composer bar is a compositor drag handle (the only way to move it, because an app cannot place its own window).
 - **Resizing** — drag any edge or corner of the bar; the opposite edge stays anchored. Native Wayland exposes the right and bottom edges because the compositor does not allow apps to position top-level windows themselves.
 - **Reset layout** — the discard control on the bar restores the default size and (on X11 / macOS / Windows) position. Use this if a persisted size leaves the HUD unusable.
+- **Tap to summon** — enable **Tap to summon HUD** under **Settings → Keyboard Shortcuts → HUD gesture**, then tap and release **⌘+Option** on macOS or **Ctrl+Alt** on Windows/Linux X11. Release both keys within half a second without another key or mouse action. On Windows, use left Alt; right Alt is reserved for AltGr layouts. This opens or focuses the HUD from another app; it does not toggle it closed, record audio, or send a message. Off by default and saved only on this device. macOS requires Input Monitoring permission; the page offers recovery controls only when permission or another error needs attention. Linux Wayland does not expose this gesture, so keep using the in-app HUD shortcut there.
 - **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is. On native Wayland this is a no-op — the compositor owns placement.
 - **Exiting** — click the exit button on the bar, press **⌘/Ctrl+Shift+H** again, or press **⌘/Ctrl+W** while the HUD has focus. The app window comes back in front with your session and the caret in its composer.
 
@@ -187,16 +199,40 @@ Under local WSLg, Hermes launches with `--ozone-platform=wayland` to avoid the X
 
 When `hermes gui` runs inside WSL2 with `/dev/dxg` present and Mesa's `d3d12_dri.so` installed, the launcher sets `GALLIUM_DRIVER=d3d12` for Electron so rendering uses the Windows GPU instead of the llvmpipe software rasterizer; an explicit `GALLIUM_DRIVER`, `MESA_LOADER_DRIVER_OVERRIDE`, `LIBGL_ALWAYS_SOFTWARE`, or `LIBGL_DRIVERS_PATH` in your environment is left untouched (for example `GALLIUM_DRIVER=llvmpipe hermes gui` keeps software rendering).
 
+#### Launch flags and the renderer heap ceiling
+
+Two `desktop.*` keys reach Chromium at launch on every path — `hermes desktop`, the Start-menu shortcut and the Linux `.desktop` entry alike (the app reads them from `config.yaml` before its first window opens):
+
+```yaml
+desktop:
+  electron_flags: ["--ozone-platform=x11"]   # extra Chromium switches; a single string is split on spaces
+  renderer_max_old_space_mb: 2048            # V8 heap ceiling for the chat renderer; 0 = Chromium default
+```
+
+`renderer_max_old_space_mb` is applied as `--js-flags=--max-old-space-size=N` and merged with any `--js-flags` you already pass, so neither overwrites the other. Set it when a very long, tool-heavy session drives the renderer past what the machine can spare: the renderer then hits its own limit and reloads (bounded to three reloads per minute) instead of freezing the whole machine.
+
+Both keys must be written exactly as shown — two spaces of indentation under a top-level `desktop:` key, and four spaces before the `-` of a block list:
+
+```yaml
+desktop:
+  electron_flags:
+    - "--ozone-platform=x11"
+    - "--js-flags=--expose-gc"
+```
+
+The pre-window reader is a small YAML subset, not the full parser the rest of Hermes uses, because it has to run before the app loads anything. Other indentations are valid YAML but are ignored here; when that happens the app logs `desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored` at startup and launches with Chromium's defaults.
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
 
-- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider. Accounts and API keys share the Settings **Applies to** selection: credential reads and edits, OAuth account removal, and sign-in launched here target the selected profile, not the active chat profile. The sign-in flow keeps that target through credential saving and model selection. Changing **Applies to** discards unsaved credential drafts. Closing sign-in cancels polling and ignores late results; a credential write already sent may still finish in its original profile. Externally managed CLI credentials use their own CLI and are not covered by this profile selector. Its **Local Models** view installs and manages an on-device llama.cpp runtime — see [Local Models](./local-models.md).
+- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider. Accounts, API keys, and Custom Endpoints share the Settings **Applies to** selection: credential reads and edits, OAuth account removal, custom-endpoint save/test, and sign-in launched here target the selected profile, not the active chat profile. The sign-in flow keeps that target through credential saving and model selection. Changing **Applies to** discards unsaved credential drafts. Closing sign-in cancels polling and ignores late results; a credential write already sent may still finish in its original profile. Externally managed CLI credentials use their own CLI and are not covered by this profile selector. Its **Local Models** view installs and manages an on-device llama.cpp runtime — see [Local Models](./local-models.md).
 - **Every provider and model in the menus** — the GUI surfaces the full provider list and every model that `hermes model` knows about, so you pick from the same catalog the CLI sees rather than a curated subset.
+- **Custom endpoints with an API mode** — **Settings → Providers → Custom Endpoints** has an **API Mode** selector (**Auto-detect**, **Chat Completions**, **Responses API**, **Anthropic Messages**) — the same choice `hermes model` offers for a custom provider. It is saved as `providers.<id>.api_mode` in `config.yaml`, so a Responses-only or Anthropic-compatible host is no longer called on `/chat/completions`. **Test** checks the transport you will actually use, not just `/v1/models`: it sends a one-token request to the pinned mode's route (or to the mode Auto-detect resolves to) and fails with the transport named when the host does not serve it. **Test** also keeps the alias metadata a gateway advertises in `/v1/models` (`canonical_model`, `reasoning_effort`): picking an alias such as `gpt-5.6-sol-high` saves the canonical model and pins its effort under `agent.reasoning_overrides`.
 - **xAI Grok OAuth** — Grok is a first-class OAuth provider in the launcher; sign in through the browser flow like the other OAuth providers.
 - **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal. In the terminal backend picker, selecting a backend marked **Needs setup** asks for confirmation first; declining leaves the current backend selected.
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
-- **Reasoning Blocks** — **Settings → Chat → Reasoning Blocks** (`display.show_reasoning` in `config.yaml`) shows or hides the model's thinking in the transcript (off shows answers only). Open chats update as soon as the setting saves.
+- **Reasoning Blocks** — **Settings → Chat → Reasoning Blocks** (`display.show_reasoning` in `config.yaml`) shows or hides the model's thinking in the transcript (off shows answers only). Open chats update as soon as the setting saves. Typing `/reasoning hide` or `/reasoning show` in the composer flips the same setting and the open transcript follows immediately.
 - **Reopen Last Chat on Launch** — by default the app picks up where you left off on cold start. Turn it off in **Settings → Appearance** (or set `display.resume_last_session: false` in `config.yaml`) to always begin with a fresh chat. Deep links and explicit destinations are never overridden either way.
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **Per-task reasoning effort** — each row under **Settings → Model → Auxiliary models** has a reasoning selector next to its provider/model pick: a level, **Off**, or **inherit · main model effort** (the default, which removes the task's override). It is saved as `auxiliary.<task>.reasoning_effort` in `config.yaml`, the same key `hermes model` writes, and shows in the row's summary when set. Use it to run frequent helpers such as compression or titling at low or no reasoning while the main agent stays at high.
@@ -207,7 +243,7 @@ First-run onboarding has been redesigned on a unified overlay design system, and
 
 #### Per-profile settings: the "Applies to" scope
 
-When you have two or more [profiles](./profiles.md), the config-backed settings pages — **Model, Workspace, Safety, Memory & Context, Voice, Chat, Advanced, and Tools & Keys** — and the **Messaging** overlay show a shared **Applies to** chip row at the top. It selects which profile your edits target:
+When you have two or more [profiles](./profiles.md), the config-backed settings pages — **Model, Workspace, Safety, Memory & Context, Voice, Chat, Advanced, and Tools & Keys** — plus **Providers → Custom Endpoints** and the **Messaging** overlay show a shared **Applies to** chip row at the top. It selects which profile your edits target:
 
 - The default selection **follows the active profile**, which behaves exactly as before — edit the profile you're using.
 - Pick another profile to view and edit *its* settings without switching the whole app; the selection persists as you move between settings pages.
@@ -220,42 +256,12 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — open **Capabilities → Skills** to manage [skills](./features/skills.md). **Installed** shows the selected profile's actual skills and enable/disable state. **Browse** searches the same full published catalog as the public Skills Hub, with cards by default and an optional list/detail view.
-- **Plugins** — **Capabilities → Plugins** uses the same **Installed / Browse** layout. Installed combines actual app-level desktop plugins with agent plugins from the selected profile; Browse shows the public [Plugin Catalog](./features/plugin-catalog.md). Search stays at the top, and the tab switch and actions share one row on both pages.
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
-- **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron).
+- **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
 - **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
-
-Use the list and card icons at the right of the Browse filters to change layouts.
-The choice is remembered across Skills and Plugins. Search and filters stay in
-place; click a card to open its details or use its Install button directly.
-
-#### Where Browse gets its data
-
-These are native Desktop views, **not embedded website pages**. Desktop and
-the public website consume the same generated CDN snapshots:
-
-| Catalog | Public docs alias | Desktop fetch URL |
-|---|---|---|
-| Skills | [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json) | `https://nousresearch.github.io/hermes-agent/docs/api/skills.json` |
-| Plugins | [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json) | `https://nousresearch.github.io/hermes-agent/docs/api/plugins.json` |
-
-The skills snapshot combines `skills/`, `optional-skills/`, and the centralized
-skills index. The plugin snapshot comes from `plugin-catalog/*.yaml` and cached star
-counts; the same publish supplies the installer's removed-entry list. Browsing does not make live
-GitHub API calls or fetch plugin/skill source repositories. **Installed** is
-separate: its state comes from the selected profile's backend and the app's
-desktop-plugin registry, not those public snapshots.
-
-The public hubs' **Install in Hermes** buttons open `hermes://skill/install`
-or `hermes://plugin/install` links and require confirmation in Desktop. Use
-an updated Desktop build for the skill route and plugin catalog parameters;
-the cards retain copyable CLI commands if the app is missing or too old. See
-[skill links](./features/skills.md#install-from-the-website) and
-[plugin links](./features/plugins.md#one-click-install-links-desktop) for the
-parameters and review flow.
 
 ### Bot Mode (built in)
 
@@ -507,8 +513,8 @@ hot-reloads every save. Manage installed plugins live in **Capabilities → Plug
 See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
 reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
 
-**Capabilities → Plugins → Installed** shows the actual installed state:
-**one list entry per plugin**, with Desktop and Agent controls in its detail pane.
+**Capabilities → Plugins** is the one place for everything that extends
+Hermes: **one row per plugin**, with two switch columns.
 
 - A plugin can extend **this app**, **the agent**, or **both** — the badge on
   each row says which, inferred from what the package contains (`plugin.yaml`
@@ -534,21 +540,36 @@ reference. (This is separate from the [web dashboard plugin system](./features/e
   or git remote) for that profile only. Optional extras such as the
   [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
   install from their own repos via **Install from Git**.
+- **Uninstall** — every plugin installed under the selected profile's
+  `plugins/` folder (user or git install) has a trash button beside its name.
+  It asks for confirmation, then deletes the plugin's files and install
+  metadata from that profile — the same operation as
+  `hermes plugins remove <name>` — and prunes the app-level copy of a unified
+  package's desktop half. Restart the gateway to unload the plugin's code.
+  Repo-bundled and pip-installed (entrypoint) plugins have no trash button:
+  the first cannot be removed, the second goes with its Python package.
+  A standalone desktop plugin (a folder you dropped into
+  `~/.hermes/desktop-plugins/` with no agent package) gets the same trash
+  button; confirming deletes that folder on this computer and unloads the
+  plugin immediately, no gateway involved.
 
-Switch to **Browse** for the native [Plugin Catalog](./features/plugin-catalog.md).
-Both Browse and **Install from Git** open the review-then-install dialog. For
-an agent-plugin catalog install, the backend resolves the catalog name to its
-reviewed pin; a link's `sha` is display metadata, not an override. This does
-not guarantee a pinned standalone desktop-plugin install. **Install from Git**
-also offers **Pin to commit** for agent-plugin installs (a full 40-character
-SHA, including private repositories); pinned agent plugins show a
-`pinned @ <sha8>` badge. Old `Settings → Plugins` links redirect here.
+Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
+picker installs reviewed entries at their pinned commit into the selected
+profile, and **Install from Git** takes any other repository through the same
+review-then-install dialog; its optional **Pin to commit** field installs one
+exact 40-character commit SHA (private repos included), and pinned plugins
+carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
+redirect here.
 
 ## Troubleshooting
 
 ### Reconnect without restarting the app
 
 If a Desktop chat or bot stops responding while the connection still shows **Connected**, select that bot/profile or gateway, open the status bar's gateway menu, and click **Reconnect gateway**. Reconnect stays available for open, connecting, and disconnected transports. It redials the active route without restarting Desktop or deliberately closing other routes' sockets. In-flight requests on the selected socket can be interrupted; this is an explicit recovery action, not a backend or model restart.
+
+### The app vanished after `hermes update`
+
+An earlier update that replaced the checkout without keeping `apps/desktop/release/` leaves no packaged app to launch. As long as `HERMES_HOME/desktop-build-stamp.json` (written only by a successful Desktop build) still exists, the next `hermes update` notices the missing app and rebuilds it. To rebuild by hand: `hermes desktop --build-only --force-build`. On Windows the ZIP fallback also keeps the built app, its renderer bundle and its Electron `node_modules` across the swap.
 
 ### The local backend stopped in the background
 
@@ -563,8 +584,19 @@ generic error toast. The card offers recovery actions matched to the failure:
 
 - **Retry** — re-runs the failed turn in place (hidden when retrying would
   deterministically reproduce the failure, e.g. a content-policy rejection).
-- **Switch provider** — jumps to Settings → Models for provider, endpoint,
-  auth, and billing failures.
+  When a rate-limit or usage-limit response names when the limit lifts
+  (`Retry-After` header or a `resets_at` field), the card shows **Limit resets
+  at HH:mm (in 1h 05m)** next to Retry so you know when a retry will work; the
+  CLI/TUI print the same line under the error. The hint itself is
+  informational, but the card also offers **Retry when the limit resets
+  (HH:mm)**: click it and the app retries that turn once at the reset time
+  with a live countdown and a **Cancel** control. The schedule lives only in
+  the open window — switching sessions, sending another message, or closing
+  the app drops it, and nothing retries unattended.
+- **Switch provider** — for provider, endpoint, auth, and billing failures,
+  opens the composer's live model menu so you can move **this chat** to another
+  provider/model right away (Settings → Models only changes the default for new
+  chats). When no chat surface is on screen it falls back to Settings → Models.
 - **Open logs** — opens `HERMES_HOME/logs` in your file manager. On a remote
   or Cloud connection the button reads **Open Desktop logs**: it opens the
   local Desktop-side logs (transport evidence), since the failed turn's
@@ -590,6 +622,8 @@ Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and
 ```bash
 hermes logs gui -f
 ```
+
+On Linux, Chromium's own errors go to `HERMES_HOME/logs/desktop-chromium.log`, and a crash of the shell itself leaves a minidump under the app's `Crashpad/` directory (inside Electron's user-data directory, next to `connection.json`). If the window vanishes with `SIGTRAP` in the journal, the `FATAL:` line in that log names the check that fired; attach it to the bug report. Nothing is uploaded.
 
 Common resets:
 
@@ -622,7 +656,7 @@ clearing the entry — the latch resets and the next boot dials fresh.
 
 The build downloads the Electron runtime (~114&nbsp;MB) from `github.com/electron/electron/releases`. If the installer hangs on the **Build desktop app** step with the live output repeating `retrying attempt=…`, GitHub is being blocked or throttled on your network (firewall, proxy, or region).
 
-The installer self-heals this automatically: on a failed build it (1) clears a corrupt cached Electron zip and retries, then (2) if it still fails and you haven't set `ELECTRON_MIRROR`, retries once more through `npmmirror.com`, the de-facto Electron community mirror. `@electron/get` SHASUM-checks the download, but the checksums come from the same mirror — that catches a corrupt or partial download, not a compromised mirror. If you'd rather not trust a third-party host, pin your own `ELECTRON_MIRROR` (below); the build never overrides one you've set.
+The installer self-heals this automatically: on a failed build it (1) clears a corrupt cached Electron zip and retries, then (2) if it still fails, the Electron distributable is still missing, and you haven't set `ELECTRON_MIRROR`, retries once more through `npmmirror.com`, the de-facto Electron community mirror. `@electron/get` SHASUM-checks the download, but the checksums come from the same mirror — that catches a corrupt or partial download, not a compromised mirror. If you'd rather not trust a third-party host, pin your own `ELECTRON_MIRROR` (below); the build never overrides one you've set.
 
 To **choose your own mirror** (e.g. a corporate/trusted one), set `ELECTRON_MIRROR` before installing or rebuild manually — the build honors it and won't override it:
 
@@ -632,6 +666,8 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
 ```
 
 **Other native downloads (e.g. the `get-windows` prebuilt on Windows) that need a mirror:** put the npm keys in `$HERMES_HOME/npmrc` (`%LOCALAPPDATA%\hermes\npmrc` on Windows, `~/.hermes/npmrc` elsewhere) — for example `node_get_windows_binary_host_mirror=https://<mirror>/sindresorhus/get-windows/releases/download/`. Every `npm ci`/`npm run` the updater spawns (desktop, web and TUI builds) points `NPM_CONFIG_USERCONFIG` at that file when it exists, so the config survives `hermes update`; the repo-root `.npmrc` is git-tracked and gets autostashed on every update, and `~/.npmrc` may be missed because the desktop hand-off inherits the GUI's environment. An `NPM_CONFIG_USERCONFIG` you set yourself is never overridden.
+
+**If `get-windows` is missing or half-installed:** the build no longer fails — it prints `[stage-native-deps] get-windows not installed ... read_window_below will be unavailable in this build` and ships without the `read_window_below` tool. When the package directory exists but is not loadable (a Windows in-place update interrupted by a running Hermes window, `TAR_ENTRY_ERROR` in the install log), the same warning names the directory, and the next `hermes desktop --force-build` or update removes it before its npm install so the package is re-extracted — close every Hermes window and gateway first so the extract is not interrupted again. A package whose native binding or macOS helper is missing is likewise shipped without window enumeration rather than failing the build.
 
 To clear a corrupt cached zip by hand:
 
@@ -654,7 +690,7 @@ Point the app at a specific checkout, or sandbox it from your real config:
 
 ```bash
 HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=/tmp/throwaway npm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
@@ -668,6 +704,8 @@ npm run pack         # unpacked app under release/ (no installer)
 ```
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+
+The optional HUD modifier-tap helper is built with the Electron bundle and packaged outside ASAR. macOS uses the existing Xcode command-line tools prerequisite. Linux builds need a C compiler and X11/XInput development headers (`libx11-dev` and `libxi-dev` on Debian/Ubuntu); Windows builds need Clang and the Windows SDK. Build on the target OS and architecture. If those optional Windows/Linux prerequisites are absent, packaging continues without modifier-tap support and Settings reports it unavailable. Installed users do not need a compiler.
 
 ### macOS permissions and local rebuilds (TCC)
 

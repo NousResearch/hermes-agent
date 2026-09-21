@@ -15,13 +15,13 @@ Stock quotes, history, search, compare, crypto via Yahoo.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/stocks` |
-| Path | `optional-skills/finance\stocks` |
+| Path | `optional-skills/finance/stocks` |
 | Version | `0.1.0` |
 | Author | Mibay (Mibayy), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Stocks`, `Finance`, `Market`, `Crypto`, `Investing` |
-| Related skills | [`dcf-model`](./finance-dcf-model.md), [`comps-analysis`](./finance-comps-analysis.md), [`lbo-model`](./finance-lbo-model.md) |
+| Related skills | [`dcf-model`](../../optional/finance/finance-dcf-model.md), [`comps-analysis`](../../optional/finance/finance-comps-analysis.md), [`lbo-model`](../../optional/finance/finance-lbo-model.md) |
 
 ## Reference: full SKILL.md
 

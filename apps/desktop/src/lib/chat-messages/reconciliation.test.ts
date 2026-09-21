@@ -3,13 +3,21 @@ import { expect, it } from 'vitest'
 import { type ChatMessage, preserveLocalAssistantErrors, textPart, toChatMessages } from './index'
 
 const row = (id: string, role: 'user' | 'assistant', text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
-  id, role, parts: [textPart(text)], ...extra
+  id,
+  role,
+  parts: [textPart(text)],
+  ...extra
 })
 
 it('reconciles only the represented failed tail, retaining its structured error and omitted segments', () => {
   const hydrated = toChatMessages([
     { role: 'user', content: 'read it', timestamp: 1 },
-    { role: 'assistant', content: '', timestamp: 2, tool_calls: [{ id: 'call', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }] },
+    {
+      role: 'assistant',
+      content: '',
+      timestamp: 2,
+      tool_calls: [{ id: 'call', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }]
+    },
     { role: 'tool', tool_call_id: 'call', tool_name: 'read_file', content: 'contents', timestamp: 3 },
     { role: 'assistant', content: 'Done.', timestamp: 4 }
   ])
@@ -25,7 +33,12 @@ it('reconciles only the represented failed tail, retaining its structured error 
   for (const id of [failed.id, storedAssistant.id]) {
     const merged = preserveLocalAssistantErrors(hydrated, [row('local-user', 'user', 'read it'), { ...failed, id }])
     expect(merged.filter(message => message.role === 'assistant')).toHaveLength(1)
-    expect(merged.at(-1)).toMatchObject({ id: storedAssistant.id, error: failed.error, errorSurface: failed.errorSurface, pending: false })
+    expect(merged.at(-1)).toMatchObject({
+      id: storedAssistant.id,
+      error: failed.error,
+      errorSurface: failed.errorSurface,
+      pending: false
+    })
   }
 
   const user = row('user', 'user', 'read it')
@@ -33,13 +46,29 @@ it('reconciles only the represented failed tail, retaining its structured error 
   const laterUser = row('later-user', 'user', 'read it')
 
   const cases: { name: string; stored: ChatMessage[]; local: ChatMessage[] }[] = [
-    { name: 'omitted continuation', stored: [user, earlier], local: [user, earlier, row('hidden', 'user', 'Continue.', { hidden: true }), failed] },
+    {
+      name: 'omitted continuation',
+      stored: [user, earlier],
+      local: [user, earlier, row('hidden', 'user', 'Continue.', { hidden: true }), failed]
+    },
     { name: 'older failed segment', stored: [user, earlier], local: [user, failed, earlier] },
     { name: 'repeated prompt', stored: [user, earlier], local: [user, earlier, laterUser, failed] },
     { name: 'older identical text', stored: [user, earlier, laterUser], local: [user, earlier, laterUser, failed] },
-    { name: 'different attachments', stored: [{ ...user, attachmentRefs: ['a.png'] }, earlier], local: [{ ...user, attachmentRefs: ['b.png'] }, failed] },
-    { name: 'different durable row', stored: [user, { ...earlier, rowId: 10 }], local: [user, { ...failed, rowId: 20 }] },
-    { name: 'reused tool id across turns', stored: [user, storedAssistant, laterUser], local: [user, storedAssistant, laterUser, failed] }
+    {
+      name: 'different attachments',
+      stored: [{ ...user, attachmentRefs: ['a.png'] }, earlier],
+      local: [{ ...user, attachmentRefs: ['b.png'] }, failed]
+    },
+    {
+      name: 'different durable row',
+      stored: [user, { ...earlier, rowId: 10 }],
+      local: [user, { ...failed, rowId: 20 }]
+    },
+    {
+      name: 'reused tool id across turns',
+      stored: [user, storedAssistant, laterUser],
+      local: [user, storedAssistant, laterUser, failed]
+    }
   ]
 
   for (const fixture of cases) {

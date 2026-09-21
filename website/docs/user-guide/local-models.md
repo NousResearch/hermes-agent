@@ -102,7 +102,10 @@ models** section on the same page searches all of Hugging Face:
 If a llama-server is already running on your machine, Hermes detects it
 and uses it instead of starting its own. Point a custom endpoint at any
 OpenAI-compatible server for full manual control — the managed runtime is
-a default, not a requirement. For manual setups (Ollama, MLX, custom
+a default, not a requirement. You can enter the server root (for example
+`http://127.0.0.1:8080`) or the full `/v1` URL: the endpoint test tries
+both and saves the variant that actually served `/models`, so chat
+requests go to the same prefix the model list came from. For manual setups (Ollama, MLX, custom
 builds, headless CLI machines), see
 [Run Hermes Locally with Ollama](../guides/local-ollama-setup.md) and
 [Run Local LLMs on Mac](../guides/local-llm-on-mac.md).
@@ -120,7 +123,26 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
+  detect_ports: [8081]  # extra ports to probe for a llama-server you run
+                        # yourself (the default probe is :8080 only)
 ```
+
+Running `llama-server` yourself on a fixed port works with the same
+`model.provider: llamacpp` selection — either list the port in
+`local_runtime.detect_ports`, or define the endpoint explicitly under
+`providers:` (an explicit entry wins over server detection):
+
+```yaml
+providers:
+  llamacpp:
+    base_url: http://127.0.0.1:8081/v1
+    model: my-model
+```
+
+The `/model` → **Local** picker row and `provider: llamacpp` resolve to that
+server; with no server reachable the error names the local runtime ("the local
+model server isn't running") instead of an unknown-provider or missing-API-key
+message.
 
 Models and runtime builds live under the Hermes home directory
 (`models/` and `runtimes/llamacpp/`). Selecting a local model as your

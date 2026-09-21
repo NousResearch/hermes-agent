@@ -1756,3 +1756,24 @@ class TestMultiplexBackgroundScope:
                 t.join(timeout=5)
         assert created == ["p1-secret"]
         assert "Daemon started successfully" in (home / "logs" / "hindsight-embed.log").read_text()
+
+
+def test_append_mode_trims_retained_turns_without_dropping_any(provider, monkeypatch):
+    """Append retains ship only the delta, so retained turns leave `_session_turns` (a never-ending
+    session no longer pins every turn) while every turn is still shipped exactly once."""
+    provider._auto_retain = True
+    provider._retain_every_n_turns = 3
+    monkeypatch.setattr(provider, "_ensure_writer", lambda: None)
+    monkeypatch.setattr(provider, "_register_atexit", lambda: None)
+    monkeypatch.setattr(provider, "_resolve_retain_target", lambda doc: ("doc", "append"))
+    shipped: list[str] = []
+    monkeypatch.setattr(provider, "_make_turn_retain_job",
+                        lambda turns, **kw: (lambda: shipped.extend(turns)))
+    provider._retain_queue = MagicMock(put=lambda job: job())
+
+    for i in range(7):
+        provider.sync_turn(f"user {i}", f"assistant {i}")
+
+    assert len(provider._session_turns) == 1  # only the un-retained tail (turn 7)
+    assert provider._last_retained_turn_count == 0
+    assert len(shipped) == 6 and len(set(shipped)) == 6

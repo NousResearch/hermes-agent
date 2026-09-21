@@ -10,6 +10,7 @@ estimators that tests patch on the loop module are imported lazily inside the ha
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +33,11 @@ from utils import base_url_host_matches
 logger = logging.getLogger("agent.conversation_loop")
 
 _RETRY_HINT = "   💡 Try /new to start a fresh conversation, or /compress to retry compression."
+
+# A provider "context exceeded" whose request (incl. the output reservation) is under this share
+# of the known window is not explained by the transcript; the rough estimator is ±30%, so a real
+# overflow (request ≈ window) never lands below half.
+_UNEXPLAINED_REJECTION_FRACTION = 0.5
 
 _GITHUB_MODELS_HINT = (
     "   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
@@ -88,7 +94,8 @@ class _Recovery(OverflowVerdict):
 
     def fail_turn(
         self, final_response: str, *, notices: tuple = (), log: Optional[tuple] = None,
-        compression_exhausted: bool = True, **extra: Any,
+        compression_exhausted: bool = True, reason: str = "context_overflow",
+        retryable: bool = False, **extra: Any,
     ) -> OverflowVerdict:
         """End the turn as failed/partial. ``notices`` flush the buffered retry trace
         first so the user sees what compression attempts were made."""
@@ -108,7 +115,7 @@ class _Recovery(OverflowVerdict):
             "error": final_response,
             "partial": True,
             "failed": True,
-        }, "context_overflow", False)
+        }, reason, retryable)
         if compression_exhausted:
             # Reuse the gateway's existing context-recovery contract (#98722, salvaged from #98741). The
             # bloated transcript remains intact while future input can move to a clean session instead of
@@ -346,12 +353,12 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
     if is_minimax_provider and "context window exceeds limit (" in error_msg:
         agent._buffer_vprint(
             f"Provider reported overflow amount only; "
-            f"keeping context_length at {old_ctx:,} tokens and compressing."
+            f"keeping context_length at {old_ctx:,} tokens."
         )
     else:
         agent._buffer_vprint(
             f"⚠️  Context length exceeded, but provider did not report a max context length; "
-            f"keeping context_length at {old_ctx:,} tokens and compressing."
+            f"keeping context_length at {old_ctx:,} tokens."
         )
     return None
 
@@ -371,11 +378,13 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     # fits) and would death-loop on the same 400. Fail fast.
     if is_output_cap_error(error_msg):
         return st.fail_turn(
-            "max_tokens exceeds the provider's output cap for this model. "
-            "Lower model.max_tokens in config.yaml.",
+            "The requested output length exceeds the provider's output cap for this model, "
+            "and the error did not state the allowed limit.",
             notices=(
-                "❌ The provider rejected the request because max_tokens exceeds its output cap for this model.",
-                "   💡 Lower model.max_tokens in your config.yaml to at or below the model's max-output limit. "
+                "❌ The provider rejected the request because the requested output length exceeds its "
+                "output cap for this model, and the error did not state the allowed limit.",
+                "   💡 Hermes has no user setting for the output cap — check the endpoint's default max output "
+                "(completion) tokens for this model on the server or proxy. "
                 "(This is an output-cap error, not a context overflow — compression cannot fix it.)",
             ),
             log=(
@@ -386,6 +395,35 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
         )
 
     new_ctx = _adopt_provider_context_limit(st, error_msg, old_ctx)
+
+    # A rejection the transcript cannot explain (#114644): the request sits far below the window
+    # Hermes knows for this model (after adopting any limit the server reported), so compressing
+    # would destroy history for nothing. Single-slot local servers reject like this while ANOTHER
+    # request — a background review from an earlier session — holds their context. Name that,
+    # keep the turn retryable and transient: no "conversation too long", no gateway auto-reset.
+    # Only when the server quoted NO measurement of its own: "prompt is too long: 233153 tokens
+    # > 200000" is the server's count and beats the local estimate.
+    window = agent.context_compressor.context_length
+    request_tokens = st.request_tokens() + max(0, int(getattr(agent, "max_tokens", 0) or 0))
+    if (
+        not re.search(r"\d{4,}", error_msg)
+        and isinstance(window, int) and window > 0
+        and request_tokens < window * _UNEXPLAINED_REJECTION_FRACTION
+    ):
+        return st.fail_turn(
+            site_copy("server_context_rejection", model=agent.model, tokens=request_tokens, window=window),
+            notices=(
+                f"❌ The server rejected the request as too large, but it is only ~{request_tokens:,} "
+                f"tokens against a {window:,}-token window — not compressing.",
+                "   💡 Wait a moment and /retry; another request on the same server (e.g. a background "
+                "review) may have been holding its context.",
+            ),
+            log=(
+                "%sProvider context rejection not explained by request size (~%s of %s tokens); "
+                "skipping compression: %s", agent.log_prefix, f"{request_tokens:,}", f"{window:,}", error_msg[:200],
+            ),
+            compression_exhausted=False, reason=FailoverReason.server_error.value, retryable=True,
+        )
 
     exhausted = st.count_attempt()
     if exhausted is not None:

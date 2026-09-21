@@ -5,7 +5,13 @@ import type * as HermesModule from '@/hermes'
 
 import { emitGatewayEvent } from './events'
 import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
-import { discoverRuntimePlugins, loadRuntimePlugin, unloadRuntimePlugin, watchRuntimePlugins } from './runtime-loader'
+import {
+  discoverRuntimePlugins,
+  loadRuntimePlugin,
+  uninstallDiskPlugin,
+  unloadRuntimePlugin,
+  watchRuntimePlugins
+} from './runtime-loader'
 
 // getStatus would supply the connected backend's hermes_home — a REMOTE path in
 // remote mode. The disk scanner must NOT derive the plugin root from it (#66899).
@@ -385,6 +391,103 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
   })
 })
 
+describe('uninstallDiskPlugin (Plugins hub trash button)', () => {
+  const removeDesktopPlugin = vi.fn<(payload: { name: string }) => Promise<{ ok: boolean; error?: string }>>()
+
+  const blobToDataUrl = () => {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    return () => {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  }
+
+  /** One standalone folder `gone-soon` at the root, loaded as plugin id `gone`. */
+  const seedStandalone = async () => {
+    const root = '/local/.hermes/desktop-plugins'
+    desktopPluginsRoot.mockResolvedValue(root)
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: [{ isDirectory: true, name: 'gone-soon', path: `${root}/gone-soon` }] }
+      }
+
+      if (dir === `${root}/gone-soon`) {
+        return { entries: [{ isDirectory: false, name: 'plugin.js', path: `${root}/gone-soon/plugin.js` }] }
+      }
+
+      return { entries: [] }
+    })
+    readFileText.mockResolvedValue({ text: 'export default { id: "gone", register() {} }' })
+    watchPreviewFile.mockResolvedValue({ id: 'w-gone' })
+    removeDesktopPlugin.mockReset()
+    ;(window.hermesDesktop as unknown as { removeDesktopPlugin: unknown }).removeDesktopPlugin = removeDesktopPlugin
+
+    await discoverRuntimePlugins()
+    expect($pluginRecords.get().gone).toMatchObject({ kind: 'disk', status: 'loaded' })
+  }
+
+  it('asks Electron to delete the FOLDER by name, then retires the registration and its watch', async () => {
+    const restore = blobToDataUrl()
+
+    try {
+      await seedStandalone()
+      removeDesktopPlugin.mockResolvedValue({ ok: true })
+
+      expect(await uninstallDiskPlugin('gone')).toEqual({ ok: true })
+
+      // The folder name, never a path — Electron resolves it under the root.
+      expect(removeDesktopPlugin).toHaveBeenCalledWith({ name: 'gone-soon' })
+      expect($pluginRecords.get().gone).toBeUndefined()
+      expect(stopPreviewFileWatch).toHaveBeenCalledWith('w-gone')
+    } finally {
+      restore()
+      unloadRuntimePlugin('gone')
+    }
+  })
+
+  it('keeps the plugin loaded and reports the reason when Electron refuses', async () => {
+    const restore = blobToDataUrl()
+
+    try {
+      await seedStandalone()
+      removeDesktopPlugin.mockResolvedValue({ ok: false, error: 'gone-soon is not inside the desktop-plugins folder' })
+
+      expect(await uninstallDiskPlugin('gone')).toEqual({
+        ok: false,
+        error: 'gone-soon is not inside the desktop-plugins folder'
+      })
+      expect($pluginRecords.get().gone).toMatchObject({ kind: 'disk', status: 'loaded' })
+
+      // Unknown ids never reach the bridge.
+      expect(await uninstallDiskPlugin('never-installed')).toMatchObject({ ok: false })
+      expect(removeDesktopPlugin).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+      removeDesktopPlugin.mockResolvedValue({ ok: true })
+      await uninstallDiskPlugin('gone')
+    }
+  })
+})
+
 describe('bundled-shadowed disk copies', () => {
   it('skips a disk copy of a bundled plugin but publishes a visible inventory row', async () => {
     // The bundled twin is already registered (build-time glob).
@@ -432,6 +535,136 @@ describe('bundled-shadowed disk copies', () => {
       createObjectURL.mockRestore()
       revokeObjectURL.mockRestore()
       vi.stubGlobal('Blob', RealBlob)
+    }
+  })
+})
+
+describe('specifier scanning is limited to code (strings/comments never load-block)', () => {
+  // Same blob→data: URL reroute as the suites above: the loader evaluates the
+  // rewritten source through URL.createObjectURL.
+  const withBlobReroute = () => {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    return () => {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  }
+
+  it('loads a plugin whose own copy ends a sentence with "from"', async () => {
+    // The specifier regex reads `from '` as an import specifier — a label like
+    // 'Copy keys from' must not be load-blocked for it.
+    const restore = withBlobReroute()
+
+    try {
+      const register = vi.fn()
+
+      ;(globalThis as unknown as { __copyFromRegister: unknown }).__copyFromRegister = register
+
+      const id = await loadRuntimePlugin(
+        "const label = 'Copy keys from'\nexport default { id: 'copy-from', register: globalThis.__copyFromRegister }",
+        'copy-from'
+      )
+
+      expect(id).toBe('copy-from')
+      expect(register).toHaveBeenCalledTimes(1)
+      expect($pluginRecords.get()['copy-from']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('copy-from')
+      delete (globalThis as unknown as { __copyFromRegister?: unknown }).__copyFromRegister
+      restore()
+    }
+  })
+
+  it('loads a plugin whose comment mentions an import', async () => {
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "// old docs said: import 'left-pad' here\nexport default { id: 'comment-import', register() {} }",
+        'comment-import'
+      )
+
+      expect(id).toBe('comment-import')
+    } finally {
+      unloadRuntimePlugin('comment-import')
+      restore()
+    }
+  })
+
+  it('still rejects a real unmapped import', async () => {
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "import 'left-pad'\nexport default { id: 'real-bare', register() {} }",
+        'real-bare'
+      )
+
+      expect(id).toBeNull()
+      expect($pluginRecords.get()['real-bare']).toMatchObject({ status: 'error' })
+      expect($pluginRecords.get()['real-bare']?.error).toContain('unsupported import')
+    } finally {
+      restore()
+    }
+  })
+
+  it('never rewrites a mapped specifier quoted inside a string', async () => {
+    // Rewriting is for real imports only; a string that documents the import
+    // form must reach the plugin verbatim (it used to become a blob URL).
+    const restore = withBlobReroute()
+
+    try {
+      ;(globalThis as unknown as { __captured?: string }).__captured = undefined
+
+      const id = await loadRuntimePlugin(
+        `const doc = "from '@hermes/plugin-sdk'"
+export default { id: 'quoted-spec', register: () => { globalThis.__captured = doc } }`,
+        'quoted-spec'
+      )
+
+      expect(id).toBe('quoted-spec')
+      expect((globalThis as unknown as { __captured?: string }).__captured).toBe("from '@hermes/plugin-sdk'")
+    } finally {
+      unloadRuntimePlugin('quoted-spec')
+      delete (globalThis as unknown as { __captured?: string }).__captured
+      restore()
+    }
+  })
+
+  it('still rewrites a real mapped import', async () => {
+    // The fix must not swing the other way: the SDK import is the load path.
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "import { host } from '@hermes/plugin-sdk'\nexport default { id: 'real-mapped', register() { void host } }",
+        'real-mapped'
+      )
+
+      expect(id).toBe('real-mapped')
+      expect($pluginRecords.get()['real-mapped']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('real-mapped')
+      restore()
     }
   })
 })

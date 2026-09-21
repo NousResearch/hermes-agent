@@ -75,6 +75,7 @@ def add_notify_sub(
     user_id_alt: Optional[str] = None,
     chat_type: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    notifier_profile_explicit: bool = False,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
 ) -> None:
@@ -90,6 +91,12 @@ def add_notify_sub(
     into an existing row so re-subscribing never discards them. New subs start
     caught up (``last_event_id`` =
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
+
+    ``notifier_profile``: an implicit write (ambient profile, the default)
+    self-heals only a missing stamp; ``notifier_profile_explicit=True`` (the
+    CLI's ``--notifier-profile``) write-through over a wrong stamp, so the
+    routed-subscription WARNING's advertised repair is not a silent no-op
+    (#118123).
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
     # api_server is stateless: the adapter has no send(), the wake self-post IS
@@ -123,12 +130,14 @@ def add_notify_sub(
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
         # preserves existing routing fields while supplied fields overwrite them.
-        # user_id, user_id_alt and notifier_profile only self-heal legacy rows lacking one.
+        # user_id and user_id_alt only self-heal legacy rows lacking one;
+        # notifier_profile likewise, EXCEPT an explicit re-subscribe which
+        # write-through corrects a wrong (route-denied) stamp (#118123).
         for column, value, fill_only in (
             ("chat_type", chat_type, False),
             ("user_id", user_id, True),
             ("user_id_alt", user_id_alt, True),
-            ("notifier_profile", notifier_profile, True),
+            ("notifier_profile", notifier_profile, not notifier_profile_explicit),
             ("delivery_mode", valid_mode, False),
             ("delivery_metadata", metadata_json, False),
         ):

@@ -113,6 +113,57 @@ def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
     }
 
 
+def test_notify_subscribe_explicit_profile_write_through(kanban_home):
+    """An explicit ``--notifier-profile`` re-subscribe overwrites a wrong stamp —
+    the repair the routed-subscription WARNING advertises must not be a silent
+    no-op (#118123); the ambient fallback stays fill-only."""
+    import argparse
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stamp repair", assignee="worker")
+
+    def _stamp() -> str:
+        with kbc.connect() as conn:
+            return kbn.list_notify_subs(conn, tid)[0]["notifier_profile"]
+
+    def _cli(*extra: str) -> None:
+        parser = argparse.ArgumentParser()
+        kc.build_parser(parser.add_subparsers(dest="command"))
+        args = parser.parse_args([
+            "kanban", "notify-subscribe", tid, "--platform", "discord", "--chat-id", "thread",
+            "--thread-id", "thread", "--chat-type", "thread", *extra,
+        ])
+        assert kc.kanban_command(args) == 0
+
+    # Ambient subscribe fills the empty stamp.
+    with patch.object(kc, "_profile_author", return_value="default"):
+        _cli()
+    assert _stamp() == "default"
+
+    # Ambient re-subscribe keeps the fill-only guard: an ambient (possibly
+    # wrong) profile must not silently re-stamp a routed subscription.
+    with patch.object(kc, "_profile_author", return_value="ambient"):
+        _cli()
+    assert _stamp() == "default"
+
+    # Explicit re-subscribe write-through: the advertised repair works.
+    _cli("--notifier-profile", "orchestrator")
+    assert _stamp() == "orchestrator"
+
+    # An explicit re-subscribe also stamps a row the ambient path left blank.
+    with kbc.connect() as conn:
+        other = kb.create_task(conn, title="blank stamp", assignee="worker")
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", other, "--platform", "discord", "--chat-id", "thread",
+        "--thread-id", "thread", "--notifier-profile", "orchestrator",
+    ])
+    assert kc.kanban_command(args) == 0
+    with kbc.connect() as conn:
+        assert kbn.list_notify_subs(conn, other)[0]["notifier_profile"] == "orchestrator"
+
+
 def test_child_task_inherits_parent_delivery_mode(kanban_home):
     """Graph children inherit the parent's ACK edge AND its delivery_mode."""
     import hermes_cli.kanban_db as kb

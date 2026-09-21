@@ -6,6 +6,8 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
+import pytest
+
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _strip_images_from_messages,
     strip_images_for_rejecting_model,
@@ -465,3 +467,80 @@ def test_iteration_summary_strips_images_for_rejecting_model(tmp_path, monkeypat
     assert "image_url" not in str(out), "summary request must be text-only for a rejecting model"
     assert any("look" in str(m.get("content")) for m in out if m.get("role") == "user")
     assert history == before, "the per-call strip must not leak into canonical history"
+
+
+def test_image_only_turn_keeps_roles_alternating_for_rejecting_model(tmp_path, monkeypatch):
+    """History keeps an image-only user turn and replays it on every request; dropping it from
+    the request to a rejecting model left the replies around it adjacent, which strict
+    chat templates (Gemma- and Mistral-style on vLLM / llama.cpp) reject."""
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    from agent.vision_message_prep import _provider_model_key
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = AIAgent(api_key="k", base_url="http://localhost:8000/v1", provider="custom", model="m",
+                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+    api_messages = [
+        {"role": "system", "content": "S"}, {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "A"},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+        {"role": "assistant", "content": "B"}, {"role": "user", "content": "and now?"},
+    ]
+
+    assert strip_images_for_rejecting_model(agent, api_messages) is True
+
+    wire = agent._build_api_kwargs(api_messages)["messages"]
+    assert [m["role"] for m in wire] == ["system", "user", "assistant", "user", "assistant", "user"]
+    assert "image_url" not in str(wire)
+
+
+def test_image_only_current_turn_still_ends_on_user_for_rejecting_model():
+    """An image-only message as the current turn must not leave the request ending on an
+    assistant turn."""
+    from types import SimpleNamespace
+
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    from agent.vision_message_prep import _provider_model_key
+
+    agent = SimpleNamespace(provider="p", model="m", _image_rejecting_models=set())
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+    api_messages = [
+        {"role": "user", "content": "hi"}, {"role": "assistant", "content": "A"},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+    ]
+
+    assert strip_images_for_rejecting_model(agent, api_messages) is True
+    assert [m["role"] for m in api_messages] == ["user", "assistant", "user"]
+    assert "image content removed" in api_messages[-1]["content"]
+
+
+@pytest.mark.parametrize("roles, expected", [
+    # I = an image-only user turn. Kept as a placeholder only where dropping it leaves no user
+    # neighbour; next to a user turn it is dropped, so no adjacent user turns are created.
+    ("u a I a u", "u a P a u"),
+    ("u a I", "u a P"),
+    ("s I a u", "s P a u"),
+    ("u I a u", "u a u"),
+    ("u a I u", "u a u"),
+    ("u a I I a", "u a P a"),
+    ("u a I I u", "u a u"),
+])
+def test_rejecting_model_strip_never_breaks_role_alternation(roles, expected):
+    from types import SimpleNamespace
+
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    from agent.vision_message_prep import _provider_model_key
+
+    role = {"s": "system", "u": "user", "a": "assistant"}
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    msgs = [{"role": "user", "content": [img]} if r == "I" else {"role": role[r], "content": r}
+            for r in roles.split()]
+    agent = SimpleNamespace(provider="p", model="m", _image_rejecting_models=set())
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+
+    assert strip_images_for_rejecting_model(agent, msgs) is True
+
+    got = " ".join("P" if "image content removed" in str(m["content"]) else m["content"] for m in msgs)
+    assert got == expected
+    assert "image_url" not in str(msgs)

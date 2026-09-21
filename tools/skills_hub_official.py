@@ -96,6 +96,14 @@ class OptionalSkillSource(SkillSource):
         return results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        # This source only serves the official optional-skills catalog. Never
+        # answer for foreign identifiers (github/skills-sh/clawhub/...): the
+        # name-only fallback below would otherwise shadow a same-named skill
+        # from another registry with the official (possibly stub) copy, so
+        # e.g. "pbakaus/impeccable/.hermes/skills/impeccable" silently
+        # installed the official "creative/impeccable" entry instead.
+        if not identifier.startswith("official/"):
+            return None
         # identifier format: "official/category/skill" or "official/skill"
         rel = self._rel(identifier)
         # Guard against path traversal (e.g. "official/../../etc")
@@ -133,6 +141,9 @@ class OptionalSkillSource(SkillSource):
         return self._bundle(rel_id, files) if files else None
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        # Same namespace rule as fetch(): only the official catalog.
+        if not identifier.startswith("official/"):
+            return None
         skill_name = self._rel(identifier).rsplit("/", 1)[-1]
         for meta in self._scan_all():
             if meta.name == skill_name:

@@ -591,6 +591,33 @@ Complex cases are documented under `{glob_reference}`.
     ):
         assert _referenced_support_paths(f"Use `{reference}`.") == {expected}
 
+    # ── singular reference/ support dir ─────────────────────────────────
+    @pytest.mark.parametrize(
+        ("skill_md", "expected"),
+        [
+            ("See reference/guide.md for details.", {"reference/guide.md"}),
+            ("See `reference/api.md`.", {"reference/api.md"}),
+            (
+                "See [the docs](reference/api.md) and references/web.md.",
+                {"reference/api.md", "references/web.md"},
+            ),
+            (
+                "Run `scripts/run.sh`, then read reference/notes.txt.",
+                {"scripts/run.sh", "reference/notes.txt"},
+            ),
+        ],
+    )
+    def test_support_path_extraction_accepts_singular_reference(
+        self, skill_md, expected
+    ):
+        # Skills in the wild use "reference/" (singular, e.g. pbakaus/impeccable)
+        # as well as "references/"; both are legitimate support dirs.
+        assert _referenced_support_paths(skill_md) == expected
+
+    def test_support_path_extraction_rejects_singular_reference_traversal(self):
+        assert _referenced_support_paths("See reference/../escape.md.") is None
+        assert _referenced_support_paths("See reference/sub/../../escape.md.") is None
+
     # ── _matches ────────────────────────────────────────────────────────
     def test_matches_bare_md_url(self):
         assert self._source()._matches("https://example.com/path/SKILL.md") is True
@@ -1112,6 +1139,70 @@ class TestOptionalSkillSourceMetadata:
 
         assert [meta.name for meta in src._scan_all()] == ["real-skill"]
         assert src._find_skill_dir("archived-skill") is None
+
+
+class TestOptionalSkillSourceForeignIdentifiers:
+    """OptionalSkillSource must fail closed on identifiers outside its official/
+    namespace: without the guard, fetch()/inspect() fell through to a name-only
+    match and shadowed a same-named skill from another registry with the
+    official (possibly stub) copy."""
+
+    @pytest.fixture
+    def source_with_colliding_skill(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "creative" / "impeccable"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: impeccable\ndescription: official catalog entry\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+        return src
+
+    @pytest.mark.parametrize(
+        "foreign_identifier",
+        [
+            # The exact shape from the reported bug: a same-named foreign skill
+            # whose last path segment collides with the official entry.
+            "pbakaus/impeccable/.hermes/skills/impeccable",
+            "github/pbakaus/impeccable",
+            "skills-sh/impeccable",
+            "clawhub/impeccable",
+            # Bare names are short-name aliases resolved via search, never a
+            # fetch target for this source.
+            "impeccable",
+        ],
+    )
+    def test_fetch_rejects_foreign_identifiers(
+        self, source_with_colliding_skill, foreign_identifier
+    ):
+        # Before the namespace guard this returned the official
+        # "official/creative/impeccable" bundle via the name-only fallback.
+        assert source_with_colliding_skill.fetch(foreign_identifier) is None
+
+    @pytest.mark.parametrize(
+        "foreign_identifier",
+        [
+            "pbakaus/impeccable/.hermes/skills/impeccable",
+            "github/pbakaus/impeccable",
+            "skills-sh/impeccable",
+            "clawhub/impeccable",
+            "impeccable",
+        ],
+    )
+    def test_inspect_rejects_foreign_identifiers(
+        self, source_with_colliding_skill, foreign_identifier
+    ):
+        assert source_with_colliding_skill.inspect(foreign_identifier) is None
+
+    def test_official_identifiers_still_resolve(self, source_with_colliding_skill):
+        bundle = source_with_colliding_skill.fetch("official/creative/impeccable")
+        assert bundle is not None
+        assert bundle.identifier == "official/creative/impeccable"
+        meta = source_with_colliding_skill.inspect("official/creative/impeccable")
+        assert meta is not None
+        assert meta.name == "impeccable"
 
 
 class TestOptionalSkillSourceBinaryAssets:

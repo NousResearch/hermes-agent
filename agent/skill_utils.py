@@ -767,7 +767,19 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     active_org = read_active_org_id(skills_dir)
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     matches: list[str] = []
+    visited_dirs: set[tuple[int, int]] = set()
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+        try:
+            stat = os.stat(root)
+        except OSError:
+            dirs[:] = []
+            continue
+        inode = (stat.st_dev, stat.st_ino)
+        if inode in visited_dirs:
+            dirs[:] = []
+            continue
+        visited_dirs.add(inode)
+
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)

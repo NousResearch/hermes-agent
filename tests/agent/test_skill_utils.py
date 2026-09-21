@@ -179,6 +179,22 @@ def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
     assert resolved["wiki.tilde_var"] == str(subprocess_home / "leaf")
 
 
+def test_iter_skill_index_files_ignores_symlink_cycles(tmp_path):
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    skill_md = skill / "SKILL.md"
+    skill_md.write_text("---\nname: skill\n---\n", encoding="utf-8")
+
+    cycle = tmp_path / "cycle"
+    cycle.mkdir()
+    try:
+        (cycle / "loop").symlink_to(cycle, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlinks not supported")
+
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [skill_md]
+
+
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     """Archived package SKILL.md files under support dirs are not active skills."""
     real = tmp_path / "umbrella"

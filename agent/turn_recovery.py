@@ -1278,6 +1278,36 @@ def reset_hint(api_error: Exception) -> str:
     return f"~{format_duration_compact(remaining)}" if remaining >= 1 else ""
 
 
+def _provider_ambiguity_hint(agent: Any, api_error: Exception) -> str:
+    """One-shot, provenance-gated mis-route hint for transport failures (#30797).
+
+    When no explicit provider was requested and the first transport retry is backing off,
+    list the other auto-detect-eligible providers whose keys are configured. The ROUTE is
+    named from the agent's own ``provider`` (never re-derived from the env, so an OpenRouter
+    win via OPENAI_API_KEY is never misnamed), and an explicitly requested provider
+    (``requested_provider``) suppresses the hint entirely — the two failure modes that sank
+    the first cut of this hint in #30797 review. Empty string whenever any gate misses."""
+    try:
+        text = str(api_error).lower()
+        if not any(marker in text for marker in ("timed out", "timeout", "connection")):
+            return ""
+        requested = (getattr(agent, "requested_provider", None) or "").strip().lower()
+        resolved = (getattr(agent, "provider", None) or "").strip().lower()
+        if requested not in ("", "auto", "none") or not resolved:
+            return ""
+        from hermes_cli.auth import env_key_provider_candidates
+        others = [p for p in env_key_provider_candidates() if p != resolved]
+        if not others:
+            return ""
+        return (
+            f"No `model.provider` is set; '{resolved}' was auto-detected from your environment "
+            f"keys, but {', '.join(others)} also have keys configured. If this keeps timing out, "
+            f"set `model.provider` in config.yaml to pin the one you meant."
+        )
+    except Exception:
+        return ""
+
+
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
@@ -1346,6 +1376,13 @@ def compute_error_backoff(
             agent._emit_diagnostic_status(_retry_status)
         else:
             agent._buffer_diagnostic_status(_retry_status)
+        # First transport-class retry only: a provider chosen by env-key auto-detect that keeps
+        # timing out may simply be the wrong route — name the alternatives once, provenance-gated
+        # (#30797). Buffered, so it replays only if the retries exhaust.
+        if retry_count == 1:
+            _ambiguity = _provider_ambiguity_hint(agent, api_error)
+            if _ambiguity:
+                agent._buffer_diagnostic_status(f"💡 {_ambiguity}")
     # The buffered line only replays if every retry fails; the live status
     # line is the one thing the user sees meanwhile. Name the wait there so a
     # 60s backoff after a 5xx is not an anonymous spinner — this is transient

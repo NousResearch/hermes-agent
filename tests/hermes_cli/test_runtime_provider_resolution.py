@@ -2202,3 +2202,49 @@ def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(mon
     runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
 
     assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")
+
+
+# =============================================================================
+# _env_key_auto_detected — ambiguous multi-provider warning (#30797)
+# =============================================================================
+
+
+def test_env_key_auto_detect_warns_when_multiple_providers_have_keys(caplog):
+    """Several usable env keys → first registry match still wins, but the warning names
+    every candidate so the user knows `model.provider` needs pinning."""
+    import logging
+
+    import hermes_cli.auth as auth_mod
+
+    keys = {"GEMINI_API_KEY": "gemini-key-1", "GLM_API_KEY": "glm-key-1"}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+        picked = auth_mod._env_key_auto_detected(lambda var: keys.get(var, ""), None)
+
+    assert picked == "gemini"  # registry order: gemini before zai
+    assert "Multiple providers have usable API keys" in caplog.text
+    assert "gemini" in caplog.text and "zai" in caplog.text
+
+
+def test_env_key_auto_detect_single_key_no_ambiguity_warning(caplog):
+    import logging
+
+    import hermes_cli.auth as auth_mod
+
+    keys = {"GLM_API_KEY": "glm-key-1"}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+        picked = auth_mod._env_key_auto_detected(lambda var: keys.get(var, ""), None)
+
+    assert picked == "zai"
+    assert "Multiple providers" not in caplog.text
+
+
+def test_env_key_provider_candidates_skips_non_auto_providers():
+    """copilot/lmstudio are never auto-detect eligible; the enumerator used by the
+    timeout hint (#30797) must skip them too."""
+    import hermes_cli.auth as auth_mod
+
+    keys = {"GEMINI_API_KEY": "gemini-key-1", "GLM_API_KEY": "glm-key-1", "LM_API_KEY": "lm-key-1", "GH_TOKEN": "gh-token-1"}
+
+    assert auth_mod.env_key_provider_candidates(lambda var: keys.get(var, "")) == ["gemini", "zai"]

@@ -182,10 +182,15 @@ def _recover_unicode_encode_error(
     _messages_sanitized = isinstance(api_messages, list) and _sanitize_messages_non_ascii(api_messages)
     _tools_sanitized = False
     if isinstance(api_kwargs, dict):
-        if api_kwargs.get("tools") is getattr(agent, "tools", None):
-            api_kwargs["tools"] = copy.deepcopy(api_kwargs["tools"])
+        # The retry rebuilds kwargs from ``agent.tools`` and ``sanitize_outbound_kwargs`` detaches
+        # that alias before stripping; here only strip a request-local tools list, never the
+        # canonical schemas.
+        _tools = api_kwargs.pop("tools", None)
         _tools_sanitized = _sanitize_structure_non_ascii(api_kwargs)
-        _tools_sanitized = _sanitize_tools_non_ascii(api_kwargs.get("tools")) or _tools_sanitized
+        if _tools is not None:
+            if _tools is not getattr(agent, "tools", None):
+                _tools_sanitized = _sanitize_tools_non_ascii(_tools) or _tools_sanitized
+            api_kwargs["tools"] = _tools
 
     _system_sanitized = False
     if isinstance(active_system_prompt, str):

@@ -6,7 +6,7 @@ that can't encode non-ASCII characters in API request payloads.
 
 import pytest
 
-from agent.message_sanitization import _strip_non_ascii, _sanitize_messages_non_ascii, _sanitize_structure_non_ascii, _sanitize_tools_non_ascii, _sanitize_messages_surrogates
+from agent.message_sanitization import _strip_non_ascii, _sanitize_messages_non_ascii, _sanitize_structure_non_ascii, _sanitize_tools_non_ascii, _sanitize_messages_surrogates, sanitize_outbound_kwargs
 
 
 class TestStripNonAscii:
@@ -358,9 +358,17 @@ class TestSanitizeMessagesPersistMarker:
         assert canonical[0][_DB_PERSISTED_MARKER] is True
         assert api_messages[0] is not canonical[0]
         api_messages[0]["content"].encode("ascii")
-        assert api_kwargs["tools"] is not agent.tools
         api_kwargs["extra_body"]["note"].encode("ascii")
-        api_kwargs["tools"][0]["function"]["description"].encode("ascii")
+        # Recovery leaves the aliased canonical tools alone; the outbound chokepoint detaches
+        # the alias on the retry before stripping, so agent.tools stays byte-stable.
+        assert api_kwargs["tools"] is agent.tools
+        assert agent._force_ascii_payload is True
+        retry_kwargs = {"tools": agent.tools, "extra_body": {"note": "retry ☕"}}
+        sanitize_outbound_kwargs(agent, retry_kwargs)
+        assert retry_kwargs["tools"] is not agent.tools
+        assert repr(tools) == tools_before
+        retry_kwargs["tools"][0]["function"]["description"].encode("ascii")
+        retry_kwargs["extra_body"]["note"].encode("ascii")
 
     def test_ascii_word_in_error_does_not_strip_utf8_request_copy(self, monkeypatch):
         from agent.turn_recovery import _recover_unicode_encode_error

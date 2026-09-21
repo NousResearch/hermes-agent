@@ -7,6 +7,7 @@ characters that would crash ``json.dumps`` in the OpenAI SDK or be rejected upst
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -132,6 +133,10 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
     """
     _sanitize_structure_surrogates(api_kwargs)
     if agent._force_ascii_payload:
+        # ``tools`` is built from ``agent.tools`` per attempt and usually aliases it; detach
+        # before the in-place strip so the retry never rewrites the canonical tool schemas.
+        if api_kwargs.get("tools") is not None and api_kwargs["tools"] is getattr(agent, "tools", None):
+            api_kwargs["tools"] = copy.deepcopy(api_kwargs["tools"])
         _sanitize_structure_non_ascii(api_kwargs)
 
 

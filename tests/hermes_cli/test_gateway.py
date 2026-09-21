@@ -1253,6 +1253,36 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
     ]
 
 
+def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypatch):
+    """A Scheduled Task descendant is not owned by the Schedule service."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def as_dict(self):
+            return {"name": "Schedule", "pid": 100, "status": "running"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(200), FakeProcess(100)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService()],
+        Process=FakeProcess,
+    )
+
+    assert gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil,
+        profile_processes=[profile],
+    ) == []
+
+
 def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch):
     """A transitional service in the gateway ancestry remains fail-closed."""
     monkeypatch.setattr(gateway.sys, "platform", "win32")

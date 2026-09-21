@@ -73,6 +73,11 @@ logger = logging.getLogger(__name__)
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
 _CAPTURE_TEXT = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
+# Task Scheduler launches jobs beneath its own SCM process, but it does not
+# supervise them as Windows services.  Treating that ancestry as ownership
+# makes the updater attempt to stop the OS scheduler instead of the gateway.
+_WINDOWS_TASK_SCHEDULER_SERVICE = "schedule"
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -822,6 +827,8 @@ def find_windows_gateway_services(
                 raise RuntimeError("SCM service inspection failed") from exc
             if not service_name:
                 raise RuntimeError("SCM service has an empty name")
+            if service_name.casefold() == _WINDOWS_TASK_SCHEDULER_SERVICE:
+                continue
             if service_status == "stopped":
                 continue
             if service_status != "running":

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tools.memory_tool import (
     MemoryStore,
+    apply_memory_pending,
     memory_tool,
     _scan_memory_content,
 )
@@ -930,3 +931,64 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestApprovePartialAnchorFailsClosed:
+    """#117952: approving a staged replace anchored on a substring of a longer
+    entry must fail closed instead of silently overwriting the whole entry."""
+
+    def test_staged_batch_partial_anchor_rejected_atomically(self, store):
+        store.add("memory", "alpha standing rule one")
+        store.add("memory", "beta standing rule two")
+        result = apply_memory_pending(
+            {"action": "batch", "target": "memory", "operations": [
+                {"action": "replace", "old_text": "alpha standing rule one",
+                 "content": "alpha rule updated"},
+                {"action": "replace", "old_text": "beta standing",
+                 "content": "beta core"},
+            ]},
+            store,
+        )
+        assert result["success"] is False
+        assert "Operation 2" in result["error"]
+        assert "ENTIRE" in result["error"]
+        # All-or-nothing: the valid full-entry op must not have applied either.
+        assert store._entries_for("memory") == ["alpha standing rule one", "beta standing rule two"]
+
+    def test_staged_single_replace_partial_anchor_rejected(self, store):
+        store.add("memory", "gate facts: a; b; c")
+        result = apply_memory_pending(
+            {"action": "replace", "target": "memory", "old_text": "a; b;", "content": "x; y;"},
+            store,
+        )
+        assert result["success"] is False
+        assert "This write" in result["error"]
+        assert store._entries_for("memory") == ["gate facts: a; b; c"]
+
+    def test_staged_batch_full_entry_anchors_still_apply(self, store):
+        store.add("memory", "old one")
+        result = apply_memory_pending(
+            {"action": "batch", "target": "memory", "operations": [
+                {"action": "replace", "old_text": "old one", "content": "new one"},
+            ]},
+            store,
+        )
+        assert result["success"] is True
+        assert store._entries_for("memory") == ["new one"]
+
+    def test_staged_remove_partial_anchor_still_applies(self, store):
+        store.add("memory", "stale detail here")
+        result = apply_memory_pending(
+            {"action": "remove", "target": "memory", "old_text": "stale detail"}, store
+        )
+        assert result["success"] is True
+        assert store._entries_for("memory") == []
+
+    def test_ungated_replace_keeps_entry_replace_contract(self, store):
+        # The guard is approval-path only: a direct call still replaces the
+        # whole matched entry (the documented contract, cf. test_replace_entry).
+        store.add("memory", "Python 3.11 project")
+        result = json.loads(memory_tool(
+            action="replace", old_text="3.11", content="Python 3.12 project", store=store))
+        assert result["success"] is True
+        assert store._entries_for("memory") == ["Python 3.12 project"]

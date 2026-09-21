@@ -246,12 +246,44 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
     return {"success": False, "error": f"Built-in {label} writes are disabled in memory config.", "target": target}
 
 
+def _partial_anchor_error(payload: Dict[str, Any], store: "MemoryStore", target: str) -> Optional[Dict[str, Any]]:
+    """Fail closed on a staged ``replace`` anchored to a substring of a longer entry
+    (#117952): replaying replaces the WHOLE entry with the op text, silently deleting
+    the unmatched remainder. Direct (ungated) calls keep the documented entry-replace
+    contract; only the /memory approve replay path gets the guard."""
+    is_batch = payload.get("action") == "batch"
+    ops = payload.get("operations") or [] if is_batch else (
+        [payload] if payload.get("action") == "replace" else [])
+    entries = store._entries_for(target)
+    for i, op in enumerate(ops):
+        old = ((op.get("old_text") or "")).strip()
+        if not old:
+            continue
+        hits = [e for e in entries if old in e]
+        if len(hits) == 1 and hits[0].strip() != old:
+            label = f"Operation {i + 1}" if is_batch else "This write"
+            return {
+                "success": False,
+                "error": (
+                    f"{label} anchors on a substring of a longer entry, so applying it would "
+                    f"replace the ENTIRE {len(hits[0])}-char entry with just the op text and "
+                    "silently delete the unmatched remainder. Discard this pending write and "
+                    "either re-stage it with old_text set to the FULL entry text (and the "
+                    "complete new entry in content), or swap the substring in place with the "
+                    "patch tool."),
+            }
+    return None
+
+
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve)."""
     action, target = payload.get("action"), payload.get("target", "memory")
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return target_error
+    partial_error = _partial_anchor_error(payload, store, target)
+    if partial_error is not None:
+        return partial_error
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action not in _STORE_ACTIONS:

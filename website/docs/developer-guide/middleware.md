@@ -102,6 +102,33 @@ Responses API `input`, model settings, tool definitions, stream options, and
 provider-specific options. Execution middleware receives the same effective
 request plus `next_call`.
 
+For native conversation requests, `llm_request` also receives input provenance
+outside the provider request:
+
+- `original_user_message`: the input admitted at the start of this turn, before
+  runtime wrappers or context compression.
+- `native_user_message`: an independent descriptor of the current turn's
+  persisted user row, shaped as `{"role": "user", "content": ..., "_row_id": ...}`,
+  or `None` when Hermes cannot verify that row.
+
+Use the descriptor with `session_id` in the current profile's session database.
+The turn loop supplies the exact current-user index; identical earlier text or a
+later steering message never selects the row. Hermes checks the row's session,
+role, identity and retained content. After compaction the descriptor follows the
+current persisted copy, which can contain the runtime wrapper rather than the
+original input. Image content follows the native transcript's durable text
+projection; it is not a copy of image bytes or proof that those bytes are retained.
+User-role rows can also originate from host automation: the descriptor identifies
+storage provenance, not human authorship or participant authority.
+
+A standalone source-backed memory plugin can use this coordinate to associate
+recall or retained copies with the actual native input instead of guessing from
+the last user message in the provider payload. Missing storage or an unverifiable
+coordinate yields `None` and still runs request middleware, so the plugin can
+withhold provenance-dependent context. Consumers should tolerate absent fields
+on other request paths. Hermes does not add this metadata to provider kwargs or
+change the prompt, and changing the descriptor does not mutate the stored row.
+
 ### Tool Calls
 
 For each tool call, Hermes applies middleware in this order:

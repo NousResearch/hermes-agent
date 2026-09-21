@@ -1429,6 +1429,14 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#       # Base URL printed by `hermes webhook subscribe|list` and used by the
+#       # dashboard. Set it when a reverse proxy / TLS terminator fronts the
+#       # gateway: without it the printed URL is derived from the listener
+#       # (http://localhost:8644-style) and senders register an unreachable
+#       # endpoint. Absolute http(s) URL, any path is kept, trailing "/" stripped.
+#       # Unset → listener-derived URL (unchanged default). Malformed → one-time
+#       # warning + listener fallback, so a typo never prints a broken URL.
+#       public_base_url: "https://hooks.example.com"
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

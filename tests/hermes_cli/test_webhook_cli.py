@@ -223,3 +223,97 @@ class TestWebhookEnabledGate:
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is False
 
+
+
+class TestPublicBaseUrl:
+
+    def _config(self, extra, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.webhook._get_webhook_config",
+            lambda: {"extra": extra},
+        )
+
+    def test_unset_falls_back_to_listener_derivation(self, monkeypatch):
+        self._config({"host": "0.0.0.0", "port": 9123}, monkeypatch)
+        assert _get_webhook_base_url() == "http://localhost:9123"
+
+    def test_valid_public_base_url_used_verbatim(self, monkeypatch):
+        self._config(
+            {
+                "host": "0.0.0.0",
+                "port": 8644,
+                "public_base_url": "https://hooks.example.com",
+            },
+            monkeypatch,
+        )
+        assert _get_webhook_base_url() == "https://hooks.example.com"
+
+    def test_trailing_slash_stripped(self, monkeypatch):
+        self._config({"public_base_url": "https://hooks.example.com/"}, monkeypatch)
+        assert _get_webhook_base_url() == "https://hooks.example.com"
+
+    def test_route_paths_append_to_public_base(self, monkeypatch):
+        from hermes_cli.webhook import _route_url
+
+        self._config({"public_base_url": "https://hooks.example.com"}, monkeypatch)
+        assert (
+            _route_url("push", {"profile": "default"})
+            == "https://hooks.example.com/webhooks/push"
+        )
+        assert (
+            _route_url("push", {"profile": "compta"})
+            == "https://hooks.example.com/p/compta/webhooks/push"
+        )
+
+    def test_public_base_url_with_mount_path_keeps_route_suffix(self, monkeypatch):
+        from hermes_cli.webhook import _route_url
+
+        self._config({"public_base_url": "https://example.com/hermes"}, monkeypatch)
+        assert _route_url("push", {}) == "https://example.com/hermes/webhooks/push"
+
+    def test_malformed_public_base_url_warns_once_and_falls_back(
+        self, monkeypatch, caplog
+    ):
+        self._config(
+            {"host": "127.0.0.1", "port": 8644, "public_base_url": "hooks.example.com"},
+            monkeypatch,
+        )
+        with caplog.at_level("WARNING", logger="hermes_cli.webhook"):
+            assert _get_webhook_base_url() == "http://127.0.0.1:8644"
+            assert _get_webhook_base_url() == "http://127.0.0.1:8644"
+        warnings = [r for r in caplog.records if "public_base_url" in r.message]
+        assert len(warnings) == 1
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "ftp://hooks.example.com",  # non-http scheme
+            "https://",  # no netloc
+            "https://ex ample.com",  # embedded space / injection char
+            "  ",  # whitespace-only
+        ],
+    )
+    def test_non_http_or_garbage_values_fall_back(self, monkeypatch, bad):
+        self._config(
+            {"host": "127.0.0.1", "port": 8644, "public_base_url": bad}, monkeypatch
+        )
+        assert _get_webhook_base_url() == "http://127.0.0.1:8644"
+
+    def test_non_string_value_coerces_and_warns(self, monkeypatch, caplog):
+        # YAML `public_base_url: 12345` is a config error, not silence: coerce, reject, warn once.
+        self._config(
+            {"host": "127.0.0.1", "port": 8644, "public_base_url": 12345}, monkeypatch
+        )
+        with caplog.at_level("WARNING", logger="hermes_cli.webhook"):
+            assert _get_webhook_base_url() == "http://127.0.0.1:8644"
+        assert len([r for r in caplog.records if "public_base_url" in r.message]) == 1
+
+    def test_warning_dedup_survives_new_value(self, monkeypatch, caplog):
+        # A changed typo warns afresh even after an earlier value already warned.
+        self._config({"public_base_url": "example.org"}, monkeypatch)
+        with caplog.at_level("WARNING", logger="hermes_cli.webhook"):
+            _get_webhook_base_url()
+        self._config({"public_base_url": "example.net"}, monkeypatch)
+        with caplog.at_level("WARNING", logger="hermes_cli.webhook"):
+            _get_webhook_base_url()
+        assert len([r for r in caplog.records if "public_base_url" in r.message]) == 2

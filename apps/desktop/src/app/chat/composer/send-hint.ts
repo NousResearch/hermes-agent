@@ -1,5 +1,5 @@
 import { formatCombo } from '@/lib/keybinds/combo'
-import { activeSendGestures, type ComposerSendGesture, type ComposerSendPrefs } from '@/store/composer-send'
+import { activeSendGestures, type ComposerSendGesture, type ComposerSendPrefs } from '@/store/composer-prefs'
 
 export interface SendHintWords {
   /** Gets the platform-correct chord, already formatted. */

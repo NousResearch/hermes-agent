@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
-import { $composerSendPrefs } from '@/store/composer-send'
+import { $composerSendPrefs } from '@/store/composer-prefs'
 
 import { pickPlaceholder } from '../composer-utils'
 import { composerSendHint } from '../send-hint'

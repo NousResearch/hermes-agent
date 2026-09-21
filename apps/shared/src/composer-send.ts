@@ -2,11 +2,12 @@
  * How the composer decides to commit a draft, and the windows the gestures
  * measure against.
  *
- * Main owns the persisted value (a small JSON file under userData, hand-editable
- * like `data-url-read-max.json`); the renderer mirrors it in Settings →
- * Keyboards and clamps optimistically before sending. Both ends have to agree on
- * the default and the bounds, so they live here rather than as two constants
- * with a "keep these in sync" comment between them.
+ * The gateway config owns the persisted values, as `desktop.composer.*` in
+ * config.yaml, so they can be hand-edited with more precision than the controls
+ * offer. The renderer mirrors that record, clamps optimistically, and writes
+ * back through `composerConfigFromPrefs` — the two name maps live here, side by
+ * side, so both ends of the round trip agree on the default and the bounds
+ * rather than keeping two constant lists in sync by comment.
  *
  * The shape is three KINDS of setting, not one enum:
  *
@@ -143,60 +144,18 @@ export function activeSendGestures(prefs: ComposerSendPrefs): readonly ComposerS
   return COMPOSER_SEND_GESTURES.filter(gesture => prefs[GESTURE_FLAG[gesture]] === true)
 }
 
-/** Keep only the known situations, in canonical order, so a hand-edited file
- *  cannot introduce a duplicate or an unknown entry. */
+/** Keep only the known situations, in canonical order, so a hand-edited config
+ *  value cannot introduce a duplicate or an unknown entry. */
 function normalizeGraceReasons(record: Record<string, unknown>): readonly SendGraceReason[] {
-  const stored = record.sendGraceFor
+  const stored = record.sendGraceFor ?? record.send_grace_for
 
   if (Array.isArray(stored)) {
     return SEND_GRACE_REASONS.filter(reason => stored.includes(reason))
   }
 
-  // Legacy three-way scope, from before this became per-situation. `inferred`
-  // was the scope that covered the guessed send only — a held key was never
-  // inferred, so it does not come along.
-  if (record.sendGrace === 'all') {
-    return [...SEND_GRACE_REASONS]
-  }
-
-  if (record.sendGrace === 'off') {
-    return []
-  }
-
   return SEND_GRACE_DEFAULT_REASONS
 }
 
-/**
- * The `mode` enum this replaced, expanded into the equivalent flags. Every value
- * that ever shipped is here, including `hold`, which was briefly a mode of its
- * own before becoming a flag.
- *
- * Landing an old value on the DEFAULT would be a silent behaviour change — a
- * user who had moved sending off Enter would find Enter sending again, which is
- * the exact thing they opened Settings to prevent — so unknown values fall
- * through to the default rather than guessing.
- */
-function fromLegacyMode(mode: unknown): Omit<ComposerSendPrefs, 'doubleEnterMs' | 'enterNewline' | 'holdMs' | 'idleSendMs' | 'sendGraceFor' | 'sendGraceMs' | 'sendOnIdle' | 'typingIdleMs'> | null {
-  switch (mode) {
-    case 'enter':
-      return { enterSends: true, sendOnDoubleTap: false, sendOnHold: false, sendOnPause: false }
-
-    case 'double-enter':
-      return { enterSends: false, sendOnDoubleTap: true, sendOnHold: false, sendOnPause: false }
-
-    case 'pause':
-      return { enterSends: false, sendOnDoubleTap: false, sendOnHold: false, sendOnPause: true }
-
-    case 'mod-enter':
-      return { enterSends: false, sendOnDoubleTap: false, sendOnHold: false, sendOnPause: false }
-
-    case 'hold':
-      return { enterSends: false, sendOnDoubleTap: false, sendOnHold: true, sendOnPause: false }
-
-    default:
-      return null
-  }
-}
 
 export function clampDoubleEnterMs(value: unknown): number {
   const parsed = Number(value)
@@ -248,24 +207,22 @@ export function clampSendGraceMs(value: unknown): number {
   return Math.min(SEND_GRACE_MAX_MS, Math.max(SEND_GRACE_MIN_MS, Math.round(parsed)))
 }
 
-/** Coerce anything read off disk (or off the IPC bridge) into valid prefs. A
- *  legacy `mode` is translated; an out-of-range window clamps. */
+/** Coerce anything read out of storage into valid prefs. An out-of-range
+ *  window clamps, so a hand-edited config cannot produce a broken gesture. */
 export function normalizeComposerSendPrefs(value: unknown): ComposerSendPrefs {
   const record = (value ?? {}) as Record<string, unknown> & Partial<ComposerSendPrefs>
-  const legacy = record.enterSends === undefined ? fromLegacyMode(record.mode) : null
 
   return {
-    enterSends: legacy ? legacy.enterSends : record.enterSends !== false,
+    enterSends: record.enterSends !== false,
     // Defaults ON: a file written before this key existed keeps breaking the
     // line as it always did, and closing the gate gives the least surprising
     // result. Turning it off is the deliberate "the key does nothing" choice.
     enterNewline: record.enterNewline !== false,
-    sendOnDoubleTap: legacy ? legacy.sendOnDoubleTap : record.sendOnDoubleTap === true,
-    sendOnHold: legacy ? legacy.sendOnHold : record.sendOnHold === true,
-    sendOnPause: legacy ? legacy.sendOnPause : record.sendOnPause === true,
-    // Never migrated from a legacy value: the auto-send did not exist before, so
-    // defaulting it on for an old file would start sending messages nobody asked
-    // it to send.
+    sendOnDoubleTap: record.sendOnDoubleTap === true,
+    sendOnHold: record.sendOnHold === true,
+    sendOnPause: record.sendOnPause === true,
+    // Off unless asked for: this is the one gesture that acts with no press at
+    // all, so it must never arrive switched on.
     sendOnIdle: record.sendOnIdle === true,
     idleSendMs: clampIdleSendMs(record.idleSendMs ?? IDLE_SEND_DEFAULT_MS),
     doubleEnterMs: clampDoubleEnterMs(record.doubleEnterMs ?? DOUBLE_ENTER_DEFAULT_MS),
@@ -273,5 +230,56 @@ export function normalizeComposerSendPrefs(value: unknown): ComposerSendPrefs {
     typingIdleMs: clampTypingIdleMs(record.typingIdleMs ?? TYPING_IDLE_DEFAULT_MS),
     sendGraceFor: normalizeGraceReasons(record),
     sendGraceMs: clampSendGraceMs(record.sendGraceMs ?? SEND_GRACE_DEFAULT_MS)
+  }
+}
+
+/**
+ * Read the composer send contract out of the gateway config (`desktop.composer`).
+ *
+ * Config keys are snake_case and the renderer is camelCase, so this is the single
+ * place the two names meet. Bounds live in this module, so a value typed straight
+ * into `config.yaml` clamps exactly the way a slider does.
+ */
+export function composerPrefsFromConfig(composer: unknown): ComposerSendPrefs {
+  const record = (composer ?? {}) as Record<string, unknown>
+
+  return normalizeComposerSendPrefs({
+    enterSends: record.enter_sends !== false,
+    enterNewline: record.enter_newline !== false,
+    sendOnDoubleTap: record.send_on_double_tap === true,
+    sendOnHold: record.send_on_hold === true,
+    sendOnPause: record.send_on_pause === true,
+    sendOnIdle: record.send_on_idle === true,
+    idleSendMs: record.idle_send_ms,
+    doubleEnterMs: record.double_enter_ms,
+    holdMs: record.hold_ms,
+    typingIdleMs: record.typing_idle_ms,
+    sendGraceFor: record.send_grace_for,
+    sendGraceMs: record.send_grace_ms
+  })
+}
+
+/**
+ * The inverse: prefs as the `desktop.composer` record the panel writes back.
+ *
+ * Every key is written, not just the changed one, because the panel replaces the
+ * record it read — a sparse patch would leave the two ends disagreeing about a
+ * window the user never touched. `composerPrefsFromConfig` reverses this
+ * exactly, which `composer-send.test.ts` holds to a round trip.
+ */
+export function composerConfigFromPrefs(prefs: ComposerSendPrefs): Record<string, unknown> {
+  return {
+    enter_sends: prefs.enterSends,
+    enter_newline: prefs.enterNewline,
+    send_on_double_tap: prefs.sendOnDoubleTap,
+    send_on_hold: prefs.sendOnHold,
+    send_on_pause: prefs.sendOnPause,
+    send_on_idle: prefs.sendOnIdle,
+    double_enter_ms: prefs.doubleEnterMs,
+    hold_ms: prefs.holdMs,
+    idle_send_ms: prefs.idleSendMs,
+    typing_idle_ms: prefs.typingIdleMs,
+    send_grace_for: [...prefs.sendGraceFor],
+    send_grace_ms: prefs.sendGraceMs
   }
 }

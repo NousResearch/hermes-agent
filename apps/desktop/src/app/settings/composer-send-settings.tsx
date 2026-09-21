@@ -1,3 +1,4 @@
+import { composerConfigFromPrefs } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
@@ -5,10 +6,10 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
+import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import {
-  $composerSendConfigPath,
   $composerSendPrefs,
   clampDoubleEnterMs,
   clampHoldMs,
@@ -25,13 +26,13 @@ import {
   SEND_GRACE_MIN_MS,
   SEND_GRACE_REASONS,
   type SendGraceReason,
-  setComposerSendPrefs,
   TYPING_IDLE_MAX_MS,
   TYPING_IDLE_MIN_MS
-} from '@/store/composer-send'
-import { notify } from '@/store/notifications'
+} from '@/store/composer-prefs'
+import { notify, notifyError } from '@/store/notifications'
 
 import { composerSendHint } from '../chat/composer/send-hint'
+import { useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { ListRow } from './primitives'
 
@@ -119,9 +120,10 @@ export function ComposerSendSettings() {
   const { t } = useI18n()
   const k = t.keybinds.composerSend
   const prefs = useStore($composerSendPrefs)
-  const configPath = useStore($composerSendConfigPath)
-
-  const fileHint = configPath ? k.fileHint(configPath) : undefined
+  // The gateway config owns these values, so the hint names the record rather
+  // than a file this app writes.
+  const { writeScope } = useHermesConfigRecord()
+  const fileHint = k.fileHint('desktop.composer in config.yaml')
   const gesturesLocked = prefs.enterSends
 
   // Say what the settings currently amount to. The gestures are invisible until
@@ -143,6 +145,32 @@ export function ComposerSendSettings() {
     })
   }
 
+  /** Persist through the gateway config, which owns `desktop.composer.*`. The
+   *  patch lands on the prefs already in hand, so switching one gesture on never
+   *  writes a neighbour back to its default. The atom moves first and rolls back
+   *  if the write fails, because the composer reads it on every keystroke. */
+  const save = (patch: Partial<typeof prefs>, title?: string) => {
+    const previous = $composerSendPrefs.get()
+    const next = { ...previous, ...patch }
+
+    $composerSendPrefs.set(next)
+
+    void saveHermesConfig({ desktop: { composer: composerConfigFromPrefs(next) } }, writeScope)
+      .then(result => {
+        if (!result.ok) {
+          throw new Error('composer send settings were not saved')
+        }
+
+        if (title) {
+          announce(title)
+        }
+      })
+      .catch(error => {
+        $composerSendPrefs.set(previous)
+        notifyError(error, t.settings.config.autosaveFailed)
+      })
+  }
+
   const toggleGrace = (reason: SendGraceReason, enabled: boolean) => {
     triggerHaptic('selection')
 
@@ -150,7 +178,7 @@ export function ComposerSendSettings() {
       ? SEND_GRACE_REASONS.filter(candidate => candidate === reason || prefs.sendGraceFor.includes(candidate))
       : prefs.sendGraceFor.filter(candidate => candidate !== reason)
 
-    void setComposerSendPrefs({ sendGraceFor: next })
+    save({ sendGraceFor: next })
   }
 
   const reasonLabel: Record<SendGraceReason, string> = {
@@ -186,7 +214,7 @@ export function ComposerSendSettings() {
             disabled={gesturesLocked}
             onCheckedChange={checked => {
               triggerHaptic('selection')
-              void setComposerSendPrefs({ [pref]: checked })
+              save({ [pref]: checked }, title)
               announce(title)
             }}
           />
@@ -202,7 +230,7 @@ export function ComposerSendSettings() {
               label={timing.title}
               max={timing.max}
               min={timing.min}
-              onChange={value => void setComposerSendPrefs({ [timing.pref]: value })}
+              onChange={value => save({ [timing.pref]: value })}
               unit={timing.unit}
               value={prefs[timing.pref]}
             />
@@ -228,7 +256,7 @@ export function ComposerSendSettings() {
             checked={!prefs.enterSends}
             onCheckedChange={checked => {
               triggerHaptic('selection')
-              void setComposerSendPrefs({ enterSends: !checked })
+              save({ enterSends: !checked })
               announce(k.gateLabel)
             }}
           />
@@ -247,7 +275,7 @@ export function ComposerSendSettings() {
               checked={prefs.enterNewline}
               onCheckedChange={checked => {
                 triggerHaptic('selection')
-                void setComposerSendPrefs({ enterNewline: checked })
+                save({ enterNewline: checked })
                 announce(k.newlineLabel)
               }}
             />
@@ -347,7 +375,7 @@ export function ComposerSendSettings() {
               label={k.graceMsTitle}
               max={SEND_GRACE_MAX_MS}
               min={SEND_GRACE_MIN_MS}
-              onChange={sendGraceMs => void setComposerSendPrefs({ sendGraceMs })}
+              onChange={sendGraceMs => save({ sendGraceMs })}
               unit={k.graceMsUnit}
               value={prefs.sendGraceMs}
             />

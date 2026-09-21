@@ -2618,6 +2618,8 @@ export const ar = defineLocale({
       fast: 'سريع'
     },
     modelOptions: {
+      dynamicThinking: 'ديناميكي',
+      thinkingBudget: 'ميزانية التفكير (رموز)',
       noOptions: 'لا توجد خيارات لهذا النموذج',
       options: 'الخيارات',
       thinking: 'التفكير',

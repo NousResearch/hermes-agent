@@ -1574,7 +1574,10 @@ def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base
 def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
-    picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
+    picker will later show. A successful authoritative listing (including an empty one) replaces
+    curated IDs; otherwise empty live → ``fallback_models`` (None when the profile has none)."""
+    if live is not None and profile.model_catalog_authoritative:
+        return _drop_delisted_opencode_models(normalized, live)
     if not live:
         rows = list(profile.fallback_models) if profile.fallback_models else None
     else:

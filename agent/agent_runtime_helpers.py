@@ -2319,7 +2319,9 @@ def switch_model(
     try:
         from hermes_constants import resolve_reasoning_config
         from hermes_cli.config import load_config as _sm_load_config
-        agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
+        from providers.reasoning import resolve_provider_reasoning_config
+        agent.reasoning_config = resolve_provider_reasoning_config(
+            agent.provider, agent.model, resolve_reasoning_config(_sm_load_config() or {}, agent.model))
         logger.info(
             "switch_model: reasoning_config resolved for %s: %s", agent.model, agent.reasoning_config
         )

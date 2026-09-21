@@ -896,7 +896,7 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         # ``/model`` picker; when neither live nor fallback_models yields rows, the curated
         # ``_PROVIDER_MODELS`` row still applies (built-in providers with a short curated list).
         model_list = probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base)
-        if model_list:
+        if model_list or (model_list is not None and profile.model_catalog_authoritative):
             _report_live_models(model_list, f"{pconfig.name} catalog")
             return model_list
         _show_curated(curated)

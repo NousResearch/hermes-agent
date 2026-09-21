@@ -15431,6 +15431,50 @@
             ],
             "default": null,
             "title": "Can Disable Reasoning"
+          },
+          "reasoning_control": {
+            "anyOf": [
+              {
+                "enum": [
+                  "adjustable",
+                  "default",
+                  "unsupported",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Control"
+          },
+          "reasoning_efforts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Efforts"
+          },
+          "reasoning_budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningBudget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -22325,6 +22369,30 @@
           "session_id"
         ],
         "title": "ReadRangeRequestParams",
+        "type": "object"
+      },
+      "ReasoningBudget": {
+        "additionalProperties": false,
+        "properties": {
+          "min": {
+            "title": "Min",
+            "type": "integer"
+          },
+          "max": {
+            "title": "Max",
+            "type": "integer"
+          },
+          "dynamic": {
+            "default": false,
+            "title": "Dynamic",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "min",
+          "max"
+        ],
+        "title": "ReasoningBudget",
         "type": "object"
       },
       "RecordRepoItem": {

@@ -26,7 +26,7 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
-import { reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { reasoningEffortLabel, resolveModelReasoningEffort } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -302,7 +302,12 @@ export function ModelCatalogMenu({
 
     controller.applyPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
+        effort:
+          (caps?.reasoning ?? true)
+            ? caps?.reasoning_efforts == null
+              ? (preset.effort ?? defaultEffort)
+              : resolveModelReasoningEffort(preset.effort ?? '', defaultEffort, caps) || 'auto'
+            : undefined,
         fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
       },
       { model: family.id, provider: provider.slug }
@@ -506,7 +511,11 @@ export function ModelCatalogMenu({
                     // the active model, otherwise its remembered preset. Row
                     // label AND submenu read from these so they never disagree.
                     const preset = controller.presetFor(group.provider.slug, family.id)
-                    const effEffort = isCurrent ? current.effort : (preset.effort ?? '')
+                    const rawEffort = isCurrent ? current.effort : (preset.effort ?? '')
+                    const effEffort =
+                      caps?.reasoning_efforts == null
+                        ? rawEffort
+                        : resolveModelReasoningEffort(rawEffort, defaultEffort, caps)
                     const effFast = isCurrent ? current.fast : (preset.fast ?? false)
 
                     const fastControl: FastControl = resolveFastControl(
@@ -520,7 +529,9 @@ export function ModelCatalogMenu({
                       tag || null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                       (caps?.reasoning ?? true)
-                        ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
+                        ? caps?.reasoning_efforts != null && !effEffort
+                          ? t.shell.modelOptions.unverified
+                          : reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
                         : null
                     ]
                       .filter(Boolean)
@@ -579,6 +590,9 @@ export function ModelCatalogMenu({
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu
                           canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
+                          reasoningControl={caps?.reasoning_control ?? undefined}
+                          reasoningEfforts={caps?.reasoning_efforts ?? undefined}
+                          reasoningBudget={caps?.reasoning_budget ?? undefined}
                           defaultEffort={defaultEffort}
                           effort={effEffort}
                           effortWire={isCurrent ? current.effortWire : undefined}

@@ -2998,6 +2998,10 @@ export const zhHant = defineLocale({
       fast: '快速'
     },
     modelOptions: {
+      dynamicThinking: '動態',
+      thinkingBudget: '思考預算（權杖）',
+      unverified: '未驗證的設定',
+      unknownThinking: '思考選項尚未驗證',
       noOptions: '此模型沒有可用選項',
       options: '選項',
       thinking: '思考',

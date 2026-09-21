@@ -40,6 +40,9 @@ export function ReasoningMenuPanel(props: ModelMenuHostProps) {
   return (
     <ModelOptionsContent
       canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
+      reasoningControl={caps?.reasoning_control ?? undefined}
+      reasoningEfforts={caps?.reasoning_efforts ?? undefined}
+      reasoningBudget={caps?.reasoning_budget ?? undefined}
       defaultEffort={defaultEffort}
       effort={controller.current.effort}
       effortWire={controller.current.effortWire}

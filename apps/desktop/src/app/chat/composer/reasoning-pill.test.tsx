@@ -40,6 +40,17 @@ afterEach(() => {
 })
 
 describe('ReasoningPill', () => {
+  it('offers the effort menu without inventing a level for an unset override', () => {
+    $defaultReasoningEffort.set('high')
+    render(
+      <SessionViewProvider value={tileView('auto')}>
+        <ReasoningPill disabled={false} model={modelState()} />
+      </SessionViewProvider>
+    )
+    expect(screen.getByTestId('reasoning-pill').textContent).toBe('Effort')
+    expect(screen.getByTestId('reasoning-pill').getAttribute('aria-label')).toBe('Effort')
+  })
+
   it('shows a clamped pick as what the route sends, never as a distinct level (#61634)', () => {
     // The gateway says this route clamps `ultra` to `max`: compact "Ultra→Max",
     // tooltip in the CLI's `/reasoning` wording.

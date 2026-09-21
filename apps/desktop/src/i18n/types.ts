@@ -3148,6 +3148,10 @@ export interface Translations {
       fast: string
     }
     modelOptions: {
+      dynamicThinking: string
+      thinkingBudget: string
+      unverified: string
+      unknownThinking: string
       noOptions: string
       options: string
       thinking: string

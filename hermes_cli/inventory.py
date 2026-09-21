@@ -300,6 +300,45 @@ def _reasoning_catalog_reader(slug: str):
     return read
 
 
+def _validate_model_description(value: dict) -> dict:
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    clean = {key: value[key] for key in ('fast', 'reasoning', 'can_disable_reasoning')
+             if type(value.get(key)) is bool}
+    state = value.get('reasoning_control')
+    if state in ('adjustable', 'default', 'unsupported', 'unknown'):
+        clean['reasoning_control'] = state
+    efforts = value.get('reasoning_efforts')
+    budget = value.get('reasoning_budget')
+    if (isinstance(budget, dict) and type(budget.get('min')) is int
+            and type(budget.get('max')) is int and 1 <= budget['min'] <= budget['max']):
+        clean['reasoning_budget'] = {key: budget[key] for key in ('min', 'max')}
+        if type(budget.get('dynamic')) is bool:
+            clean['reasoning_budget']['dynamic'] = budget['dynamic']
+    if isinstance(efforts, list) and all(
+            isinstance(effort, str) and effort in ('none', *VALID_REASONING_EFFORTS)
+            for effort in efforts):
+        clean['reasoning_efforts'] = list(dict.fromkeys(efforts))
+    return clean
+
+
+def _profile_model_descriptions(slug: str, model_ids: list[str]) -> dict:
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(slug)
+    if profile is None:
+        return {}
+    try:
+        descriptions = profile.describe_models(model_ids=model_ids)
+    except Exception:
+        # Optional metadata must not take down every provider's picker.
+        return {}
+    if not isinstance(descriptions, dict):
+        return {}
+    return {model: _validate_model_description(value)
+            for model, value in descriptions.items() if model in model_ids and isinstance(value, dict)}
+
+
 def _apply_capabilities(rows: list[dict]) -> None:
     """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
@@ -316,6 +355,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
+
+        descriptions = _profile_model_descriptions(slug, row.get("models") or [])
 
         for model in row.get("models") or []:
             reasoning = True
@@ -341,6 +382,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
 
+            entry.update(descriptions.get(model, {}))
             caps[model] = entry
 
         row["capabilities"] = caps

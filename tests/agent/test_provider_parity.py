@@ -983,3 +983,7 @@ class TestReasoningEffortDefaults:
         assert kwargs["reasoning"]["effort"] == "medium"
 
 
+
+
+
+pytestmark = pytest.mark.usefixtures("gemini_reasoning_catalog")

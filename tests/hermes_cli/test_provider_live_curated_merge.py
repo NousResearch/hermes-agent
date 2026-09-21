@@ -13,6 +13,7 @@ Guards two contracts:
 """
 
 from unittest.mock import MagicMock, patch
+import pytest
 
 from hermes_cli.models import (
     _LIVE_FIRST_PICKER_PROVIDERS,
@@ -30,6 +31,7 @@ class TestGenericProviderLiveCuratedMerge:
         p.base_url = "https://api.example.com/v1"
         p.fetch_models.return_value = models
         p.fallback_models = None
+        p.model_catalog_authoritative = False
         return p
 
     def test_curated_first_for_single_provider(self):
@@ -143,3 +145,35 @@ class TestGenericProviderLiveCuratedMerge:
 
         assert "x-preview-f-free" not in result
         assert "kimi-k3" in result
+
+
+@pytest.mark.parametrize("live", [["live-only"], [], None])
+def test_authoritative_catalog_is_shared_with_setup(monkeypatch, live):
+    from types import SimpleNamespace
+
+    from hermes_cli import model_setup_flows, models
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(
+        name="catalog-test",
+        base_url="https://example.test/v1",
+        model_catalog_authoritative=True,
+        fallback_models=("fallback",),
+    )
+    monkeypatch.setattr(profile, "fetch_models", lambda **kw: live)
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+    monkeypatch.setattr(models, "_api_key_credentials", lambda name: ("test-key", profile.base_url))
+    monkeypatch.setattr(model_setup_flows, "_models_dev_merged", lambda *a: [])
+    monkeypatch.setitem(models._PROVIDER_MODELS, profile.name, ["stale-curated"])
+    expected = ["fallback"] if live is None else live
+    assert models._profile_live_catalog(profile.name) == expected
+    assert (
+        model_setup_flows._api_key_provider_model_list(
+            profile.name,
+            SimpleNamespace(name="Catalog test"),
+            "test-key",
+            "",
+            profile.base_url,
+        )
+        == expected
+    )

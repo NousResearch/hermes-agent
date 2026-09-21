@@ -45,6 +45,8 @@ class ModelInfo:
     provider_id: str        # models.dev provider ID (e.g. "anthropic")
     # Capabilities
     reasoning: bool = False
+    # None means absent/invalid metadata; () explicitly means no caller controls.
+    reasoning_options: Optional[Tuple[Dict[str, Any], ...]] = None
     tool_call: bool = False
     attachment: bool = False       # supports image/file attachments (vision)
     temperature: bool = False
@@ -878,6 +880,38 @@ def list_agentic_models(provider: str, *, allow_network: bool = True) -> List[st
     ] if models is not None else []
 
 
+def _parse_reasoning_options(value: Any) -> Optional[Tuple[Dict[str, Any], ...]]:
+    """Read the models.dev tagged union without guessing missing capabilities."""
+    if not isinstance(value, list):
+        return None
+    result = []
+    seen = set()
+    for option in value:
+        if not isinstance(option, dict):
+            return None
+        kind = option.get("type")
+        if kind not in ("toggle", "effort", "budget_tokens") or kind in seen:
+            return None
+        seen.add(kind)
+        parsed = {"type": kind}
+        if kind == "effort":
+            values = option.get("values")
+            allowed = (None, "none", "minimal", "low", "medium", "high", "xhigh", "max", "default")
+            if not isinstance(values, list) or not values or any(v not in allowed for v in values):
+                return None
+            parsed["values"] = list(dict.fromkeys(values))
+        if kind == "budget_tokens":
+            for key, lower in (("min", -1), ("max", 0)):
+                if key in option:
+                    if type(option[key]) is not int or option[key] < lower:
+                        return None
+                    parsed[key] = option[key]
+            if "min" in parsed and "max" in parsed and parsed["min"] > parsed["max"]:
+                return None
+        result.append(parsed)
+    return tuple(result)
+
+
 def _parse_model_info(model_id: str, raw: Dict[str, Any], provider_id: str) -> ModelInfo:
     """Convert a raw models.dev model entry dict into a ModelInfo dataclass."""
     cost = _dict_or_empty(raw.get("cost"))
@@ -890,6 +924,7 @@ def _parse_model_info(model_id: str, raw: Dict[str, Any], provider_id: str) -> M
     return ModelInfo(
         id=model_id, name=raw.get("name", "") or model_id, family=raw.get("family", "") or "", provider_id=provider_id,
         **{k: bool(raw.get(k, False)) for k in ("reasoning", "tool_call", "attachment", "temperature", "structured_output", "open_weights")},
+        reasoning_options=_parse_reasoning_options(raw.get("reasoning_options")),
         input_modalities=_mods("input"), output_modalities=_mods("output"),
         context_window=_extract_limit(raw, "context") or 0, max_output=_extract_limit(raw, "output") or 0, max_input=_extract_limit(raw, "input"),
         cost_input=float(cost.get("input", 0) or 0), cost_output=float(cost.get("output", 0) or 0),

@@ -1593,12 +1593,24 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
 def profile_task_eligibility(profile: str, task: "Task") -> tuple[bool, Optional[str]]:
     """Side-effect-free preclaim capability check for a profile/task pair.
 
-    Profile existence is checked by the caller. Repository work requires an
-    existing declared path; deployments may inject a narrower capability probe.
+    Profile existence is checked by the caller. Repository work requires both
+    an existing declared path and the terminal toolset in the candidate's
+    effective CLI configuration.  Use the same profile-scoped resolver as the
+    eventual worker argv so routing cannot select a profile whose process would
+    start without command capability.
     """
     if task.workspace_kind in {"dir", "worktree"} and task.workspace_path:
         if not Path(task.workspace_path).exists():
             return False, "repository_ineligible"
+        try:
+            from hermes_cli.profiles import resolve_profile_env
+
+            profile_home = resolve_profile_env(profile)
+        except (FileNotFoundError, ValueError):
+            return False, "command_incapable"
+        toolsets = _resolve_worker_cli_toolsets(profile_home)
+        if not toolsets or "terminal" not in toolsets:
+            return False, "command_incapable"
     return True, None
 
 

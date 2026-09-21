@@ -212,32 +212,48 @@ def test_nonspawnable_assignee_uses_finite_declared_fallback(
 def test_live_evidence_route_requires_command_and_repository_eligibility(
     board, monkeypatch: pytest.MonkeyPatch
 ):
-    conn, _ = board
+    conn, home = board
+    profiles = home / "profiles"
+    for name, toolsets in (
+        ("web-only", "[web, file]"),
+        ("builder", "[terminal, file]"),
+    ):
+        profile_home = profiles / name
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text(
+            f"platform_toolsets:\n  cli: {toolsets}\n",
+            encoding="utf-8",
+        )
+    repository = home / "repository"
+    repository.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles: [web-only, builder]\n",
+        encoding="utf-8",
+    )
     task_id = kb.create_task(
         conn,
         title="command-backed verification",
         body="Run repository tests and capture live command evidence.",
         assignee="web-only",
         workspace_kind="dir",
-        workspace_path="/srv/repository",
+        workspace_path=str(repository),
     )
-    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
-    monkeypatch.setattr(
-        kbd,
-        "_dispatch_profile_allowlist",
-        lambda _normalize: ("web-only", "wrong-repository", "builder"),
-    )
-    monkeypatch.setattr("hermes_cli.profiles.normalize_profile_name", lambda name: name)
     eligibility = getattr(kbd, "profile_task_eligibility", None)
     assert callable(eligibility), "dispatcher needs a command/repository eligibility predicate"
-    monkeypatch.setattr(
-        kbd,
-        "profile_task_eligibility",
-        lambda profile, _task: {
-            "web-only": (False, "command_incapable"),
-            "wrong-repository": (False, "repository_ineligible"),
-            "builder": (True, None),
-        }[profile],
+    task = _task(conn, task_id)
+    assert eligibility("web-only", task) == (False, "command_incapable")
+    assert eligibility("builder", task) == (True, None)
+
+    missing_repo_id = kb.create_task(
+        conn,
+        title="missing repository verification",
+        assignee="builder",
+        workspace_kind="dir",
+        workspace_path=str(home / "missing-repository"),
+    )
+    assert eligibility("builder", _task(conn, missing_repo_id)) == (
+        False,
+        "repository_ineligible",
     )
     spawned: list[str] = []
 
@@ -253,7 +269,6 @@ def test_live_evidence_route_requires_command_and_repository_eligibility(
     assert assignment_payload is not None
     assert assignment_payload["attempted_profiles"] == [
         {"profile": "web-only", "reason": "command_incapable"},
-        {"profile": "wrong-repository", "reason": "repository_ineligible"},
         {"profile": "builder", "reason": None},
     ]
 

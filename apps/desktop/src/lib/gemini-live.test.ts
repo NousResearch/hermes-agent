@@ -1,7 +1,19 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
-import { GeminiLiveSession, resolveGeminiLiveApiKey, saveGeminiApiKey } from './gemini-live'
+import {
+  DEFAULT_GEMINI_LIVE_MODEL,
+  DEFAULT_GEMINI_LIVE_VOICE,
+  GEMINI_LIVE_MODEL_STORAGE,
+  GEMINI_LIVE_MODELS,
+  GEMINI_VOICES,
+  GeminiLiveSession,
+  getStoredGeminiLiveModel,
+  resolveGeminiLiveApiKey,
+  RETIRED_GEMINI_LIVE_MODELS,
+  saveGeminiApiKey,
+  thinkingConfigForModel
+} from './gemini-live'
 import { deleteEnvVar, revealEnvVar, setEnvVar } from '@/hermes'
 
 vi.mock('@/hermes', () => ({
@@ -285,5 +297,72 @@ describe('GeminiLiveSession', () => {
     const res = await saveGeminiApiKey('   ')
     expect(res).toEqual({ ok: true })
     expect(deleteEnvVar).toHaveBeenCalledWith('GEMINI_API_KEY')
+  })
+})
+
+describe('Gemini Live model and voice catalogs', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('offers only models that support bidiGenerateContent', () => {
+    const ids = GEMINI_LIVE_MODELS.map(m => m.id)
+
+    // `gemini-2.5-flash` does not support bidiGenerateContent and fails setup
+    // with 1008; `gemini-2.5-flash-native-audio-latest` is the working 2.5 model.
+    expect(ids).not.toContain('gemini-2.5-flash')
+    expect(ids).toContain('gemini-2.5-flash-native-audio-latest')
+    // Fastest measured time-to-first-audio; must stay selectable.
+    expect(ids).toContain('gemini-3.1-flash-live-preview')
+  })
+
+  it('keeps the default model selectable', () => {
+    expect(GEMINI_LIVE_MODELS.map(m => m.id)).toContain(DEFAULT_GEMINI_LIVE_MODEL)
+  })
+
+  it('exposes the full verified voice set without duplicates', () => {
+    const ids = GEMINI_VOICES.map(v => v.id)
+
+    expect(ids).toHaveLength(30)
+    expect(new Set(ids).size).toBe(30)
+    expect(ids).toContain(DEFAULT_GEMINI_LIVE_VOICE)
+  })
+
+  it('retires stored models that can no longer connect', () => {
+    localStorage.setItem(GEMINI_LIVE_MODEL_STORAGE, 'gemini-2.5-flash')
+
+    expect(RETIRED_GEMINI_LIVE_MODELS).toContain('gemini-2.5-flash')
+    expect(getStoredGeminiLiveModel()).toBe(DEFAULT_GEMINI_LIVE_MODEL)
+  })
+
+  it('keeps a stored model that is still offered', () => {
+    localStorage.setItem(GEMINI_LIVE_MODEL_STORAGE, 'gemini-3.1-flash-live-preview')
+
+    expect(getStoredGeminiLiveModel()).toBe('gemini-3.1-flash-live-preview')
+  })
+})
+
+describe('thinkingConfigForModel', () => {
+  it('adds thinkingConfig for the model that requires it', () => {
+    // Without it this model fails setup with
+    // "Thinking level must be specified for this model" (1007).
+    expect(thinkingConfigForModel('gemini-3.8-live-extended-thinking')).toEqual({
+      thinkingLevel: 'LOW'
+    })
+  })
+
+  it('omits thinkingConfig for models that reject it', () => {
+    // Regression guard: sending thinkingConfig to gemini-3.8-live fails setup
+    // with "Thinking level is not supported for this model" (1007).
+    expect(thinkingConfigForModel('gemini-3.8-live')).toBeNull()
+    expect(thinkingConfigForModel('gemini-3.1-flash-live-preview')).toBeNull()
+    expect(thinkingConfigForModel('gemini-2.5-flash-native-audio-latest')).toBeNull()
+  })
+
+  it('accepts a models/ prefixed name', () => {
+    expect(thinkingConfigForModel('models/gemini-3.8-live-extended-thinking')).toEqual({
+      thinkingLevel: 'LOW'
+    })
+    expect(thinkingConfigForModel('models/gemini-3.8-live')).toBeNull()
   })
 })

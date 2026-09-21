@@ -143,7 +143,9 @@ export function GeminiLiveDialog() {
                   <SelectItem key={v.id} value={v.id}>
                     <div className="flex flex-col text-left">
                       <span className="font-medium">{v.label}</span>
-                      <span className="text-[11px] text-muted-foreground">{v.tone}</span>
+                      {v.tone && (
+                        <span className="text-[11px] text-muted-foreground">{v.tone}</span>
+                      )}
                     </div>
                   </SelectItem>
                 ))}

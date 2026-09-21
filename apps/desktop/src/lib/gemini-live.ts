@@ -6,19 +6,64 @@ export const GEMINI_LIVE_MODEL_STORAGE = 'hermes_gemini_live_model'
 export const DEFAULT_GEMINI_LIVE_VOICE = 'Puck'
 export const DEFAULT_GEMINI_LIVE_MODEL = 'gemini-3.8-live'
 
-export const GEMINI_VOICES = [
+/**
+ * Live models differ in how they treat `thinkingConfig`, so it must be sent per
+ * model rather than unconditionally (see `thinkingConfigForModel`).
+ */
+export const THINKING_LEVEL_MODELS = ['gemini-3.8-live-extended-thinking'] as const
+export const DEFAULT_THINKING_LEVEL = 'LOW'
+
+export type GeminiLiveVoice = {
+  id: string
+  label: string
+  /** Set only where the character is published; acceptance is not character. */
+  tone?: string
+}
+
+export type GeminiLiveModel = { id: string; label: string }
+
+// Every voice below was accepted by the Live API and returned audio. The first
+// five carry the tone descriptions from Google's published voice list; the rest
+// are verified to connect but deliberately left without a tone claim.
+export const GEMINI_VOICES: readonly GeminiLiveVoice[] = [
   { id: 'Puck', label: 'Puck', tone: 'Playful, energetic, high dynamic range' },
   { id: 'Charon', label: 'Charon', tone: 'Deep, calm, authoritative' },
   { id: 'Aoede', label: 'Aoede', tone: 'Warm, natural, expressive' },
   { id: 'Kore', label: 'Kore', tone: 'Clear, balanced, pleasant' },
-  { id: 'Fenrir', label: 'Fenrir', tone: 'Bold, direct, resonant' }
-] as const
+  { id: 'Fenrir', label: 'Fenrir', tone: 'Bold, direct, resonant' },
+  { id: 'Zephyr', label: 'Zephyr' },
+  { id: 'Leda', label: 'Leda' },
+  { id: 'Orus', label: 'Orus' },
+  { id: 'Callirrhoe', label: 'Callirrhoe' },
+  { id: 'Autonoe', label: 'Autonoe' },
+  { id: 'Enceladus', label: 'Enceladus' },
+  { id: 'Iapetus', label: 'Iapetus' },
+  { id: 'Umbriel', label: 'Umbriel' },
+  { id: 'Algieba', label: 'Algieba' },
+  { id: 'Despina', label: 'Despina' },
+  { id: 'Erinome', label: 'Erinome' },
+  { id: 'Algenib', label: 'Algenib' },
+  { id: 'Rasalgethi', label: 'Rasalgethi' },
+  { id: 'Laomedeia', label: 'Laomedeia' },
+  { id: 'Achernar', label: 'Achernar' },
+  { id: 'Alnilam', label: 'Alnilam' },
+  { id: 'Schedar', label: 'Schedar' },
+  { id: 'Gacrux', label: 'Gacrux' },
+  { id: 'Pulcherrima', label: 'Pulcherrima' },
+  { id: 'Achird', label: 'Achird' },
+  { id: 'Zubenelgenubi', label: 'Zubenelgenubi' },
+  { id: 'Vindemiatrix', label: 'Vindemiatrix' },
+  { id: 'Sadachbia', label: 'Sadachbia' },
+  { id: 'Sadaltager', label: 'Sadaltager' },
+  { id: 'Sulafat', label: 'Sulafat' }
+]
 
-export const GEMINI_LIVE_MODELS = [
+export const GEMINI_LIVE_MODELS: readonly GeminiLiveModel[] = [
+  { id: 'gemini-3.1-flash-live-preview', label: 'Gemini 3.1 Flash Live (Fastest to first audio)' },
   { id: 'gemini-3.8-live', label: 'Gemini 3.8 Live (Recommended)' },
   { id: 'gemini-3.8-live-extended-thinking', label: 'Gemini 3.8 Live Extended Thinking' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' }
-] as const
+  { id: 'gemini-2.5-flash-native-audio-latest', label: 'Gemini 2.5 Flash Native Audio' }
+]
 
 export function getStoredGeminiLiveVoice(): string {
   try {
@@ -34,10 +79,17 @@ export function setStoredGeminiLiveVoice(voice: string): void {
   } catch {}
 }
 
+// Retired ids that no longer connect: a stored value pointing at one of these
+// would leave the dialog showing a model that fails at setup.
+export const RETIRED_GEMINI_LIVE_MODELS: readonly string[] = [
+  'gemini-2.0-flash-exp',
+  'gemini-2.5-flash'
+]
+
 export function getStoredGeminiLiveModel(): string {
   try {
     const stored = localStorage.getItem(GEMINI_LIVE_MODEL_STORAGE)?.trim()
-    if (stored && stored !== 'gemini-2.0-flash-exp') {
+    if (stored && !RETIRED_GEMINI_LIVE_MODELS.includes(stored)) {
       return stored
     }
     return DEFAULT_GEMINI_LIVE_MODEL
@@ -50,6 +102,23 @@ export function setStoredGeminiLiveModel(model: string): void {
   try {
     localStorage.setItem(GEMINI_LIVE_MODEL_STORAGE, model)
   } catch {}
+}
+
+/**
+ * `thinkingConfig` cannot be sent unconditionally — the models disagree:
+ *
+ *   - `gemini-3.8-live-extended-thinking` rejects setup without it:
+ *     "Thinking level must be specified for this model" (code 1007).
+ *   - `gemini-3.8-live` rejects setup when it IS present:
+ *     "Thinking level is not supported for this model" (code 1007).
+ *
+ * `MINIMAL` is rejected by the extended-thinking model; `LOW` and `HIGH` connect.
+ */
+export function thinkingConfigForModel(model: string): { thinkingLevel: string } | null {
+  const bare = model.startsWith('models/') ? model.slice('models/'.length) : model
+  return (THINKING_LEVEL_MODELS as readonly string[]).includes(bare)
+    ? { thinkingLevel: DEFAULT_THINKING_LEVEL }
+    : null
 }
 
 /**
@@ -227,6 +296,9 @@ export class GeminiLiveSession {
       ws.addEventListener('message', setupListener)
 
       ws.onopen = () => {
+        // Sent per model, never unconditionally: see thinkingConfigForModel().
+        const thinkingConfig = thinkingConfigForModel(modelName)
+
         const setupMessage = {
           setup: {
             model: modelName.startsWith('models/') ? modelName : `models/${modelName}`,
@@ -238,7 +310,8 @@ export class GeminiLiveSession {
                     voiceName
                   }
                 }
-              }
+              },
+              ...(thinkingConfig ? { thinkingConfig } : {})
             },
             inputAudioTranscription: {},
             outputAudioTranscription: {},

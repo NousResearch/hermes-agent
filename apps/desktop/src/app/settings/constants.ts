@@ -256,8 +256,46 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // gpt-live branch (one full-duplex voice model delegating to Hermes);
   // gemini-live connects directly to Google Multimodal Live from the desktop client.
   'voice.voice_chat_mode': ['chained', 'gpt-live', 'gemini-live'],
-  'voice.gemini_live.voice': ['Puck', 'Charon', 'Aoede', 'Kore', 'Fenrir'],
-  'voice.gemini_live.model': ['gemini-3.8-live', 'gemini-3.8-live-extended-thinking', 'gemini-2.5-flash'],
+  // Verified against the Live API: every voice here was accepted and returned
+  // audio, and every model here reports `bidiGenerateContent`.
+  'voice.gemini_live.voice': [
+    'Puck',
+    'Charon',
+    'Aoede',
+    'Kore',
+    'Fenrir',
+    'Zephyr',
+    'Leda',
+    'Orus',
+    'Callirrhoe',
+    'Autonoe',
+    'Enceladus',
+    'Iapetus',
+    'Umbriel',
+    'Algieba',
+    'Despina',
+    'Erinome',
+    'Algenib',
+    'Rasalgethi',
+    'Laomedeia',
+    'Achernar',
+    'Alnilam',
+    'Schedar',
+    'Gacrux',
+    'Pulcherrima',
+    'Achird',
+    'Zubenelgenubi',
+    'Vindemiatrix',
+    'Sadachbia',
+    'Sadaltager',
+    'Sulafat'
+  ],
+  'voice.gemini_live.model': [
+    'gemini-3.1-flash-live-preview',
+    'gemini-3.8-live',
+    'gemini-3.8-live-extended-thinking',
+    'gemini-2.5-flash-native-audio-latest'
+  ],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',

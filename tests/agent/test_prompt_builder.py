@@ -810,6 +810,20 @@ class TestEnvironmentHints:
 
 
 
+    def test_build_environment_hints_names_the_bubblewrap_boundary_with_host_lines(self, monkeypatch):
+        """bubblewrap is a host-path backend (host lines stay) whose commands run confined: the model is told
+        what the sandbox refuses so EROFS / an empty ~/.ssh is reported as the boundary, not detoured around."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
+        monkeypatch.setenv("TERMINAL_BUBBLEWRAP_PROFILE", "workspace")
+        result = _pb.build_environment_hints()
+        assert "Host:" in result and "User home directory:" in result
+        assert "Terminal sandbox: bubblewrap, profile `workspace`" in result
+        assert "no network" in result and "Read-only file system" in result
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        assert "Terminal sandbox" not in _pb.build_environment_hints()
+
     def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
         """Docker/remote backends must hide host info — the agent can only touch the backend.
 

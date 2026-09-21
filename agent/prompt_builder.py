@@ -1053,6 +1053,29 @@ def _embedder_environment_hint() -> str:
         (_config_readonly("agent.environment_hint").get("agent", {}) or {}).get("environment_hint", "")).strip()
 
 
+def _bubblewrap_sandbox_hint() -> str:
+    """Confinement notice for the bubblewrap backend: host paths are real, but each command runs boxed.
+
+    Without it a `Read-only file system` refusal or an empty `~/.ssh` reads as a broken host, and the
+    model detours (sudo, another path, another tool) instead of reporting the boundary.
+    """
+    from tools.environments.bubblewrap import DEFAULT_PROFILE, ENV_PROFILE, resolve_profile
+
+    profile = resolve_profile(_tenv_read(ENV_PROFILE) or DEFAULT_PROFILE)
+    writable = ("the working directory and the scratch directory" if profile.writable_cwd
+                else "nothing (the working directory is read-only under this profile)")
+    network = "the host network" if profile.share_net else "no network (loopback only)"
+    return (
+        f"Terminal sandbox: bubblewrap, profile `{profile.name}`. Every `terminal` and `execute_code` call runs "
+        f"in its own bwrap sandbox on this host with the same paths: the filesystem is read-only except {writable}; "
+        "~/.ssh, ~/.aws, ~/.hermes and other credential directories appear empty; /tmp and /proc are private to "
+        f"each command; it has {network}. A `Read-only file system` error, an empty credential directory or a "
+        "refused connection is that boundary, not a broken host: report it instead of working around it. "
+        "Background processes are not available on this backend. `read_file`, `write_file`, `patch` and "
+        "`search_files` run on the host itself and are not confined."
+    )
+
+
 def build_environment_hints() -> str:
     """Execution-environment block: local backends get host OS/home/cwd; remote/sandbox
     backends get ONLY the backend's own state (the agent's tools cannot touch the host).
@@ -1060,6 +1083,7 @@ def build_environment_hints() -> str:
     backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
     hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
+    hints += [_bubblewrap_sandbox_hint()] if backend == "bubblewrap" else []
     hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 

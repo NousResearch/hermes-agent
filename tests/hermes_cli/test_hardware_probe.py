@@ -51,6 +51,17 @@ def test_nvidia_vram_skips_malformed_rows(monkeypatch):
     assert free == 47800 << 20
 
 
+def test_nvidia_vram_partial_row_contributes_nothing(monkeypatch):
+    # smi reports "N/A" per field, not per row: "24576, N/A" must not bump
+    # total_mib before its free parse fails (and "N/A, 24000" the reverse) —
+    # a row commits to both aggregates or to neither, keeping the budget
+    # internally consistent.
+    _fake_smi(monkeypatch, "24576, N/A\nN/A, 24000\n24576, 24000\n")
+    total, free = hardware._nvidia_vram()
+    assert total == 24576 << 20
+    assert free == 24000 << 20
+
+
 def test_nvidia_vram_all_zero_reports_no_device(monkeypatch):
     _fake_smi(monkeypatch, "0, 0\n0, 0\n")
     assert hardware._nvidia_vram() is None

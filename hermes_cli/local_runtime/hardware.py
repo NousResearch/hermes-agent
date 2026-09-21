@@ -164,11 +164,15 @@ def _nvidia_vram() -> tuple[int, int] | None:
             # A per-field "N/A" (driver mismatch, vGPU, WDDM) must skip only its own row:
             # letting the ValueError reach the outer suppress would discard the good rows
             # already totaled and return None — the silent degradation this probe prevents.
+            # Parse both fields before committing either: smi reports "N/A" per field, so
+            # "24576, N/A" would otherwise bump total before free fails to parse.
             try:
-                total_mib += int(parts[0])
-                free_mib += int(parts[1])
+                row_total = int(parts[0])
+                row_free = int(parts[1])
             except ValueError:
                 continue
+            total_mib += row_total
+            free_mib += row_free
         if total_mib <= 0:
             return None
         return total_mib << 20, free_mib << 20

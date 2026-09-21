@@ -116,6 +116,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
   // Shared singleton client — drop cached skills/toolsets so each test refetches.
   queryClient.clear()
 })
@@ -306,6 +307,19 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() =>
       expect(vi.mocked(notify)).toHaveBeenCalledWith(
         expect.objectContaining({ title: '"web-research" is already installed' })
+      )
+    )
+  })
+
+  it('uses GitHub Pages for the Capabilities picker when the Vercel probe fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }))
+    const { EmbeddedHubPicker } = await import('./skills/embedded-hub-picker')
+
+    render(<EmbeddedHubPicker installedNames={new Set()} profile={null} />)
+
+    await waitFor(() =>
+      expect(globalThis.document.querySelector('iframe')?.getAttribute('src')).toBe(
+        'https://nousresearch.github.io/hermes-agent/docs/skills?embed=picker'
       )
     )
   })

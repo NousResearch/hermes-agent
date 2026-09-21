@@ -21,7 +21,14 @@ import type { RosterRow } from './types'
 // checklist above gains the row. Search-box fallback kept for offline use.
 
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const FALLBACK_HUB_ORIGIN = 'https://nousresearch.github.io'
 const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
+const FALLBACK_HUB_PICKER_URL = FALLBACK_HUB_ORIGIN + '/hermes-agent/docs/skills?embed=picker'
+
+function isHubOrigin(origin: string) {
+  return origin === HUB_ORIGIN || origin === FALLBACK_HUB_ORIGIN
+}
+
 /** One `skills.manage action=search` hit. */
 interface HubSkillResult {
   description?: string
@@ -41,8 +48,35 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
   const [installing, setInstalling] = useState<null | string>(null)
   const [installed, setInstalled] = useState<Record<string, boolean>>({})
   const [browseHub, setBrowseHub] = useState(false)
+  const [hubPickerUrl, setHubPickerUrl] = useState(HUB_PICKER_URL)
   const installRef = useRef<((name: string, displayName?: string) => Promise<void>) | null>(null)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
+
+  // Vercel may block the docs host for an IP range. The equivalent GitHub
+  // Pages deployment keeps the picker available when that probe fails.
+  useEffect(() => {
+    if (!browseHub) {
+      return undefined
+    }
+
+    let mounted = true
+
+    void fetch(HUB_PICKER_URL, { method: 'HEAD' })
+      .then(response => {
+        if (mounted && !response.ok) {
+          setHubPickerUrl(FALLBACK_HUB_PICKER_URL)
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setHubPickerUrl(FALLBACK_HUB_PICKER_URL)
+        }
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [browseHub])
 
   // Picker messages from the embedded hub page. Origin- AND source-checked —
   // only OUR frame may ask for an install (the hub origin alone would let any
@@ -54,7 +88,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
     }
 
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== HUB_ORIGIN) {
+      if (!isHubOrigin(event.origin)) {
         return
       }
 
@@ -183,7 +217,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
             <iframe
               ref={frameRef}
               sandbox="allow-scripts allow-same-origin"
-              src={HUB_PICKER_URL}
+              src={hubPickerUrl}
               style={{
                 width: '133.34%',
                 height: '133.34%',

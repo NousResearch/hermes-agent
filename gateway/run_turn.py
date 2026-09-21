@@ -2682,8 +2682,7 @@ class GatewayTurnMixin:
             raise RuntimeError("skip streaming for non-editable platform")
         _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
         # Some Matrix clients render the cursor as tofu: stream text, no cursor.
-        _buffer_only = source.platform == Platform.MATRIX
-        if _buffer_only:
+        if source.platform == Platform.MATRIX:
             _effective_cursor = ""
         # Fresh-final applies to Telegram only (others edit in place cheaply).
         # Fresh-final applies to Telegram only — other platforms either edit in place cheaply (Discord,
@@ -2695,7 +2694,7 @@ class GatewayTurnMixin:
         )
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
-            cursor=_effective_cursor, buffer_only=_buffer_only,
+            cursor=_effective_cursor,
             fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
             chat_type=getattr(source, "chat_type", "") or "",
         )

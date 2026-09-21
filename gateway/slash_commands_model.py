@@ -579,8 +579,12 @@ class GatewayModelCommandsMixin:
         async with self._model_switch_lock():
             response = await self._handle_model_command_locked(event, inline_payload=inline_payload)
         if isinstance(response, tuple) and response[0] == "__model_guard_publish__":
-            guard_reply = await response[1]  # render the guard prompt outside the lock
-            return guard_reply
+            publish = response[1]
+            # Legacy test doubles may return None (buttons-rendered) instead of the deferred
+            # publish callable; only render when there is something to await.
+            if asyncio.iscoroutine(publish) or asyncio.isfuture(publish):
+                return await publish
+            return publish
         return response
 
     async def _handle_model_command_locked(

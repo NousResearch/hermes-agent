@@ -56,3 +56,31 @@ async def test_poll_loop_dispatches_new_message_to_handle_message():
     # The inter-iteration delay actually ran (not just present in source) — proves the loop
     # doesn't spin at zero delay between successful getUpdates calls.
     mock_sleep.assert_awaited_once_with(POLL_INTERVAL_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_survives_dispatch_error_and_processes_next_update():
+    adapter = RubikaAdapter(_config())
+    adapter._running = True
+    updates_payload = {
+        "updates": [
+            {"type": "NewMessage", "chat_id": "c1", "chat_type": "User",
+             "new_message": {"message_id": "m1", "text": "boom", "sender_id": "u1",
+                             "reply_to_message_id": None, "aux_data": None}},
+            {"type": "NewMessage", "chat_id": "c2", "chat_type": "User",
+             "new_message": {"message_id": "m2", "text": "ok", "sender_id": "u2",
+                             "reply_to_message_id": None, "aux_data": None}},
+        ],
+        "next_offset_id": "off-2",
+    }
+    call_mock = AsyncMock(side_effect=[updates_payload, asyncio.CancelledError()])
+    adapter._client.call = call_mock
+    # First update's dispatch blows up (stand-in for a parse_update/build_source/handle_message
+    # bug); the second must still be processed and the exception must not escape _poll_loop.
+    dispatch_mock = AsyncMock(side_effect=[RuntimeError("boom"), None])
+    with patch.object(adapter, "_dispatch_update", dispatch_mock), \
+         patch("plugins.platforms.rubika.adapter.asyncio.sleep", AsyncMock()):
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._poll_loop()
+    assert dispatch_mock.await_count == 2
+    assert adapter._offset_id == "off-2"

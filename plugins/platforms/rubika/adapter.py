@@ -73,7 +73,15 @@ class RubikaAdapter(BasePlatformAdapter):
                 await asyncio.sleep(POLL_ERROR_BACKOFF_SECONDS)
                 continue
             for update in result.get("updates", []):
-                await self._dispatch_update(update)
+                try:
+                    await self._dispatch_update(update)
+                except Exception as exc:
+                    # A bug in parse_update/parse_inline_message, build_source, or handle_message
+                    # must not kill the whole poll task: left uncaught it propagates out of
+                    # _poll_loop, silently leaving self._running True with no more messages ever
+                    # delivered and no automatic recovery. Broad on purpose: RubikaAPIError alone
+                    # wouldn't cover a handle_message failure.
+                    logger.exception("[%s] Failed to process update, skipping: %s", self.name, exc)
             next_offset = result.get("next_offset_id")
             if next_offset:
                 self._offset_id = next_offset

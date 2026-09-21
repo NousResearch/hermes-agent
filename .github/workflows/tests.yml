@@ -83,7 +83,8 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+          # Bedrock request-schema tests validate against the real locked botocore model.
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web --extra bedrock
 
       - name: Minimize uv cache
         run: uv cache prune --ci

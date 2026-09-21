@@ -170,6 +170,22 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
     assert compressor.threshold_tokens == 256_000
 
 
+def test_live_model_threshold_outranks_only_implicit_default_cap(monkeypatch):
+    session, compressor = _neutral_session(threshold_tokens_cap=100_000)
+    cfg = {"compression": {"model_thresholds": {"unset-test-model": 0.6}}}
+
+    _sync_with_cfg(monkeypatch, session, cfg)
+
+    assert compressor.threshold_tokens_cap == 256_000
+    assert compressor.threshold_tokens_cap_is_default is True
+    assert compressor.threshold_tokens == 360_000
+
+    cfg["compression"]["threshold_tokens"] = 256_000
+    _sync_with_cfg(monkeypatch, session, cfg)
+    assert compressor.threshold_tokens_cap_is_default is False
+    assert compressor.threshold_tokens == 256_000
+
+
 
 def test_prompt_submit_calls_compression_sync_after_model_sync():
     # Read the module that actually defines the turn (it moved out of server.py).

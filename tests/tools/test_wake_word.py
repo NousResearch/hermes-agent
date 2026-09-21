@@ -702,15 +702,19 @@ def test_stream_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(ww, "_lock_path", lambda: lock_path)
     owner = object()
 
-    ww.start_listening(lambda: None, owner=owner, config={})
-    deadline = time.time() + 2
-    while ww.owns_listener(owner) and time.time() < deadline:
-        time.sleep(0.01)
-
-    assert ww.owns_listener(owner) is False
-    assert engine.closed is True
-    handle = ww._acquire_machine_lock(lock_path)
-    ww._release_machine_lock(handle)
+    detector = ww.start_listening(lambda: None, owner=owner, config={})
+    try:
+        # The reader owns the bounded recovery budget and releases the lease
+        # only after exhausting it. Join completion rather than assuming an
+        # immediate release within the old two-second polling window.
+        detector._thread.join(timeout=10)
+        assert not detector.running
+        assert ww.owns_listener(owner) is False
+        assert engine.closed is True
+        handle = ww._acquire_machine_lock(lock_path)
+        ww._release_machine_lock(handle)
+    finally:
+        ww.stop_listening(owner=owner)
 
 
 def _hold_machine_lock(path: str, ready, release) -> None:

@@ -4273,6 +4273,10 @@ def task_age(task: Task) -> dict:
 
 def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600) -> int:
     """Prune old done/archived events, retaining decomposition identity until task deletion."""
+    if older_than_seconds < 0:
+        raise ValueError(
+            f"older_than_seconds must be >= 0, got {older_than_seconds!r}: a negative "
+            "retention builds a future cutoff that matches every event row.")
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
@@ -4284,6 +4288,10 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
 
 def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[str] = None) -> int:
     """Delete worker log files older than the cutoff on one board; returns the count."""
+    if older_than_seconds < 0:
+        raise ValueError(
+            f"older_than_seconds must be >= 0, got {older_than_seconds!r}: a negative "
+            "retention builds a future cutoff that matches every worker log.")
     log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0

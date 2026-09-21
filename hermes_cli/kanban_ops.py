@@ -340,9 +340,13 @@ def _cmd_gc(args: argparse.Namespace) -> int:
 
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
-    with kbc.connect_closing() as conn:
-        removed_events = kb.gc_events(conn, older_than_seconds=event_days * 24 * 3600)
-    removed_logs = kb.gc_worker_logs(older_than_seconds=log_days * 24 * 3600)
+    if event_days < 0 or log_days < 0:
+        return _err("kanban gc: retention days must be >= 0 (0 disables that sweep)", 2)
+    removed_events = 0
+    if event_days:
+        with kbc.connect_closing() as conn:
+            removed_events = kb.gc_events(conn, older_than_seconds=event_days * 24 * 3600)
+    removed_logs = kb.gc_worker_logs(older_than_seconds=log_days * 24 * 3600) if log_days else 0
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0

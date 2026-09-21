@@ -58,6 +58,8 @@ async def test_successful_delivery_is_mirrored_as_user_role_with_a_label(mirrore
     # the turn's user is webhook:<route>, which matches no session in the target chat
     assert kwargs["user_id"] is None
     assert kwargs["source_label"] == "webhook"
+    # "" selects the chat's main conversation; None would match any reply thread
+    assert kwargs["thread_id"] == ""
 
 
 @pytest.mark.asyncio
@@ -101,3 +103,24 @@ async def test_a_mirror_that_fails_never_fails_a_delivered_send(monkeypatch):
         "telegram", "delivered anyway", {"deliver_extra": {"chat_id": "chat-1"}})
 
     assert result.success
+
+
+def test_empty_thread_id_selects_the_main_conversation_over_a_newer_thread(tmp_path):
+    """The bug this guards: a DM that has ever had a reply thread.
+
+    With thread_id=None the lookup applies no thread filter and returns the most
+    recently started live session, which here is a stale reply thread. The mirror
+    then lands where nobody is talking and the next message in the main
+    conversation cannot see it.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("main", "buzz", user_id="u1", session_key="agent:main:buzz:dm:c1",
+                      chat_id="c1", chat_type="dm")
+    db.create_session("thread", "buzz", user_id="u1", session_key="agent:main:buzz:dm:c1:t9",
+                      chat_id="c1", chat_type="dm", thread_id="t9")  # started later
+
+    assert db.find_session_by_origin(platform="buzz", chat_id="c1") == "thread"  # the old trap
+    assert db.find_session_by_origin(platform="buzz", chat_id="c1", thread_id="") == "main"
+    assert db.find_session_by_origin(platform="buzz", chat_id="c1", thread_id="t9") == "thread"

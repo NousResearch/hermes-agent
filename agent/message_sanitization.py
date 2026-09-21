@@ -393,10 +393,9 @@ _IMAGE_REJECTION_PHRASES = (
 )
 
 # Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it
-# just could not decode what it was sent. Matched by ``_looks_like_image_content_rejection`` too
-# (the turn recovers the same way: strip and retry), but the recovery must NOT remember the
-# model as image-rejecting for the session on their account: the next request with a good image
-# would be needlessly stripped for the rest of the session.
+# just could not decode what it was sent. Disjoint from ``_IMAGE_REJECTION_PHRASES``: the turn
+# recovers the same way (strip and retry) but must NOT remember the model as image-rejecting,
+# or the next request with a good image would be needlessly stripped for the rest of the session.
 _IMAGE_CORRUPT_PHRASES = (
     # ChatGPT-account Codex backend's wording for corrupt/unsupported native image payloads.
     "image data you provided does not represent a valid image",
@@ -409,9 +408,6 @@ _IMAGE_CORRUPT_PHRASES = (
     # validation in tools/vision_tools._normalize_to_supported_image)
     "failed to decode image",
 )
-
-_IMAGE_REJECTION_PHRASES = _IMAGE_REJECTION_PHRASES + _IMAGE_CORRUPT_PHRASES
-
 
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     """Send-path image strip for a model that rejected image content (see turn_recovery).

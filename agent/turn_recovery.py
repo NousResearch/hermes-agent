@@ -220,6 +220,17 @@ def _recover_unicode_encode_error(
     return True, active_system_prompt
 
 
+def _strip_request_images_and_retry(agent: Any, api_messages: Any) -> bool:
+    """Strip image parts from the per-call ``api_messages`` copy; True if anything was removed.
+
+    Shared by the corrupt-image recoveries: a bad payload says nothing about the model, so it
+    is stripped for this attempt only and the model is never recorded as image-rejecting."""
+    if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
+        _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+        return True
+    return False
+
+
 def recover_before_classification(
     agent: Any, api_error: Exception, *, messages: List[Dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
@@ -249,18 +260,18 @@ def recover_before_classification(
     # images too, and a turn-wide flag would skip its recovery and fail the turn.
     _model_key = _provider_model_key(agent)
     _rejected = agent._image_rejecting_models
-    if _model_key not in _rejected and _looks_like_image_content_rejection(_err_body) and _status_ok:
+    _corrupt = _looks_like_corrupt_image_rejection(_err_body)
+    if _status_ok and (_corrupt or (_model_key not in _rejected and _looks_like_image_content_rejection(_err_body))):
         # Send-path only. A rejection says what THIS model accepts, not what the conversation
         # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
         # image — and every image-only message — from state.db for good, so a later switch to a
         # vision model found them gone. Same failure as the ASCII strip in #117802.
-        if _looks_like_corrupt_image_rejection(_err_body):
+        if _corrupt:
             # A bad payload says nothing about the model's capability: strip this attempt only
             # (like the image_corrupt branch below) and leave the model unmarked so a later good
             # image still reaches it. Retry only if something was stripped, or a text-only
             # request would loop on the same error.
-            if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
-                _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+            if _strip_request_images_and_retry(agent, api_messages):
                 return True, active_system_prompt
         else:
             # Record the model; the retry re-enters build_api_request with the same
@@ -709,8 +720,7 @@ def recover_after_classification(
     # Strip ONLY the per-call copy: replacing msg["content"] on the shallow api_messages
     # rows keeps canonical history's images (transient rejection must not erase history).
     if classified.reason == FailoverReason.image_corrupt:
-        if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
-            _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+        if _strip_request_images_and_retry(agent, api_messages):
             return True, recovered_with_pool
         logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
 

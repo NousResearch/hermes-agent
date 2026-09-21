@@ -7,7 +7,8 @@ require, and that the phrase detector fires on the expected error bodies.
 """
 
 from agent.message_sanitization import (
-    _looks_like_image_content_rejection, _strip_images_from_messages, strip_images_for_rejecting_model,
+    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _strip_images_from_messages,
+    strip_images_for_rejecting_model,
 )
 
 
@@ -171,7 +172,9 @@ class TestImageRejectionPhraseIsolation:
     """
 
     def _matches(self, body: str) -> bool:
-        return _looks_like_image_content_rejection(body)
+        # The two phrase lists are disjoint (corrupt payload vs. text-only model) but both
+        # trip the strip-and-retry recovery; this asks the same question the recovery does.
+        return _looks_like_corrupt_image_rejection(body) or _looks_like_image_content_rejection(body)
 
     def test_kimi_truncated_image_trips_recovery(self):
         # Kimi/Moonshot reject truncated image bytes with this 400; the

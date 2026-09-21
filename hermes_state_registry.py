@@ -398,6 +398,31 @@ def close_all_under(directory: str | Path) -> int:
     return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
+def other_generations_for_path(
+    db_path: Path, *, exclude: Optional["SessionDB"] = None
+) -> List[str]:
+    """Describe every OTHER SessionDB generation THIS process holds for *db_path*.
+
+    The registry is path-keyed, so it can answer the in-process half of "is this store quiet?"
+    that a ``/proc`` descriptor scan structurally cannot: that scan skips our own pid, so it only
+    ever proves other PROCESSES are away. Retired generations count — they stay open for their
+    holders, and a VACUUM's TRUNCATE checkpoint retires the WAL generation underneath them.
+    """
+    try:
+        path = Path(db_path).resolve()
+    except OSError:
+        path = Path(db_path)
+    with _lock:
+        candidates = [
+            ("live", generation) for generation in _generations.values()
+        ] + [("retired", generation) for generation in _retired.values()]
+        return [
+            f"in-process {kind} SessionDB generation (refcount {generation.refcount})"
+            for kind, generation in candidates
+            if generation.db is not exclude and generation.path == path
+        ]
+
+
 def live_shared_session_dbs() -> List["SessionDB"]:
     """Snapshot of every live (non-retired) shared SessionDB (refcounts untouched), for
     in-process maintenance. A concurrent final release may close an instance, in which

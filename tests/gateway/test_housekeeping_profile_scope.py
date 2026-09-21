@@ -53,6 +53,12 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     monkeypatch.setenv("HERMES_HOME", str(a))
     monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    # The hermetic conftest pins ``hermes_state.DEFAULT_DB_PATH`` at one sandbox store whenever
+    # hermes_state is already imported, and that pin WINS over ``get_hermes_home()`` inside
+    # ``_default_db_path()`` — exactly the per-profile resolution these tests exist to prove.
+    # Restore the import-time sentinel so an argless ``acquire()`` resolves through the scope.
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     return a, b
 
 
@@ -126,6 +132,46 @@ def test_multiplexed_auto_archive_tick_sweeps_every_served_profile_store(two_hom
         set_multiplex_active(False)
 
     assert swept == [a / "state.db", b / "state.db"]
+
+
+def test_multiplexed_maintenance_tick_prunes_every_served_profile_store(two_homes, monkeypatch):
+    """Prune/VACUUM reaches each served profile's OWN state.db, under its OWN ``sessions:`` config.
+
+    Prune and VACUUM ran once in the gateway constructor against a handle pinned to the launch
+    home, so a multiplexed secondary's store was never pruned or vacuumed by anybody — it grew
+    without bound while the launch profile's ``retention_days`` decided whether it happened at all.
+    Real stores, real config files: nothing here is patched.
+    """
+    from agent.secret_scope import set_multiplex_active
+    from hermes_state import SessionDB
+
+    homes = two_homes
+    for home in homes:
+        (home / "config.yaml").write_text(
+            "model:\n  provider: nous\n"
+            "sessions:\n"
+            "  auto_prune: true\n"
+            "  retention_days: 0\n"
+            "  min_interval_hours: 0\n"
+            "  vacuum_after_prune: false\n",
+            encoding="utf-8")
+        db = SessionDB(db_path=home / "state.db")
+        db.create_session("old", "cli")
+        db.end_session("old", "done")
+        db.close()
+
+    set_multiplex_active(True)
+    try:
+        _run_60_ticks(SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)))
+    finally:
+        set_multiplex_active(False)
+
+    for home in homes:
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            assert db.get_session("old") is None, f"{home.name}'s store was never pruned"
+        finally:
+            db.close()
 
 
 def test_single_profile_sync_ticks_run_once_against_the_process_home(two_homes, monkeypatch):

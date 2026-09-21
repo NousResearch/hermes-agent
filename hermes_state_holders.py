@@ -156,9 +156,23 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     this instance's stale-FTS rebuild forever despite lsof proving zero open
     handles).  Ambiguous argv without absolute-path tokens returns False and
     keeps the fail-closed suspicion.
+
+    One process per host serves EVERY profile, so a token naming the install
+    root is not evidence of another instance when ``db_path`` is a profile
+    store under it: a default-launched multiplexer holds
+    ``<root>/profiles/<name>/state.db`` while its argv mentions only
+    ``<root>``.  Only a token under a DIFFERENT install root still counts.
     """
     db_path_str = os.path.abspath(os.fspath(db_path))
     this_home = os.path.dirname(db_path_str)
+    # ``<root>/profiles/<name>/state.db`` -> ``<root>``; the multiplexer scoped to the
+    # install root is a candidate holder of every profile store beneath it.
+    profiles_dir = os.path.dirname(this_home)
+    install_root = (
+        os.path.dirname(profiles_dir)
+        if os.path.basename(profiles_dir) == "profiles"
+        else None
+    )
     ours = {
         os.path.normcase(candidate)
         for candidate in (
@@ -166,8 +180,13 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
             db_path_str + "-wal",
             db_path_str + "-shm",
             this_home,
+            *((install_root,) if install_root else ()),
         )
     }
+    own_prefixes = tuple(
+        os.path.normcase(root) + os.sep
+        for root in (this_home, *((install_root,) if install_root else ()))
+    )
     other_home_seen = False
     for token in argv:
         if not isinstance(token, str):
@@ -183,7 +202,7 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
             path_token = None
         if path_token is not None:
             normalized = os.path.normcase(os.path.normpath(path_token))
-            if normalized in ours or normalized.startswith(this_home + os.sep):
+            if normalized in ours or normalized.startswith(own_prefixes):
                 return False
             if "/.hermes" in normalized or normalized.endswith("/.hermes"):
                 other_home_seen = True
@@ -333,6 +352,24 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
         )
         holders.append((-1, f"open-file scan failed: {exc}"))
     return holders
+
+
+def in_process_state_db_holders(
+    db_path: Path, *, exclude=None
+) -> List[Tuple[int, str]]:
+    """Return holders of ``db_path`` inside THIS process, other than *exclude*.
+
+    :func:`foreign_state_db_holders` skips ``os.getpid()`` by design, so it answers a
+    cross-PROCESS question only. Consumers that read "no holders" as "the store is quiet"
+    (auto-VACUUM admission) need this arm too: a VACUUM plus its TRUNCATE checkpoint retires
+    the generation a sibling SessionDB in this very process still holds.
+    """
+    from hermes_state_registry import other_generations_for_path
+
+    return [
+        (os.getpid(), description)
+        for description in other_generations_for_path(db_path, exclude=exclude)
+    ]
 
 
 def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str] = "--force") -> Optional[str]:

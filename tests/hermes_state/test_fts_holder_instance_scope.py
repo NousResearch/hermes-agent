@@ -137,3 +137,21 @@ class TestUninspectableHolderInstanceScope:
             holders = hermes_state_holders.foreign_state_db_holders(db_path)
             assert [pid for pid, _ in holders] == [222], argv
             assert holders[0][1].startswith("uninspectable holder:"), argv
+
+    def test_install_root_argv_still_holds_a_profile_store_under_it(self, tmp_path, monkeypatch):
+        """One process per host serves EVERY profile, so argv naming only the install root does
+        not prove the process is another instance: it holds ``<root>/profiles/<name>/state.db``
+        too. A DIFFERENT install root is still proof."""
+        root = tmp_path / ".hermes"
+        db_path = root / "profiles" / "b" / "state.db"
+        db_path.parent.mkdir(parents=True)
+        multiplexer = ["hermes", "--home", str(root), "gateway", "run"]
+        other_install = ["hermes", "--home", "/home/demo/.hermes", "gateway", "run"]
+
+        _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: multiplexer})
+        assert [pid for pid, _ in hermes_state_holders.foreign_state_db_holders(db_path)] == [222]
+
+        _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: other_install})
+        assert hermes_state_holders.foreign_state_db_holders(db_path) == []

@@ -3676,25 +3676,16 @@ class GatewayRunner(
         # state.db corruption or NFS/SMB lock failures silently degrade the entire gateway — messages may
         # flow but nothing is persisted, and the user has no indication until they try /resume and find
         # nothing (#88235).
-        if self._session_db is not None:
-            try:
-                from hermes_cli.config import load_config as _load_full_config
-                _sess_cfg = (_load_full_config().get("sessions") or {})
-                if _sess_cfg.get("auto_archive", False):
-                    self._session_db._db.maybe_auto_archive(
-                        idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
-                        min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
-                if _sess_cfg.get("auto_prune", False):
-                    # Construction-time, before the loop serves traffic; sync DB is fine.
-                    self._session_db._db.maybe_auto_prune_and_vacuum(
-                        retention_days=int(_sess_cfg.get("retention_days", 90)),
-                        min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
-                        min_vacuum_interval_days=int(
-                            _sess_cfg.get("min_vacuum_interval_days", 30)),
-                        vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
-                        sessions_dir=self.config.sessions_dir)
-            except Exception as exc:
-                logger.debug("state.db auto-maintenance skipped: %s", exc)
+        # Once per SERVED profile, each under its own scope: both the store and the ``sessions:``
+        # config that governs it must be the profile's own. Bound to ``self._session_db`` this ran
+        # against the construction-time launch home only, so a multiplexed secondary profile's
+        # state.db was never pruned or vacuumed by anybody, and the launch profile's
+        # retention_days/auto_prune decided whether it happened at all.
+        from gateway.run_profile_reconcile import _for_each_served_profile
+        _housekeeping_chore(
+            "state.db startup maintenance",
+            lambda: _for_each_served_profile(
+                self, lambda _label: _housekeeping_state_db_maintenance()))
         # Checkpoint store pruning is a housekeeping chore (``_housekeeping_checkpoint_prune``), not a
         # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
         # here it ran before the control socket, adapters and the code_sha stamp — so the first
@@ -4592,25 +4583,37 @@ def _housekeeping_org_skill_sync() -> None:
     maybe_pull_org_skills()
 
 
-def _housekeeping_auto_archive() -> None:
-    """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
-    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound.
+def _housekeeping_state_db_maintenance() -> None:
+    """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
+    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
+    SessionDB — SQLite connections are thread-bound.
 
-    Profile-scoped by its caller: ``acquire()`` and ``load_config()`` both resolve through
-    ``get_hermes_home()``, so an unscoped tick swept only the LAUNCH profile's store and a
-    multiplexed secondary was never archived by anyone — the dashboard/serve trigger defers to
-    the gateway for every profile a gateway owns (``web_server_sessions``)."""
+    Profile-scoped by its caller: ``acquire()``, ``get_hermes_home()`` and ``load_config()`` all
+    resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
+    the LAUNCH profile's retention settings and a multiplexed secondary was never archived, pruned
+    or vacuumed by anyone — the dashboard/serve trigger defers to the gateway for every profile a
+    gateway owns (``web_server_sessions``)."""
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
-    if _sess_cfg.get("auto_archive", False):
-        _adb = acquire()
-        try:
+    if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
+        return
+    _adb = acquire()
+    try:
+        if _sess_cfg.get("auto_archive", False):
             _adb.maybe_auto_archive(
                 idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
                 min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
-        finally:
-            release_or_close(_adb)
+        if _sess_cfg.get("auto_prune", False):
+            _adb.maybe_auto_prune_and_vacuum(
+                retention_days=int(_sess_cfg.get("retention_days", 90)),
+                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
+                min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
+                vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+                # This profile's own transcript dir, not the launch profile's ``config.sessions_dir``.
+                sessions_dir=get_hermes_home() / "sessions")
+    finally:
+        release_or_close(_adb)
 
 
 def _housekeeping_deferred_fts_retry() -> None:
@@ -4703,7 +4706,7 @@ def _start_gateway_housekeeping(
         (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
         (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
         (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
-        (60, "Auto-archive tick", profile_scoped_chore(runner, _housekeeping_auto_archive)),
+        (60, "state.db maintenance tick", profile_scoped_chore(runner, _housekeeping_state_db_maintenance)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

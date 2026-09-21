@@ -74,16 +74,26 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
 
-    applied, failed = 0, []
+    applied, failed, stuck = 0, [], []
     for rec in targets:
         ok, msg = _apply_one(subsystem, rec, memory_store)
-        if ok:
-            wa.discard_pending(subsystem, rec["id"])
-            applied += 1
-        else:
+        if not ok:
             failed.append(f"{rec['id']}: {msg}")
+            continue
+        applied += 1
+        # The write has landed; a record that cannot be removed would be replayed by the next
+        # `approve all` (a duplicate memory entry, or a skill patch whose old_string is gone).
+        # discard_pending is False both when the unlink failed and when the record was already
+        # gone (another surface — the gateway serves this same handler — removed it first); only
+        # a record still on disk is a replay hazard.
+        if not wa.discard_pending(subsystem, rec["id"]) and wa.pending_exists(subsystem, rec["id"]):
+            stuck.append(rec["id"])
 
     out = [f"Approved {applied} {subsystem} write(s)."]
+    if stuck:
+        out.append("Applied, but the pending record could not be removed (approving it again "
+                   "would apply the write twice) — drop it with "
+                   f"/{subsystem} reject <id>: {', '.join(stuck)}")
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)
@@ -111,10 +121,23 @@ def _reject(subsystem: str, rest: List[str]) -> str:
         return _usage(subsystem)
     target = rest[0]
     if target.lower() == "all":
-        n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
-        return f"Rejected {n} pending {subsystem} write(s)."
+        n, stuck = 0, []
+        for rec in wa.list_pending(subsystem):
+            if wa.discard_pending(subsystem, rec["id"]):
+                n += 1
+            elif wa.pending_exists(subsystem, rec["id"]):
+                stuck.append(rec["id"])
+        out = f"Rejected {n} pending {subsystem} write(s)."
+        if stuck:
+            out += (f"\nCould not remove (still pending; check the log and the pending directory's "
+                    f"permissions): {', '.join(stuck)}")
+        return out
     if wa.discard_pending(subsystem, target):
         return f"Rejected pending {subsystem} write '{target}'."
+    if wa.pending_exists(subsystem, target):
+        # Not "nothing to do": the record is still queued for the next `approve all`.
+        return (f"Could not remove pending {subsystem} write '{target}' — it is still queued; "
+                "check the log and the pending directory's permissions.")
     return f"No pending {subsystem} write with id '{target}'."
 
 

@@ -339,10 +339,13 @@ async def test_strict_model_and_credential_recovery(monkeypatch, tmp_path, async
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("provider", ["custom", "auto", "main"])
+@pytest.mark.parametrize("task,provider", [
+    ("researcher", "custom"), ("researcher", "auto"), ("researcher", "main"),
+    ("vision", "custom"), ("vision", "main"), ("vision", "zai"),
+])
 @pytest.mark.parametrize("policy", [None, False], ids=["default", "strict"])
 async def test_profile_routes_keep_credentials_and_models(
-    tmp_path, monkeypatch, asynchronous, provider, policy,
+    tmp_path, monkeypatch, asynchronous, task, provider, policy,
 ):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
@@ -376,15 +379,20 @@ async def test_profile_routes_keep_credentials_and_models(
     thread.start()
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     base = f"http://127.0.0.1:{server.server_port}/v1"
+    # Exercise ZAI's dedicated branch against the same real loopback server.
+    monkeypatch.setattr(aux, "_ZAI_OPENAI_VISION_URLS", (base,))
     homes = [tmp_path / name for name in ("a", "b")]
     for home in homes:
         home.mkdir()
-        (home / ".env").write_text(f"OPENAI_API_KEY=fixture-{home.name}\n", encoding="utf-8")
+        (home / ".env").write_text(
+            f"OPENAI_API_KEY=fixture-{home.name}\nZAI_API_KEY=fixture-{home.name}\n",
+            encoding="utf-8",
+        )
         (home / "config.yaml").write_text(yaml.safe_dump({
             "model": {"provider": "custom", "default": "main-model", "base_url": base,
                       "api_key": "${OPENAI_API_KEY}"},
         }), encoding="utf-8")
-    kwargs = dict(provider=provider, model="custom/selected-model",
+    kwargs = dict(task=task, provider=provider, model="custom/selected-model",
                   messages=[{"role": "user", "content": "profile prompt"}])
     if policy is not None:
         kwargs["allow_fallback"] = policy
@@ -397,7 +405,7 @@ async def test_profile_routes_keep_credentials_and_models(
                     response = await aux.async_call_llm(**kwargs) if asynchronous else aux.call_llm(**kwargs)
                     expected_model = (
                         "main-model" if policy is None and provider == "auto"
-                        else "selected-model" if policy is None
+                        else "selected-model" if policy is None and provider != "zai"
                         else "custom/selected-model"
                     )
                     assert response.model == expected_model

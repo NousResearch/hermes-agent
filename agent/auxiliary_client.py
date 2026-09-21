@@ -5635,12 +5635,14 @@ def resolve_vision_provider_client(
                 requested, resolved_model, async_mode, base_url=_zai_url,
                 api_key=resolved_api_key or None, api_mode="chat_completions", main_runtime=runtime,
                 is_vision=True,
+                **({"allow_fallback": False} if not allow_fallback else {}),
             )
             if client is not None:
                 return _finalize_vision_client(requested, client, final_model, resolved_model, async_mode)
         # Fallback: try without explicit base_url (old behavior)
     client, final_model = _get_cached_client(
         requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
+        **({"allow_fallback": False} if not allow_fallback else {}),
     )
     return requested, client, (final_model if client is not None else None)
 

@@ -235,7 +235,7 @@ _FAILURE_CODE_COPY: Dict[str, str] = {
     "truncated": (
         "The model's reply was cut off before it finished (it hit its output length limit), so "
         "Hermes didn't run the incomplete action. Nothing was changed. Send `continue`, ask for "
-        "the work in smaller steps, or raise max_tokens for this model."
+        "the work in smaller steps, or lower reasoning effort with `/reasoning low`."
     ),
     "invalid_response": (
         "{label} sent back an empty or broken reply {attempts} times — it is probably overloaded "

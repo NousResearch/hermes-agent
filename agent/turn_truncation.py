@@ -49,7 +49,7 @@ _THINKING_EXHAUSTED = (
     "→ Lower reasoning effort: `/reasoning low` or `/reasoning minimal`\n"
     "→ Or switch to a larger/non-reasoning model with `/model`",
     "Model used all output tokens on reasoning with none left "
-    "for the response. Try lowering reasoning effort or increasing max_tokens.",
+    "for the response. Try lowering reasoning effort.",
 )
 _REPETITION_DOMINATED = (
     "🔁 Response dominated by repeated text — stopping instead of continuing a degenerate response.",
@@ -63,7 +63,7 @@ _REPETITION_DOMINATED = (
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
-    "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
+    "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or switch to a different model with `/model`"
 )
 # Below this many free tokens the prompt itself filled the window: a continuation nudge +
 # fragment costs ~100 tokens per attempt, so retrying only shrinks the room (#106120).

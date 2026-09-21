@@ -669,6 +669,99 @@ def test_wedged_stream_halts_without_blocking_read_and_aborts_before_close(monke
     assert stream.calls[:2] == ["abort", "close"]
 
 
+def test_starved_read_available_falls_back_to_blocking_read(monkeypatch, caplog):
+    """A stream that never advances read_available (#118552, Windows DirectSound) must
+    not spin in the poll guard forever: after the stall window it warns once, then
+    reads blocking — audio flows on such devices, so frames keep arriving."""
+    class _StarvedStream(_FakeStream):
+        read_available = 0
+
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.read_calls = 0
+
+        def read(self, n):
+            self.read_calls += 1
+            time.sleep(0.01)
+            return [0] * n, False
+
+    streams = []
+
+    def _stream(**kw):
+        streams.append(_StarvedStream(**kw))
+        return streams[-1]
+
+    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
+    monkeypatch.setattr(ww, "_READ_STALL_FALLBACK_SECONDS", 0.1)
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
+    with caplog.at_level("WARNING", logger="tools.wake_word"):
+        det.start()
+        assert det.running is True
+        deadline = time.monotonic() + 3
+        while streams and streams[0].read_calls < 5 and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert streams[0].read_calls >= 5, "must block-read frames once read_available is starved"
+    warnings = [r for r in caplog.records if "falling back to blocking reads" in r.message]
+    assert len(warnings) == 1, "the stall fallback warns exactly once per capture"
+    det.pause()
+    assert det.running is False
+
+
+def test_starved_and_wedged_read_is_released_by_halt_abort(monkeypatch):
+    """Worst case for the #118552 fallback: read_available is starved AND the blocking
+    read truly wedges. pause() must join out, abort the capture to unblock the reader,
+    and leave ``running`` truthful — the #117096 guarantee survives the fallback."""
+    class _StarvedWedgedStream(_FakeStream):
+        read_available = 0
+
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.read_calls = 0
+            self.calls = []
+            self._unblock = threading.Event()
+
+        def read(self, n):
+            self.read_calls += 1
+            self._unblock.wait(30)  # blocks like a wedged PortAudio read; abort releases
+            return [0] * n, False
+
+        def abort(self):
+            self.calls.append("abort")
+            self._unblock.set()
+
+        def stop(self):
+            self.calls.append("stop")
+
+        def close(self):
+            self.calls.append("close")
+            self.closed = True
+
+    streams = []
+
+    def _stream(**kw):
+        streams.append(_StarvedWedgedStream(**kw))
+        return streams[-1]
+
+    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
+    monkeypatch.setattr(ww, "_READ_STALL_FALLBACK_SECONDS", 0.1)
+    monkeypatch.setattr(ww, "_HALT_JOIN_SECONDS", 0.2)
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
+    det.start()
+    assert det.running is True
+    deadline = time.monotonic() + 3
+    while streams and streams[0].read_calls < 1 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert streams[0].read_calls == 1, "starved guard must have fallen back into read()"
+    t0 = time.monotonic()
+    det.pause()
+    assert time.monotonic() - t0 < 2.5, "pause() must abort the wedged read, not block on it"
+    stream = streams[0]
+    assert "abort" in stream.calls, "halt must abort the capture to release the reader"
+    if det._thread is not None:
+        det._thread.join(timeout=2)
+    assert det.running is False
+
+
 def test_startup_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
     class _BrokenSoundDevice:
         @staticmethod

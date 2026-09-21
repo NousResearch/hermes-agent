@@ -58,10 +58,7 @@ test('an under-cap or absent active log is left alone', () => {
   const touched: string[] = []
   const truncate = (f: string) => touched.push(f)
 
-  assert.equal(
-    reclaimActiveLogIfOversized('/logs/x.log', { size: () => LOG_MAX_BYTES - 1, truncate }),
-    false
-  )
+  assert.equal(reclaimActiveLogIfOversized('/logs/x.log', { size: () => LOG_MAX_BYTES - 1, truncate }), false)
   assert.equal(reclaimActiveLogIfOversized('/logs/x.log', { size: () => null, truncate }), false)
   assert.deepEqual(touched, [])
 })

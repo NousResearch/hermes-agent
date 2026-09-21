@@ -42,12 +42,7 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
 
   const blockLines: string[] = []
 
-  const splitFlow = (raw: string) =>
-    raw
-      .slice(1, -1)
-      .split(',')
-      .map(unquote)
-      .filter(Boolean)
+  const splitFlow = (raw: string) => raw.slice(1, -1).split(',').map(unquote).filter(Boolean)
 
   for (let i = start + 1; i < lines.length; i += 1) {
     const line = lines[i]
@@ -138,7 +133,11 @@ export function planLaunchSwitches(cfg: DesktopLaunchConfig, argv: readonly stri
     const [, name, value] = match
 
     if (name === 'js-flags') {
-      jsFlagParts.push(...String(value ?? '').split(/\s+/).filter(Boolean))
+      jsFlagParts.push(
+        ...String(value ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+      )
 
       return
     }

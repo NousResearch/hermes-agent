@@ -55,12 +55,14 @@ export function createLinuxNotifications() {
       if (connection !== state) {
         return
       }
+
       connection = undefined
       state.generation++
 
       for (const item of state.live.values()) {
         item.receive('failed', undefined)
       }
+
       state.live.clear()
       bus.connection.stream.destroy()
     }
@@ -92,6 +94,7 @@ export function createLinuxNotifications() {
       if (message.path !== PATH || message.interface !== SERVICE || !message.member) {
         return
       }
+
       const [id, value] = message.body ?? []
       state.live.get(`${message.sender}:${id}`)?.receive(message.member, value)
     })
@@ -99,6 +102,7 @@ export function createLinuxNotifications() {
       const startup = new AbortController()
       const timer = setTimeout(() => startup.abort(), DELIVERY_TIMEOUT_MS)
       const options = { signal: startup.signal, timeout: DELIVERY_TIMEOUT_MS }
+
       try {
         bus.name = await bus.invokeDbus<string>({ member: 'Hello' }, options)
 
@@ -131,6 +135,7 @@ export function createLinuxNotifications() {
       if (delivered) {
         delivered.state.live.delete(`${delivered.owner}:${delivered.id}`)
       }
+
       delivered = undefined
     }
 
@@ -142,6 +147,7 @@ export function createLinuxNotifications() {
       if (!target) {
         return
       }
+
       const { state, owner, id } = target
       // The retention timer must never re-enter synchronous libnotify either.
       void state.bus
@@ -181,6 +187,7 @@ export function createLinuxNotifications() {
         const state = connect()
         await state.ready
         const { bus } = state
+
         const getOwner = () =>
           new Promise<{ owner: string; generation: number }>((resolve, reject) => {
             bus.invokeDbus(
@@ -190,19 +197,23 @@ export function createLinuxNotifications() {
                 if (error) {
                   return reject(error)
                 }
+
                 // Snapshot before another message in this read batch can replace the
                 // owner. An await followed by reading generation pairs stale/new data.
                 resolve({ owner, generation: state.generation })
               }
             )
           })
+
         let destination: { owner: string; generation: number }
+
         try {
           destination = await getOwner()
         } catch (error) {
           if ((error as { dbusName?: string })?.dbusName !== 'org.freedesktop.DBus.Error.NameHasNoOwner') {
             throw error
           }
+
           // A running daemon need not have an activation file, but an unowned
           // activatable service is healthy too. Never make this an owner-only guard.
           await bus.invokeDbus({ member: 'StartServiceByName', signature: 'su', body: [SERVICE, 0] }, callOptions)
@@ -211,6 +222,7 @@ export function createLinuxNotifications() {
 
         const { owner, generation } = destination
         addressed = { state, generation }
+
         if (state.generation !== generation) {
           throw new Error('Notification owner changed during lookup')
         }
@@ -261,6 +273,7 @@ export function createLinuxNotifications() {
               if (state.generation !== generation) {
                 return reject(new Error('Notification owner changed during delivery'))
               }
+
               if (!Number.isInteger(id) || id <= 0) {
                 return reject(new Error(`Notify returned an invalid id: ${String(id)}`))
               }
@@ -304,6 +317,7 @@ export function createLinuxNotifications() {
         if (!addressed || addressed.state.generation === addressed.generation) {
           retryAfter = Date.now() + RETRY_COOLDOWN_MS
         }
+
         release()
         notification.emit('failed')
 

@@ -9,6 +9,7 @@ import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
+import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
 import { openExternalLink } from '@/lib/external-link'
 import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
@@ -194,6 +195,8 @@ export function BootFailureOverlay() {
   // connection's owning login flow. Hermes Cloud must reuse its portal session
   // and per-agent cascade; generic remote gateways use native/embedded OAuth.
   // Reload after success so boot mints a fresh ticket against the new session.
+  // The cloud ladder is shared with Settings (reestablishCloudAgentSession) so
+  // the boot recovery and the in-Settings recovery cannot drift apart.
   const signInRemote = async () => {
     if (!remoteReauth) {
       return
@@ -206,31 +209,27 @@ export function BootFailureOverlay() {
 
       await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
 
-      let result: { connected?: boolean } | undefined
+      let connected: boolean
 
       if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
-        const status = await desktop.cloud.status()
+        const outcome = await reestablishCloudAgentSession(desktop, remoteReauth.url)
 
-        if (!status.signedIn) {
-          const login = await desktop.cloud.login()
+        if (outcome === 'portal-incomplete') {
+          notify({
+            kind: 'warning',
+            title: t.boot.failure.signInIncompleteTitle,
+            message: t.boot.failure.signInIncompleteMessage
+          })
 
-          if (!login.signedIn) {
-            notify({
-              kind: 'warning',
-              title: t.boot.failure.signInIncompleteTitle,
-              message: t.boot.failure.signInIncompleteMessage
-            })
-
-            return
-          }
+          return
         }
 
-        result = await desktop.cloud.agentSignIn(remoteReauth.url)
+        connected = true
       } else {
-        result = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+        connected = (await desktop?.oauthLoginConnectionConfig(remoteReauth.url))?.connected === true
       }
 
-      if (result?.connected) {
+      if (connected) {
         if (connectionConfig?.mode === 'cloud') {
           await desktop?.resetBootstrap().catch(() => undefined)
         }

@@ -15,7 +15,7 @@ import logging
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, Literal, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
@@ -357,7 +357,7 @@ class GatewayNotificationsMixin:
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
-    ) -> bool:
+    ) -> Literal["delivered", "failed", "declined"]:
         """Deliver a queued response using the normal text+attachment split.
 
         ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
@@ -365,11 +365,10 @@ class GatewayNotificationsMixin:
         ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
         stays unledgered.
 
-        Returns whether the caller may treat this turn's final as delivered. True: the stream had
-        already delivered it, the reconcile edit landed, the send succeeded, or there was nothing
-        textual to send. False: the send was REFUSED (flood control, dead transport) — the caller
-        must leave the normal completion send as the fallback, or the user gets nothing. A connector
-        DECLINE returns True: that destination is not approved and must not be re-sent."""
+        Returns ``"delivered"`` when the caller may treat this turn's final as delivered,
+        ``"failed"`` when the normal completion send must remain as a fallback, or ``"declined"``
+        when a reconcile edit did not confirm the complete final and the connector's egress
+        decision forbids a fallback send."""
         from gateway.run import _strip_response_attachments_for_direct_send
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
@@ -405,7 +404,7 @@ class GatewayNotificationsMixin:
                                     "connector's egress guard; not falling back "
                                     "to a send (the destination is not approved)."
                                 )
-                                return True
+                                return "declined"
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
@@ -416,16 +415,16 @@ class GatewayNotificationsMixin:
                         # The text never landed. Report it undelivered and skip the attachments too:
                         # the caller's normal completion send replays the whole response (text and
                         # its MEDIA: tags), so uploading here would duplicate every file.
-                        return False
+                        return "failed"
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
-            return True
+            return "delivered"
         await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
-        return True
+        return "delivered"
 
     async def _send_queued_final_text(
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],

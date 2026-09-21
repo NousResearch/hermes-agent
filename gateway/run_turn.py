@@ -1907,8 +1907,19 @@ class GatewayTurnMixin:
         agent_result, agent_messages, response, _footer_line, _intentional_silence,
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
-        Returns the text for the adapter to send, or ``None`` when already delivered."""
+        Returns the text for the adapter to send, or ``None`` when delivery is already complete or
+        a terminal connector refusal forbids another attempt."""
         if diagnostic_wake_muted(event):
+            return None
+        # The queued reconcile lane reached a connector egress guard. The complete final was not
+        # confirmed, so this is not ``already_sent``; it is nevertheless terminal for this
+        # destination and must suppress voice, media, footer and the normal text fallback too.
+        if agent_result.get("queued_final_delivery_declined"):
+            logger.warning(
+                "Suppressing normal completion send for session %s: queued final delivery was "
+                "declined by the connector's egress guard.",
+                session_key or "?",
+            )
             return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
@@ -3709,7 +3720,7 @@ class GatewayTurnMixin:
                 session_key or "?",
             )
             try:
-                _text_delivered = await self._deliver_queued_first_response(
+                _delivery_outcome = await self._deliver_queued_first_response(
                     first_response, source=turn_ctx.source, adapter=adapter,
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
@@ -3725,13 +3736,16 @@ class GatewayTurnMixin:
                 # completion path (`_hmwa_deliver_turn_response`) consults ``already_sent`` on the
                 # result the queued lane hands back. Every early `return result` after this point
                 # (follow-up text refused, stale goal continuation) otherwise re-sends the text the
-                # fallback just delivered — the #81052 duplicate. A REFUSED send reports False, and
-                # the completion send stays the fallback so the user is not left with nothing.
-                if _text_delivered and isinstance(result, dict):
+                # fallback just delivered — the #81052 duplicate. An ordinary failure leaves the
+                # completion send in place. A connector DECLINE is also undelivered, but records a
+                # distinct terminal marker so completion does not retry the forbidden destination.
+                if _delivery_outcome == "delivered" and isinstance(result, dict):
                     result["already_sent"] = True
                     # The queued lane already uploaded this response's MEDIA: attachments; without
                     # this the completion path's already_sent rescan uploads every file twice.
                     result["media_already_delivered"] = _deliver_media
+                elif _delivery_outcome == "declined" and isinstance(result, dict):
+                    result["queued_final_delivery_declined"] = True
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):

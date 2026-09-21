@@ -64,6 +64,32 @@ def _env_multiplex_profiles_override() -> "bool | None":
     return parsed
 
 
+# What the runner does when the last messaging adapter goes down (GatewayConfig.on_all_adapters_down).
+ON_ALL_ADAPTERS_DOWN_POLICIES = ("exit", "stay_alive")
+
+
+def _env_on_all_adapters_down_override() -> "str | None":
+    """GATEWAY_ON_ALL_ADAPTERS_DOWN operator override: 'exit'/'stay_alive' for a recognized token.
+
+    ``None`` when unset, blank, or unrecognized so the caller keeps the config.yaml value
+    (env > config > default). Launchers without a supervising service manager (the desktop app
+    spawns ``hermes serve`` directly) set ``stay_alive``: a failure exit there only severs the
+    UI's websocket connections and drops in-flight assistant messages (#118080).
+    """
+    raw = os.getenv("GATEWAY_ON_ALL_ADAPTERS_DOWN")
+    if not (raw or "").strip():
+        return None
+    token = raw.strip().lower()
+    if token in ON_ALL_ADAPTERS_DOWN_POLICIES:
+        return token
+    logger.warning(
+        "Ignoring unrecognized GATEWAY_ON_ALL_ADAPTERS_DOWN=%r "
+        "(expected one of %s); falling back to config.yaml.",
+        raw, list(ON_ALL_ADAPTERS_DOWN_POLICIES),
+    )
+    return None
+
+
 def _normalize_transport_token(value: Any) -> str:
     """Canonical streaming transport token. YAML 1.1 parses bare ``on``/``off`` as
     booleans (``mode: off`` → ``False`` → ``"false"`` would ENABLE streaming), so
@@ -623,6 +649,13 @@ class GatewayConfig:
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
+    # What happens when the LAST messaging adapter goes down. ``exit`` (default) shuts the gateway
+    # down with the failure verdict so a supervising service manager (systemd/launchd) restarts it;
+    # ``stay_alive`` keeps the process running and leaves recovery to the reconnect watcher — for
+    # launchers with no supervisor (the desktop app spawns ``hermes serve`` directly), where a
+    # failure exit only severs the UI's websockets and drops in-flight assistant messages (#118080).
+    # Retryable failures are recoverable in both modes; non-retryable adapter loss always exits.
+    on_all_adapters_down: str = "exit"  # "exit" | "stay_alive"; GATEWAY_ON_ALL_ADAPTERS_DOWN overrides
     unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
     unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
@@ -635,6 +668,7 @@ class GatewayConfig:
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
+        "on_all_adapters_down",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
@@ -759,6 +793,14 @@ class GatewayConfig:
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is not None:
             multiplex_profiles = env_multiplex
+        # env > config.yaml > default: GATEWAY_ON_ALL_ADAPTERS_DOWN wins for launchers that know
+        # whether a service manager is watching (the desktop launcher sets stay_alive); anything
+        # unrecognized (env or yaml) falls back to "exit", the historical behavior (#118080).
+        on_all_adapters_down = _env_on_all_adapters_down_override()
+        if on_all_adapters_down is None:
+            on_all_adapters_down = _normalize_choice(
+                pick("on_all_adapters_down"), ON_ALL_ADAPTERS_DOWN_POLICIES, "exit"
+            )
         max_concurrent_sessions = _coerce_optional_positive_int(
             pick("max_concurrent_sessions"), key_label("max_concurrent_sessions")
         )
@@ -785,6 +827,7 @@ class GatewayConfig:
             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
+            on_all_adapters_down=on_all_adapters_down,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
             unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),

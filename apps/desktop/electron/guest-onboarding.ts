@@ -32,5 +32,15 @@ export function skipIntroEnabled(
 // "off" is an explicit '0' rather than an absent key so a '1' inherited from
 // the parent's environment cannot leak into a backend the launch decided off.
 export function desktopBackendSpawnEnv(base: NodeJS.ProcessEnv, guestOnboarding: boolean): NodeJS.ProcessEnv {
-  return { ...base, [GUEST_ONBOARDING_ENV]: guestOnboarding ? '1' : '0' }
+  return {
+    ...base,
+    [GUEST_ONBOARDING_ENV]: guestOnboarding ? '1' : '0',
+    // The desktop spawns `hermes serve` directly — no systemd/launchd supervisor will
+    // revive a failure exit, so EX_TEMPFAIL only severs the UI's websockets and drops
+    // in-flight assistant messages (#118080). Tell the gateway to stay alive on
+    // all-adapters-down and let the reconnect watcher recover instead. Written LAST
+    // (same rule as GUEST_ONBOARDING_ENV) so no earlier spread can override it. Older
+    // runtimes ignore the unknown variable and keep the historical exit behavior.
+    GATEWAY_ON_ALL_ADAPTERS_DOWN: 'stay_alive'
+  }
 }

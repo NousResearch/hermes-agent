@@ -1647,6 +1647,34 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     return _gated
 
 
+def _profile_has_skill(profile: Optional[str], skill: str) -> bool:
+    """True when *profile*'s own skills tree contains *skill*.
+
+    Mirrors what the spawned worker can actually load: a kanban worker runs
+    under a profile-scoped ``HERMES_HOME`` and resolves ``--skills`` names
+    against ``<profile_home>/skills/**/SKILL.md`` (``tools.skills_tool``
+    scans only the active profile dir, project dirs, and ``skills.external_dirs``).
+    The bundled repo copy under ``skills/`` is seeded into homes, never
+    importable from one, so a profile without the file cannot load the skill.
+    Unknown/invalid profile names and unreadable trees fail closed (False).
+    """
+    if not profile:
+        return False
+    try:
+        from hermes_cli.profiles import get_profile_dir, normalize_profile_name
+        profile_dir = Path(get_profile_dir(normalize_profile_name(profile)))
+    except Exception:
+        return False
+    skills_root = profile_dir / "skills"
+    try:
+        return any(
+            (category / skill / "SKILL.md").is_file()
+            for category in skills_root.iterdir()
+        )
+    except OSError:
+        return False
+
+
 def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
     """Per-home claim allowlist ``kanban.dispatch_profiles`` (#110995).
 
@@ -2061,7 +2089,30 @@ def _dispatch_lane_task(
     if lane == "review":
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        if not _profile_has_skill(claimed.assignee, "sdlc-review"):
+            # The assignee's profile cannot load sdlc-review: the spawn would
+            # hard-crash at startup (cli.py finalize_preloaded_skills ->
+            # ValueError "Unknown skill(s)" when nothing else loaded) and loop
+            # review->crash->review. Route the review to the ``reviewer``
+            # profile (which bundles the skill); when that profile does not
+            # exist either, spawn without the skill instead — a review by the
+            # original assignee beats a crash-loop, and the kanban lifecycle
+            # guidance in every worker's system prompt keeps the card moving.
+            reviewer_home_exists = _profile_exists_fn()
+            if reviewer_home_exists is not None and reviewer_home_exists("reviewer"):
+                _kb._log.warning(
+                    "kanban review dispatch: task %s assignee %r lacks sdlc-review; rerouting review to 'reviewer'",
+                    claimed.id, claimed.assignee,
+                )
+                claimed.assignee = "reviewer"
+            else:
+                _kb._log.warning(
+                    "kanban review dispatch: task %s assignee %r lacks sdlc-review and no 'reviewer' profile exists; spawning without the skill",
+                    claimed.id, claimed.assignee,
+                )
+                skills = [s for s in skills if s != "sdlc-review"]
+        claimed.skills = skills
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:

@@ -722,6 +722,72 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     assert captured == [["domain-specific-review", "sdlc-review"]]
 
 
+def test_review_dispatch_reroutes_to_reviewer_when_assignee_lacks_skill(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Behaviour contract: a review card whose assignee's profile cannot load
+    ``sdlc-review`` made the worker hard-crash at startup (cli.py
+    finalize_preloaded_skills -> ``ValueError: Unknown skill(s)``) and loop
+    review->crash->review on every dispatcher tick. The dispatcher must
+    reroute the review to the ``reviewer`` profile, which bundles the skill,
+    while preserving the forced ``sdlc-review`` skill on the spawn argv."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    captured: list[tuple[str, list[str]]] = []
+
+    def spawn(task, workspace):
+        captured.append((task.assignee, list(task.skills or [])))
+        return None
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="rerouted review", assignee="engineer")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured == [("reviewer", ["sdlc-review"])]
+
+
+def test_review_dispatch_spawns_without_skill_when_reviewer_profile_missing(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the ``reviewer`` profile does not exist either, the dispatcher must
+    spawn the original assignee WITHOUT the unloadable ``sdlc-review`` skill
+    instead of crashing or rerouting to a nonexistent profile. A review by the
+    original assignee (kanban lifecycle guidance is in every worker's system
+    prompt) beats a spawn that dies on startup."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    # "engineer" exists; there is no "reviewer" profile on this host.
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: name == "engineer")
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    captured: list[tuple[str, list[str]]] = []
+
+    def spawn(task, workspace):
+        captured.append((task.assignee, list(task.skills or [])))
+        return None
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="no-reviewer fallback", assignee="engineer")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured == [("engineer", [])]
+
+
 def test_review_dispatch_honors_global_and_per_profile_caps(
     kanban_home: Path,
     monkeypatch: pytest.MonkeyPatch,

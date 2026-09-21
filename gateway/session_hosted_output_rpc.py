@@ -211,6 +211,8 @@ def source_output_admission(service, selector, task, generation, *, owner, targe
             "scope": scope.as_mapping(),
             "source_home": str(Path(service.authority.profile_id).resolve()),
             "source_home_key": hermes_home_key(service.authority.profile_id),
+            "source_owner_epoch": service.authority.epoch,
+            "source_instance_id": service.authority.instance_id,
             "owner_subject": owner,
             "target_home": str(Path(target_home).resolve()),
         }
@@ -222,6 +224,7 @@ def source_output_admission(service, selector, task, generation, *, owner, targe
 class OwnerOutputContext:
     authority: object
     service: object
+    source_authority: object
     binding: dict
     attested: dict
     peer_subject: str
@@ -245,11 +248,20 @@ def capture_owner_output_context(authority, binding, attested, peer_subject):
             or binding["source_home"] != candidate["source_home"]
             or binding["target_home"] != authority.profile_id
             or candidate["selector"] != binding["selector"]
+            or candidate["source_owner_epoch"] != source.epoch
+            or candidate["source_instance_id"] != source.instance_id
         ):
             return None
     except (AttributeError, KeyError, RuntimeStoreError):
         return None
-    return OwnerOutputContext(authority, service, copy.deepcopy(binding), copy.deepcopy(candidate), peer_subject)
+    return OwnerOutputContext(
+        authority=authority,
+        service=service,
+        source_authority=source,
+        binding=copy.deepcopy(binding),
+        attested=copy.deepcopy(candidate),
+        peer_subject=peer_subject,
+    )
 
 
 def new_admission_authorizer(rpc, context, *, request_id, payload, task, generation):
@@ -323,11 +335,27 @@ def new_admission_authorizer(rpc, context, *, request_id, payload, task, generat
         del outbox
         registry = rpc.authority.runner.session_authorities
         if (
-            registry.for_home(candidate["source_home"]) is None
+            registry.for_home(candidate["source_home"]) is not context.source_authority
+            or candidate["source_owner_epoch"] != getattr(context.source_authority, "epoch", None)
+            or candidate["source_instance_id"] != getattr(context.source_authority, "instance_id", None)
             or registry.for_home(rpc.authority.profile_id) is not rpc.authority
             or _owner_identity(rpc.authority) != context.service._owner_output_owner
         ):
             raise RuntimeStoreError("permission_denied")
+        live = rpc.authority.sessions.get(rpc.ref.session_id)
+        if live is None:
+            raise RuntimeStoreError("permission_denied")
+        from gateway.session_managed_worker import managed_policy
+        from gateway.session_policy import policy_for_source
+
+        policy = policy_for_source(rpc.authority.runner, live.source)
+        if (
+            managed_policy(rpc.authority, rpc.ref) is not None
+            or policy is None
+            or policy.source != "bot_room"
+            or "bot_room" not in policy.toolsets
+        ):
+            return
         old = conn.execute("SELECT value FROM state_meta WHERE key=?", (key,)).fetchone()
         if old is not None and old[0] != encoded:
             raise RuntimeStoreError("admission_conflict")
@@ -945,6 +973,23 @@ def _validate_action_params(operation, params):
     return task, scope, receipt
 
 
+def _require_ordinary_action_current(service, operation, receipt):
+    """Linearize one local check; owners' clocks are not treated as atomic.
+
+    Source calls this after validating its reservation.  Target calls it in each
+    pre/post-read snapshot and again in the ACK writer.  Discard instead relies
+    on its exact retained cleanup disposition.
+    """
+    if operation == "output_discard":
+        return
+    try:
+        now = float(service._artifact_clock())
+    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeStoreError("permission_denied") from exc
+    if not math.isfinite(now) or now >= receipt["expires_at"]:
+        raise RuntimeStoreError("permission_denied")
+
+
 def source_output_action_attestation(service, selector, operation, params):
     """Authorize one reserved source action without any reverse call."""
     action_params = {key: value for key, value in params.items() if key != "_target_home"}
@@ -994,6 +1039,7 @@ def source_output_action_attestation(service, selector, operation, params):
             raise RuntimeStoreError("permission_denied")
         if operation == "output_ack" and service._publication_operation(conn, key) != "ack":
             raise RuntimeStoreError("permission_denied")
+        _require_ordinary_action_current(service, operation, receipt)
     return {"action_digest": _digest({"operation": operation, "params": action_params})}
 
 
@@ -1001,6 +1047,7 @@ def _target_snapshot(authority, source_home, selector, peer_subject, operation, 
     task, scope, receipt = _validate_action_params(operation, params)
     service = authority.hosted_room_service
     outbox = _provider(service, conn)
+    _require_ordinary_action_current(service, operation, receipt)
     try:
         raw = _admission(conn, receipt["target_admission_id"])
         row = _row(raw)

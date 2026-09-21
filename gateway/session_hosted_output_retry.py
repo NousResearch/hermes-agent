@@ -356,7 +356,10 @@ class CanonicalOutputRetry:
             # Completion never grants a new route/result the old success.
             stale = stale or bool(done and not row and not same(json.loads(done['metadata_json'])))
             stale = stale or bool(done and done['event_digest'] != self._output_events_digest(conn, key))
-            expired = now >= metadata['valid_until']
+            # An already selected exact discard is retained cleanup authority,
+            # not an extension of the expired export/ACK receipt.
+            retained_discard = bool(row and row['operation'] == 'discard')
+            expired = now >= metadata['valid_until'] and not retained_discard
             attempts = min(2147483647, row['attempts'] + 1) if row else 1
             delay = min(60.0, 2.0 ** min(attempts - 1, 16))
             encoded = done['metadata_json'] if done and not row else json.dumps(metadata, sort_keys=True)
@@ -396,7 +399,7 @@ class CanonicalOutputRetry:
             if (row['operation'] != operation or self._publication_operation(conn, key) != operation
                     or (retained.get('publication') and retained['publication'] != event_digest)):
                 raise RoomArtifactError('Group Chat output completion disposition changed')
-            if not event_digest or now >= metadata['valid_until']:
+            if not event_digest or (operation != 'discard' and now >= metadata['valid_until']):
                 raise RoomArtifactError('Group Chat output completion authority expired')
             conn.execute('''INSERT INTO hosted_room_artifact_completions VALUES (?,?,?,?,?,?,?,?)
                 ON CONFLICT(room_id,task_id,execution_generation) DO UPDATE SET

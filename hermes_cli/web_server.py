@@ -1398,18 +1398,6 @@ def start_server(
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
-    # One host process serves every profile, and this one can be asked for any of them via
-    # ``?profile=``. Decide at boot instead of on the first such request: activation is one-way, so
-    # everything the backend had already done by then (idle-reaper flushes, hosted rooms, cron)
-    # stayed on single-profile assumptions and was never re-scoped. No-op on a single-profile host.
-    try:
-        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
-
-        if activate_multi_profile_hosting_eagerly():
-            _log.debug("multi-profile hosting activated at startup (more than one profile home)")
-    except Exception as exc:
-        _log.debug("eager multi-profile activation skipped: %s", exc)
-
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
     from hermes_cli.resource_limits import apply_nofile_soft_limit
@@ -1454,6 +1442,22 @@ def start_server(
     if _port_bind_conflict(host, port):
         _report_port_in_use(host, port)
         raise SystemExit(PORT_IN_USE_EXIT_CODE)
+
+    # LAST boot step, deliberately. One host process serves every profile and this one can be asked
+    # for any of them via ``?profile=``, so the decision is made here instead of on the first such
+    # request — activation is one-way, and everything the backend had already done by then
+    # (idle-reaper flushes, hosted rooms, cron) stayed on single-profile assumptions. It runs after
+    # the keepalive / auth gate / uvicorn build because activation FREEZES ``os.environ`` as the
+    # launch profile's credentials, and that snapshot is the only source for launch keys with no
+    # ``.env`` to rebuild from (systemd ``Environment=``, ``op run``, Compose): anything injected or
+    # rotated by a later boot step would otherwise be invisible for the process lifetime. No-op on a
+    # single-profile host and on one that pinned ``gateway.multiplex_profiles: false``.
+    try:
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
+
+        activate_multi_profile_hosting_eagerly()
+    except Exception:
+        _log.warning("eager multi-profile activation failed", exc_info=True)
 
     async def _serve():
         # startup split from main_loop so the bound (ephemeral) port is readable.

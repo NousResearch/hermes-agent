@@ -18,10 +18,13 @@ Two facts anchor this module:
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 from pathlib import Path
 from typing import Dict, Iterator, Optional
+
+logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _snapshot: Optional[Dict[str, str]] = None
@@ -48,6 +51,45 @@ def activate_multi_profile_hosting() -> None:
     set_multiplex_active(True)
 
 
+def _multiplex_disabled_explicitly() -> bool:
+    """True when this host has deliberately turned multiplexing OFF.
+
+    ``profiles_to_serve(multiplex=True)`` takes the flag as an argument and never reads config, so
+    the eager gate must consult the operator's setting itself or it arms the fail-closed guard on
+    hosts that pinned ``gateway.multiplex_profiles: false`` to keep per-profile gateways. Same
+    precedence the gateway boot uses: ``GATEWAY_MULTIPLEX_PROFILES`` over config.yaml; unset means
+    "not disabled" (the default is on, and the lazy backstop still fires either way).
+    """
+    from gateway.config import _coerce_bool, _env_multiplex_profiles_override
+    env_override = _env_multiplex_profiles_override()
+    if env_override is not None:
+        return not env_override
+    from hermes_cli.config import load_config
+    cfg = load_config() or {}
+    value = cfg.get("multiplex_profiles")
+    gateway_cfg = cfg.get("gateway")
+    if value is None and isinstance(gateway_cfg, dict):
+        value = gateway_cfg.get("multiplex_profiles")
+    return value is not None and not _coerce_bool(value, True)
+
+
+def _servable_profile_homes() -> set:
+    """Resolved homes this host could be asked to serve: the launch home plus every profile dir
+    carrying a real servability marker.
+
+    ``named_profile_has_identity`` accepts an EMPTY ``.env``, which is all a crashed
+    ``hermes profile create`` leaves behind — counting it would flip a single-profile host
+    fail-closed at its next boot.
+    """
+    from hermes_constants import named_profile_has_servable_identity
+    from hermes_cli.profiles import profiles_to_serve
+
+    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True)
+             if name == "default" or named_profile_has_servable_identity(home)}
+    homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
+    return homes
+
+
 def activate_multi_profile_hosting_eagerly() -> bool:
     """Activate at HOST startup when this machine has more than one servable profile home.
 
@@ -56,22 +98,37 @@ def activate_multi_profile_hosting_eagerly() -> bool:
     connects, MCP discovery) ran under single-profile assumptions and is never re-scoped, and the
     launch profile's env had already been mutated by then, so ``capture_launch_env`` froze a
     polluted snapshot. One ``hermes serve`` / ``hermes gateway run`` per host means the process
-    knows at boot whether it can be asked for a second home: decide there, once.
+    knows at boot whether it can be asked for a second home: decide there, once. Call it as the LAST
+    boot step: the frozen snapshot is the only source for launch keys with no ``.env`` to rebuild
+    from, so every credential the boot still injects must already be in ``os.environ``.
 
     A genuinely single-profile host still never activates (byte-identical behaviour, ``os.environ``
-    precedence preserved). Returns True when this call activated hosting.
+    precedence preserved), and so does one that pinned ``gateway.multiplex_profiles: false``. An
+    unreadable profiles directory fails CLOSED: we cannot prove the host is single-profile, and the
+    lazy backstop only fires once a request has already been answered. Returns True when this call
+    activated hosting.
     """
     from agent.secret_scope import is_multiplex_active
     if is_multiplex_active():
         return False
     try:
-        from hermes_cli.profiles import profiles_to_serve
-        homes = {Path(home).resolve() for _name, home in profiles_to_serve(multiplex=True)}
-        homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
+        if _multiplex_disabled_explicitly():
+            return False
     except Exception:
-        return False
+        logger.warning("Could not read gateway.multiplex_profiles; continuing with the profile probe",
+                       exc_info=True)
+    try:
+        homes = _servable_profile_homes()
+    except Exception:
+        logger.warning(
+            "Could not enumerate this host's profile homes; activating multi-profile hosting "
+            "fail-closed (unscoped credential reads will raise instead of borrowing the launch "
+            "profile's)", exc_info=True)
+        activate_multi_profile_hosting()
+        return True
     if len(homes) < 2:
         return False
+    logger.info("Multi-profile hosting activated at startup (%d servable profile homes)", len(homes))
     activate_multi_profile_hosting()
     return True
 
@@ -100,7 +157,15 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
     not, so the body's credential source is decided once at entry: a request that entered while
     single-profile keeps resolving from this mapping after a concurrent first secondary flips
     ``get_secret`` to fail closed (``_MULTIPLEX_ACTIVE`` is read on every ``get_secret``, the
-    scope decision was made at entry)."""
+    scope decision was made at entry).
+
+    PRECEDENCE, and it is not the process's: ``<launch home>/.env`` (plus hydrated external sources)
+    WINS over the env. For a key present in both, an unscoped read returned the ambient
+    ``os.environ`` value before activation and returns the ``.env`` value after — so activation is
+    not purely "stricter" for the launch tenant, it also changes which of the launch profile's own
+    two values it sees. Env-only keys (systemd ``Environment=``, ``op run``, Compose) are unaffected:
+    nothing in the files shadows them.
+    """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))

@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import copy
 import functools
+import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 #: Auto-migration support floor. Configs whose on-disk ``_config_version`` is below this are NOT
 #: auto-migrated (v12 predates ~two years of releases; carrying the sub-v12 steps and the env
@@ -740,5 +743,9 @@ def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> No
                 # ladder (config loading itself fails otherwise). Loud, not silent.
                 warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
                 results.setdefault("warnings", []).append(warning)
+                # Quiet callers (profile creation, unattended update) discard ``results`` and
+                # migrate_config still stamps the latest version, so without a log line the
+                # skipped step vanishes for good.
+                logger.warning("%s", warning)
                 if not quiet:
                     print(f"  ⚠ {warning}")

@@ -945,3 +945,26 @@ def test_autostash_dirty_tree_promotes_intent_to_add_entries(tmp_path):
 
     assert (stashed, error) == (True, ""), "the plugin autostash must not be blocked by i-t-a entries"
     assert git("status", "--porcelain").stdout == ""
+
+
+def test_toggle_plugin_toolset_rewrites_a_list_literal_string_platform_entry(tmp_path, monkeypatch):
+    """``hermes plugins enable`` must reach a platform whose ``platform_toolsets`` entry is the
+    list-literal string an older ``hermes config set`` stored, and re-save it as a real list —
+    the runtime already reads that string as the user's selection (follow-up to #115866)."""
+
+    from hermes_cli import plugins_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"platform_toolsets": {"cli": '["web", "terminal"]', "telegram": ["hermes-telegram"]}}),
+        encoding="utf-8")
+    monkeypatch.setattr(plugins_cmd, "_get_plugin_toolset_key", lambda name: "my-plugin")
+
+    plugins_cmd._toggle_plugin_toolset("my-plugin", enable=True)
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["platform_toolsets"]
+    assert saved["cli"] == ["web", "terminal", "my-plugin"]
+    assert saved["telegram"] == ["hermes-telegram", "my-plugin"]
+
+    plugins_cmd._toggle_plugin_toolset("my-plugin", enable=False)
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["platform_toolsets"]
+    assert saved["cli"] == ["web", "terminal"]

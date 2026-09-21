@@ -373,10 +373,13 @@ _EXPLICIT_API_MODES = {
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
     from hermes_cli.providers import is_actual_route
+    from agent.transports import registered_api_modes
     host, url = agent._base_url_hostname, agent._base_url_lower
     if is_actual_route(agent.provider, base_url):
         agent.api_mode = "chat_completions"
-    elif api_mode in _EXPLICIT_API_MODES:
+    elif api_mode in _EXPLICIT_API_MODES or (api_mode and api_mode in registered_api_modes()):
+        # A provider plugin's own dialect (``register_transport(api_mode, cls)``) is as explicit
+        # as the in-tree modes; rewriting it to chat_completions silently dropped its transport.
         agent.api_mode = api_mode
     elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
@@ -513,6 +516,7 @@ def _set_defaults(agent, table: Dict[str, Any]) -> None:
 # Control-flow state (interrupts / steer / redirect / delegation / background review).
 _CONTROL_STATE: Dict[str, Any] = {
     "_executing_tools": False,  # lets _vprint print while tools run with stream consumers on
+    "_trim_after_tool_batch": False,  # a >=1 MB tool result was committed; trim once the batch unwinds
     "_tool_guardrails": ToolCallGuardrailController,
     "_tool_guardrail_halt_decision": None,
     # Interrupts. Hard cancellation is separate from redirect/message state; the Event makes
@@ -746,14 +750,13 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
 
     agent.api_key = effective_key
     agent._anthropic_api_key = effective_key
-    # OAuth only for native Anthropic: third-party anthropic_messages providers must never
-    # trip OAuth paths — those inject Claude-Code identity headers → 401/403.
-    # Only mark the session as OAuth-authenticated when the token genuinely belongs to native Anthropic.
-    # Third-party providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must
-    # never trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
+    # OAuth only for native Anthropic routes (the anthropic provider, or a custom provider whose host
+    # is exactly api.anthropic.com, incl. a key_cmd callable token — #114967). Third-party
+    # providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must never
+    # trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
     # cause 401/403 on their endpoints. See #1739.
-    from agent.anthropic_credentials import _is_oauth_token as _is_oat
-    agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+    from agent.anthropic_credentials import anthropic_route_is_oauth
+    agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
     agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
@@ -1684,6 +1687,55 @@ def _scope_context_length_to_default_runtime(
         )
         return None
     return _config_context_length
+
+
+def set_config_context_length(agent, value: Optional[int]) -> None:
+    """Store the durable ``model.context_length`` pin on EVERY cached copy of it.
+
+    The pin is read from config exactly once, at construction, then cached twice: on
+    ``agent._config_context_length`` (switch/fallback resolution plus every display and ``/usage``
+    surface) and on ``context_compressor._config_context_length`` (the compressor's own
+    re-resolution). Live paths that updated only one copy left the other stale, so a session could
+    report a pinned ceiling while compressing against a different window (#116467).
+    """
+    agent._config_context_length = value
+    _compressor = getattr(agent, "context_compressor", None)
+    if _compressor is not None:
+        _compressor._config_context_length = value
+
+
+def config_context_length_for_runtime(agent, config=None) -> Optional[int]:
+    """Re-read the durable ``model.context_length`` pin for ``agent``'s CURRENT runtime, or ``None``.
+
+    Single re-derivation point for the cached pin: construction resolves it once, and every live path
+    that re-resolves a runtime used to clear the cached copy without re-reading the config — so a
+    model/provider switch or a Desktop config round-trip silently dropped a ceiling the user still had
+    on disk, and resolution fell through to probing / catalog metadata / the 256K fallback (#116467).
+
+    Reuses construction's own scoping (``_scope_context_length_to_default_runtime``): the pin describes
+    the configured default route, so an unrelated runtime never inherits it.
+    """
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+        _agent_cfg = config if isinstance(config, dict) else load_config()
+        if not isinstance(_agent_cfg, dict):
+            return None
+        _model_section = _agent_cfg.get("model", {})
+        if not isinstance(_model_section, dict):
+            return None
+        _pin = _model_section.get("context_length")
+        if _pin is None or isinstance(_pin, bool):
+            return None
+        _pin = int(_pin)
+        if _pin <= 0:
+            return None
+        return _scope_context_length_to_default_runtime(
+            agent, _agent_cfg, _model_section, get_compatible_custom_providers(_agent_cfg),
+            _pin, str(getattr(agent, "base_url", "") or ""),
+        )
+    except Exception:
+        logger.debug("Could not re-read model.context_length for the current runtime", exc_info=True)
+        return None
 
 
 _CTX_LEN_REQUIREMENT = "must be a positive integer (e.g. 256000, not '256K')"

@@ -17,6 +17,7 @@ import {
   invokePluginNotifyActivate,
   respondToApprovalAction
 } from '@/store/native-notifications'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
@@ -295,6 +296,9 @@ export function useDesktopIntegrations({
 
   // hermes:// deep links:
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
+  //  - plugin/install?catalog=<name> → curated-catalog lookup, then the same
+  //    reviewed/pinned install modal an in-app catalog pick opens; unknown
+  //    names toast an error and never fall back to a git-path install.
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
@@ -326,6 +330,12 @@ export function useDesktopIntegrations({
         const command = `/blueprint ${action.name}${slots ? ' ' + slots : ''}`
         requestComposerInsert(command, { mode: 'block', target: 'main' })
         requestComposerFocus('main')
+
+        return
+      }
+
+      if (action.type === 'plugin-catalog-install') {
+        void requestPluginCatalogInstallFromDeepLink(action.name)
 
         return
       }

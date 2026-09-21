@@ -8,6 +8,9 @@ export interface DeepLinkPayload {
 
 export type DeepLinkAction =
   | { type: 'plugin-install'; repo: string; enable: boolean; force: boolean; legacyHint: PluginInstallLegacyHint }
+  /** `hermes://plugin/install?catalog=<name>` — resolved against the curated
+   *  catalog by the caller; the raw name is never treated as a git identifier. */
+  | { type: 'plugin-catalog-install'; name: string }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
   | { type: 'ignore' }
 
@@ -28,6 +31,13 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
 
   if (payload.kind === 'blueprint' && payload.name) {
     return { type: 'composer-blueprint', name: payload.name, params: payload.params || {} }
+  }
+
+  // A `catalog` param claims the link outright: even when a `repo` rides along
+  // (or the name is empty/bogus) the outcome is the catalog lookup's verdict,
+  // never a git-path install of whatever else the link carried.
+  if (payload.kind === 'plugin' && payload.name === 'install' && payload.params?.catalog !== undefined) {
+    return { type: 'plugin-catalog-install', name: payload.params.catalog.trim() }
   }
 
   const repo = (payload.params?.repo || payload.params?.identifier || payload.name || '').trim()

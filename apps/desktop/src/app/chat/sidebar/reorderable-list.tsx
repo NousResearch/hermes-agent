@@ -86,3 +86,21 @@ export function useSortableBindings(id: string) {
     }
   }
 }
+
+/**
+ * A row shell owns the presses that STARTED inside its own DOM, and nothing
+ * else. React re-dispatches an event fired in a PORTAL along the REACT tree,
+ * so a pointerdown on a dialog's input — `DialogContent` portals into `<body>`
+ * — still arrives at the row shell that rendered the dialog, carrying a
+ * `target` outside the row. Those presses belong to the dialog: selecting a
+ * session title in the rename input must not arm a reorder or lift the row onto
+ * the shared drag session (the pointer-side sibling of the Space leak #83617
+ * fixed on the keyboard side). Gate the shell's own `onPointerDown` with this
+ * BEFORE its `[data-reorder-handle], [data-row-actions]` exclusion — that
+ * selector walks the DOM, where a portal's content has neither marker.
+ */
+export function shellOwnsPress(event: React.PointerEvent<HTMLElement>) {
+  const target = event.target
+
+  return target instanceof Node && event.currentTarget.contains(target)
+}

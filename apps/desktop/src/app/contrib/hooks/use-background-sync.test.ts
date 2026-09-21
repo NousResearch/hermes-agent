@@ -640,6 +640,26 @@ describe('active transcript refresh', () => {
 })
 
 describe('reconcileActiveTranscript', () => {
+  // A drop mid-send on a flaky link leaves the optimistic `user-*` row as the
+  // only copy of the message: the server never acked it, so server truth does
+  // not contain it. A background refresh landing in that window replaced the
+  // transcript outright and the message vanished, forcing the user to retype.
+  it('keeps an un-acked optimistic user row when the refresh lands mid-send', async () => {
+    const fixture = makeRefresh()
+    const optimisticId = 'user-1758100000000-ab12cd'
+
+    fixture.state.messages = [
+      { id: optimisticId, parts: [{ text: 'the message I just sent', type: 'text' }], role: 'user' }
+    ]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('an older answer') as never)
+
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+
+    expect(messages.map(message => message.id)).toContain(optimisticId)
+  })
+
   it('keeps one failed assistant bubble when refresh rebuilds the same tail turn under a new id', async () => {
     const fixture = makeRefresh()
     fixture.state.messages = [

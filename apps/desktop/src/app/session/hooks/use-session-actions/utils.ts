@@ -1478,6 +1478,20 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
+  // A hidden row (canonical Bot Chat, room plumbing) is unlisted by design:
+  // inserting it into $sessions paints a sidebar row until the next refresh,
+  // and the keep-list then holds it there (#113273). Park it on the off-list
+  // owner atom the draft stubs ride — owner resolution still finds it via
+  // ownerLookupSessionRows, the sidebar never does.
+  if (session.hidden) {
+    setUnlistedSessionOwnerRows(prev => [
+      session,
+      ...prev.filter(existing => (existing._lineage_root_id ?? existing.id) !== lineage)
+    ])
+
+    return
+  }
+
   const prepend = (prev: SessionInfo[]) => [
     session,
     ...prev.filter(existing => {

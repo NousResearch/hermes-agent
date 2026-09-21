@@ -6,7 +6,9 @@ Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide
 
 `cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins
 `hermes_cli/cli_commands_mixin.py`, `cli_stream_mixin.py`, `cli_status_bar_mixin.py`,
-`cli_billing_mixin.py`, `cli_tui_mixin.py`, ... **Rich** renders banner/panels; **prompt_toolkit**
+`cli_billing_mixin.py`, `cli_tui_mixin.py` (widgets, keybindings, panels), `cli_tui_runtime_mixin.py`
+(run-loop phases: input dispatch, startup, signals, shutdown), `cli_init_mixin.py` (the `__init__`
+phases), ... **Rich** renders banner/panels; **prompt_toolkit**
 handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
 the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through
@@ -213,8 +215,9 @@ supervisor (control-socket `identify` answering anything but `manual`, OR the ar
 for a fresh supervised PID, never stop + foreground `run_gateway` (that stamps the CLI's PID and wedges
 every KeepAlive respawn, #110637).
 
-Service installs are a matrix, not a unit file: `gateway.py::generate_systemd_unit(system=,
-run_as_user=)` (user unit AND `--system` unit with `User=`; an unresolvable `User=` is a blocker,
+Service installs are a matrix, not a unit file: `gateway_service_unit.py::generate_systemd_unit(system=,
+run_as_user=)` (systemd unit generation / `systemd_unit_is_current` / `refresh_systemd_unit_if_needed` live in that
+sibling and read facade helpers late-bound through `hermes_cli.gateway`, so patch them on the facade; user unit AND `--system` unit with `User=`; an unresolvable `User=` is a blocker,
 never a dir-owner fallback), `generate_launchd_plist` (`gui/<uid>` then `user/<uid>` domains, never a
 `~/Library/LaunchAgents` glob), Windows Scheduled Task and the Desktop-spawned backend all carry the
 profile's `HERMES_HOME` (and `HOME` for the service user) explicitly — a supervisor starts with an

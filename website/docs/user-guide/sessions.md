@@ -233,7 +233,7 @@ What happens:
 1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
 2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
 3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
-   - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
+   - **Telegram** — opens a new forum topic (DM topics if the bot owner has enabled Threaded Mode via BotFather, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
    - **Matrix** — posts a seed message and uses its event id as the thread root (`m.thread` relation).
@@ -585,7 +585,10 @@ hermes sessions archive --title "dry run" --yes
 ```
 
 At least one filter is required — a bare `hermes sessions archive` refuses to
-archive your entire history. Archived sessions are hidden from
+archive your entire history. A compacted conversation is archived as a unit
+through its live tip: an old compression segment never matches on its own age,
+so a chat that is still active is never hidden because its history is long.
+Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
 

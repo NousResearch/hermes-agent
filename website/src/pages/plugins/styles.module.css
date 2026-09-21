@@ -911,4 +911,10 @@
 .pickBtn:hover {
   background: var(--ifm-color-primary);
   color: #fff;
+  text-decoration: none;
+}
+
+a.pickBtn {
+  text-align: center;
+  text-decoration: none;
 }

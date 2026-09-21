@@ -71,6 +71,7 @@ export const ar = defineLocale({
     connect: 'اتصال',
     connecting: 'جار الاتصال',
     continue: 'متابعة',
+    bots: 'الروبوتات',
     copied: 'تم النسخ',
     copy: 'نسخ',
     copyFailed: 'فشل النسخ',
@@ -110,7 +111,8 @@ export const ar = defineLocale({
     renameLabel: 'الاسم الجديد',
     deleteTitle: name => `حذف ${name}؟`,
     deleteBody: 'سيتم نقله إلى سلة المهملات — يمكنك استعادته من هناك.',
-    pathCopied: 'تم نسخ المسار'
+    pathCopied: 'تم نسخ المسار',
+    revealMissing: 'هذا المجلد ليس على هذا الحاسوب'
   },
   boot: {
     ready: 'Hermes Desktop جاهز',
@@ -1779,20 +1781,16 @@ export const ar = defineLocale({
     failedCreate: 'فشل الإنشاء',
     failedRename: 'فشل إعادة التسمية'
   },
+  modelAssignment: {
+    saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.',
+    confirmTitle: 'تحذير اختيار النموذج',
+    confirmDetail: 'أكّد فقط إذا كنت تقبل هذه المقايضة.',
+    confirmAction: 'تأكيد',
+    declined: 'أُلغي تغيير النموذج — رفضت تحذير طبقة تدريب البيانات.'
+  },
+
   cron: {
     close: 'إغلاق',
-    modelImpact: {
-      title: 'تبقى المهام المجدولة على نموذجها الأصلي',
-      message: count =>
-        `${count} من المهام المجدولة غير المثبتة ستواصل العمل على النموذج الذي أُنشئت به. ثبّتها أو اضبط cron.model لنقلها.`,
-      detailMore: (names, remaining) => `${names} و${remaining} أخرى`,
-      review: 'مراجعة المهام المجدولة',
-      saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.',
-      confirmTitle: 'تحذير اختيار النموذج',
-      confirmDetail: 'أكّد فقط إذا كنت تقبل هذه المقايضة.',
-      confirmAction: 'تأكيد',
-      declined: 'أُلغي تغيير النموذج — رفضت تحذير طبقة تدريب البيانات.'
-    },
     search: 'بحث',
     loading: 'جار التحميل...',
     states: {
@@ -1982,6 +1980,10 @@ export const ar = defineLocale({
     results: 'النتائج',
     pinned: 'المثبتة',
     sessions: 'الجلسات',
+    terminal: 'الطرفية',
+    files: 'الملفات',
+    review: 'المراجعة',
+    logs: 'السجلات',
     cronJobs: 'المهام المجدولة',
     groupAriaGrouped: 'الجلسات مجمعة حسب مساحة العمل',
     groupAriaUngrouped: 'الجلسات غير مجمعة',
@@ -3025,6 +3027,7 @@ export const ar = defineLocale({
       statusRecovered: 'تم الاسترداد',
       statusDone: 'تم',
       resultUnavailable: 'النتيجة غير متاحة',
+      resultInterrupted: 'تمت المقاطعة',
       memoryWriteNoted: 'تم تسجيل كتابة الذاكرة',
       actions: {
         read: 'قراءة',

@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
+from hermes_cli.plugin_validate_desktop import desktop_surface_hits, is_desktop_surface
 
 
 def _make_plugin(
@@ -249,3 +250,29 @@ class TestDesktopSurface:
         assert "prototype patching (desktop/plugin.js:2)" in failed["desktop surface"]
         assert "dynamic import outside the SDK (desktop/plugin.js:3)" in failed["desktop surface"]
         assert ":4)" not in failed["desktop surface"]
+
+    def test_node_sidecar_and_test_mjs_outside_desktop_are_not_the_surface(self, tmp_path):
+        """A tools plugin with a Node sidecar (``sidecar/*.mjs`` lazily importing a lockfile-pinned
+        dependency) and ``tests/*.test.mjs`` has no Desktop surface: the lint stays silent, and the
+        scoped helper batch tooling should use reports nothing for it."""
+        d = tmp_path / "sidecar-plugin"
+        (d / "sidecar").mkdir(parents=True)
+        (d / "tests").mkdir()
+        (d / "plugin.yaml").write_text(yaml.safe_dump(dict(BASE_MANIFEST, name="sidecar-plugin")), encoding="utf-8")
+        (d / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+        (d / "sidecar" / "cloud-service.mjs").write_text(
+            "export async function zip() { const { default: JSZip } = await import('jszip'); return new JSZip() }\n",
+            encoding="utf-8")
+        (d / "tests" / "cloud-sidecar.test.mjs").write_text("const fn = new Function('return 1')\n", encoding="utf-8")
+        report = validate_plugin_dir(d)
+        assert "desktop surface" not in {name for name, _ok, _detail in report.checks}
+        assert desktop_surface_hits(d) == []
+        assert not is_desktop_surface("sidecar/cloud-service.mjs") and not is_desktop_surface("tests/x.test.mjs")
+
+    def test_same_dynamic_import_in_desktop_plugin_js_still_fails(self, tmp_path):
+        d = self._desktop_plugin(tmp_path, "const { default: JSZip } = await import('jszip')\n")
+        report = validate_plugin_dir(d)
+        failed = {name: detail for name, ok, detail in report.checks if not ok}
+        assert "dynamic import outside the SDK (desktop/plugin.js:1)" in failed["desktop surface"]
+        assert desktop_surface_hits(d) == ["dynamic import outside the SDK (desktop/plugin.js:1)"]
+        assert is_desktop_surface("desktop/plugin.js")

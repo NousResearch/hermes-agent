@@ -1,5 +1,5 @@
 import { clearBotAttention, noteBotAttention } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   appendGroupChatEntry,
@@ -10,7 +10,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { groupMemberKey } from './group-membership'
+import { groupMemberAuthor, groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupDeltaLines } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
@@ -161,7 +161,7 @@ export async function runGroupRoundMember(
       return null
     }
 
-    const reason = String(error?.data?.reason || '').trim()
+    const reason = groupFailureReason(error)
     recordGroupActivity(context.group, {
       kind: 'failed',
       member: groupMemberKey(member),
@@ -230,34 +230,43 @@ export async function runGroupRoundMember(
     })
   }
 
-  if (reply !== null && !isGroupPassText(reply)) {
+  const spoke = reply !== null && !isGroupPassText(reply)
+
+  if (reply !== null && spoke) {
     appendGroupChatEntry(
       context.group,
-      {
-        kind: 'member',
-        name: member.name,
-        ...(member.remoteSource
-          ? {
-              source: member.connectionLabel || member.connectionId
-            }
-          : {})
-      },
+      groupMemberAuthor(member),
       reply,
       thread
     )
-    // A reply cannot acknowledge user entries that arrived during inference.
-    updateGroupChat(context.group, (r: GroupChatRoom) => {
-      if (r.watermarks[markKey] === r.log.length - 1) {
-        r.watermarks[markKey] = r.log.length
-      }
-
-      return r
-    })
-
-    return true
   }
 
-  return false
+  // A member's own entries — its reply, and the rows group-external-writes.ts
+  // mirrored out of its own session — are never news to their author, so the
+  // watermark steps over them. A user entry that arrived during inference
+  // stops the walk: a reply cannot acknowledge what it never saw.
+  updateGroupChat(context.group, (r: GroupChatRoom) => {
+    let mark = r.watermarks[markKey] || 0
+
+    while (mark < r.log.length && authoredByMember(r.log[mark], member)) {
+      mark += 1
+    }
+
+    if (mark !== (r.watermarks[markKey] || 0)) {
+      r.watermarks[markKey] = mark
+    }
+
+    return r
+  })
+
+  return spoke
+}
+
+function authoredByMember(entry: GroupMessage, member: GroupMember): boolean {
+  const from = entry?.from
+  const source = member.remoteSource ? member.connectionLabel || member.connectionId : undefined
+
+  return from?.kind === 'member' && from.name === member.name && String(from.source || '') === String(source || '')
 }
 
 export async function runGroupContinuationMembers(

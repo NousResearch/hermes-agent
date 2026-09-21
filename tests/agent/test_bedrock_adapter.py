@@ -123,6 +123,56 @@ class TestHasAwsCredentials:
             assert has_aws_credentials({}) is False
 
 
+class TestScopedAwsSessionKwargs:
+    """A served multiplex profile never signs with the launch profile's ambient AWS chain (#116313)."""
+
+    def test_two_homes_multiplex_refuses_ambient_chain_and_keeps_standalone(self, tmp_path, monkeypatch):
+        """A -> B -> A over two real homes: A (own AWS_* in .env) gets its key pair, cred-less B is
+        refused at the production client seam BEFORE boto3 is touched (``{}`` would let
+        ``boto3.Session()`` sign as A) and its bearer read is scoped, A again is unaffected.
+        Control: a standalone run keeps the ambient chain (``{}`` + process-env bearer)."""
+        from agent import bedrock_adapter, secret_scope
+        from agent.bedrock_adapter import _cached_client, resolve_bedrock_bearer_token, scoped_aws_session_kwargs
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home_a, home_b = tmp_path / "home-A", tmp_path / "home-B"
+        for home in (home_a, home_b):
+            home.mkdir()
+        (home_a / ".env").write_text(
+            "AWS_ACCESS_KEY_ID=AKIA-A\nAWS_SECRET_ACCESS_KEY=secret-A\nAWS_BEARER_TOKEN_BEDROCK=bearer-A\n"
+        )
+        (home_b / ".env").write_text("")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIA-A")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret-A")
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-A")
+
+        def boom():
+            raise AssertionError("boto3 must not be imported for a refused profile")
+        monkeypatch.setattr(bedrock_adapter, "_require_boto3", boom)
+
+        def in_scope(home, fn):
+            h_tok = set_hermes_home_override(str(home))
+            s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+            try:
+                return fn()
+            finally:
+                secret_scope.reset_secret_scope(s_tok)
+                reset_hermes_home_override(h_tok)
+
+        # Control: standalone keeps the ambient chain.
+        assert scoped_aws_session_kwargs() == {}
+        assert resolve_bedrock_bearer_token() == "bearer-A"
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        a_kwargs = {"aws_access_key_id": "AKIA-A", "aws_secret_access_key": "secret-A"}
+        assert in_scope(home_a, scoped_aws_session_kwargs) == a_kwargs
+        with pytest.raises(RuntimeError, match="refused for this profile"):
+            in_scope(home_b, lambda: _cached_client({}, "bedrock-runtime", "us-east-1"))
+        assert in_scope(home_b, resolve_bedrock_bearer_token) == ""
+        assert in_scope(home_a, scoped_aws_session_kwargs) == a_kwargs
+        assert in_scope(home_a, resolve_bedrock_bearer_token) == "bearer-A"
+
+
 class TestResolveBedrocRegion:
     def test_prefers_aws_region(self):
         from agent.bedrock_adapter import resolve_bedrock_region

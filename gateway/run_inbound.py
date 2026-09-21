@@ -655,14 +655,9 @@ class GatewayInboundMixin:
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
         if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
-            try:
-                if running_agent.redirect(
-                    self._steer_text_with_origin((event.text or "").strip(), event)
-                ):
-                    logger.debug("PRIORITY redirect for session %s", _quick_key)
-                    return
-            except Exception as exc:
-                logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
+            if self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
+                logger.debug("PRIORITY redirect for session %s", _quick_key)
+                return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
         _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
@@ -1331,6 +1326,7 @@ class GatewayInboundMixin:
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
+        _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)

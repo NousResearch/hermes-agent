@@ -51,6 +51,7 @@ export const zhHant = defineLocale({
     connect: '連線',
     connecting: '連線中',
     continue: '繼續',
+    bots: '機器人',
     copied: '已複製',
     copy: '複製',
     copyFailed: '複製失敗',
@@ -94,7 +95,8 @@ export const zhHant = defineLocale({
     renameLabel: '新名稱',
     deleteTitle: name => `刪除 ${name}？`,
     deleteBody: '將移至垃圾桶，你可以從那裡還原。',
-    pathCopied: '已複製路徑'
+    pathCopied: '已複製路徑',
+    revealMissing: '該資料夾不在這台電腦上'
   },
 
   boot: {
@@ -1101,11 +1103,11 @@ export const zhHant = defineLocale({
       pasteSessionToken: '貼上工作階段 Token',
       plainTextConfirmTitle: '以純文字儲存閘道 Token？',
       plainTextConfirmDesc:
-        '在此裝置上找不到作業系統的金鑰環服務，因此 Token 將以未加密的純文字儲存在應用程式的連線設定檔中，以該使用者身分執行的任何處理程序皆可讀取。請安裝或啟用 GNOME Keyring 或 KWallet 以進行加密儲存。',
+        '在此裝置上找不到作業系統的金鑰環服務，因此 Token 將以未加密的純文字儲存在應用程式的連線設定檔中，以該使用者身分執行的任何處理程序皆可讀取。請安裝或啟用系統鑰匙圈（Linux 上為 GNOME Keyring 或 KWallet）以進行加密儲存。',
       plainTextConfirmAction: '以純文字儲存',
       plainTextStoredTitle: 'Token 以純文字儲存',
       plainTextStoredDesc:
-        '安全儲存無法使用，因此已儲存的 Token 以未加密方式儲存在此裝置上應用程式的連線設定檔中。請安裝或啟用 GNOME Keyring 或 KWallet 以將其加密。',
+        '安全儲存無法使用，因此已儲存的 Token 以未加密方式儲存在此裝置上應用程式的連線設定檔中。請安裝或啟用系統鑰匙圈（Linux 上為 GNOME Keyring 或 KWallet）以將其加密。',
       keychainEncryptionTitle: '使用系統鑰匙圈加密已儲存的機密',
       keychainEncryptionDesc:
         '預設關閉。開啟後，閘道 Token 與登入憑證將使用系統鑰匙圈（Keychain Access、GNOME Keyring 或 Windows DPAPI）加密——系統可能會要求授權或密碼。關閉時，它們以僅目前使用者可讀的一般檔案形式儲存。',
@@ -2073,21 +2075,18 @@ export const zhHant = defineLocale({
     failedRename: '重新命名設定檔失敗'
   },
 
+  modelAssignment: {
+    saveFailed: 'Hermes 未儲存該模型變更。',
+    confirmTitle: '模型選擇警告',
+    confirmDetail: '僅在你接受此權衡時確認。',
+    confirmAction: '確認',
+    declined: '已取消模型變更 — 你拒絕了資料訓練層級警告。'
+  },
+
   cron: {
     close: '關閉排程',
     title: '排程工作',
     count: count => `${count} 個工作`,
-    modelImpact: {
-      title: '排程工作將繼續使用原模型',
-      message: count => `${count} 個未固定的排程工作將繼續使用建立時的模型執行。固定它們或設定 cron.model 以遷移。`,
-      detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 個`,
-      review: '檢查排程工作',
-      saveFailed: 'Hermes 未儲存該模型變更。',
-      confirmTitle: '模型選擇警告',
-      confirmDetail: '僅在你接受此權衡時確認。',
-      confirmAction: '確認',
-      declined: '已取消模型變更 — 你拒絕了資料訓練層級警告。'
-    },
     search: '搜尋排程工作…',
     loading: '正在載入排程工作…',
     states: {
@@ -2300,6 +2299,10 @@ export const zhHant = defineLocale({
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',
+    terminal: '終端機',
+    files: '檔案',
+    review: '審查',
+    logs: '記錄',
     cronJobs: '排程任務',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
@@ -3458,6 +3461,7 @@ export const zhHant = defineLocale({
       statusRecovered: '已復原',
       statusDone: '完成',
       resultUnavailable: '結果無法使用',
+      resultInterrupted: '已中斷',
       memoryWriteNoted: '已記下記憶寫入',
       actions: {
         read: '已讀取',

@@ -30,6 +30,7 @@ import {
   probeRemotePlatform,
   PROTOCOL_VERSION,
   readLockfile,
+  readRemoteInstallId,
   READY_RE,
   remotePidAlive,
   remoteSupportsSshOwnership,
@@ -235,6 +236,52 @@ test('POSIX relaunch gate rechecks after token upload immediately before process
     calls.some(command => /setsid|nohup/.test(command)),
     false
   )
+})
+
+test('readRemoteInstallId reads the backend identity without spawning a dashboard or minting one', async () => {
+  const ssh = fakeSsh([
+    [/HERMES_HOME/, '/Users/zillajr/.hermes\n'],
+    [/cat .*install_id/, '0f8a1c2b3d4e5f60718293a4b5c6d7e8\n']
+  ])
+
+  assert.equal(await readRemoteInstallId(ssh), '0f8a1c2b3d4e5f60718293a4b5c6d7e8')
+  // Read-only: identity is the install's to mint, never a visiting client's.
+  assert.equal(
+    ssh.calls.some(cmd => /serve|dashboard|>\s*\S*install_id|tee|uuidgen/.test(cmd)),
+    false
+  )
+})
+
+test('readRemoteInstallId reports the INSTALL root id for a profile-pinned home', async () => {
+  // The whole point of the id: two ssh connections to one machine — one pinned at a profile,
+  // one at the root — must report the SAME backend so their roster rows collapse.
+  const pinned = fakeSsh([
+    [/HERMES_HOME/, '/Users/zillajr/.hermes/profiles/dixie\n'],
+    [/cat .*install_id/, '0f8a1c2b3d4e5f60718293a4b5c6d7e8\n']
+  ])
+
+  assert.equal(await readRemoteInstallId(pinned), '0f8a1c2b3d4e5f60718293a4b5c6d7e8')
+  assert.equal(
+    pinned.calls.some(cmd => cmd.includes('/Users/zillajr/.hermes/install_id')),
+    true
+  )
+  assert.equal(
+    pinned.calls.some(cmd => cmd.includes('/profiles/dixie/install_id')),
+    false
+  )
+})
+
+test('readRemoteInstallId reports no id rather than a bad one', async () => {
+  for (const payload of ['', 'not-an-id\n', 'ABCDEF\n', '0f8a1c2b3d4e5f60718293a4b5c6d7e8extra\n']) {
+    const ssh = fakeSsh([
+      [/HERMES_HOME/, '/Users/zillajr/.hermes\n'],
+      [/cat .*install_id/, payload]
+    ])
+
+    // An older backend (or one that has never been started) simply has no identity: the roster
+    // falls back to a per-connection key, exactly as before.
+    assert.equal(await readRemoteInstallId(ssh), undefined, payload)
+  }
 })
 
 test('listRemoteHermesProfiles inventories Mini-style profile dirs without spawning a dashboard', async () => {
@@ -1516,6 +1563,35 @@ test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)'
   // token file, and orphans the backend.
   assert.doesNotMatch(cmd, /\$\{lock_json\/\//, 'must not use ${var//} substitution under sh')
   assert.ok(cmd.includes('sed "s/__PID__/${child}/"'), 'pid substitution must use sed')
+})
+
+test('buildSpawnCommand scopes umask 077 to the mkdir subshell (no leak into serve)', () => {
+  const cmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    reservationNonce: SPAWN_NONCE,
+    spawnNonce: SPAWN_NONCE,
+    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+    lockMetadata: { ownershipId: OWNERSHIP_ID, pid: '__PID__' }
+  })
+
+  // umask 077 must apply only to the reservation-parent mkdir. A bare
+  // umask call at the top level leaks 077 into the rest of the payload,
+  // so the detached setsid backend inherits 077 instead of the login umask.
+  assert.ok(
+    cmd.includes('(umask 077 && mkdir -p'),
+    'umask 077 must be scoped to a mkdir subshell'
+  )
+  assert.doesNotMatch(
+    cmd,
+    /(^|[^(])umask 077/,
+    'no bare umask 077 may leak into the spawn chain'
+  )
+  assert.ok(
+    cmd.indexOf('(umask 077') < cmd.indexOf('serve --isolated'),
+    'scoped mkdir must still precede the serve spawn'
+  )
 })
 
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {

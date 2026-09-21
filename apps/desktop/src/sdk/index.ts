@@ -1868,6 +1868,12 @@ export {
   type TranscriptDirectiveContribution,
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
+/** Add plugin UI at supported transcript-message placements. */
+export {
+  TRANSCRIPT_MESSAGE_AREA,
+  type TranscriptMessageContribution,
+  type TranscriptMessageProps
+} from '@/lib/transcript-message'
 export { cn } from '@/lib/utils'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen

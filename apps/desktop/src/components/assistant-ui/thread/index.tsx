@@ -24,9 +24,9 @@ interface ThreadEditContextValue {
   sessionId: string | null
 }
 
-// Edit-composer context. The composer only exists while a message is being
-// edited, and it mounts deep inside the memo'd ThreadMessageList, so the
-// edit context can neither ride the component-map memo deps (that remints
+// Thread-bound context for consumers mounted deep inside the memo'd
+// ThreadMessageList (currently message rows and the edit composer). It can
+// neither ride the component-map memo deps (that remints
 // the component types on every session switch and remounts the outgoing
 // transcript) nor sit in a render-time ref (a mounted composer never
 // re-reads it when a same-session change leaves every list prop
@@ -120,7 +120,7 @@ export const Thread = memo(function Thread({
   // re-minted these types mid-switch and remounted the entire OUTGOING
   // transcript — thousands of renders of a thread that was about to be
   // replaced, all of it before the resume RPC had even been sent. They
-  // reach the edit composer through ThreadEditContext instead (see above).
+  // reach mounted message consumers through ThreadEditContext instead.
   const callbacksRef = useRef({ onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage })
   callbacksRef.current = { onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage }
 
@@ -135,15 +135,24 @@ export const Thread = memo(function Thread({
 
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => (
-        <AssistantMessage
-          onBranchInNewChat={
-            hasBranchInNewChat ? messageId => callbacksRef.current.onBranchInNewChat?.(messageId) : undefined
-          }
-          onDismissError={hasDismissError ? messageId => callbacksRef.current.onDismissError?.(messageId) : undefined}
-        />
-      ),
-      SystemMessage,
+      AssistantMessage: () => {
+        const { sessionId: containingSessionId } = useContext(ThreadEditContext)
+
+        return (
+          <AssistantMessage
+            onBranchInNewChat={
+              hasBranchInNewChat ? messageId => callbacksRef.current.onBranchInNewChat?.(messageId) : undefined
+            }
+            onDismissError={hasDismissError ? messageId => callbacksRef.current.onDismissError?.(messageId) : undefined}
+            sessionId={containingSessionId}
+          />
+        )
+      },
+      SystemMessage: () => {
+        const { sessionId: containingSessionId } = useContext(ThreadEditContext)
+
+        return <SystemMessage sessionId={containingSessionId} />
+      },
       UserEditComposer: () => {
         const { cwd: editCwd, gateway: editGateway, sessionId: editSessionId } = useContext(ThreadEditContext)
 

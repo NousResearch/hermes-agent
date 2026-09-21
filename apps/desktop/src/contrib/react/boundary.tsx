@@ -8,6 +8,8 @@ import { Tip } from '@/components/ui/tooltip'
 
 interface ContribBoundaryProps {
   children: ReactNode
+  /** Surface-owned fallback when its native content should remain on failure. */
+  fallback?: ReactNode
   /** Contribution key, shown in the fallback + console tag. */
   id: string
   /** `chip` = inline bar item (tiny fallback); `pane` = zone body. */
@@ -35,11 +37,13 @@ export function ContribRender({ render }: ContribRenderProps) {
  * as the React boundary and dialog errors) so a crashed contribution reads like
  * every other failure, not a raw stack dump.
  */
-export function ContribBoundary({ children, id, variant = 'pane' }: ContribBoundaryProps) {
+export function ContribBoundary({ children, fallback, id, variant = 'pane' }: ContribBoundaryProps) {
   return (
     <ErrorBoundary
       fallback={({ error, reset }) =>
-        variant === 'chip' ? (
+        fallback !== undefined ? (
+          fallback
+        ) : variant === 'chip' ? (
           <Tip label={`${id}: ${error.message}`}>
             <button
               className="inline-flex items-center gap-1 rounded px-1.5 text-[0.6875rem] text-destructive transition-colors hover:bg-(--chrome-action-hover)"

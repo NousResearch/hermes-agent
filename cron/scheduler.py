@@ -1274,6 +1274,24 @@ def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
     return workdir
 
 
+def _release_no_agent_session_db(session_db) -> None:
+    """Return a no_agent run's session handle the same way the agent path does.
+
+    ``_open_cron_session_db`` hands back a registry-managed handle, so a plain
+    ``.close()`` would bypass the shared-writer coordination it set up; a
+    failure to release leaks the SQLite FDs for the whole process lifetime.
+    Best-effort: a store that cannot be released must never fail the run.
+    """
+    if session_db is None:
+        return
+    try:
+        from hermes_state_registry import release_or_close
+
+        release_or_close(session_db)
+    except Exception as e:
+        logger.debug("Failed to release no_agent session store: %s", e)
+
+
 def _run_no_agent_job(
     job: dict, job_id: str, job_name: str, cancel_event,
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -1296,32 +1314,40 @@ def _run_no_agent_job(
 
         return _block_and_pause_job(job_id, job_name, NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
-    # Record this run as a session BEFORE executing the script: the run
-    # session's open/ended state is what the desktop run-history endpoint
-    # uses for its "running" indicator (``is_active``), and the session row
-    # is the run record itself. Without it, no_agent runs are invisible
-    # after a manual trigger (#44080). Best-effort — a missing/broken state
-    # store degrades to the old no-record behaviour, never blocks the run.
-    # This block is deliberately self-contained: no_agent short-circuits
-    # BEFORE importing run_agent, so the SessionDB handle is local to it.
-    _session_db = None
+    # Record this run as a session BEFORE executing the script: the run session's
+    # open/ended state is what the desktop run-history endpoint uses for its
+    # "running" indicator (is_active), and the session row is the run record
+    # itself. Without it, no_agent runs are invisible after a manual trigger
+    # (#44080). Best-effort — a missing/broken state store degrades to the old
+    # no-record behaviour, never blocks the run.
+    #
+    # Contract: no_agent short-circuits BEFORE importing run_agent, so this path
+    # never builds an agent. The shared _open_cron_session_db helper is used
+    # instead of a bare SessionDB() for the same reasons the agent path uses it:
+    # the init is bounded against a wedged sqlite3.connect (a stale flock from a
+    # crashed sibling would otherwise wedge this worker thread forever), it
+    # resolves the session store under the *run's* profile context rather than
+    # the process-global default, and it takes/release through the process-wide
+    # shared registry so concurrent writers stay coordinated. The handle goes
+    # back through release_or_close in _record_run on every exit path.
+    _session_db = _open_cron_session_db(job)
     _run_session_id = None
-    try:
-        from hermes_state import SessionDB
-
-        _session_db = SessionDB()
-        _run_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
-        _session_db.create_session(_run_session_id, source="cron")
-        # First user message becomes the run's preview in run history.
-        _session_db.append_message(
-            _run_session_id, "user", f"no_agent script: {script_path}"
-        )
-    except (Exception, KeyboardInterrupt) as e:
-        logger.debug(
-            "Job '%s': SQLite session store not available for no_agent run: %s",
-            job_id, e,
-        )
-        _session_db = None
+    if _session_db is not None:
+        try:
+            _run_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+            _session_db.create_session(_run_session_id, source="cron")
+            # First user message becomes the run's preview in run history.
+            _session_db.append_message(
+                _run_session_id, "user", f"no_agent script: {script_path}"
+            )
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug(
+                "Job '%s': SQLite session store unusable for no_agent run: %s",
+                job_id, e,
+            )
+            _release_no_agent_session_db(_session_db)
+            _session_db = None
+            _run_session_id = None
 
     def _record_run(run_doc: str, success: bool = True) -> None:
         """Persist the outcome and close out this run's session record."""
@@ -1350,12 +1376,7 @@ def _run_no_agent_job(
             )
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Job '%s': failed to end session: %s", job_id, e)
-        try:
-            _session_db.close()
-        except (Exception, KeyboardInterrupt) as e:
-            logger.debug(
-                "Job '%s': failed to close SQLite session store: %s", job_id, e
-            )
+        _release_no_agent_session_db(_session_db)
 
     # Pass workdir as subprocess cwd; never os.chdir() (leaks into concurrent gateway sessions).
     _job_workdir = _resolve_job_workdir(job, job_id)

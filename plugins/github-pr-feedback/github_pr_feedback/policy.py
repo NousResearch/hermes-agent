@@ -483,6 +483,7 @@ class PluginPolicy:
     release_maintenances: tuple[ReleaseMaintenancePolicy, ...] = ()
     github_identity: GitHubIdentityPolicy | None = None
     github_actions_permissions_identity: GitHubActionsPermissionsIdentityPolicy | None = None
+    debug: bool = False
 
     def merge_policies(self) -> tuple[MergeMaintainerPolicy, ...]:
         """Return configured merge lanes, preserving the legacy singular field."""
@@ -1337,18 +1338,22 @@ def load_policy(raw: object) -> PluginPolicy:
         "release_maintenances",
         "github_identity",
         "github_actions_permissions_identity",
+        "debug",
     }
     if not required.issubset(raw) or set(raw) - required - optional:
         raise ValueError("enabled configuration has missing or unknown fields")
     include_self_feedback = raw.get("include_self_feedback", False)
     include_bot_feedback = raw.get("include_bot_feedback", False)
     auto_dispatch = raw.get("auto_dispatch", False)
+    debug = raw.get("debug", False)
     if (
         not isinstance(include_self_feedback, bool)
         or not isinstance(include_bot_feedback, bool)
         or not isinstance(auto_dispatch, bool)
     ):
         raise ValueError("feedback inclusion settings must be booleans")
+    if not isinstance(debug, bool):
+        raise ValueError("debug must be a boolean")
     repositories = raw["repositories"]
     if isinstance(repositories, (str, bytes)) or not isinstance(repositories, Sequence):
         raise ValueError("repositories must be a non-empty list")
@@ -1505,6 +1510,7 @@ def load_policy(raw: object) -> PluginPolicy:
             if "github_actions_permissions_identity" in raw
             else None
         ),
+        debug=debug,
     )
 
 

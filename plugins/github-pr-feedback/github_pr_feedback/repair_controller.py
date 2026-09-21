@@ -420,7 +420,7 @@ class RepairController:
                 except Exception as error:
                     import os
 
-                    if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+                    if self._policy.debug:
                         print(
                             f"DEBUG dispatch fail pr={receipt.pr_number}: "
                             f"{type(error).__name__}: {error}",
@@ -520,7 +520,7 @@ class RepairController:
                 except Exception as error:
                     import os
 
-                    if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+                    if self._policy.debug:
                         print(
                             f"DEBUG dispatch fail pr={receipt.pr_number}: "
                             f"{type(error).__name__}: {error}",

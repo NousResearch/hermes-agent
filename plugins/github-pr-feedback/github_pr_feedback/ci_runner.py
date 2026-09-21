@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -440,7 +441,7 @@ class GitRepositoryInspector:
         self, worktree: Path, base_sha: str, head_sha: str
     ) -> tuple[str, ...]:
         output = self._run(
-            worktree, "diff", "--name-only", "--diff-filter=ACMR", f"{base_sha}..{head_sha}"
+            worktree, "diff", "--name-only", "--diff-filter=ACMRD", f"{base_sha}..{head_sha}"
         )
         return tuple(line for line in output.splitlines() if line)
 
@@ -453,7 +454,7 @@ class LocalCIRunner:
         *,
         command_runner: CICommandRunner | None = None,
         inspector: RepositoryInspector | None = None,
-        python_argv: tuple[str, ...] = (".venv/bin/python",),
+        python_argv: tuple[str, ...] | None = None,
         now: Callable[[], datetime] | None = None,
         supervisor_pid: Callable[[], int] | None = None,
         pid_is_alive: Callable[[int], bool] | None = None,
@@ -464,7 +465,7 @@ class LocalCIRunner:
         self._ledger = ledger
         self._commands = command_runner or SubprocessCICommandRunner()
         self._inspector = inspector or GitRepositoryInspector()
-        self._python_argv = python_argv
+        self._python_argv = python_argv or _default_python_argv()
         self._now = now or (lambda: datetime.now(UTC))
         self._supervisor_pid = supervisor_pid or os.getpid
         self._pid_is_alive = pid_is_alive or _pid_is_alive
@@ -595,6 +596,16 @@ class LocalCIRunner:
         return receipt
 
     def _run_claimed(self, identity: CIAuditIdentity, worktree: Path) -> CIAuditReceipt:
+        with tempfile.TemporaryDirectory(prefix="hermes-pr-feedback-ci-") as temp_home:
+            environment = _isolated_ci_environment(Path(temp_home))
+            return self._run_claimed_with_environment(identity, worktree, environment)
+
+    def _run_claimed_with_environment(
+        self,
+        identity: CIAuditIdentity,
+        worktree: Path,
+        base_environment: dict[str, str],
+    ) -> CIAuditReceipt:
         worktree = Path(worktree).resolve()
         if not worktree.is_dir():
             raise CIValidationError("CI worktree does not exist")
@@ -605,7 +616,6 @@ class LocalCIRunner:
             and any(not script.is_file() for script in scripts)
         ):
             raise CIValidationError("required CI owner files are missing")
-        bootstrap_evidence = self._ensure_python_environment(worktree)
         manifest_bytes = manifest_path.read_bytes()
         manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
         lanes = () if is_hermes_contract(manifest_bytes) else _required_lanes(manifest_bytes)
@@ -620,6 +630,7 @@ class LocalCIRunner:
         changed_files = self._inspector.changed_files(
             worktree, identity.base_sha, identity.head_sha
         )
+        bootstrap_evidence = self._ensure_python_environment(worktree, base_environment)
 
         started_at = _aware_now(self._now())
         command_specs: list[tuple[tuple[str, ...], Path, dict[str, str]]] = [
@@ -667,10 +678,10 @@ class LocalCIRunner:
         if bootstrap_evidence is not None:
             evidence.append(bootstrap_evidence)
         for argv, cwd, additions in command_specs:
-            environment = dict(os.environ)
-            environment.update(additions)
+            command_environment = dict(base_environment)
+            command_environment.update(additions)
             result = self._commands.run(
-                argv, cwd=cwd, env=environment, timeout=_COMMAND_TIMEOUT_SECONDS
+                argv, cwd=cwd, env=command_environment, timeout=_COMMAND_TIMEOUT_SECONDS
             )
             evidence.append(_command_evidence(argv, cwd, worktree, result))
             if result.returncode != 0 or result.timed_out:
@@ -739,9 +750,11 @@ class LocalCIRunner:
         )
         return receipt
 
-    def _ensure_python_environment(self, worktree: Path) -> CommandEvidence | None:
+    def _ensure_python_environment(
+        self, worktree: Path, environment: dict[str, str]
+    ) -> CommandEvidence | None:
         executable = Path(self._python_argv[0])
-        if executable.is_absolute() or "/" not in str(executable):
+        if executable.is_absolute() or len(executable.parts) == 1:
             return None
         resolved = worktree / executable
         if resolved.is_file() and os.access(resolved, os.X_OK):
@@ -758,7 +771,7 @@ class LocalCIRunner:
                 result = self._commands.run(
                     probe,
                     cwd=worktree,
-                    env=dict(os.environ),
+                    env=dict(environment),
                     timeout=30,
                 )
                 actual = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
@@ -785,11 +798,16 @@ class LocalCIRunner:
         bootstrap = worktree / "scripts/bootstrap_agent_workspace.py"
         if not bootstrap.is_file():
             raise CIValidationError("worktree Python environment is missing")
-        argv = ("python3", "scripts/bootstrap_agent_workspace.py", "--venv", "link")
+        argv = (
+            sys.executable,
+            "scripts/bootstrap_agent_workspace.py",
+            "--venv",
+            "link",
+        )
         result = self._commands.run(
             argv,
             cwd=worktree,
-            env=dict(os.environ),
+            env=dict(environment),
             timeout=_BOOTSTRAP_TIMEOUT_SECONDS,
         )
         evidence = _command_evidence(argv, worktree, worktree, result)
@@ -803,6 +821,45 @@ class LocalCIRunner:
                 "worktree Python bootstrap failed", command_evidence=(evidence,)
             )
         return evidence
+
+
+def _default_python_argv(*, windows: bool | None = None) -> tuple[str, ...]:
+    use_windows_layout = os.name == "nt" if windows is None else windows
+    executable = ".venv/Scripts/python.exe" if use_windows_layout else ".venv/bin/python"
+    return (executable,)
+
+
+def _isolated_ci_environment(home: Path) -> dict[str, str]:
+    """Give PR-owned commands a temporary home without supervisor credentials."""
+    home.mkdir(parents=True, exist_ok=True)
+    temporary = home / "tmp"
+    temporary.mkdir(exist_ok=True)
+    allowed = {
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+    }
+    environment = {key: os.environ[key] for key in allowed if key in os.environ}
+    environment.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "HERMES_HOME": str(home / ".hermes"),
+            "TMP": str(temporary),
+            "TEMP": str(temporary),
+            "TMPDIR": str(temporary),
+            "PYTHONNOUSERSITE": "1",
+            "TZ": "UTC",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        }
+    )
+    return environment
 
 
 def _pid_is_alive(pid: int) -> bool:

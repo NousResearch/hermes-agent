@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,7 +15,11 @@ from github_pr_feedback.ci_runner import (
     CI_MODE_BUDGET_EXHAUSTED_LOCAL_EQUIVALENT,
     CIValidationError,
     CompletedCommand,
+    GitRepositoryInspector,
     LocalCIRunner,
+    _default_python_argv,
+    _isolated_ci_environment,
+    _pid_is_alive,
 )
 from github_pr_feedback.ci_coordinator import CIAuditJob, GroupedCICoordinator
 from github_pr_feedback.github_client import CheckState, GitHubClientError, PullRequestMergeState
@@ -169,7 +175,7 @@ def test_ci_run_is_claimed_before_bootstrap_with_real_supervisor_pid(tmp_path: P
             assert lifecycle["status"] == "running"
             assert lifecycle["supervisor_pid"] == 4242
             result = super().run(argv, cwd=cwd, env=env, timeout=timeout)
-            if argv == ("python3", "scripts/bootstrap_agent_workspace.py", "--venv", "link"):
+            if argv[1:] == ("scripts/bootstrap_agent_workspace.py", "--venv", "link"):
                 executable = cwd / ".venv/bin/python"
                 executable.parent.mkdir(parents=True)
                 executable.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -193,7 +199,7 @@ def test_ci_run_is_claimed_before_bootstrap_with_real_supervisor_pid(tmp_path: P
     assert lifecycle["status"] == "completed"
     assert lifecycle["receipt_id"] == receipt.receipt_id
     assert commands.calls[0][0] == (
-        "python3",
+        sys.executable,
         "scripts/bootstrap_agent_workspace.py",
         "--venv",
         "link",
@@ -551,7 +557,7 @@ def test_local_ci_runner_bootstraps_missing_repo_venv_before_ci(tmp_path: Path) 
             timeout: int,
         ) -> CompletedCommand:
             result = super().run(argv, cwd=cwd, env=env, timeout=timeout)
-            if argv == ("python3", "scripts/bootstrap_agent_workspace.py", "--venv", "link"):
+            if argv[1:] == ("scripts/bootstrap_agent_workspace.py", "--venv", "link"):
                 executable = cwd / ".venv/bin/python"
                 executable.parent.mkdir(parents=True)
                 executable.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -572,13 +578,13 @@ def test_local_ci_runner_bootstraps_missing_repo_venv_before_ci(tmp_path: Path) 
 
     assert receipt.status == "passed"
     assert receipt.commands[0].argv == (
-        "python3",
+        sys.executable,
         "scripts/bootstrap_agent_workspace.py",
         "--venv",
         "link",
     )
     assert commands.calls[0][0] == (
-        "python3",
+        sys.executable,
         "scripts/bootstrap_agent_workspace.py",
         "--venv",
         "link",
@@ -605,6 +611,96 @@ def test_local_ci_runner_adds_locked_frontend_checks_only_for_frontend_changes(
     ]
     assert all(call[1] == worktree / "frontend" for call in commands.calls[-4:])
     ledger.close()
+
+
+def test_ci_runner_uses_a_credential_free_temporary_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "supervisor-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "supervisor-key")
+    real_home = tmp_path / "supervisor-hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(real_home))
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    runner, ledger, commands = build_runner(tmp_path)
+
+    runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+
+    assert commands.calls
+    for _argv, _cwd, environment, _timeout in commands.calls:
+        assert "GH_TOKEN" not in environment
+        assert "OPENAI_API_KEY" not in environment
+        assert environment["HERMES_HOME"] != str(real_home)
+        assert Path(environment["HERMES_HOME"]).parent == Path(environment["HOME"])
+        assert environment["PYTHONNOUSERSITE"] == "1"
+    ledger.close()
+
+
+def test_ci_runner_selects_platform_native_venv_python() -> None:
+    assert _default_python_argv(windows=False) == (".venv/bin/python",)
+    assert _default_python_argv(windows=True) == (".venv/Scripts/python.exe",)
+
+
+@pytest.mark.windows_only
+def test_windows_ci_runner_defaults_to_scripts_python() -> None:
+    assert _default_python_argv() == (".venv/Scripts/python.exe",)
+
+
+@pytest.mark.windows_only
+def test_windows_ci_runner_probes_a_real_scripts_venv(tmp_path: Path) -> None:
+    import venv
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    venv.EnvBuilder(with_pip=False).create(worktree / ".venv")
+    version = ".".join(map(str, sys.version_info[:3]))
+    (worktree / ".python-version").write_text(version + "\n", encoding="utf-8")
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    runner = LocalCIRunner(FakeGitHub(merge_state()), ledger)
+
+    evidence = runner._ensure_python_environment(
+        worktree, _isolated_ci_environment(tmp_path / "isolated-home")
+    )
+
+    assert runner._python_argv == (".venv/Scripts/python.exe",)
+    assert evidence is None
+    ledger.close()
+
+
+def test_ci_runner_environment_helper_drops_unlisted_variables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HERMES_GITHUB_BOT_TOKEN", "bot-secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "cloud-secret")
+
+    environment = _isolated_ci_environment(tmp_path / "isolated")
+
+    assert "HERMES_GITHUB_BOT_TOKEN" not in environment
+    assert "AWS_SECRET_ACCESS_KEY" not in environment
+    assert Path(environment["HERMES_HOME"]).is_relative_to(tmp_path / "isolated")
+
+
+def test_git_inspector_includes_deleted_paths_in_diff_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspector = GitRepositoryInspector()
+    received_arguments: list[tuple[str, ...]] = []
+
+    def fake_run(_worktree: Path, *arguments: str) -> str:
+        received_arguments.append(arguments)
+        return "frontend/src/DeletedComponent.tsx\n"
+
+    monkeypatch.setattr(inspector, "_run", fake_run)
+
+    assert inspector.changed_files(Path("worktree"), BASE_SHA, HEAD_SHA) == (
+        "frontend/src/DeletedComponent.tsx",
+    )
+    assert "--diff-filter=ACMRD" in received_arguments[0]
+
+
+@pytest.mark.windows_only
+def test_windows_supervisor_pid_probe_does_not_signal_the_current_process() -> None:
+    assert _pid_is_alive(os.getpid()) is True
 
 
 def test_environment_lane_uses_the_repo_owned_locked_install_runner(tmp_path: Path) -> None:

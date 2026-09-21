@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import importlib.util
 import json
@@ -867,6 +868,70 @@ def test_scan_lock_rejects_a_concurrent_scan_for_the_same_control_home(
         assert after_release is True
 
 
+def test_scan_lock_only_treats_lock_contention_as_a_busy_scan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from github_pr_feedback import cli
+
+    def contention(_handle: object) -> None:
+        raise BlockingIOError(errno.EAGAIN, "lock is held")
+
+    monkeypatch.setattr(cli, "_acquire_scan_lock", contention)
+    with cli._exclusive_scan_lock(tmp_path) as acquired:
+        assert acquired is False
+
+    def unsupported_filesystem(_handle: object) -> None:
+        raise OSError(errno.EIO, "locking is unavailable")
+
+    monkeypatch.setattr(cli, "_acquire_scan_lock", unsupported_filesystem)
+    with pytest.raises(OSError, match="locking is unavailable"):
+        with cli._exclusive_scan_lock(tmp_path):
+            pass
+
+
+def _windows_scan_lock_worker(
+    control_home: str, start, release, results
+) -> None:
+    from github_pr_feedback.cli import _exclusive_scan_lock
+
+    start.wait(10)
+    with _exclusive_scan_lock(Path(control_home)) as acquired:
+        results.put(acquired)
+        if acquired:
+            release.wait(10)
+
+
+@pytest.mark.windows_only
+def test_windows_fresh_scan_lock_has_no_prelock_write_race(tmp_path: Path) -> None:
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    release = context.Event()
+    results = context.Queue()
+    workers = [
+        context.Process(
+            target=_windows_scan_lock_worker,
+            args=(str(tmp_path), start, release, results),
+        )
+        for _ in range(2)
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        start.set()
+        acquired = [results.get(timeout=20), results.get(timeout=20)]
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(timeout=10)
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=5)
+    assert sorted(acquired) == [False, True]
+    assert all(worker.exitcode == 0 for worker in workers)
+
+
 def test_retry_deployment_recovers_completed_merge_without_receipt_and_holds_scan_lock(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1101,6 +1166,17 @@ def test_namespaced_context_loads_assignee_rules_for_runtime_routing(
     policy = _load_policy_from_context(RecordingContext(settings))
 
     assert policy.assignee_for("Reduce latency") == "performance-patch-steward"
+
+
+def test_namespaced_context_loads_typed_debug_setting(tmp_path: Path) -> None:
+    from github_pr_feedback.cli import _load_policy_from_context
+
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    settings = enabled_settings(repository)
+    settings["debug"] = True
+
+    assert _load_policy_from_context(RecordingContext(settings)).debug is True
 
 
 @pytest.mark.parametrize("state", ["OPEN", "CLOSED", "MERGED"])
@@ -2336,6 +2412,7 @@ def test_doctor_fails_closed_for_an_incomplete_enabled_configuration(
         "include_self_feedback",
         "include_bot_feedback",
         "auto_dispatch",
+        "debug",
         "assignee_rules",
         "routing_rules",
         "local_ci_audit",

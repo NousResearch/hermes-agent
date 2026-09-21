@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
@@ -16,8 +18,6 @@ def pytest_configure(config):
     # Clear task identity before collection: handoff tests spawn real CLI children.
     import os
     import tempfile
-    import pytest
-
     sandbox = tempfile.TemporaryDirectory(prefix="hermes-feedback-tests-")
     patch = pytest.MonkeyPatch()
     for name in tuple(os.environ):
@@ -28,3 +28,21 @@ def pytest_configure(config):
     patch.setenv("HERMES_TEST_ISOLATION", str(Path(sandbox.name) / ".hermes"))
     config.add_cleanup(sandbox.cleanup)
     config.add_cleanup(patch.undo)
+
+
+def pytest_collection_modifyitems(config, items):
+    host = sys.platform
+    os_marks = {
+        "windows_only": (host == "win32", "native Windows"),
+        "macos_only": (host == "darwin", "macOS"),
+        "linux_only": (host.startswith("linux"), "Linux"),
+    }
+    for mark_name, (is_host, label) in os_marks.items():
+        if is_host:
+            continue
+        skip = pytest.mark.skip(
+            reason=f"{label}-only test (marked {mark_name}); host is {host}"
+        )
+        for item in items:
+            if item.get_closest_marker(mark_name) is not None:
+                item.add_marker(skip)

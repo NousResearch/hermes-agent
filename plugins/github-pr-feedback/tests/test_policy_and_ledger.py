@@ -903,6 +903,19 @@ def test_enabled_policy_normalizes_not_before_to_utc(tmp_path: Path) -> None:
     assert policy.not_before == datetime(2026, 8, 24, tzinfo=UTC)
 
 
+def test_debug_policy_is_typed_and_disabled_by_default(tmp_path: Path) -> None:
+    repository_path = tmp_path / "widgets"
+    initialize_git_worktree(repository_path)
+    raw = enabled_raw_config(repository_path)
+
+    assert load_policy(raw).debug is False
+    raw["debug"] = True
+    assert load_policy(raw).debug is True
+    raw["debug"] = "false"
+    with pytest.raises(ValueError, match="debug must be a boolean"):
+        load_policy(raw)
+
+
 def test_enabled_policy_parses_a_bounded_local_ci_audit_lane(tmp_path: Path) -> None:
     repository_path = tmp_path / "widgets"
     initialize_git_worktree(repository_path)

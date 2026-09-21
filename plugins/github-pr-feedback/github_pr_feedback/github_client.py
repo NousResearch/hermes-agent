@@ -1216,7 +1216,9 @@ class GitHubClient:
             )
         except (KeyError, TypeError) as error:
             raise GitHubClientError("GitHub check state was unavailable") from error
-        all_green = check_green and status_state == "success"
+        legacy_statuses_green = not statuses or status_state == "success"
+        has_check_evidence = bool(check_runs or statuses)
+        all_green = check_green and legacy_statuses_green and has_check_evidence
         billing_blocked = False if all_green else self._billing_blocked(
             repository, check_runs
         )

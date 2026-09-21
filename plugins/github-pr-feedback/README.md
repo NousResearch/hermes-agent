@@ -62,6 +62,7 @@ plugins:
         include_self_feedback: false
         include_bot_feedback: false
         auto_dispatch: false
+        debug: false
         # Optional exact-head audit lane. It runs only when the canonical
         # repository Actions permission is `enabled: false` and reruns once
         # for each new PR head SHA.

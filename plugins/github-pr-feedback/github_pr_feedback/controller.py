@@ -1888,7 +1888,7 @@ class ScanController:
             if promote_task is not None and self._policy.auto_dispatch:
                 promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
-            if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+            if self._policy.debug:
                 print(
                     f"DEBUG ci-repair dispatch fail pr={receipt.pr_number}: "
                     f"{type(error).__name__}: {error}",
@@ -2019,7 +2019,7 @@ class ScanController:
             if promote_task is not None and self._policy.auto_dispatch:
                 promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
-            if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+            if self._policy.debug:
                 print(
                     f"DEBUG task-create dispatch fail pr={receipt.pr_number}: "
                     f"{type(error).__name__}: {error}",
@@ -2318,7 +2318,7 @@ class ScanController:
             if promote_task is not None and self._policy.auto_dispatch:
                 promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
-            if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+            if self._policy.debug:
                 print(
                     f"DEBUG task-create dispatch fail pr={receipt.pr_number}: "
                     f"{type(error).__name__}: {error}",

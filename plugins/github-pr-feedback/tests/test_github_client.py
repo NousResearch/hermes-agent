@@ -1150,7 +1150,7 @@ def test_github_client_fails_closed_on_truncated_or_malformed_review_threads() -
         )
 
 
-def test_github_client_reads_green_checks_only_when_actions_are_enabled() -> None:
+def test_github_client_accepts_green_check_runs_with_neutral_empty_legacy_status() -> None:
     permissions_argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
     checks_argv = (
         "gh",
@@ -1169,7 +1169,7 @@ def test_github_client_reads_green_checks_only_when_actions_are_enabled() -> Non
                 "total_count": 1,
                 "check_runs": [{"status": "completed", "conclusion": "success"}],
             },
-            statuses_argv: {"state": "success", "statuses": []},
+            statuses_argv: {"state": "pending", "statuses": []},
         }
     )
 
@@ -1177,6 +1177,31 @@ def test_github_client_reads_green_checks_only_when_actions_are_enabled() -> Non
 
     assert state == CheckState(actions_enabled=True, all_green=True, check_count=1)
     assert runner.calls == [permissions_argv, checks_argv, statuses_argv]
+
+
+def test_github_client_does_not_treat_missing_check_evidence_as_green() -> None:
+    permissions_argv = ("gh", "api", "repos/acme/widgets/actions/permissions")
+    checks_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?per_page=100",
+    )
+    statuses_argv = (
+        "gh",
+        "api",
+        "repos/acme/widgets/commits/" + "a" * 40 + "/status?per_page=100",
+    )
+    runner = RecordingRunner(
+        {
+            permissions_argv: {"enabled": True},
+            checks_argv: {"total_count": 0, "check_runs": []},
+            statuses_argv: {"state": "pending", "statuses": []},
+        }
+    )
+
+    state = GitHubClient(runner).get_check_state("acme/widgets", "a" * 40)
+
+    assert state == CheckState(actions_enabled=True, all_green=False, check_count=0)
 
 
 def test_github_client_treats_disabled_actions_as_a_distinct_known_state() -> None:

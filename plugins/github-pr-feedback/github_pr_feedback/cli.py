@@ -5,7 +5,7 @@ from __future__ import annotations
 from .ci_contract import manifest_path as ci_manifest_path
 
 import argparse
-import fcntl
+import errno
 import hashlib
 import json
 import os
@@ -19,6 +19,11 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from utils import env_var_enabled
 
@@ -1490,19 +1495,47 @@ def _exclusive_scan_lock(control_home: Path | None = None) -> Iterator[bool]:
 
     lock_root = (control_home or get_default_hermes_root()) / "github-pr-feedback"
     lock_root.mkdir(parents=True, exist_ok=True)
-    handle = (lock_root / "scan.lock").open("a+")
+    handle = (lock_root / "scan.lock").open("a+b")
     acquired = False
     try:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _acquire_scan_lock(handle)
             acquired = True
-        except BlockingIOError:
-            pass
+        except OSError as error:
+            if not _is_scan_lock_contention(error):
+                raise
         yield acquired
     finally:
-        if acquired:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+        try:
+            if acquired:
+                _release_scan_lock(handle)
+        finally:
+            handle.close()
+
+
+def _acquire_scan_lock(handle: Any) -> None:
+    if os.name == "nt":
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _release_scan_lock(handle: Any) -> None:
+    if os.name == "nt":
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _is_scan_lock_contention(error: OSError) -> bool:
+    contention_errnos = {
+        errno.EACCES,
+        errno.EAGAIN,
+        getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
+    }
+    return error.errno in contention_errnos or getattr(error, "winerror", None) == 33
 
 
 def _retry(ctx: Any, args: argparse.Namespace) -> int:
@@ -3070,6 +3103,7 @@ def _load_policy_from_context(ctx: Any) -> PluginPolicy:
         "include_self_feedback",
         "include_bot_feedback",
         "auto_dispatch",
+        "debug",
         "assignee_rules",
         "routing_rules",
         "local_ci_audit",

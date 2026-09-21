@@ -271,6 +271,9 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
                 os.close(fd)
             return
 
+        if os.name != "nt":
+            return
+
         # Windows needs path-based chmod to clear FILE_ATTRIBUTE_READONLY.
         # Re-check immediately before it so a link is never intentionally
         # followed on platforms without chmod(follow_symlinks=False).

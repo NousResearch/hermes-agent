@@ -45,9 +45,19 @@ def _normalize_server_trust(value: Any) -> str:
 
 
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
-    """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable."""
+    """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable.
+
+    The mcp SDK 1.x -> 2.x rename (see ``mcp_field``) applies to ``ToolAnnotations`` too: the
+    installed 2.x model exposes ``read_only_hint``, not ``readOnlyHint``. A schema-cache dict may
+    still carry either spelling depending on which SDK wrote it, so both are checked either way.
+    """
     annotations = getattr(mcp_tool, "annotations", None)
-    hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else getattr(annotations, "readOnlyHint", None)
+    if isinstance(annotations, dict):
+        hint = annotations.get("read_only_hint")
+        if hint is None:
+            hint = annotations.get("readOnlyHint")
+    else:
+        hint = mcp_field(annotations, "read_only_hint", "readOnlyHint")
     return hint is True
 
 

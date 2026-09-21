@@ -333,3 +333,33 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_snake_case_annotation_spelling_supported(self):
+        """mcp SDK 2.x's ``ToolAnnotations`` model exposes ``read_only_hint``, not the
+        1.x ``readOnlyHint``. Both an object annotations value (attribute access) and a
+        dict annotations value (cache/JSON) must recognize the new spelling; the old
+        spelling must keep working too since a cache written by an older SDK may still
+        carry it."""
+        # SDK 2.x object attribute.
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=False))
+        ) is False
+        # SDK 1.x object attribute still recognized.
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(readOnlyHint=True))
+        ) is True
+        # Dict form (schema cache), both spellings.
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": True})
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"readOnlyHint": True})
+        ) is True
+        # snake_case takes precedence when (improbably) both are present and disagree --
+        # it is the spelling the installed SDK actually emits.
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": False, "readOnlyHint": True})
+        ) is False

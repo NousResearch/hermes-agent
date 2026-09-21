@@ -193,6 +193,13 @@ jobs:
       - name: Forbid literal /tmp paths outside the baseline
         run: python scripts/check_no_tmp_literals.py
 
+      # `m.assert_called_once(), "msg"` is a tuple expression, not an assert: the message is
+      # discarded and a non-call element (`x == y, "msg"`) never runs at all. ruff/flake8 B018
+      # exempts expressions containing a Call, so the whole class is invisible to the lint
+      # config; a human reviewer caught the first one (#117299), not CI.
+      - name: Forbid inert tuple assertions
+        run: python scripts/check_inert_tuple_assertions.py
+
       # The OS lanes import only files carrying the matching marker, so a test that fakes
       # macOS (is_macos -> True, sys.platform -> "darwin") without `macos_only` is green on
       # Linux over a faked branch and never runs on macOS (#111866, AGENTS.md § Don't fake the host OS).

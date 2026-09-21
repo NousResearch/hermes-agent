@@ -189,7 +189,7 @@ class TestTickerEmfileBackoff:
         assert attempts["n"] >= 3
         assert errors, "failures must be recorded"
         assert True in beats, "a successful tick must bump the success marker"
-        clear.assert_called(), "a successful tick must clear the recorded error"
+        assert clear.called, "a successful tick must clear the recorded error"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

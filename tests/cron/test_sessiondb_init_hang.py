@@ -387,7 +387,7 @@ class TestLateSessionDbClosedAfterTimeout:
             never_set.set()
 
         assert len(late_db_holder) == 1, "SessionDB() should have completed once"
-        late_db_holder[0].close.assert_called_once(), (
+        assert late_db_holder[0].close.call_count == 1, (
             "The SessionDB that completed after the timeout must be closed by "
             "the done-callback — otherwise its SQLite FDs leak until process exit (#72782)"
         )

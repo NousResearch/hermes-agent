@@ -181,7 +181,7 @@ class TestCompressionSessionPropagation:
             "session_entry.session_id was not updated to the compressed session id. "
             "The next turn would load the old transcript and re-trigger compression."
         )
-        session_store._save.assert_called_once_with(), (
+        assert session_store._save.call_args_list == [call()], (
             "session_store._save() was not called after session_entry update. "
             "The new session mapping would not survive a gateway restart."
         )

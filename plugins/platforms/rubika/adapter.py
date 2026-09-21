@@ -176,7 +176,16 @@ class RubikaAdapter(BasePlatformAdapter):
             return False
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        raise NotImplementedError  # Task 10
+        try:
+            data = await self._client.call("getChat", chat_id=chat_id)
+        except RubikaAPIError as exc:
+            logger.warning("[%s] get_chat_info failed: %s", self.name, exc)
+            return {"name": chat_id, "type": "dm"}
+        chat = data.get("chat") or {}
+        chat_type = str(chat.get("chat_type") or "").lower()
+        is_group = chat_type == "group"
+        name = chat.get("title") if is_group else chat.get("first_name") or chat_id
+        return {"name": name, "type": "group" if is_group else "dm"}
 
 
 def register(*args, **kwargs) -> None:

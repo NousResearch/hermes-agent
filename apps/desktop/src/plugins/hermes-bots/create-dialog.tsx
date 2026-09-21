@@ -70,7 +70,7 @@ import { CapabilitiesView, capabilitiesViewRoutesConnections, CheckList } from '
 import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
 import { HubSkillsSection } from './skills-hub'
-import { composeSoul } from './soul'
+import { composeSoul, deriveSoulDescription } from './soul'
 import type { BotMeta, ConnectionRow, RosterRow } from './types'
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -129,7 +129,6 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
   const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
   // (falls back to the legacy shape vocabulary on older SDKs).
   const [shape, setShape] = useState(blobatarSvg ? 'blobatar' : 'circle')
@@ -261,7 +260,6 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const reset = () => {
     setName('')
     setTitle('')
-    setDescription('')
     setShape(blobatarSvg ? 'blobatar' : 'circle')
     setColor(null)
     setImage(null)
@@ -382,10 +380,17 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         return null
       }
 
-      const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
+      // Single source of truth: the SOUL owns the words. profile.yaml
+      // description is display-only, derived from the composed SOUL.
+      const soulText = composeSoul({
+        name: slug,
+        title: botTitle,
+        roster,
+        customSoul: soul
+      })
       await requestForTarget('profiles.create', {
         name: slug,
-        description: descriptionText,
+        description: deriveSoulDescription(soulText),
         // Clone sources are profiles of the TARGET backend. The picker's
         // roster is the local one, so a remote create always starts from the
         // remote machine's default (or fresh) — never a local profile name
@@ -396,13 +401,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         // logins are never copied (single-use refresh tokens fork) and never inherited: a
         // profile only reads its own auth.json, so sign the bot in itself for those.
         mirror_credentials: mirrorCredentials,
-        soul: composeSoul({
-          name: slug,
-          title: botTitle,
-          description,
-          roster,
-          customSoul: soul
-        }),
+        soul: soulText,
         ...(model.trim() && provider.trim()
           ? {
               model: model.trim(),
@@ -619,7 +618,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
             generateSeed={{
               name: slug || 'agent',
               title,
-              description
+              description: deriveSoulDescription(soul)
             }}
             image={image}
             onColor={setColor}
@@ -678,15 +677,6 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           {labeled(
             'Title',
             <Input onChange={event => setTitle(event.target.value)} placeholder="Inbox Triage" value={title} />
-          )}
-          {labeled(
-            'Description',
-            <Textarea
-              className="min-h-16"
-              onChange={event => setDescription(event.target.value)}
-              placeholder={b.bot.helpPromptPlaceholder}
-              value={description}
-            />
           )}
           <Button
             className="flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)"

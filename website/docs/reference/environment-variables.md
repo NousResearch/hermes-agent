@@ -263,6 +263,7 @@ These variables configure the [Tool Gateway](../user-guide/features/tool-gateway
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
+| `HERMES_WORKER_SCOPES` | Opt-in (`1`/`true`): run background terminal workers in their own `systemd-run --user --scope` cgroup even when the agent is embedded in a non-gateway host (e.g. `hermes-webui` under systemd), so a memory-hungry worker cannot take the whole host service down. Ignored on the gateway, which always scopes workers. |
 | `TERMINAL_CWD` | Deprecated direct override for gateway/cron terminal sessions. Prefer `terminal.cwd` in `config.yaml`; CLI still uses the launch directory. |
 | `SUDO_PASSWORD` | Enable sudo without interactive prompt |
 

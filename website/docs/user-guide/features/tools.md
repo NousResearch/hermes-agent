@@ -239,6 +239,19 @@ Unrelated conversations and requests without a bound owning session cannot read
 retained receipts, even with an exact process handle. `process(action="list")`
 also includes retained results for the current task or conversation.
 
+### Background process lifetime cap
+
+A background process that the agent never kills (a leaked dev server, a headless
+browser) would otherwise live in the host's cgroup until the machine restarts.
+The registry can enforce an opt-in hard lifetime cap:
+`terminal.background_max_age_seconds` (default `0` — no cap; e.g. `86400` for 24 hours).
+When a process exceeds it, Hermes kills the whole process tree, logs the reap,
+and reports it like any other termination (`termination_source: "max_age"`),
+so a `notify=true` process still sends its completion notice. The cap survives
+restarts: a process recovered from the checkpoint is reaped based on its original
+start time, not granted a fresh window. Treat background sessions as bounded
+work, never as durable storage.
+
 Hermes keeps the newest **64 completed results**, for up to **7 days after
 completion**, under `logs/process-results/` in the profile's Hermes home. Each
 receipt contains at most the existing rolling **200,000-character output tail**,

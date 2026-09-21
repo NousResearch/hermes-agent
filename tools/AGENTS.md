@@ -119,6 +119,14 @@ teardown, kills the worker cgroup) runs only after that PID kill in `kill()`, or
 proven dead/recycled (`session.exited`, `_signal_kill` recycled-PID path, checkpoint recovery) —
 it is never the first signal a live parent receives.
 
+**Background processes can carry an opt-in hard lifetime cap.** When `terminal.background_max_age_seconds`
+is set (default 0 = no cap), every tracked background process gets `expires_at`; a single registry
+watchdog thread (`_expiry_watchdog_loop`) reaps overdue trees via the normal
+`kill_process(source="max_age")` teardown — so the completion notification still fires — and
+checkpoint recovery re-arms from the persisted `started_at` (a restart grants no extra lifetime).
+Cgroup scope isolation stays gateway-only by default with the `HERMES_WORKER_SCOPES=1` host opt-in.
+See #116936.
+
 ## Delegation (`tools/delegate_tool.py`)
 
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless

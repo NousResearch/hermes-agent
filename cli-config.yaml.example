@@ -402,6 +402,11 @@ terminal:
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
+  # OPT-IN hard lifetime cap for tracked background processes (`terminal(background=true)`). Past
+  # it the registry kills the whole process tree and reports the termination like any other; this
+  # bounds a forgotten child (a headless browser, a dev server) the model started and never closed,
+  # which would otherwise live in the host's cgroup until restart. Default 0 = no cap.
+  # background_max_age_seconds: 86400   # e.g. 24h
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 

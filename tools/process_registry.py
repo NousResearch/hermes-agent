@@ -1,7 +1,10 @@
 """Process Registry -- in-memory registry for background processes spawned via
 terminal(background=true): rolling 200KB output buffer, poll/log/wait/kill, JSON
 checkpoint for crash recovery, session-scoped tracking for gateway reset protection.
-Nothing runs on the host unless TERMINAL_ENV=local; other backends run in their sandbox.
+Every tracked process also carries a hard lifetime cap
+(``terminal.background_max_age_seconds``) enforced by the registry itself, so a forgotten or
+leaked child tree cannot outlive the cap in any host. Nothing runs on the host unless
+TERMINAL_ENV=local; other backends run in their sandbox.
 """
 
 import codecs
@@ -81,16 +84,18 @@ WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 
 
-# --- systemd cgroup isolation for gateway-spawned local executors ------------------
-# Under a systemd gateway with MemoryMax, local background commands inherit the gateway's
-# cgroup, so a memory-heavy executor can get the ENTIRE gateway killed by systemd-oomd;
+# --- systemd cgroup isolation for host-spawned local executors ---------------------
+# Under a systemd host with MemoryMax, local background commands inherit the host's
+# cgroup, so a memory-heavy executor can get the ENTIRE host killed by systemd-oomd;
 # ``systemd-run --user --scope`` gives the worker its own transient cgroup. Usability is
 # probed and cached for a bounded TTL (binary present but user D-Bus absent in system services/containers).
 # A memory-heavy executor (Codex, tests, Node) can push the whole cgroup past MemoryMax and trigger
-# systemd-oomd to kill the ENTIRE gateway — taking down the messaging control plane and silently losing the
+# systemd-oomd to kill the ENTIRE host — taking down the messaging control plane and silently losing the
 # active turn. We probe whether ``systemd-run --user --scope`` is actually usable (the binary can
 # exist on the PATH while the user D-Bus session is unavailable — common for system services and
 # containers), and cache the verdict for a bounded TTL. See #70716.
+# The supervised gateway is scoped by default; any other embedding host opts in with
+# ``HERMES_WORKER_SCOPES=1`` — see ``ProcessRegistry._scope_argv``. See #116936.
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
@@ -134,7 +139,8 @@ def _worker_memory_max_bytes() -> int:
             raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
             if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
                 candidates.append(int(raw_limit))
-    with suppress(OSError, ValueError, TypeError):
+    # AttributeError: os.sysconf does not exist on Windows.
+    with suppress(OSError, ValueError, TypeError, AttributeError):
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
         candidates.append(min(_WORKER_MEMORY_MAX_CAP_BYTES, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)))
     safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
@@ -281,6 +287,21 @@ def _is_supervised_gateway_process() -> bool:
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
+
+
+def _worker_scopes_opted_in() -> bool:
+    """Whether an embedding host explicitly requested per-worker scope isolation.
+
+    ``_is_supervised_gateway_process`` is gateway-only by design: PID-file ownership
+    keeps terminal children and CLIs unscoped. But the agent also runs inside other
+    supervised hosts (hermes-webui, custom systemd services embedding Hermes), where
+    an OOM-happy background child takes down the whole host cgroup just the same.
+    ``HERMES_WORKER_SCOPES=1`` is the host operator's explicit request to give
+    background terminal workers the same sibling-cgroup treatment the gateway gets.
+    Unlike the gateway probe this flag MAY be inherited by descendants: it changes
+    only where workers are placed, never which self-kill guards apply.
+    """
+    return os.environ.get("HERMES_WORKER_SCOPES", "").lower() in {"1", "true", "yes", "on"}
 
 
 def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[str]:
@@ -513,7 +534,7 @@ class ProcessSession:
     exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
     exit_code: Optional[int] = None             # None while running
     completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
-    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start|max_age
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
@@ -547,6 +568,12 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
+    # Hard lifetime cap (``terminal.background_max_age_seconds``, 0 = disabled): the
+    # registry watchdog reaps the tree once ``expires_at`` passes and reports the kill
+    # like any other termination, so a forgotten/leaked child cannot outlive the cap.
+    expires_at: Optional[float] = None
+    _expiry_callback: Optional[Any] = field(default=None, repr=False)  # registry watchdog hook
+    _expiry_context: Any = field(default=None, repr=False)  # spawning contextvars.Context (profile scope)
 
     def append_output(self, text: str) -> None:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
@@ -626,6 +653,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # a read-only terminal tab without killing the process.
         self.on_output = None
         self.on_close = None
+        # Lifetime-cap watchdog (see _ensure_expiry_watchdog).
+        self._expiry_lock = threading.Lock()
+        self._expiry_wake = threading.Event()
+        self._expiry_watchdog: Optional[threading.Thread] = None
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -869,6 +900,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Grace (s) between SIGTERM and escalated SIGKILL; 0 disables escalation."""
         return ProcessRegistry._config_seconds("daemon_term_grace_seconds", 2.0)
 
+    @staticmethod
+    def _background_max_age_seconds() -> float:
+        """Opt-in hard lifetime cap (s) for tracked background processes; 0 (default) = none."""
+        return ProcessRegistry._config_seconds("background_max_age_seconds", 0.0)
+
+
     @classmethod
     def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
         """Terminate a host-visible PID and its descendants.
@@ -1051,16 +1088,21 @@ class ProcessRegistry(ProcessCheckpointMixin):
         gateway and its messaging control plane)."""
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
         # This applies to both pipe mode and the PTY path above. See #70716.
-        in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
-        if in_supervised_gateway and _systemd_run_user_scope_available():
+        isolate_worker = _IS_LINUX and (
+            _is_supervised_gateway_process() or _worker_scopes_opted_in()
+        )
+        if isolate_worker and _systemd_run_user_scope_available():
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
             return _build_systemd_scope_argv(argv, unit_suffix=unit_suffix)
-        if in_supervised_gateway:
-            # Under a supervisor but no private cgroup: a worker OOM can still take
-            # the whole gateway down.
+        if isolate_worker:
+            # Isolation was requested (gateway or opted-in host) but no private
+            # cgroup could be created: a worker OOM can still take the whole
+            # hosting service down.
             logger.debug(
                 "%s background executor not isolated in a systemd scope "
-                "(systemd-run --user unavailable); worker shares the gateway cgroup.", label)
+                "(systemd-run --user unavailable); worker shares the host cgroup.",
+                label,
+            )
         return argv
 
     @staticmethod
@@ -1079,6 +1121,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
                                   daemon=True, name=reader_name)
         session._reader_thread = reader
+        self._arm_expiry(session, copy_context())
         with self._lock:
             self._prune_if_needed()
             # Completion takes this lock too. Starting here also leaves no
@@ -1086,6 +1129,106 @@ class ProcessRegistry(ProcessCheckpointMixin):
             reader.start()
             self._running[session.id] = session
         self._write_checkpoint()
+        self._ensure_expiry_watchdog()
+
+    # ----- lifetime cap (terminal.background_max_age_seconds) -------------------
+
+    def _arm_expiry(self, session: ProcessSession, spawn_context) -> None:
+        """Stamp ``expires_at`` from the configured cap and bind the registry watchdog
+        to the spawning context (a reap must write into the spawning profile's scope,
+        like the reader thread does). Disabled when the cap is 0."""
+        max_age = self._background_max_age_seconds()
+        if max_age <= 0:
+            return
+        session.expires_at = time.time() + max_age
+        session._expiry_callback = self._expiry_callback
+        session._expiry_context = spawn_context
+
+    @staticmethod
+    def _expiry_callback(session: ProcessSession) -> None:
+        """Registry-side reap for a session past its lifetime cap, run on the watchdog
+        thread inside the spawning context. Uses the normal tree teardown (PID signal +
+        systemd scope stop) so ``_move_to_finished`` still enqueues the completion
+        notification; ``consume_output`` matches abandoned-turn reaping: nobody is
+        waiting for this output, so the autonomous turn still fires with the tail."""
+        try:
+            result = process_registry.kill_process(
+                session.id, source="max_age", consume_output=True)
+            status = result.get("status")
+            if status == "killed":
+                logger.warning(
+                    "Background process %s (%s) reaped: lifetime exceeded "
+                    "terminal.background_max_age_seconds (%.0fs).",
+                    session.id, session.command[:80],
+                    ProcessRegistry._background_max_age_seconds())
+            elif status in ("already_exited", "not_found"):
+                logger.debug("Lifetime-cap reap for %s: %s", session.id, status)
+            else:
+                logger.warning("Lifetime-cap reap for %s failed: %s", session.id, result)
+        except Exception:
+            logger.exception("Lifetime-cap reap for %s crashed", session.id)
+
+    def _ensure_expiry_watchdog(self) -> None:
+        """Start (once) the single watchdog thread that reaps expired sessions.
+
+        One thread per registry instead of a Timer per process: bounded thread count,
+        and it survives patched ``threading.Thread`` in tests the same way the reader
+        threads do (tests patch Thread and would break a per-session thread)."""
+        if self._expiry_watchdog is not None:
+            return
+        with self._expiry_lock:
+            if self._expiry_watchdog is not None:
+                return
+            thread = threading.Thread(
+                target=self._expiry_watchdog_loop, daemon=True, name="process-expiry-watchdog")
+            self._expiry_watchdog = thread
+            thread.start()
+        # Whether freshly started or long-running (possibly sleeping with no deadline),
+        # the schedule changed: recompute the sleep deadline now.
+        self._expiry_wake.set()
+
+    def _expiry_watchdog_loop(self) -> None:
+        """Reap sessions whose ``expires_at`` has passed; sleep until the next deadline
+        (or until a spawn/finish wakes us to recompute). Never touches profile-bound
+        state outside the session's spawning context."""
+        while True:
+            with self._lock:
+                now = time.time()
+                due = [s for s in self._running.values()
+                       if s.expires_at is not None and s.expires_at <= now and not s.exited]
+                next_deadline = min(
+                    (s.expires_at for s in self._running.values()
+                     if s.expires_at is not None and not s.exited),
+                    default=None)
+            for session in due:
+                callback = session._expiry_callback
+                context = session._expiry_context
+                if callback is None or context is None:
+                    continue
+                try:
+                    context.run(callback, session)
+                except Exception:
+                    logger.exception("Expiry callback for %s failed", session.id)
+            if next_deadline is None:
+                timeout = None  # nothing capped is running; wait for a wake
+            else:
+                timeout = max(0.05, next_deadline - time.time())
+                if due:
+                    # A reap can fail (kill error) — retry soon instead of waiting a
+                    # full cap again; the wake event keeps this cheap.
+                    timeout = min(timeout, 1.0)
+            self._expiry_wake.wait(timeout)
+            self._expiry_wake.clear()
+
+    def _cancel_expiry(self, session: ProcessSession) -> None:
+        """Clear the cap on normal completion so the watchdog never touches a finished
+        session, and wake it to recompute its sleep deadline."""
+        if session.expires_at is None and session._expiry_callback is None:
+            return
+        session.expires_at = None
+        session._expiry_callback = None
+        session._expiry_context = None
+        self._expiry_wake.set()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
         """PTY spawn for interactive CLI tools (Codex, Claude Code, REPLs).
@@ -1512,6 +1655,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
+        self._cancel_expiry(session)  # normal completion: the cap must never reap a finished session
         # Release the retained Popen/PTY handles now: otherwise every
         # finished-but-unpruned session keeps its stdout pipe (or PTY master)
         # FD open until FINISHED_TTL_SECONDS elapses, and heavy background

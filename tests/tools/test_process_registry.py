@@ -2310,6 +2310,70 @@ class TestSystemdCgroupIsolation:
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
+    @pytest.mark.linux_only
+    def test_embedded_host_opt_in_scopes_workers(self, registry, monkeypatch):
+        """An embedding host (hermes-webui, custom service) is not the gateway:
+        no PID file, no supervisor marker. HERMES_WORKER_SCOPES=1 is its explicit
+        request for the same per-worker cgroup isolation (#116936)."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setenv("HERMES_WORKER_SCOPES", "1")
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda environ=None: False,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv[0] == "/usr/bin/systemd-run", argv
+        assert "--scope" in argv
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+        # The opt-in only moves workers into their own cgroup; it must never
+        # widen the gateway self-kill guards to a non-gateway host.
+        from tools.process_registry import _is_supervised_gateway_process
+        assert _is_supervised_gateway_process() is False
+
+    @pytest.mark.linux_only
+    def test_worker_scopes_flag_off_by_default(self, registry, monkeypatch):
+        """Without the opt-in, a plain embedding host keeps today's behaviour:
+        unscoped spawns (isolation stays a gateway concern)."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.delenv("HERMES_WORKER_SCOPES", raising=False)
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda environ=None: False,
+        )
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["argv"] == ["/bin/bash", "-lic", "set +m; echo hello"]
+        assert session.systemd_unit == ""
+
     @pytest.mark.parametrize("use_pty", [False, True])
     def test_inherited_systemd_marker_does_not_scope_interactive_cli(
         self, registry, monkeypatch, use_pty
@@ -3235,3 +3299,96 @@ def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatc
     text = _format_async(evt)
     assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "No fallback chain is configured" not in text
+
+
+# ----- lifetime cap + scope isolation (#116936) ----
+
+import contextvars
+
+
+def _patch_max_age(monkeypatch, seconds):
+    monkeypatch.setattr(ProcessRegistry, "_background_max_age_seconds", staticmethod(lambda: seconds))
+
+
+def test_expiry_watchdog_reaps_overdue_session(monkeypatch, registry):
+    """A session past its cap is reaped via the normal teardown with source=max_age."""
+    _patch_max_age(monkeypatch, 3600)
+    session = _make_session(sid="proc_overdue")
+    session.expires_at = time.time() - 1  # already overdue
+    session._expiry_callback = registry._expiry_callback
+    session._expiry_context = contextvars.copy_context()
+    registry._running[session.id] = session
+    killed = {}
+
+    def fake_kill(session_id, *, source="process.kill", consume_output=True):
+        killed["session_id"] = session_id
+        killed["source"] = source
+        registry._running.pop(session_id, None)
+        registry._finished[session_id] = session
+        session.exited = True
+        session.termination_source = source
+        return {"status": "killed", "session_id": session_id}
+
+    monkeypatch.setattr("tools.process_registry.process_registry", registry)
+    monkeypatch.setattr(registry, "kill_process", fake_kill)
+    # Drive one watchdog iteration directly (deterministic; no wall-clock waiting).
+    session._expiry_context.run(session._expiry_callback, session)
+    assert killed["session_id"] == "proc_overdue"
+    assert killed["source"] == "max_age"
+    assert session.termination_source == "max_age"
+
+
+def test_expiry_watchdog_ignores_fresh_sessions(monkeypatch, registry):
+    """Only overdue RUNNING sessions are due."""
+    fresh = _make_session(sid="proc_fresh")
+    fresh.expires_at = time.time() + 3600
+    registry._running[fresh.id] = fresh
+    with registry._lock:
+        due = [s for s in registry._running.values()
+               if s.expires_at is not None and s.expires_at <= time.time() and not s.exited]
+    assert due == []
+
+
+def test_move_to_finished_cancels_expiry(monkeypatch, registry):
+    """Normal completion clears the cap: the watchdog can never reap a finished session."""
+    _patch_max_age(monkeypatch, 3600)
+    session = _make_session(sid="proc_done", exited=True, exit_code=0)
+    session.expires_at = time.time() - 5
+    session._expiry_callback = registry._expiry_callback
+    session._expiry_context = contextvars.copy_context()
+    registry._running[session.id] = session
+    registry._move_to_finished(session)
+    assert session.expires_at is None
+    assert session._expiry_callback is None
+    assert session._expiry_context is None
+
+
+def test_arm_expiry_disabled_when_cap_zero(monkeypatch, registry):
+    _patch_max_age(monkeypatch, 0)
+    session = _make_session(sid="proc_nocap")
+    registry._arm_expiry(session, contextvars.copy_context())
+    assert session.expires_at is None
+    assert session._expiry_callback is None
+
+
+def test_checkpoint_recovery_rearms_expiry_from_started_at(monkeypatch, tmp_path):
+    """A restart must not grant another full cap: expires_at is anchored to the
+    persisted start time, so a session that already blew past the cap is due at once."""
+    import tools.process_registry_checkpoint as prc
+
+    _patch_max_age(monkeypatch, 100)
+    import tools.process_registry as pr
+
+    monkeypatch.setattr(pr, "_checkpoint_path", lambda: tmp_path / "processes.json")
+    (tmp_path / "processes.json").write_text(json.dumps([{
+        "session_id": "proc_rec", "pid": os.getpid(), "pid_scope": "host",
+        "command": "sleep 1000", "started_at": time.time() - 500, "host_start_time": None,
+    }]), encoding="utf-8")
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: True)
+    recovered = registry.recover_from_checkpoint()
+    assert recovered == 1
+    session = registry._running["proc_rec"]
+    # 500s of the 100s cap already elapsed: overdue immediately, not started+100 again.
+    assert session.expires_at <= time.time()
+    assert session._expiry_callback is not None

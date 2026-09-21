@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from contextvars import copy_context
 from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
@@ -47,7 +48,7 @@ class ProcessCheckpointMixin:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
         were recovered as detached sessions."""
         from tools.process_registry import (
-            ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
+            ProcessRegistry, ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
 
@@ -102,6 +103,15 @@ class ProcessCheckpointMixin:
             session = ProcessSession(id=entry["session_id"], detached=True, **fields)
             with self._lock:
                 self._running[session.id] = session
+            # A restart must not grant another full lifetime cap: re-arm from the
+            # persisted start time, so a session that already blew past the cap is
+            # reaped on the first watchdog sweep (remaining time may be <= 0).
+            max_age = self._background_max_age_seconds()
+            if max_age > 0:
+                session.expires_at = session.started_at + max_age
+                session._expiry_callback = ProcessRegistry._expiry_callback
+                session._expiry_context = copy_context()
+                self._ensure_expiry_watchdog()
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
             # Re-enqueue watcher so gateway can resume notifications

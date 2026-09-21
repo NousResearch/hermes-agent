@@ -295,6 +295,11 @@ DEFAULT_CONFIG = {
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,
+        # OPT-IN hard lifetime cap (seconds) for tracked background processes: past it the
+        # registry reaps the process tree and reports the kill like any other termination,
+        # bounding a forgotten/leaked child (a headless browser, a dev server) that would
+        # otherwise live until the host restarts. 0 (default) = no cap; e.g. 86400 = 24 h.
+        "background_max_age_seconds": 0.0,
         # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
         # background processes to finish. The dying parent owns their stdout pipes, so exiting
         # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /

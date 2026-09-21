@@ -787,3 +787,49 @@ def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
 
     resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
     assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+
+@pytest.mark.parametrize(
+    "api_key, configured, expected_prefix",
+    [
+        # AQ. keys exist for BOTH AI Studio and Vertex express mode (#115306): the prefix never
+        # reroutes, so an AI-Studio AQ. key keeps working on the default Studio host.
+        ("AQ.studio-key", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # Control: legacy AIza Studio key keeps the Studio host too.
+        ("AIza-test", None, "https://generativelanguage.googleapis.com/v1beta/models/"),
+        # An explicit aiplatform base (host root or versioned) is completed to the publishers form —
+        # the express key's only route to aiplatform now that the prefix no longer reroutes.
+        ("AQ.express-key", "https://aiplatform.googleapis.com", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        ("AIza-test", "https://aiplatform.googleapis.com/v1beta1", "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/"),
+        # An explicit proxy is never overridden by the key shape.
+        ("AQ.studio-key", "http://localhost:4000/gemini", "http://localhost:4000/gemini/v1beta/models/"),
+    ],
+)
+def test_native_client_never_reroutes_aq_keys_off_the_configured_surface(api_key, configured, expected_prefix):
+    """Google issues ``AQ.`` keys for both AI Studio and Vertex express mode, so the key prefix must
+    not decide the surface (#115306): the default (or explicitly configured) base is used verbatim,
+    and an explicit aiplatform base is completed to ``…/publishers/google/models/…``."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    seen = []
+
+    class _HTTP:
+        def post(self, url, **_):
+            seen.append(url)
+            return SimpleNamespace(status_code=200, json=lambda: {"candidates": [
+                {"content": {"role": "model", "parts": [{"text": "ok"}]}, "finishReason": "STOP"}]})
+
+    client = GeminiNativeClient(api_key=api_key, base_url=configured, http_client=_HTTP())
+    client.chat.completions.create(model="gemini-3.7-flash", messages=[{"role": "user", "content": "hi"}])
+    assert seen == [f"{expected_prefix}gemini-3.7-flash:generateContent"]
+
+
+def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
+    """The express base is native Gemini; the OAuth Vertex provider's OpenAI-compatible
+    ``…/endpoints/openapi`` base must NOT be captured by the native adapter."""
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1beta1/publishers/google")
+    assert not is_native_gemini_base_url(
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    )

@@ -143,13 +143,15 @@ class TurnStatus(WireEnum):
 
 
 class ErrorSurface(Payload):
-    """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint)."""
+    """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint,
+    + ``resets_at`` epoch seconds when the provider named when its limit lifts)."""
 
     layer: str
     code: str
     retryable: bool
     provider: str | None = None
     model: str | None = None
+    resets_at: float | None = None
     model_config = Payload.model_config | {"extra": "allow"}
 
 

@@ -57,6 +57,8 @@ export const ModelMenuCloseContext = createContext<() => void>(() => {})
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
 export interface ModelChoice {
   effort: string
+  /** Level the route actually sends for `effort` (`session.info.reasoning_effort_wire`); '' = unknown. */
+  effortWire?: string
   fast: boolean
   model: string
   provider: string
@@ -491,7 +493,7 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -515,8 +517,11 @@ export function ModelCatalogMenu({
                     )
 
                     const meta = [
+                      tag || null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
+                      (caps?.reasoning ?? true)
+                        ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
+                        : null
                     ]
                       .filter(Boolean)
                       .join(' ')
@@ -576,6 +581,7 @@ export function ModelCatalogMenu({
                           canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
                           defaultEffort={defaultEffort}
                           effort={effEffort}
+                          effortWire={isCurrent ? current.effortWire : undefined}
                           fastControl={fastControl}
                           isActive={isCurrent}
                           model={family.id}

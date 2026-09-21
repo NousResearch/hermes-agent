@@ -72,6 +72,23 @@ export function profileScoped(profile?: null | string): { priority?: 'foreground
   }
 }
 
+/** A session's OWNER as a request scope: a profile belongs to ONE gateway, so
+ *  a Bot on another connection is (its connection, its profile) — never the
+ *  active connection with the Bot's profile name. Missing halves fall back to
+ *  the ambient scope; an explicit connection — `'local'` included — overrides
+ *  the ambient tag `hermesApi` spreads underneath (as capabilityScoped does). */
+export interface OwnerScope {
+  connectionId?: null | string
+  profile?: null | string
+}
+
+export function ownerScoped(owner?: OwnerScope): { connectionId?: string; priority?: 'foreground'; profile?: string } {
+  return {
+    ...profileScoped(owner?.profile || undefined),
+    ...(owner?.connectionId ? { connectionId: owner.connectionId } : {})
+  }
+}
+
 /** Profile that profile-scoped REST/WS calls should target (null → primary).
  *  Read-only twin of setApiRequestProfile for modules (e.g. voice playback)
  *  that build their own connection URLs and must stay on the same backend. */
@@ -139,7 +156,7 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //
 // A profile is not a machine-global name — it belongs to ONE gateway. The
 // Capabilities surface can be pointed at any (connection, profile) pair
-// (SkillsView's scope selector, Bot Mode's fixedProfile/fixedConnection), so
+// (CapabilitiesView's scope selector, Bot Mode's fixedProfile/fixedConnection), so
 // its REST helpers accept either the legacy string form or an explicit scope
 // object:
 //

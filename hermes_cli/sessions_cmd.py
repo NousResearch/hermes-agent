@@ -657,11 +657,14 @@ def _cmd_prune_or_archive(db, args, action):
     # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
     filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
     filters["include_pinned"] = getattr(args, "include_pinned", False)
+    # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
+    # never qualifies); the preview must show the same rows the archive will touch.
+    filters["lineage_tips_only"] = not prune
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
     candidates = db.list_prune_candidates(**filters)
-    # Archive expands each row to its compression lineage (may include open continuations), so a
-    # direct-open count would misdescribe its effect.
+    # Archive expands each matched tip to its compression lineage, so a direct-open count would
+    # misdescribe its effect.
     skipped_open = db.count_open_prune_matches(**filters) if prune else 0
     if skipped_open:
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
@@ -963,7 +966,15 @@ def _cmd_stats(db, args):
 
 # -- dispatch -----------------------------------------------------------------
 
-_PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+def _cmd_repair_profiles(args):
+    from hermes_cli.sessions_cmd_repair_profiles import cmd_repair_profiles
+    return cmd_repair_profiles(args)
+
+
+_PRE_DB_HANDLERS = {
+    "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
+    "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
+}
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,

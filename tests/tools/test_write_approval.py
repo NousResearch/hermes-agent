@@ -48,6 +48,18 @@ def test_invalid_subsystem_is_off(hermes_home):
     assert wa.write_approval_enabled("bogus") is False
 
 
+def test_list_pending_skips_non_dict_record(hermes_home):
+    """A parseable-but-non-object pending file must be skipped, not crash the sort."""
+    from tools import write_approval as wa
+    wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
+                   summary="ok", origin="foreground")
+    pending_dir = wa._pending_path("memory", "").parent
+    (pending_dir / "bad.json").write_text('"not a record"', encoding="utf-8")
+    records = wa.list_pending("memory")
+    assert len(records) == 1 and records[0]["payload"]["content"] == "ok"
+    assert wa.get_pending("memory", "bad") is None
+
+
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
     # Real bools pass through.

@@ -45,6 +45,35 @@ export interface CronEditorSaveValues {
   schedule: string
 }
 
+export interface CronModelChoice {
+  model: string
+  provider: string
+}
+
+/** Encode the provider/model pair as an opaque Select value without delimiter ambiguity. */
+export function cronModelChoiceValue(provider: string, model: string): string {
+  return JSON.stringify([provider, model])
+}
+
+export function parseCronModelChoiceValue(value: string): CronModelChoice | null {
+  try {
+    const parsed: unknown = JSON.parse(value)
+
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 2 ||
+      typeof parsed[0] !== 'string' ||
+      typeof parsed[1] !== 'string'
+    ) {
+      return null
+    }
+
+    return { provider: parsed[0], model: parsed[1] }
+  } catch {
+    return null
+  }
+}
+
 export function parseCronDeliveryTargets(value: string): string[] {
   const targets = value
     .split(',')

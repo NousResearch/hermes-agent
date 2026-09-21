@@ -57,7 +57,11 @@ def _build_browser_env() -> dict:
             env[key] = value
     # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
     # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
-    return add_loopback_no_proxy(env)
+    env = add_loopback_no_proxy(env)
+    # Chrome puts its SingletonSocket under $TMPDIR; a deep scratch dir overflows the AF_UNIX
+    # path cap and Chrome dies at startup ("Socket path too long"), so browsers get the short root.
+    env["TMPDIR"] = _socket_safe_tmpdir()
+    return env
 
 
 try:
@@ -352,9 +356,10 @@ def _last_session_key(task_id: str) -> str:
 
 
 def _socket_safe_tmpdir() -> str:
-    """Short temp dir for Unix sockets: macOS ``TMPDIR`` + ``agent-browser-hermes_…``
-    exceeds the 104-byte AF_UNIX limit (silent screenshot failures), so use /tmp there."""
-    return "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+    """Temp root short enough for the agent-browser socket dir and Chrome's SingletonSocket
+    (``hermes_constants.socket_safe_tmpdir``)."""
+    from hermes_constants import socket_safe_tmpdir
+    return socket_safe_tmpdir()
 
 
 # Active sessions keyed by "session key": the bare task_id, or f"{task_id}::local"
@@ -1158,11 +1163,7 @@ def _maybe_stop_recording(task_id: str):
             _recording_sessions.discard(task_id)
 
 
-_GET_IMAGES_JS = """JSON.stringify(
-        [...document.images].map(img => ({
-            src: img.src, alt: img.alt || '', width: img.naturalWidth, height: img.naturalHeight
-        })).filter(img => img.src && !img.src.startsWith('data:'))
-    )"""
+_GET_IMAGES_JS = "JSON.stringify([...document.images].map(img => ({src: img.src, alt: img.alt || '', width: img.naturalWidth, height: img.naturalHeight})).filter(img => img.src && !img.src.startsWith('data:')))"
 
 
 def browser_get_images(task_id: Optional[str] = None) -> str:

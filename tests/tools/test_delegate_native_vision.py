@@ -55,15 +55,16 @@ def _child_runtime(parent: SimpleNamespace, *, override_base_url=None):
 def test_inherited_named_custom_child_uses_native_vision(tmp_path):
     runtime = _child_runtime(_parent())
     assert runtime["provider"] == "custom"
-    assert runtime["requested_provider"] == "custom:vision-endpoint"
 
     image = tmp_path / "page.png"
     image.write_bytes(_TINY_PNG)
+    # The persisted default is a different named route: config-side fallback must not mask the child's
+    # missing identity (a /model switch or session-scoped pick is where the aux slow path fired live).
     get_hermes_home().joinpath("config.yaml").write_text(
         """\
 model:
-  provider: custom:vision-endpoint
-  default: vision-model
+  provider: custom:text-endpoint
+  default: text-model
 providers:
   vision-endpoint:
     name: Vision Endpoint
@@ -78,7 +79,7 @@ providers:
     token = set_runtime_main(
         runtime["provider"],
         runtime["model"],
-        requested_provider=runtime["requested_provider"],
+        requested_provider=runtime.get("requested_provider") or "",
         base_url=runtime["base_url"],
         api_key=runtime["api_key"],
         api_mode=runtime["api_mode"],
@@ -95,6 +96,7 @@ providers:
 
     assert isinstance(result, dict) and result["_multimodal"] is True
     auxiliary.assert_not_called()
+    assert runtime.get("requested_provider") == "custom:vision-endpoint"
 
 
 def test_endpoint_override_does_not_borrow_parent_named_identity():

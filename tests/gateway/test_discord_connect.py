@@ -478,6 +478,8 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
         "recreated": 0,
         "created": 1,
         "deleted": 1,
+        "failed": 0,
+        "deferred": 0,
     }
     fake_http.edit_global_command.assert_awaited_once_with(999, 12, desired_updated)
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired_created)
@@ -531,6 +533,8 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
         "recreated": 0,
         "created": 1,
         "deleted": 0,
+        "failed": 0,
+        "deferred": 0,
     }
     sync = AsyncMock(side_effect=[asyncio.TimeoutError(), summary])
     monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
@@ -640,6 +644,8 @@ async def test_safe_sync_reads_permission_attrs_from_existing_command():
         "recreated": 0,
         "created": 0,
         "deleted": 0,
+        "failed": 0,
+        "deferred": 0,
     }
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_not_awaited()

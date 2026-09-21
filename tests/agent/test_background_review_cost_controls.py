@@ -177,7 +177,7 @@ def test_enabled_false_disables_automatic_review():
 
 def test_unresolvable_review_provider_falls_back_with_visible_warning(caplog):
     """The fork silently ran on the main model with only a debug line (#116055): the fallback must
-    name the configured provider and reason at WARNING and reach the agent's user-visible warning rail."""
+    identify the affected setting at WARNING and reach the user-visible rail without echoing route data."""
     import logging
 
     agent = _FakeAgent()
@@ -191,5 +191,8 @@ def test_unresolvable_review_provider_falls_back_with_visible_warning(caplog):
 
     assert rt["routed"] is False and rt["model"] == "gpt-5.5"
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert warnings and all("no-such-provider" in w and "review-model" in w for w in warnings)
-    assert len(emitted) == 1 and "no-such-provider" in emitted[0]  # once per agent on the user rail
+    assert len(warnings) == 2
+    assert all("auxiliary.background_review" in w and "AuthError" in w for w in warnings)
+    assert all("background reviews run on the main model" in w and "hermes doctor" in w for w in warnings)
+    assert all("no-such-provider" not in w and "review-model" not in w for w in warnings)
+    assert len(emitted) == 1 and emitted[0] == warnings[0]  # once per agent on the user rail

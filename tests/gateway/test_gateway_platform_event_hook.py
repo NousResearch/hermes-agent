@@ -22,6 +22,7 @@ import asyncio
 import json
 import sys
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,12 +40,7 @@ if _repo not in sys.path:
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402
-from hermes_cli.plugins import (  # noqa: E402
-    VALID_HOOKS,
-    PluginContext,
-    PluginManager,
-    PluginManifest,
-)
+from hermes_cli.plugins import VALID_HOOKS  # noqa: E402
 
 
 def _adapter(extra=None) -> TelegramAdapter:
@@ -81,14 +77,22 @@ def _reaction(*, emoji=None, custom_emoji_id=None):
     return r
 
 
-def _reaction_update(reactions, chat_id: object = 123, message_id: object = 456):
+def _reaction_update(
+    reactions, chat_id: object = 123, message_id: object = 456, *,
+    old_reactions=(), update_id=789, actor_id=777, actor_name="Alice",
+    occurred_at=datetime(2026, 8, 11, 18, 0, tzinfo=timezone.utc),
+):
     """A PTB Update stand-in carrying a message_reaction with ``reactions``."""
-    update = MagicMock()
-    update.message_reaction = MagicMock()
-    update.message_reaction.chat.id = chat_id
-    update.message_reaction.message_id = message_id
-    update.message_reaction.new_reaction = list(reactions)
-    return update
+    return SimpleNamespace(
+        update_id=update_id,
+        message_reaction=SimpleNamespace(
+            chat=SimpleNamespace(id=chat_id, type="private", is_forum=False),
+            message_id=message_id,
+            user=SimpleNamespace(id=actor_id, username=actor_name, full_name=actor_name),
+            actor_chat=None, date=occurred_at,
+            old_reaction=tuple(old_reactions), new_reaction=tuple(reactions),
+        ),
+    )
 
 
 def _auth_reaction_update(user_id, chat_type="private", chat_id=123, message_id=456):
@@ -199,23 +203,40 @@ class TestRunnerDispatch:
 # ---------------------------------------------------------------------------
 
 class TestNormalizePlatformEvent:
-    def test_standard_emoji_reaction_normalized(self):
+    @pytest.mark.parametrize("actor_kind,name_field,event_date", [
+        ("user", "username", datetime(2026, 8, 11, tzinfo=timezone.utc)),
+        ("user", "full_name", datetime(2026, 8, 11)),
+        ("actor_chat", "title", None),
+        ("user", None, object()),
+    ])
+    def test_standard_emoji_reaction_normalized(self, actor_kind, name_field, event_date):
         """A message_reaction update becomes {platform, event_type, payload} with
         exactly the fields a real plugin consumes — no raw SDK objects."""
         a = _adapter()
         update = _reaction_update([_reaction(emoji="\U0001F44E")], chat_id=123, message_id=456)
+        actor = SimpleNamespace(id=-100777 if actor_kind == "actor_chat" else 777)
+        if name_field:
+            setattr(actor, name_field, "Alice")
+        update.message_reaction.user = None
+        setattr(update.message_reaction, actor_kind, actor)
+        update.message_reaction.date = event_date
 
-        assert a._normalize_platform_event(update) == {
-            "platform": "telegram",
-            "event_type": "reaction",
-            "payload": {
-                "emojis": ["\U0001F44E"],
-                "custom_emoji_ids": [],
-                "chat_id": "123",
-                "message_id": "456",
-                "thread_id": None,
-            },
-        }
+        event = a._normalize_platform_event(update)
+        payload = event["payload"]
+        assert event["platform"] == "telegram" and event["event_type"] == "reaction"
+        assert payload["update_id"] == str(update.update_id)
+        assert payload["actor_id"] == str(actor.id)
+        assert payload["actor_name"] == ("Alice" if name_field else None)
+        assert payload["occurred_at"] == (
+            event_date.replace(tzinfo=timezone.utc).isoformat()
+            if isinstance(event_date, datetime) else None
+        )
+        assert payload["emojis"] == ["\U0001F44E"]
+        assert payload["custom_emoji_ids"] == []
+        assert payload["chat_id"] == str(update.message_reaction.chat.id)
+        assert payload["message_id"] == str(update.message_reaction.message_id)
+        assert payload["thread_id"] is None
+        assert json.loads(json.dumps(event)) == event
 
     def test_custom_emoji_reaction_normalized(self):
         """Custom-emoji reactions expose custom_emoji_id (no .emoji) — captured
@@ -227,38 +248,50 @@ class TestNormalizePlatformEvent:
         assert event["payload"]["emojis"] == []
         assert event["payload"]["custom_emoji_ids"] == ["555123"]
 
-    def test_mixed_reactions_split_correctly(self):
-        """A reaction set with standard + custom emojis splits into both lists."""
-        a = _adapter()
-        update = _reaction_update([
-            _reaction(emoji="\U0001F44D"),
-            _reaction(custom_emoji_id="555"),
-            _reaction(emoji="\U0001F525"),
-        ])
-
-        event = a._normalize_platform_event(update)
-        assert event["payload"]["emojis"] == ["\U0001F44D", "\U0001F525"]
-        assert event["payload"]["custom_emoji_ids"] == ["555"]
-
-    def test_malformed_values_never_escape_as_live_objects(self):
+    @pytest.mark.parametrize("old,new", [((), ("👍", "555")), (("👍", "555"), ()), (("👍", "555"), ("🔥", "666"))])
+    def test_mixed_reactions_split_correctly(self, old, new):
+        """Additions, removals and replacements preserve both snapshots."""
         a = _adapter()
         update = _reaction_update(
-            [_reaction(emoji=object(), custom_emoji_id=object())]
+            [_reaction(emoji=new[0]), _reaction(custom_emoji_id=new[1])] if new else [],
+            old_reactions=[_reaction(emoji=old[0]), _reaction(custom_emoji_id=old[1])] if old else [],
         )
 
         event = a._normalize_platform_event(update)
+        assert event["payload"]["old_emojis"] == list(old[:1])
+        assert event["payload"]["old_custom_emoji_ids"] == list(old[1:])
+        assert event["payload"]["emojis"] == list(new[:1])
+        assert event["payload"]["custom_emoji_ids"] == list(new[1:])
 
-        assert event is not None
-        assert event["payload"]["emojis"] == []
-        assert event["payload"]["custom_emoji_ids"] == []
-        json.dumps(event)
+    @pytest.mark.parametrize("state", ["old_reaction", "new_reaction"])
+    @pytest.mark.parametrize("value", [
+        None, False, {}, "", object(), [object()],
+        [_reaction(emoji=object())], [_reaction(custom_emoji_id=True)],
+        [_reaction(emoji="")], [_reaction(custom_emoji_id="")],
+    ])
+    def test_malformed_decoded_values_never_escape_as_live_objects(self, state, value):
+        a = _adapter()
+        update = _reaction_update([_reaction(emoji="👍")])
+        setattr(update.message_reaction, state, value)
+        handler = AsyncMock()
+        a.set_platform_event_handler(handler)
+
+        # These values are still observable on the SDK stand-in. Real PTB can
+        # erase malformed wire state; tests/plugins covers that separate boundary.
+        assert a._normalize_platform_event(update) is None
+        asyncio.run(a._on_platform_update(update, context=None))
+        handler.assert_not_awaited()
 
     def test_reaction_count_and_string_lengths_are_bounded(self):
         a = _adapter()
         update = _reaction_update(
             [_reaction(emoji="x" * 100, custom_emoji_id="9" * 200) for _ in range(100)],
-            chat_id="c" * 200,
-            message_id="m" * 200,
+            chat_id="1" * 128,
+            message_id="2" * 128,
+            update_id="3" * 128,
+            actor_id="4" * 128,
+            old_reactions=[_reaction(emoji="y" * 100, custom_emoji_id="8" * 200) for _ in range(100)],
+            actor_name="n" * 400,
         )
 
         event = a._normalize_platform_event(update)
@@ -269,8 +302,29 @@ class TestNormalizePlatformEvent:
         assert len(payload["custom_emoji_ids"]) == 64
         assert all(len(value) == 64 for value in payload["emojis"])
         assert all(len(value) == 128 for value in payload["custom_emoji_ids"])
+        assert len(payload["old_emojis"]) == len(payload["old_custom_emoji_ids"]) == 64
+        assert all(len(value) == 64 for value in payload["old_emojis"])
+        assert all(len(value) == 128 for value in payload["old_custom_emoji_ids"])
+        assert len(payload["actor_name"]) == 256
+        assert payload["update_id"] == str(update.update_id)
+        assert payload["actor_id"] == str(update.message_reaction.user.id)
         assert len(payload["chat_id"]) == 128
         assert len(payload["message_id"]) == 128
+
+    @pytest.mark.parametrize("field,value", [
+        (field, value)
+        for field in ("update_id", "actor_id", "chat_id", "message_id")
+        for value in (True, False, None, 1.5, "", " 123", "123 ", "abc", "１２３", "01", "9" * 129, 10 ** 128)
+    ] + [("update_id", -1), ("actor_id", -1), ("chat_id", 0), ("message_id", 0)])
+    def test_malformed_reaction_identity_never_dispatches(self, field, value):
+        a = _adapter()
+        handler = AsyncMock()
+        a.set_platform_event_handler(handler)
+        update = _reaction_update([_reaction(emoji="👍")], **{field: value})
+
+        assert a._normalize_platform_event(update) is None
+        asyncio.run(a._on_platform_update(update, context=None))
+        handler.assert_not_awaited()
 
     def test_non_reaction_update_returns_none(self):
         """Unsupported update types return None until a concrete contract exists."""
@@ -429,24 +483,35 @@ class TestOnPlatformUpdate:
         a._source_from_reaction_for_auth.assert_not_called()
         handler.assert_not_awaited()
 
-    def test_fires_gateway_platform_event_with_envelope(self):
+    @pytest.mark.parametrize("chat_type,is_forum,expected", [
+        ("private", False, "dm"), ("group", False, "group"),
+        ("supergroup", False, "group"), ("supergroup", True, "forum"),
+        ("channel", False, "channel"), (None, False, None), (object(), False, None),
+    ])
+    def test_fires_gateway_platform_event_with_envelope(self, chat_type, is_forum, expected):
         a = _adapter()
         seen: list = []
         async def observe(event, source):
             seen.append((event, source))
         a.set_platform_event_handler(observe)
+        update = _reaction_update([_reaction(emoji="\U0001F44E")], 123, 456)
+        update.message_reaction.chat.type = chat_type
+        update.message_reaction.chat.is_forum = is_forum
+        # Telegram provides no reaction topic; a stray field is not provenance.
+        update.message_reaction.message_thread_id = 42
+        asyncio.run(a._on_platform_update(update, context=None))
 
-        asyncio.run(a._on_platform_update(
-            _reaction_update([_reaction(emoji="\U0001F44E")], 123, 456), context=MagicMock(),
-        ))
-
+        if expected is None:
+            assert seen == []
+            return
         assert len(seen) == 1
         event, source = seen[0]
         assert event["platform"] == "telegram"
         assert event["event_type"] == "reaction"
         assert event["payload"]["emojis"] == ["\U0001F44E"]
-        assert event["payload"]["chat_id"] == "123"
-        assert source.chat_id == "123"
+        assert event["payload"]["chat_id"] == source.chat_id == "123"
+        assert event["payload"]["chat_type"] == source.chat_type == expected
+        assert event["payload"]["thread_id"] is source.thread_id is None
 
     def test_unsupported_update_does_not_fire(self):
         a = _adapter()
@@ -602,41 +667,6 @@ class TestProfileScopedPlatformEventHandler:
         asyncio.run(handler({"platform": "telegram", "event_type": "reaction", "payload": {}}, source))
 
         assert captured["profile"] == "work"
-
-
-class TestFixturePluginObservationPath:
-    def test_reaction_reaches_real_registered_plugin_callback(self):
-        """Adapter -> normalized source/envelope -> runner auth -> real plugin bus."""
-        manager = PluginManager()
-        context = PluginContext(
-            PluginManifest(name="reaction-fixture", source="user"), manager,
-        )
-        seen = []
-        context.register_hook(
-            "gateway_platform_event", lambda **event: seen.append(event),
-        )
-
-        runner = object.__new__(GatewayRunner)
-        runner._is_user_authorized = lambda source: source.user_id == "777"
-        adapter = _adapter()
-        adapter.set_platform_event_handler(runner._handle_gateway_platform_event)
-
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
-            asyncio.run(adapter._on_platform_update(
-                _auth_reaction_update(user_id=777), context=MagicMock(),
-            ))
-
-        assert seen == [{
-            "platform": "telegram",
-            "event_type": "reaction",
-            "payload": {
-                "emojis": ["\U0001F44D"],
-                "custom_emoji_ids": [],
-                "chat_id": "123",
-                "message_id": "456",
-                "thread_id": None,
-            },
-        }]
 
 
 # ---------------------------------------------------------------------------

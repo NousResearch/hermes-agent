@@ -257,3 +257,63 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+
+
+def test_decompose_fanout_over_cap_rejected(kanban_home):
+    """A model (or steered task body) emitting >_MAX_FANOUT_CHILDREN tasks must not
+    create that many real children — the 'use 2-6' prompt line is advisory only."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="big job", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "explode the board",
+        "tasks": [{"title": f"t{i}", "body": "x", "parents": []}
+                  for i in range(decomp._MAX_FANOUT_CHILDREN + 1)],
+    })
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert not outcome.ok
+    assert "cap" in outcome.reason
+    with kbc.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root.status == "triage"  # untouched — no children, no promotion
+
+
+def test_clean_children_cap_boundary(kanban_home):
+    routing = decomp._Routing(
+        orchestrator="orchestrator", default_assignee="orchestrator",
+        roster=[], valid_names={"orchestrator"}, auto_promote=True)
+    ok_tasks = [{"title": f"t{i}", "body": "", "parents": []}
+                for i in range(decomp._MAX_FANOUT_CHILDREN)]
+    children, reason = decomp._clean_children("t1", ok_tasks, routing)
+    assert reason == "" and len(children) == decomp._MAX_FANOUT_CHILDREN
+
+    children, reason = decomp._clean_children(
+        "t1", ok_tasks + [{"title": "one too many", "body": "", "parents": []}], routing)
+    assert children == [] and "cap" in reason
+
+
+def test_db_boundary_rejects_over_cap_fanout(kanban_home):
+    """decompose_triage_task enforces the cap itself so no caller can bypass it."""
+    import sqlite3
+    from hermes_cli.kanban_db_graph import MAX_DECOMPOSE_CHILDREN, decompose_triage_task
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="big job", triage=True)
+        children = [{"title": f"t{i}", "body": "", "parents": []}
+                    for i in range(MAX_DECOMPOSE_CHILDREN + 1)]
+        with pytest.raises(ValueError, match="cap"):
+            decompose_triage_task(conn, tid, root_assignee=None, children=children, author="me")
+        # atomic: nothing written
+        root = kb.get_task(conn, tid)
+    assert root.status == "triage"

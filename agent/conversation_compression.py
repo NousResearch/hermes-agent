@@ -4075,9 +4075,16 @@ def compress_context(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
             agent.session_id or "none", _pre_msg_count, len(compressed), f"{_compressed_est:,}",
         )
-        lifecycle.commit_status = (
-            "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
-        )
+        if getattr(agent, "_persist_disabled", False):
+            # Background-review copies share the primary session id, but never
+            # write their compacted transcript to its session store.
+            split_status = lifecycle.commit_status = "not_persisted"
+        else:
+            lifecycle.commit_status = (
+                "committed"
+                if split_status in {"not_applicable", "in_place_committed", "rotated_committed"}
+                else "aborted"
+            )
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),

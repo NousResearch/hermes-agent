@@ -117,6 +117,28 @@ def test_compression_attempt_telemetry_is_metadata_only(caplog):
     assert "assistant reply" not in raw_log
 
 
+def test_persist_disabled_compression_telemetry_is_not_reported_as_committed(caplog):
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model",
+            provider="test-provider",
+            threshold_percent=0.50,
+            quiet_mode=True,
+            config_context_length=100_000,
+        )
+    compressor.tail_token_budget = 10
+    agent = _Agent(compressor)
+    agent._persist_disabled = True
+
+    with patch.object(compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            compress_context(agent, _messages(), "system prompt", approx_tokens=75_000, force=True)
+
+    payload = _extract_telemetry(caplog)
+    assert payload["commit_status"] == "not_persisted"
+    assert payload["split_status"] == "not_persisted"
+
+
 def test_aux_call_telemetry_records_durations_without_content(caplog):
     with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(

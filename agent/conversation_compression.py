@@ -904,11 +904,33 @@ def resolve_compression_fallback_route() -> Optional[dict]:
     return None
 
 
-def _stall_retry_routes(escalate_deterministic: bool) -> list:
-    """Pinned routes for the stall retry, in order: the configured chain entry, then (only once a
-    stall-class backoff has already burned a window in this session) the deterministic fallback summary."""
+def _compression_reasoning_configured() -> bool:
+    """Whether ``auxiliary.compression`` sets a reasoning control of its own: ``reasoning_effort``, or a reasoning or
+    thinking field anywhere in its ``extra_body`` (vendor forms such as ``thinking_config`` or
+    ``chat_template_kwargs.enable_thinking`` included). The #107516 reasoning-off retry only replaces an
+    unconfigured route default, never an operator's choice; an unreadable config counts as configured."""
+    try:
+        from agent.auxiliary_client import _contains_profile_reasoning_fields, _get_auxiliary_task_config
+        task_config = _get_auxiliary_task_config("compression")
+    except Exception:
+        logger.debug("compression reasoning config lookup failed", exc_info=True)
+        return True
+    if task_config.get("reasoning_effort") not in (None, ""):
+        return True
+    return _contains_profile_reasoning_fields(task_config.get("extra_body"))
+
+
+def _stall_retry_routes(escalate_deterministic: bool, *, retry_without_reasoning: bool = False) -> list:
+    """Pinned routes for the stall retry, in order: the configured chain entry; then, only when the total ceiling
+    expired while the summary was still producing output and ``auxiliary.compression`` sets no reasoning control of
+    its own (#107516), the same route once with reasoning switched off; then the deterministic fallback summary —
+    once a stall-class backoff has already burned a window in this session, or after that reasoning-off retry."""
     routes = [route for route in (resolve_compression_fallback_route(),) if route is not None]
-    if escalate_deterministic:
+    reasoning_off = retry_without_reasoning and not _compression_reasoning_configured()
+    if reasoning_off:
+        from agent.context_compressor import REASONING_OFF_SUMMARY_ROUTE
+        routes.append(dict(REASONING_OFF_SUMMARY_ROUTE))
+    if escalate_deterministic or reasoning_off:
         from agent.context_compressor import DETERMINISTIC_SUMMARY_ROUTE
         routes.append(dict(DETERMINISTIC_SUMMARY_ROUTE))
     return routes
@@ -938,10 +960,13 @@ def _retry_compression_on_fallback_chain(
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     on_timeout_cause: Optional[Callable[[bool, bool], None]] = None, telemetry_agent: Any = None,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None, escalate_deterministic: bool = False,
+    retry_without_reasoning: bool = False,
 ) -> Optional[Tuple[list, str]]:
     """Re-run an aborted compression with the summary route pinned: once on the configured chain entry,
     then — when ``escalate_deterministic`` (a stall backoff already burned one idle window this session,
     #112420) — once with the summary LLM skipped so compress() commits its deterministic fallback summary.
+    ``retry_without_reasoning`` adds one bounded run of the same route with reasoning off after the chain entry,
+    and the deterministic rung after it, when the compression task sets no reasoning control (#107516).
     Returns ``(messages, system_prompt)`` on real compression, else ``None`` and the caller degrades as
     before. The entry's ``timeout`` sets the idle window. Re-runs the whole worker, so pre-compression
     callbacks must be idempotent.
@@ -956,11 +981,12 @@ def _retry_compression_on_fallback_chain(
     mid-pipeline would couple this path to every host's callback ordering — deliberately out of scope.
     """
     # An explicit stop is not a stalled route. The retry worker would abort on
-    # the same event anyway, but starting one at all makes /stop look ignored.
+    # the same event anyway, but starting one at all makes /stop look ignored —
+    # checked before EVERY rung, since a stop can land while an earlier rung runs.
     hard_cancel = getattr(telemetry_agent, "_hard_interrupt_requested", None)
-    if callable(getattr(hard_cancel, "is_set", None)) and hard_cancel.is_set():
-        return None
-    for route in _stall_retry_routes(escalate_deterministic):
+    for route in _stall_retry_routes(escalate_deterministic, retry_without_reasoning=retry_without_reasoning):
+        if callable(getattr(hard_cancel, "is_set", None)) and hard_cancel.is_set():
+            return None
         recovered = _run_pinned_compression_retry(
             route, worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
             idle_timeout_seconds=idle_timeout_seconds, total_ceiling_seconds=total_ceiling_seconds,
@@ -998,12 +1024,20 @@ def _run_pinned_compression_retry(
         )
         retry_fence = CompressionCommitFence()
     idle = float(route.get("timeout") or idle_timeout_seconds)
-    ceiling = max(float(total_ceiling_seconds), idle)
+    # The reasoning-off rung is content-only, so it gets ONE inactivity budget (the bound #117084 gives the
+    # over-window wait): a route that ignores the disable is cut after a window, not a second full ceiling.
+    ceiling = idle if route.get("ceiling_is_idle_window") is True else max(float(total_ceiling_seconds), idle)
     deterministic = route.get("deterministic") is True
     if deterministic:
         logger.warning(
             "Context compression stalled on every summary route — committing the %s (no summary model) "
             "before continuing without compression", route["label"],
+        )
+    elif route.get("reasoning_config") is not None and not route.get("model"):
+        logger.warning(
+            "Context compression was still producing output when its total ceiling expired — retrying once on the "
+            "%s (one inactivity budget, %.0fs) before the deterministic fallback summary (#107516)",
+            route["label"], ceiling,
         )
     else:
         logger.warning(
@@ -1171,6 +1205,9 @@ def run_compress_context_with_progress_timeout(
     Budgets bound the PRE-commit phase only: an admitted commit always completes (overrun logged, surfaced
     once via ``on_commit_overrun``). A pre-commit cancel returns ``(messages, system_prompt_fallback)`` (lazy
     callable), detaching the worker; a stall first retries the chain once on ``new_fence``, then on_timeout.
+    A total ceiling that expires while the summary is still producing output adds, when the compression task
+    sets no reasoning control, one retry of the same route without reasoning and then the deterministic rung
+    to that same attempt (#107516).
     ``request_exceeds_window``: the request this compaction must shrink is above the model's context
     window, so "continue without compression" is not an option — a stall escalates to the deterministic
     fallback summary on the FIRST timeout instead of waiting for a prior stall in the session (#114594)."""
@@ -1260,6 +1297,8 @@ def run_compress_context_with_progress_timeout(
         # cancel() is a no-op for a running worker (fence handles that path).
         future.cancel()
         total_exhausted = time.monotonic() - wait_started >= ceiling or fence.deadline_exceeded
+        # Read now, before the cancel/join below can take seconds: output within the last inactivity window.
+        producing_at_cut = fence.progress_observed and fence.seconds_since_progress() < idle
         # #97488 teardown (total-ceiling path only): give the cancelled worker a bounded grace to actually
         # exit before this host moves on. The worker checks the poison fence between provider phases, so a
         # cooperative worker exits quickly; an uninterruptible provider call is orphaned behind the fence
@@ -1294,11 +1333,19 @@ def run_compress_context_with_progress_timeout(
         # Lease is free, so run the fallback BEFORE on_timeout: that callback records
         # the summary-failure cooldown, which would no-op the retry's summary call.
         if stall_fallback:
+            # The total ceiling expired while the summary was still producing output: not a silent stall — the
+            # route is alive but did not finish this transcript within compression.context_total_ceiling_seconds.
+            # When the compression task sets no reasoning control of its own, the ladder offers one best-effort
+            # retry of the same route with reasoning switched off (one inactivity budget) after the configured
+            # chain entry, then the deterministic rung in this same attempt, instead of re-running the summary on
+            # the next turn (#107516: 2-3 ceilings, 20-30 min of "Summarizing thread", before degrading). Not on
+            # the over-window path, which keeps its #117084 single-window bound.
+            retry_without_reasoning = total_exhausted and producing_at_cut and not request_exceeds_window
             recovered = _retry_compression_on_fallback_chain(
                 worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
                 idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
-                escalate_deterministic=escalate_deterministic,
+                escalate_deterministic=escalate_deterministic, retry_without_reasoning=retry_without_reasoning,
             )
             if recovered is not None:
                 return recovered

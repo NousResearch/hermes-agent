@@ -25,12 +25,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.context_compressor import (
+    REASONING_OFF_SUMMARY_ROUTE,
     ContextCompressor,
     pin_summary_route,
     take_pinned_summary_route,
 )
 from agent.conversation_compression import (
     CompressionCommitFence,
+    _stall_retry_routes,
     resolve_compression_fallback_route,
     run_compress_context_with_progress_timeout,
 )
@@ -422,3 +424,54 @@ def test_unpinned_summary_call_keeps_task_routing():
     assert summary
     assert calls and "provider" not in calls[0]
     assert calls[0]["model"] == "aux-summarizer"
+
+
+def test_pinned_reasoning_off_route_keeps_task_routing_and_disables_reasoning():
+    """The #107516 rung names no destination: task routing and ``summary_model`` still pick the backend,
+    and only the thinking switch reaches ``call_llm``."""
+    compressor = _make_compressor()
+    calls = []
+
+    def _fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _ok_response()
+
+    with patch("agent.context_compressor.call_llm", side_effect=_fake_call_llm):
+        with pin_summary_route(dict(REASONING_OFF_SUMMARY_ROUTE)):
+            summary = compressor._generate_summary(_msgs())
+
+    assert summary and "SUMMARY BODY" in summary
+    call = calls[0]
+    assert "provider" not in call and "base_url" not in call, "same route: no pinned destination"
+    assert call["model"] == "aux-summarizer"
+    assert call["reasoning_config"] == {"enabled": False}
+    assert "label" not in call and "ceiling_is_idle_window" not in call, "host-only pin fields stay host-side"
+
+
+def test_stall_retry_routes_after_a_producing_ceiling_cut():
+    """#107516 ladder: the configured chain entry keeps its priority, then the same route without reasoning, then
+    the deterministic rung — only when compression sets no reasoning control of its own; otherwise (and without a
+    ceiling cut) the ladder is exactly the pre-existing one."""
+    def _labels(routes):
+        return [route["label"] for route in routes]
+
+    reasoning_off, chain, deterministic = (
+        "same summary route without reasoning", "fallback_chain[0](custom)", "deterministic fallback summary",
+    )
+    with _patch_chain([]):
+        assert _labels(_stall_retry_routes(False, retry_without_reasoning=True)) == [reasoning_off, deterministic]
+        assert _labels(_stall_retry_routes(False)) == []
+    with _patch_chain([CHAIN_ENTRY]):
+        assert _labels(_stall_retry_routes(False, retry_without_reasoning=True)) == [
+            chain, reasoning_off, deterministic,
+        ]
+        assert _labels(_stall_retry_routes(True)) == [chain, deterministic]
+        assert _labels(_stall_retry_routes(False)) == [chain]
+    for explicit in (
+        {"reasoning_effort": "none"}, {"reasoning_effort": "high"},
+        {"extra_body": {"thinking_config": {"thinkingBudget": 0}}},
+        {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+    ):
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={**explicit, "fallback_chain": []}):
+            assert _stall_retry_routes(False, retry_without_reasoning=True) == [], explicit
+            assert _labels(_stall_retry_routes(True, retry_without_reasoning=True)) == [deterministic], explicit

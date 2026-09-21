@@ -86,7 +86,9 @@ def _report_compression_timeout(
         emit(
             "⚠ Context compression reached its total ceiling "
             f"after {waited:.1f}s{progress}. No messages were "
-            "dropped — continuing without compression. Run /compress to retry or /new for a clean session."
+            "dropped — continuing without compression. Run /compress to retry or /new for a clean session; "
+            "if this repeats, give auxiliary.compression a faster route (a fallback_chain entry, or "
+            "reasoning_effort: none for a thinking model) or raise the compression timeouts."
         )
     else:
         emit(

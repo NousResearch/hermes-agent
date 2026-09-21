@@ -369,11 +369,6 @@
   color: rgba(255, 215, 0, 0.6);
 }
 
-.sidebarToggle {
-  display: none;
-}
-
-
 .main {
   padding: 1.25rem 1.5rem 3rem;
   min-width: 0;
@@ -905,14 +900,6 @@
   display: none;
 }
 
-.activeCatBadge {
-  font-size: 0.72rem;
-  padding: 0.1rem 0.4rem;
-  border-radius: 3px;
-  background: rgba(255, 215, 0, 0.1);
-  color: rgba(255, 215, 0, 0.8);
-}
-
 
 .controlsTopRow {
   display: contents;
@@ -978,8 +965,7 @@
 
   .sourcePills { display: none; }
   .layout { grid-template-columns: 1fr; }
-  .layout > .sidebar,
-  .layout > .sidebarToggle { display: none; }
+  .layout > .sidebar { display: none; }
 }
 
 /* Below ~820px the uppercase labels leave no room for the select's own value. */
@@ -989,12 +975,7 @@
 
 @media (max-width: 600px) {
   .controlsBar {
-    position: static;
     display: contents;
-    padding: 0;
-    border-bottom: 0;
-    backdrop-filter: none;
-    background: transparent !important;
   }
 
   .controlsTopRow {
@@ -1149,27 +1130,6 @@
     z-index: 190;
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(4px);
-  }
-
-  .sidebarToggle {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.5rem 0.85rem;
-    margin: 0 1rem 0.75rem;
-    border: 1px solid rgba(255, 215, 0, 0.1);
-    border-radius: 6px;
-    background: rgba(255, 215, 0, 0.03);
-    color: var(--ifm-font-color-secondary);
-    font-family: "DM Sans", sans-serif;
-    font-size: 0.82rem;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-
-  .sidebarToggle:hover {
-    border-color: rgba(255, 215, 0, 0.2);
-    color: var(--ifm-font-color-base);
   }
 
   .hero {

@@ -482,9 +482,6 @@ export default function PluginCatalogPage() {
     return counts;
   }, [allPlugins, tierFilter]);
 
-  useEffect(() => {
-  }, [search, tierFilter, categoryFilter]);
-
   const clearAll = useCallback(() => {
     setSearch("");
     setTierFilter("all");

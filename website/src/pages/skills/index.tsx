@@ -927,25 +927,6 @@ export default function SkillsDashboard() {
         </div>
 
         <div className={styles.layout}>
-          <button
-            className={styles.sidebarToggle}
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
-              <path
-                fillRule="evenodd"
-                d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h6a1 1 0 110 2H4a1 1 0 01-1-1z"
-                clipRule="evenodd"
-              />
-            </svg>
-            Categories
-            {categoryFilter !== "all" && (
-              <span className={styles.activeCatBadge}>
-                {categoryEntries.find((c) => c.key === categoryFilter)?.label}
-              </span>
-            )}
-          </button>
-
           <aside
             id="skills-directory-filters"
             ref={filterDialogRef}
@@ -953,9 +934,6 @@ export default function SkillsDashboard() {
             aria-modal={mobileFiltersActive && sidebarOpen ? true : undefined}
             aria-labelledby="skills-directory-filters-title"
             className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}
-            onKeyDown={(e) => {
-              if (mobileFiltersActive && sidebarOpen) e.stopPropagation();
-            }}
           >
             <div className={styles.sidebarHeader}>
               <h2 id="skills-directory-filters-title" className={styles.sidebarTitle}>Categories</h2>

@@ -949,12 +949,7 @@
 
 @media (max-width: 600px) {
   .controlsBar {
-    position: static;
     display: contents;
-    padding: 0;
-    border-bottom: 0;
-    backdrop-filter: none;
-    background: transparent !important;
   }
 
   .controlsTopRow {
@@ -1016,9 +1011,8 @@
   }
 
   .compactSelect { display: none; }
-  .compactSort { display: none; }
 
-  .filterPanelOpen {
+  .filterPanel.filterPanelOpen {
     display: block;
     margin: 0 0.75rem 0.75rem;
     padding: 0.75rem;
@@ -1029,11 +1023,10 @@
   }
 
   .filterPanelOpen .tierPills,
-  .filterPanelOpen .categoryPills {
+  .filterPanelOpen .categoryPills,
+  .filterPanelOpen .sortPills {
     justify-content: flex-start;
   }
-
-  .filterPanelOpen .sortPills { justify-content: flex-start; }
 
   .clearBtn {
     right: 0.25rem;

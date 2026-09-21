@@ -937,9 +937,14 @@ def maybe_auto_migrate_after_update() -> None:
     """``hermes update`` hook: with >= 2 profiles, per-profile gateways present and multiplex off,
     migrate automatically when unblocked (deterministic, never prompts) or print the blocker block.
     ``gateway.auto_multiplex_migration: false`` on the default profile opts out; a secondary behind a
-    service-domain / UNIX-user / HERMES_HOME boundary blocks this path only (the explicit command decides)."""
+    service-domain / UNIX-user / HERMES_HOME boundary blocks this path only (the explicit command decides).
+    ``gateway.multiplex_profiles: false`` opts out too: it pins per-profile gateways for good (see
+    ``gateway_multiplex_mode.explicit_multiplex_flag``), and only the explicit ``--multiplex`` command
+    may override that operator choice — the unattended hook must not (#118320)."""
     from hermes_cli.gateway_migrate_guards import auto_migration_blockers, auto_migration_opted_out
-    if _host_supports_migration() is not None or auto_migration_opted_out(_default_home()):
+    from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+    if (_host_supports_migration() is not None or auto_migration_opted_out(_default_home())
+            or explicit_multiplex_flag(_default_home()) is False):
         return
     plan = build_migration_plan()
     if plan.already_multiplexed or len(plan.profiles) < 2 or not plan.standalone_secondaries:

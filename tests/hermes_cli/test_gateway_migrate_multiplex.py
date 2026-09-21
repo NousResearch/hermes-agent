@@ -425,6 +425,29 @@ def test_auto_multiplex_migration_false_opts_out_of_the_update_hook_but_not_the_
     assert _config_flag(fleet.root) is True and (fleet.root / gm.MANIFEST_NAME).exists()
 
 
+def test_multiplex_profiles_false_opts_out_of_the_update_hook_but_not_the_explicit_command(fleet, capsys):
+    """#118320: ``gateway.multiplex_profiles: false`` pins per-profile gateways for good
+    (``gateway_multiplex_mode.explicit_multiplex_flag``'s contract). The unattended ``hermes update``
+    hook must not override that operator choice even though the fleet is otherwise eligible; the
+    explicit ``migrate --multiplex`` command still can, because that IS the operator overriding it."""
+    fleet.services["default"] = ("systemd", False)  # same service domain as the secondaries
+    (fleet.root / "config.yaml").write_text(
+        "model:\n  default: x\ngateway:\n  multiplex_profiles: false\n", encoding="utf-8")
+    assert gm.build_migration_plan().eligible_for_migration()  # would migrate but for the flag
+
+    gm.maybe_auto_migrate_after_update()
+    assert capsys.readouterr().out == ""
+    assert fleet.ops == [] and _config_flag(fleet.root) is False
+    assert fleet.services == {"default": ("systemd", False), "coder": ("systemd", False), "ops": ("systemd", False)}
+    assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+    # The opt-out governs the AUTOMATIC path only: an explicit --multiplex is an explicit request.
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, standalone=False, dry_run=False, yes=True))
+    assert exc.value.code == 0
+    assert _config_flag(fleet.root) is True and (fleet.root / gm.MANIFEST_NAME).exists()
+
+
 def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_restarts_default(fleet, capsys, monkeypatch):
     """The user typed --multiplex: 'nothing to migrate' + flag left off was a no-op the user did not ask
     for. The update hook keeps its no-op (previous test); the explicit command proceeds."""

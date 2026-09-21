@@ -224,9 +224,7 @@ class TestWebhookEnabledGate:
         assert wh_mod._is_webhook_enabled() is False
 
 
-
 class TestPublicBaseUrl:
-
     def _config(self, extra, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.webhook._get_webhook_config",

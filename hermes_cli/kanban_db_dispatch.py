@@ -82,6 +82,22 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
+# Cooldown base after a circuit-breaker ``gave_up`` before the task may be
+# re-spawned. Without it an auto-recovered crasher respawns on the very next
+# tick and burns a worker slot per tick until ``consecutive_failures`` trips
+# the breaker for good. The effective cooldown backs off with the task's
+# ``gave_up`` count — ``base * 2**(n-1)`` capped at
+# ``GAVE_UP_COOLDOWN_MAX_SECONDS`` — so a repeat crasher is spaced out but
+# NEVER parked: the cooldown always elapses into permission (sticky
+# ``gave_up`` is a proven self-healing deadlock). Overridable via
+# ``HERMES_KANBAN_GAVE_UP_COOLDOWN_SECONDS`` (0 = disabled, respawn at will).
+DEFAULT_GAVE_UP_COOLDOWN_SECONDS = 300  # 5 minutes
+GAVE_UP_COOLDOWN_MAX_SECONDS = 3600  # 1 hour
+_GAVE_UP_COOLDOWN_BACKOFF_BASE = 2
+# Exponent cap: 2**7 * 300s already exceeds the max, so higher counts
+# collapse to the cap without unbounded arithmetic.
+_GAVE_UP_COOLDOWN_MAX_EXPONENT = 7
+
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
@@ -140,11 +156,18 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment),
+    ``"rate_limit_cooldown"`` (quota-wall requeue inside the cooldown),
+    ``"gave_up_cooldown"`` (recent ``gave_up`` inside the crash-loop backoff),
+    ``"do_not_dispatch"`` (operator hold — see ``kanban hold``)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    ledger_warnings: list[str] = field(default_factory=list)
+    """Warn-only :func:`ledger_integrity_sweep` findings this tick
+    (``done_pointer`` / ``orphan_run`` / ``leaked_open_run``). Read-only
+    tripwires: the sweep performs no writes, so these never mutate the board."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -719,6 +742,21 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
+                # Additive timeout telemetry (Phase2 P1): provider_error when
+                # the dying worker's last output names a provider failure,
+                # else infra_error so every timed_out close carries a key.
+                # Best-effort: _worker_final_output never raises ("" when the
+                # log is missing or on the wrong board).
+                provider_hit = _classify_provider_error_text(_worker_final_output(tid))
+                if provider_hit is not None:
+                    payload["provider_error"] = provider_hit
+                else:
+                    payload["infra_error"] = {
+                        "reason": "max_runtime_exceeded",
+                        "code": None,
+                        "provider": None,
+                        "detail": f"elapsed {int(elapsed)}s > limit {limit}s",
+                    }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
                     error=error, metadata=payload,
@@ -908,6 +946,97 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     return reconciled
 
 
+# ---------------------------------------------------------------------------
+# Ledger-integrity sweep (Phase2 P4): warn-only tripwires over the task/run
+# ledger. Runs inside the dispatch tick's single-writer lock but performs NO
+# writes (SELECTs only), so it can never contend with or corrupt the board.
+# Auto-repair, if ever added, must live under this same lock with one logged
+# event per repair — never as a bare fixup. Kill-switch:
+# ``HERMES_KANBAN_LEDGER_SWEEP=0`` disables the sweep (returns no findings).
+# ---------------------------------------------------------------------------
+
+_LEDGER_SWEEP_REPORT_LIMIT = 20  # findings kept per check; totals still counted
+
+
+def _ledger_sweep_enabled() -> bool:
+    return os.environ.get("HERMES_KANBAN_LEDGER_SWEEP", "1") != "0"
+
+
+def ledger_integrity_sweep(conn: sqlite3.Connection) -> list[str]:
+    """Warn-only ledger checks; returns ``"<kind> <task_id> <detail>"`` strings.
+
+    Checks (read-only — zero writes, safe on any read connection):
+
+    * ``done_pointer`` — a ``done`` task whose ``current_run_id`` denormalised
+      pointer is still set. ``_end_run`` clears it on close, so any remnant is
+      a bookkeeping slip: ``open`` (points at a still-open run — worst),
+      ``stale`` (points at a closed run), ``dangling`` (points at no run row).
+    * ``orphan_run`` — a ``task_runs`` row whose ``task_id`` matches no task.
+    * ``leaked_open_run`` — an open run (``ended_at IS NULL``) on a task that
+      is neither ``running`` nor ``review`` (``done`` is owned by the
+      ``done_pointer`` check and excluded here to avoid double-reporting).
+      Every close path (complete/block/crash/timeout/reclaim) ends the run,
+      so a leftover open run means a close path was skipped.
+    """
+    findings: list[str] = []
+    for row in conn.execute(
+        "SELECT id, current_run_id FROM tasks "
+        "WHERE status = 'done' AND current_run_id IS NOT NULL"
+    ).fetchall():
+        run = conn.execute(
+            "SELECT ended_at FROM task_runs WHERE id = ?",
+            (row["current_run_id"],),
+        ).fetchone()
+        if run is None:
+            findings.append(
+                f"done_pointer {row['id']} dangling "
+                f"(current_run_id={row['current_run_id']} matches no run)"
+            )
+        elif run["ended_at"] is None:
+            findings.append(
+                f"done_pointer {row['id']} open "
+                f"(current_run_id={row['current_run_id']} still open)"
+            )
+        else:
+            findings.append(
+                f"done_pointer {row['id']} stale "
+                f"(current_run_id={row['current_run_id']} closed but never cleared)"
+            )
+    orphans = conn.execute(
+        "SELECT r.id, r.task_id FROM task_runs r "
+        "LEFT JOIN tasks t ON t.id = r.task_id "
+        "WHERE t.id IS NULL ORDER BY r.id"
+    ).fetchall()
+    for row in orphans[:_LEDGER_SWEEP_REPORT_LIMIT]:
+        findings.append(
+            f"orphan_run {row['task_id']} "
+            f"(task_runs.id={row['id']} references a missing task)"
+        )
+    if len(orphans) > _LEDGER_SWEEP_REPORT_LIMIT:
+        findings.append(
+            f"orphan_run * +{len(orphans) - _LEDGER_SWEEP_REPORT_LIMIT} more "
+            f"({len(orphans)} total)"
+        )
+    leaked = conn.execute(
+        "SELECT r.id, r.task_id, t.status FROM task_runs r "
+        "JOIN tasks t ON t.id = r.task_id "
+        "WHERE r.ended_at IS NULL "
+        "AND t.status NOT IN ('running', 'review', 'done') "
+        "ORDER BY r.id"
+    ).fetchall()
+    for row in leaked[:_LEDGER_SWEEP_REPORT_LIMIT]:
+        findings.append(
+            f"leaked_open_run {row['task_id']} "
+            f"(task_runs.id={row['id']} open while task is {row['status']!r})"
+        )
+    if len(leaked) > _LEDGER_SWEEP_REPORT_LIMIT:
+        findings.append(
+            f"leaked_open_run * +{len(leaked) - _LEDGER_SWEEP_REPORT_LIMIT} more "
+            f"({len(leaked)} total)"
+        )
+    return findings
+
+
 def _error_fingerprint(error_text: str) -> str:
     """Normalize an error message (strip PIDs, timestamps) so same-root-cause errors group."""
     fp = re.sub(r'\bpid \d+\b', 'pid N', error_text[:80])
@@ -1022,6 +1151,86 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     return " ".join(lines)[-400:]
 
 
+# ---------------------------------------------------------------------------
+# Crash/timeout provider telemetry (Phase2 P1 — measurement only).
+# ---------------------------------------------------------------------------
+# A crashed/timed-out run's closing ``task_runs.metadata`` carries either
+# ``provider_error`` (the dead worker's last output matches a provider-error
+# signature) or ``infra_error`` (a process-level exit with no provider
+# signature, or a max-runtime kill). Additive JSON keys only: no migration,
+# no new index, and nothing filters on these keys yet — readers aggregate
+# with e.g.::
+#
+#     SELECT id, task_id, outcome, error, metadata FROM task_runs
+#      WHERE json_extract(metadata, '$.provider_error') IS NOT NULL
+#         OR json_extract(metadata, '$.infra_error') IS NOT NULL
+#      ORDER BY id DESC LIMIT 20;
+#
+# ``reason`` mirrors ``agent.error_classifier.FailoverReason`` values as
+# plain strings (this module must not import the agent package).
+# Best-effort by design: a missed signature means a missing key, never a
+# failed close. Values are size-capped so the 4 KiB context field budget
+# (``kanban_db._CTX_MAX_FIELD_BYTES``) is never threatened.
+
+_PROVIDER_TELEMETRY_DETAIL_CHARS = 200
+
+# (pattern, reason, status_code): first match wins.
+_PROVIDER_ERROR_PATTERNS: tuple[tuple[str, str, Optional[int]], ...] = (
+    (r"rate[ _\-]?limit|too many requests|\b429\b", "rate_limit", 429),
+    (r"quota.{0,20}exceed|exceed.{0,20}quota|insufficient[ _\-]credits|"
+     r"insufficient[ _\-]quota|\bbilling\b|payment required|\b402\b|"
+     r"out of (credits|funds|extra usage)", "billing", 402),
+    (r"unauthori[sz]ed|\b401\b|invalid[ _\-](api[ _\-]?key|token|auth)|"
+     r"auth(entication|orization)?[ _\-]fail|\bforbidden\b", "auth", None),
+    (r"overloaded|over capacity|server.{0,20}overload|\b503\b|\b529\b",
+     "overloaded", 503),
+    (r"internal server error|\b500\b|bad gateway|\b502\b|"
+     r"service unavailable|server error", "server_error", None),
+    (r"model.{0,60}not[ _\-]found|not[ _\-]found.{0,40}model|"
+     r"invalid model|unknown model", "model_not_found", 404),
+    (r"context.{0,20}overflow|context.{0,20}too (large|long|big)|"
+     r"too many tokens|maximum context|context window|context length",
+     "context_overflow", None),
+    (r"timed out|timedout|\btimeout\b|deadline exceeded|"
+     r"connection (reset|refused|aborted|timed out)|"
+     r"network.{0,20}(error|unreachable|unavailable)|temporarily unavailable",
+     "timeout", None),
+)
+
+_PROVIDER_NAME_RE = re.compile(
+    r"\b(opencode-go|openai-codex|anthropic|openai|gemini|deepseek|xiaomi|"
+    r"mimo|minimax|copilot|nous|xai|bedrock|vertex)\b",
+    re.IGNORECASE,
+)
+
+
+def _classify_provider_error_text(text: str) -> Optional[dict]:
+    """Best-effort provider-error classification of free-form worker output.
+
+    Returns ``{"reason", "code", "provider", "detail"}`` (all capped, JSON-safe)
+    on the first signature hit, else None. ``provider`` is the first named
+    backend in the text (None when unnamed); ``detail`` is the trailing
+    200 chars of whitespace-collapsed text so the matched context survives.
+    """
+    if not text or not text.strip():
+        return None
+    lowered = text.lower()
+    for pattern, reason, code in _PROVIDER_ERROR_PATTERNS:
+        if re.search(pattern, lowered):
+            provider: Optional[str] = None
+            match = _PROVIDER_NAME_RE.search(text)
+            if match:
+                provider = match.group(1).lower()
+            snippet = " ".join(text.split())
+            return {
+                "reason": reason,
+                "code": code,
+                "provider": provider,
+                "detail": snippet[-_PROVIDER_TELEMETRY_DETAIL_CHARS:],
+            }
+    return None
+
+
 @dataclass
 class _DeadWorker:
     """How ``detect_crashed_workers`` should book one dead worker."""
@@ -1059,6 +1268,22 @@ def _classify_dead_worker(
         if worker_output:
             dead.error_text += f" Worker's last output: {worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
+            provider_hit = _classify_provider_error_text(worker_output)
+            if provider_hit is not None:
+                # Additive crash telemetry (Phase2 P1): task_runs.metadata
+                # only, never filtered. _end_run copies this payload into
+                # the closing run row.
+                dead.event_payload["provider_error"] = provider_hit
+        if "provider_error" not in dead.event_payload and dead.event_kind == "crashed":
+            # No provider signature (or no log at all): the exit itself is
+            # the signal. Covers every crashed close, including clean-exit
+            # protocol violations (reason worker_clean_exit).
+            dead.event_payload["infra_error"] = {
+                "reason": f"worker_{dead.kind}",
+                "code": dead.code,
+                "provider": None,
+                "detail": dead.error_text[:_PROVIDER_TELEMETRY_DETAIL_CHARS],
+            }
     return dead
 
 
@@ -1528,12 +1753,19 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
-    ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
-    refused — no restart-safe scope — within the cooldown; never counted),
+    ``"do_not_dispatch"`` (explicit operator hold — wins over every
+    automatic signal), ``"infrastructure_cooldown"`` (latest run is a
+    ``spawn_failed`` the host refused — no restart-safe scope — within the
+    cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
+    path never increments ``consecutive_failures``),
+    ``"gave_up_cooldown"`` (a ``gave_up`` inside the crash-loop backoff
+    window; ``rate_limited`` runs are exempt because that path returns
+    earlier, and a later ``completed`` run clears the debt — the cooldown
+    always elapses into permission, never a sticky park),
+    ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
@@ -1544,13 +1776,20 @@ def check_respawn_guard(
     passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, do_not_dispatch, "
+        "do_not_dispatch_reason, do_not_dispatch_until FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
         return None
 
     now = int(time.time())
+
+    # 0. Operator hold — explicit "do not dispatch" beats every automatic
+    #    signal, including an elapsed cooldown. An expired TTL reads as
+    #    cleared (no write); the stale flag row stays until `kanban release`.
+    if _kb.dispatch_hold_active(row, now):
+        return "do_not_dispatch"
 
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
@@ -1581,6 +1820,40 @@ def check_respawn_guard(
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
+
+    # 1b. Gave-up cooldown — a recent circuit-breaker ``gave_up`` spaces out
+    #     the re-dispatch with backoff. Reached only when the latest run was
+    #     NOT ``rate_limited`` (that path returned above), so quota walls
+    #     stay exempt; and a ``completed`` run after the last ``gave_up``
+    #     clears the debt (success proves health — ``complete_task`` also
+    #     resets ``consecutive_failures``). Unlike the rate-limit path, an
+    #     elapsed cooldown FALLS THROUGH to ``blocker_auth`` below: the
+    #     stamped error is a real crash signature, and a quota-flavored one
+    #     must still park. The cooldown always elapses into permission —
+    #     never a sticky park — so self-healing waves keep healing, spaced.
+    gave_up_base = _kb._resolve_gave_up_cooldown_seconds()
+    if gave_up_base > 0:
+        last_gave_up = conn.execute(
+            "SELECT MAX(created_at) AS ts, COUNT(*) AS n FROM task_events "
+            "WHERE task_id = ? AND kind = 'gave_up'",
+            (task_id,),
+        ).fetchone()
+        if last_gave_up is not None and last_gave_up["ts"] is not None:
+            gave_up_ts = int(last_gave_up["ts"])
+            completed_after = conn.execute(
+                "SELECT 1 FROM task_runs WHERE task_id = ? "
+                "AND outcome = 'completed' AND ended_at IS NOT NULL "
+                "AND ended_at >= ? LIMIT 1",
+                (task_id, gave_up_ts),
+            ).fetchone()
+            if completed_after is None:
+                exponent = min(max(int(last_gave_up["n"]) - 1, 0), _GAVE_UP_COOLDOWN_MAX_EXPONENT)
+                cooldown = min(
+                    gave_up_base * (_GAVE_UP_COOLDOWN_BACKOFF_BASE ** exponent),
+                    GAVE_UP_COOLDOWN_MAX_SECONDS,
+                )
+                if (now - gave_up_ts) < cooldown:
+                    return "gave_up_cooldown"
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last
@@ -2203,6 +2476,14 @@ def _run_reclaim_phase(
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+    if _ledger_sweep_enabled():
+        # Warn-only tripwires (SELECTs only — no writes, so a corrupt board
+        # can never be made worse by the sweep itself). Runs under the
+        # tick's single-writer lock, which is also where any future
+        # auto-repair must live, one logged event per fix.
+        result.ledger_warnings = ledger_integrity_sweep(conn)
+        for finding in result.ledger_warnings:
+            _kb._log.warning("kanban ledger: %s", finding)
 
 
 def _tick_spawn_budget(

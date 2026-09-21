@@ -205,6 +205,25 @@ jobs:
           done
           python scripts/check_profile_scope_patterns.py --base "origin/${{ github.base_ref }}" --head origin/pr-head
 
+      # Advisory: narrow UPDATEs on the kanban task ledger (Phase2 P4 lint
+      # rule — scripts/check_kanban_narrow_updates.py). A lost WHERE on
+      # tasks flips every card; a status flip without a status predicate
+      # lets two writers clobber each other's transitions. Printed into the
+      # log for the reviewer; never fails the job.
+      - name: Kanban narrow-UPDATEs on added lines (advisory)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          PR_HEAD: "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head"
+        run: |
+          git fetch --no-tags --deepen=200 origin "${{ github.base_ref }}" "$PR_HEAD"
+          for i in 1 2 3; do
+            git merge-base "origin/${{ github.base_ref }}" origin/pr-head >/dev/null 2>&1 && break
+            git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" "$PR_HEAD"
+          done
+          python scripts/check_kanban_narrow_updates.py --base "origin/${{ github.base_ref }}" --head origin/pr-head
+
       # Advisory: dropped public names / methods / test defs vs the PR base, printed into the log.
       # A refactor that silently removes a public symbol breaks plugins that import it; the Sep 2026
       # decomposition opened with 1,703 such drops that reviewers had to find by hand.

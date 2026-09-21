@@ -49,8 +49,8 @@ const descriptors = {
   research: {
     mode: 'local',
     authMode: 'token',
-    baseUrl: 'http://127.0.0.1:31002',
-    token: 'synthetic-research',
+    baseUrl: 'http://127.0.0.1:31001',
+    token: 'synthetic-primary',
     profile: 'research',
     connectionId: 'local'
   }
@@ -88,9 +88,7 @@ it.each(['default', 'research'] as const)(
 
       expect(owner.connectionOwner?.baseUrl).toBe(descriptors[profile].baseUrl)
       expect(resolveRegistryLocalRoute(profile, {}).delegate).toBe(true)
-      expect(resolveProfileBackendRoute(profile, { primaryProfile: 'default' }).backend).toBe(
-        profile === 'default' ? 'primary' : 'pool'
-      )
+      expect(resolveProfileBackendRoute(profile, { primaryProfile: 'default' }).backend).toBe('primary')
 
       for (const [method, path] of [
         ['GET', '/api/config'],
@@ -126,7 +124,8 @@ it.each(['default', 'research'] as const)(
         teardownPrimary,
         notifyApplied: vi.fn()
       })
-      expect(profile === 'default' ? teardownPrimary : teardownPool).toHaveBeenCalledOnce()
+      expect(teardownPrimary).toHaveBeenCalledOnce()
+      expect(teardownPool).not.toHaveBeenCalled()
     }
   }
 )

@@ -51,6 +51,7 @@ it('pinned recovery follows the real local/registry pool keys and leaves same-na
 
     const ssh = { remotePlatform: 'Linux' }
     const primary = vi.fn()
+    const primaryPromise = Promise.resolve({ mode: 'local' as const })
     await recyclePinnedBackend(
       { connectionId, profile: 'worker' },
       {
@@ -58,7 +59,7 @@ it('pinned recovery follows the real local/registry pool keys and leaves same-na
         routeOptions: { globalRemote, primaryProfile: 'default' },
         effectiveSshFingerprint: async () => 'fixture',
         primarySshKey: '',
-        primaryPromise: () => Promise.resolve({ mode: 'local' }),
+        primaryPromise: () => primaryPromise,
         pool,
         sshState: () => (connectionId === 'local' ? undefined : ssh),
         teardownSsh: async scope => {
@@ -70,10 +71,11 @@ it('pinned recovery follows the real local/registry pool keys and leaves same-na
         notifyApplied: vi.fn()
       }
     )
-    expect(events).toEqual(connectionId === 'local' ? ['child', 'exit'] : ['ssh', 'child', 'exit'])
-    expect(pool.has(key)).toBe(false)
+    const usesPrimary = connectionId === 'local' && !globalRemote
+    expect(events).toEqual(usesPrimary ? [] : connectionId === 'local' ? ['child', 'exit'] : ['ssh', 'child', 'exit'])
+    expect(pool.has(key)).toBe(usesPrimary)
     expect(pool.has(backendScopeKey('ssh-b', 'worker'))).toBe(true)
-    expect(primary).not.toHaveBeenCalled()
+    expect(primary).toHaveBeenCalledTimes(usesPrimary ? 1 : 0)
   }
 })
 

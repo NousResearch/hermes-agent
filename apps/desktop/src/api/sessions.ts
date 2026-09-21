@@ -361,6 +361,7 @@ export function setSessionArchived(id: string, archived: boolean, profile?: Prof
 
   return hermesApi<{ ok: boolean }>({
     ...scoped,
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
     body: { archived, ...(owner ? { profile: owner } : {}) }

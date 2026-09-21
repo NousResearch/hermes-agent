@@ -289,7 +289,8 @@ def request_elicitation_consent(message: str, description: str, *,
     # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
     try:
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
-                                           allow_permanent=False)
+                                           allow_permanent=False, allow_session=False,
+                                           approval_callback=_ctx._resolve_cli_approval_callback())
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"

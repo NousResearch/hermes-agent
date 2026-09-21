@@ -90,6 +90,42 @@ def _set_read_only(server: str, tool: str, value: bool):
 class TestTrustGateAtCallTime:
     """The handler preamble consults the approval path when required."""
 
+    @pytest.mark.parametrize("choice,allowed", [("once", True), ("deny", False)])
+    def test_cli_callback_reaches_real_consent_path(self, fake_session, monkeypatch,
+                                                  choice, allowed):
+        from tools import terminal_tool
+        from tools.thread_context import propagate_context_to_thread
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        _set_trust("srv", "untrusted")
+        handler = _mcp_handlers._make_tool_handler("srv", "write_file", 30.0)
+        prompts = []
+
+        def approve(command, description, **kwargs):
+            fake_session.call_tool.assert_not_awaited()
+            prompts.append(kwargs)
+            return choice
+
+        previous = terminal_tool._get_approval_callback()
+        terminal_tool.set_approval_callback(approve)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                raw = executor.submit(propagate_context_to_thread(handler), {}).result()
+        finally:
+            terminal_tool.set_approval_callback(previous)
+
+        assert len(prompts) == 1
+        assert prompts[0]["allow_permanent"] is False
+        assert prompts[0]["allow_session"] is False
+        if allowed:
+            fake_session.call_tool.assert_awaited_once()
+            assert json.loads(raw) == {"result": "ok"}
+        else:
+            fake_session.call_tool.assert_not_awaited()
+            assert "did not approve" in json.loads(raw)["error"]
+
     def test_write_capable_on_untrusted_server_requires_approval(
         self, fake_session
     ):

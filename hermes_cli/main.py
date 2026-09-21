@@ -241,23 +241,31 @@ def _set_process_title() -> None:
 
 # Cheap read of `display.interface` for the earliest hot-path decisions
 # (mouse-residue suppression, Termux fast launch) that run before
-# hermes_cli.config is importable. Cached so early callers don't re-parse YAML.
-_EARLY_INTERFACE_CACHE: "list | None" = None
+# hermes_cli.config is importable. Cached per config path so early callers
+# don't re-parse YAML, and so the answer follows the home the process ends up
+# in: mouse-residue suppression reads this BEFORE `_apply_profile_override()`
+# sets HERMES_HOME, and a cache keyed on nothing pinned every later caller to
+# the default home's interface for the whole run (#116902).
+_EARLY_INTERFACE_CACHE: "tuple[str, str] | None" = None
+
+
+def _early_interface_config_path() -> str:
+    """config.yaml of the home this process is currently pointed at."""
+    home = os.environ.get("HERMES_HOME")
+    if home:
+        return os.path.join(home, "config.yaml")
+    return os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
 
 
 def _config_default_interface_early() -> str:
     """Return the configured default interface ("cli"/"tui") via a minimal
     YAML read. Best-effort: any error falls back to "cli" (legacy behavior)."""
     global _EARLY_INTERFACE_CACHE
-    if _EARLY_INTERFACE_CACHE is not None:
-        return _EARLY_INTERFACE_CACHE[0]
+    cfg_path = _early_interface_config_path()
+    if _EARLY_INTERFACE_CACHE is not None and _EARLY_INTERFACE_CACHE[0] == cfg_path:
+        return _EARLY_INTERFACE_CACHE[1]
     value = "cli"
     try:
-        home = os.environ.get("HERMES_HOME")
-        if home:
-            cfg_path = os.path.join(home, "config.yaml")
-        else:
-            cfg_path = os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
         if os.path.exists(cfg_path):
             import yaml as _yaml_iface
 
@@ -272,7 +280,7 @@ def _config_default_interface_early() -> str:
                     value = "tui"
     except Exception:
         value = "cli"  # best-effort — default to classic REPL on any error
-    _EARLY_INTERFACE_CACHE = [value]
+    _EARLY_INTERFACE_CACHE = (cfg_path, value)
     return value
 
 
@@ -2340,6 +2348,19 @@ def _update_preflight_handled(args) -> bool:
         )
 
         print_update_plan(collect_runtime_inventory())
+        return True
+
+    if getattr(args, "list_venv_holders", False):
+        # Read-only twin of the Windows venv-holder refusal (#117246): same scan and classifiers,
+        # machine-readable, exit 3 when holders remain so automation can stop those PIDs and retry.
+        import json
+
+        from hermes_cli.update_cmd_windows import VENV_HOLDERS_EXIT, list_venv_holders
+
+        holders = list_venv_holders()
+        print(json.dumps(holders, indent=2))
+        if holders:
+            sys.exit(VENV_HOLDERS_EXIT)
         return True
 
     # Image/package-managed admission gate: baked provenance marker first

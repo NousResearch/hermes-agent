@@ -1,12 +1,13 @@
 name: openmail
 repo: https://github.com/openmailsh/hermes-plugin
-sha: bc8655e465cb17a9a916f1c87b667d2781a886b5
+sha: 4035b7d1f8775304443f60f67bcd636acb1a325d
 description: Gives a Hermes agent its own email address. Inbound mail wakes the agent over a websocket,
   replies go out in-thread, plus tools for sending, reading and provisioning inboxes.
 maintainer: openmailsh
 tier: community
 category: platform
 docs_url: https://docs.openmail.sh/integrations/hermes
+image: https://raw.githubusercontent.com/openmailsh/.github/f9d07f18a90a75e8b29f96cbc8d17154ce254828/profile/assets/banner.png
 platforms: []
 capabilities:
   provides_tools:
@@ -19,7 +20,6 @@ capabilities:
   - openmail_attachment_text
   - openmail_list_inboxes
   - openmail_create_inbox
-  - openmail_create_inbox_key
   provides_hooks: []
   provides_middleware: []
   requires_env:

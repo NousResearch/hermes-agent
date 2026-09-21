@@ -446,6 +446,26 @@ def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
     failed.extend(f"systemd-{scope} (listing unavailable)" for scope, _ in _SYSTEMD_SCOPES if scope not in answered)
 
 
+def _live_fleet_current_rows() -> list[dict] | None:
+    """The fleet matrix when the probe finds at least one gateway and every row is ``current``
+    at the checkout SHA (identity known); ``None`` on any unknown/stale/down row or a failed
+    probe (restart)."""
+    checkout_sha = _current_checkout_sha()
+    if not checkout_sha:
+        return None
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Pending fleet restart: fleet probe failed: %s", exc)
+        return None
+    if not fleet or _fleet_covered_gateways(fleet) is None:
+        return None
+    if all(row.get("state") == "current" and str(row.get("code_sha")) == checkout_sha for row in fleet):
+        return fleet
+    return None
+
+
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
@@ -473,6 +493,14 @@ def _run_pending_fleet_restart() -> bool:
     except Exception as exc:
         logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
         pids = None
+
+    # A gateway this very update cold-started (or a manual `hermes gateway restart` seconds
+    # ago) already serves the checkout code; stopping it here re-kills the fleet, and on
+    # Windows the stop/start pair then reports "No gateway was running" plus a second spawn
+    # (#117051). Skip when EVERY live gateway is current on the checkout SHA.
+    if pids and _live_fleet_current_rows() is not None:
+        print("  ✓ Every running gateway already serves the checkout code — nothing to restart.")
+        return True
 
     failed: list = []
     try:
@@ -579,9 +607,26 @@ def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     print()
     _warn_pending_fleet_restart()
     print("→ Running the pending fleet restart...")
-    if _run_pending_fleet_restart() and not _pending_fleet_restart_needed():
+    if not _run_pending_fleet_restart():
+        print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
+        sys.exit(1)
+    if not _pending_fleet_restart_needed():
         return
-    print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
+    # The restart itself succeeded, but the receipt still owes gateways it cannot match to a
+    # live row (unknown identity, pre-pull plan SHAs). When every live gateway serves the
+    # checkout code, that matrix is the recovery evidence: settle the receipt with it instead of
+    # failing this run — an exit 1 here writes another failed receipt and the warning never
+    # clears, even after a successful manual `hermes gateway restart` (#117051).
+    fleet = _live_fleet_current_rows()
+    if fleet is not None:
+        from hermes_cli.update_receipt import settle_latest_receipt_fleet
+        settled = settle_latest_receipt_fleet(
+            fleet, discharges=lambda receipt: not _pending_fleet_restart_needed(receipt=receipt)
+        )
+        if settled:
+            print(f"  ✓ Update receipt settled: {len(fleet)} gateway(s) serve the checkout code.")
+            return
+    print("  ⚠ Fleet restart ran, but gateways are still off the checkout code. Recover with: hermes gateway restart")
     sys.exit(1)
 
 

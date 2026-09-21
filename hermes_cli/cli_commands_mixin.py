@@ -606,6 +606,16 @@ def _browser_status() -> None:
                "   /browser disconnect   — revert to default")
 
 
+# /browser subcommand word → handler(cli, rest); ``rest`` is the raw (case-preserved)
+# remainder of the line. Adding a subcommand is one row here plus a usage line.
+_BROWSER_SUBCOMMANDS = {
+    "use": lambda cli, rest: _browser_use(cli, rest.lower() or "on"),
+    "connect": lambda cli, rest: _browser_connect(cli, rest or DEFAULT_BROWSER_CDP_URL),
+    "disconnect": lambda cli, rest: _browser_disconnect(cli),
+    "status": lambda cli, rest: _browser_status(),
+}
+
+
 class CLICommandsMixin:
     """Mixin holding the interactive-CLI slash-command handlers."""
 
@@ -2150,24 +2160,21 @@ class CLICommandsMixin:
 
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
-        sub = _command_arg(cmd).lower() or "status"
-        if sub == "use" or sub.startswith("use "):
-            _browser_use(self, sub.split(None, 1)[1].strip() if " " in sub else "on")
-        elif sub.startswith("connect"):
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
-            url = connect_parts[2].strip() if len(connect_parts) > 2 else DEFAULT_BROWSER_CDP_URL
-            _browser_connect(self, url)
-        elif sub == "disconnect":
-            _browser_disconnect(self)
-        elif sub == "status":
-            _browser_status()
-        else:
+        # The subcommand word is matched case-insensitively; the raw argument keeps
+        # its case because a CDP URL's path segment is case-sensitive.
+        parts = _command_arg(cmd).split(None, 1)
+        word = parts[0].lower() if parts else "status"
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        handler = _BROWSER_SUBCOMMANDS.get(word)
+        if handler is None:
             _say_block(
                 "Usage: /browser connect|disconnect|status|use", "",
                 "   connect      Connect browser tools to your live Chromium-family browser session",
                 "   disconnect   Revert to default browser backend",
                 "   status       Show current browser mode",
                 "   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")
+            return
+        handler(self, rest.strip())
 
     # ---- /heartbeat, /refine, /review -----------------------------------------------------
     def _session_manager(self, getter, label: str):

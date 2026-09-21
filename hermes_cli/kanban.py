@@ -933,6 +933,10 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
                                  f"--force to close its run and complete anyway.")
                 return False
+            except kb.EmptyCompletionError as empty_err:
+                fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
+                                 f"describing what was done (an empty completion is not evidence).")
+                return False
             if not done:
                 # complete_task returns bare False for a dependency refusal too;
                 # name the open parents instead of claiming the id is unknown.

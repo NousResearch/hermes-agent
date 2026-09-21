@@ -3482,6 +3482,8 @@ from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-export
     _spawn_detached_gateway,
     _launchd_fallback_to_detached,
     _launchd_degrade_or_raise,
+    _path_is_on_external_volume,
+    _launchd_stdio_log_paths,
     generate_launchd_plist,
     launchd_plist_is_current,
     _spawn_deferred_launchd_reload,

@@ -326,12 +326,54 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def _path_is_on_external_volume(path: Path) -> bool:
+    """Return whether *path* resolves beneath macOS's external-volume root."""
+    try:
+        resolved = Path(path).resolve()
+    except Exception:
+        return False
+    external_root = Path("/Volumes")
+    return resolved == external_root or external_root in resolved.parents
+
+
+def _launchd_stdio_log_paths(hermes_home: Path) -> tuple[str, str]:
+    """Return safe launchd stdio paths while keeping Hermes logs under ``HERMES_HOME``.
+
+    ``xpcproxy`` opens ``StandardOutPath`` and ``StandardErrorPath`` before the
+    gateway process starts. On macOS it can deny those opens when the target is
+    under ``/Volumes``. The gateway's own shell wrapper continues writing its
+    application logs to ``HERMES_HOME/logs``; only launchd's outer stdio files
+    move to the real account's internal ``~/Library/Logs``.
+    """
+    default_out = str(Path(hermes_home) / "logs" / "gateway.log")
+    default_err = str(Path(hermes_home) / "logs" / "gateway.error.log")
+    try:
+        if not _path_is_on_external_volume(Path(hermes_home)):
+            return default_out, default_err
+
+        import pwd
+
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        suffix = _gw()._profile_suffix()
+        stem = f"hermes-gateway-{suffix}" if suffix else "hermes-gateway"
+        stdout_path = account_home / "Library" / "Logs" / f"{stem}.stdout.log"
+        stderr_path = account_home / "Library" / "Logs" / f"{stem}.stderr.log"
+        if _path_is_on_external_volume(stdout_path) or _path_is_on_external_volume(stderr_path):
+            return default_out, default_err
+        return str(stdout_path), str(stderr_path)
+    except Exception:
+        # Preserve the previous paths rather than guessing an account or mount.
+        return default_out, default_err
+
+
 def generate_launchd_plist() -> str:
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
     working_dir = _gw()._stable_service_working_dir()
-    hermes_home = str(_gw().get_hermes_home().resolve())
-    log_dir = _gw().get_hermes_home() / "logs"
+    hermes_home_path = _gw().get_hermes_home()
+    hermes_home = str(hermes_home_path.resolve())
+    log_dir = hermes_home_path / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    launchd_stdout_log, launchd_stderr_log = _launchd_stdio_log_paths(hermes_home_path)
     label = _gw().get_launchd_label()
     venv_dir = _gw()._service_venv_dir()
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
@@ -342,10 +384,11 @@ def generate_launchd_plist() -> str:
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).
-    stdout_log, stderr_log = log_dir / "gateway.log", log_dir / "gateway.error.log"
-    command = _timestamped_stderr_gateway_command(stderr_log, external_supervisor=True)
+    app_stdout_log, app_stderr_log = log_dir / "gateway.log", log_dir / "gateway.error.log"
+    command = _timestamped_stderr_gateway_command(app_stderr_log, external_supervisor=True)
     prog_args_xml = "\n        ".join(
-        f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
+        f"<string>{escape(part)}</string>"
+        for part in launchd_program_arguments(command, app_stdout_log, app_stderr_log)
     )
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
@@ -426,10 +469,10 @@ def generate_launchd_plist() -> str:
     <integer>60</integer>
 {nofile_block}
     <key>StandardOutPath</key>
-    <string>{stdout_log}</string>
+    <string>{escape(launchd_stdout_log)}</string>
     
     <key>StandardErrorPath</key>
-    <string>{stderr_log}</string>
+    <string>{escape(launchd_stderr_log)}</string>
 </dict>
 </plist>
 """

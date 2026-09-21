@@ -2102,15 +2102,17 @@ def test_bare_custom_resolves_model_key_env_for_configured_base_url(monkeypatch)
 
 
 def test_configured_key_env_resolving_empty_is_logged(monkeypatch, caplog):
-    """#67453: a declared ``key_env`` whose variable is unset used to be laundered silently into
-    ``no-key-required`` and surface only as the provider's 403; a keyless block stays silent."""
+    """#67453: a declared ``key_env`` whose variable is unset fails closed with an
+    actionable error on auth-required endpoints; a keyless block stays silent."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
     monkeypatch.setattr(rp, "load_config", lambda: {"custom_providers": [
         {"name": "scw", "base_url": "https://api.example.test/v1", "key_env": "UNSET_LLM_KEY", "model": "m"},
         {"name": "local", "base_url": "http://127.0.0.1:8080/v1", "model": "m"}]})
     monkeypatch.delenv("UNSET_LLM_KEY", raising=False)
     with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
-        assert rp.resolve_runtime_provider(requested="custom:scw")["api_key"] == "no-key-required"
+        with pytest.raises(rp.AuthError) as excinfo:
+            rp.resolve_runtime_provider(requested="custom:scw")
+        assert excinfo.value.code == "missing_api_key"
         assert rp.resolve_runtime_provider(requested="custom:local")["api_key"] == "no-key-required"
     hits = [r for r in caplog.records if "UNSET_LLM_KEY" in r.getMessage()]
     assert len(hits) == 1 and "scw" in hits[0].getMessage()

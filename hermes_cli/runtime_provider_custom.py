@@ -435,8 +435,10 @@ def _resolve_named_custom_credential(
 
     if key_env and not rp._loopback_hostname(base_url_hostname(base_url)):
         provider_name = custom_provider.get("name") or requested_provider
+        message = f"No usable credentials found for named custom provider '{provider_name}'. Set {key_env}."
+        logger.warning(message)
         raise rp.AuthError(
-            f"No usable credentials found for named custom provider '{provider_name}'. Set {key_env}.",
+            message,
             provider=str(requested_provider or provider_name),
             code="missing_api_key",
         )

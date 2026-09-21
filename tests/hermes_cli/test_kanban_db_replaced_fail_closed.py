@@ -16,11 +16,13 @@ board explicitly. These tests pin that contract at each entry point:
 
 from __future__ import annotations
 
+import argparse
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban as kanban_cli
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
@@ -172,3 +174,45 @@ def test_repair_reports_a_replaced_board_rather_than_missing(board_db):
 
     assert report.status == "replaced"
     assert report.db_path == board_db.resolve()
+
+
+# ---------------------------------------------------------------------------
+# The CLI verbs: the explicit recovery path, and what repair reports instead
+# ---------------------------------------------------------------------------
+
+
+def _run_cli(argv: list[str]) -> int:
+    """Drive the real argparse surface exactly like `hermes kanban ...`."""
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    kanban_cli.build_parser(sub)
+    args = parser.parse_args(["kanban", *argv])
+    return kanban_cli.kanban_command(args)
+
+
+def test_cli_init_recreates_a_replaced_board_on_purpose(board_db, capsys):
+    """The opt-in verb keeps working after a refusal: `init` is the fresh-board
+    path, and it is the only one — every implicit path fails closed."""
+    _initialize_with_one_task(board_db)
+    _delete_db_files(board_db)
+
+    with pytest.raises(kbc.KanbanDbReplacedError):
+        with kbc.connect_closing(board_db):
+            pass
+
+    assert _run_cli(["init"]) == 0
+
+    assert "initialized" in capsys.readouterr().out.lower()
+    assert "tasks" in _tables(board_db)
+
+
+def test_cli_repair_reports_a_replaced_board(board_db, capsys):
+    """Repair must not present "missing → freshly created" as the fix for a
+    board that had cards on it; the verdict says REPLACED."""
+    _initialize_with_one_task(board_db)
+    _delete_db_files(board_db)
+
+    assert _run_cli(["repair"]) == 1
+
+    captured = capsys.readouterr()
+    assert "REPLACED" in captured.out + captured.err

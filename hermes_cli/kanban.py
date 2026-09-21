@@ -181,6 +181,11 @@ def kanban_command(args: argparse.Namespace) -> int:
         # KanbanDbCorruptError, which would turn every repair into "could not initialize database".
         if action == "repair":
             return _cmd_repair(args)
+        # Same for `init`, the verb that means "make me a board here": the auto-init
+        # below fails closed on a board that was deleted or replaced, so running it
+        # first would make the recovery verb itself unreachable.
+        if action == "init":
+            return _cmd_init(args)
         # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
         # "no such table: tasks" on first use from a fresh HERMES_HOME.
         try:

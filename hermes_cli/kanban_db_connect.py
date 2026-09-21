@@ -970,7 +970,6 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     return conn, out
 
 
-<<<<<<< HEAD
 def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
     """Refuse to create a fresh DB for a board that is not live.
 
@@ -1019,15 +1018,12 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
         raise ValueError(f"kanban board {slug!r} does not exist; create it with `hermes kanban boards create {slug}`")
 
 
-def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
-=======
 def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
     allow_recreate: bool = False,
 ) -> sqlite3.Connection:
->>>>>>> d6bebcf5a6 (fix(kanban): refuse to re-initialize a board DB that was deleted or replaced)
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
     per path auto-runs :func:`init_db`, later ones skip via

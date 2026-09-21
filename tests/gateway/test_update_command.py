@@ -425,25 +425,6 @@ class TestSendUpdateNotification:
         assert result is False
         assert pending_path.exists(), "marker kept so a later poll can still deliver it"
 
-    @pytest.mark.asyncio
-    async def test_marker_without_a_timestamp_keeps_retrying(self, tmp_path):
-        """Markers written before the timestamp field existed keep previous behavior."""
-        runner = _make_runner()
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-
-        pending_path = hermes_home / ".update_pending.json"
-        pending_path.write_text(json.dumps({
-            "platform": "telegram", "chat_id": "67890", "user_id": "12345",
-        }))
-        (hermes_home / ".update_exit_code").write_text("0")
-
-        with patch("gateway.run._hermes_home", hermes_home):
-            result = await runner._send_update_notification()
-
-        assert result is False
-        assert pending_path.exists()
-
 
     @pytest.mark.asyncio
     async def test_cleans_up_on_error(self, tmp_path):

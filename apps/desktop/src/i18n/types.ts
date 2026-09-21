@@ -806,6 +806,13 @@ export interface Translations {
       heading: string
       version: (value: string) => string
       versionUnavailable: string
+      productTitle: string
+      poweredBy: string
+      attributionDesc: string
+      hermesLink: string
+      nousLink: string
+      licenseNotice: string
+      licenseLink: string
       bundleOutOfSync: string
       bundleOutOfSyncDesc: string
       bundleOutOfSyncAction: string

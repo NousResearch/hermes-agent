@@ -1139,9 +1139,16 @@ export const zh: Translations = {
       }
     }),
     about: {
-      heading: 'Hermes Desktop',
+      heading: 'AI Evolution Jarvis',
       version: value => `版本 ${value}`,
       versionUnavailable: '版本不可用',
+      productTitle: 'AI Evolution Jarvis',
+      poweredBy: 'Powered by Hermes Agent — Nous Research',
+      attributionDesc: '此桌面产品外壳运行在 Hermes Agent 引擎之上，并保留 Hermes 署名。',
+      hermesLink: 'Hermes Agent 仓库',
+      nousLink: 'Nous Research',
+      licenseNotice: 'Hermes Agent 基于 MIT 许可证分发。',
+      licenseLink: 'MIT 许可证',
       bundleOutOfSync: '应用构建版本过旧',
       bundleOutOfSyncDesc:
         'Hermes 运行时已更新,但桌面应用本身仍是旧构建——在应用更新之前,新的界面功能(如 Bot Mode)不会显示。请运行下方的更新以重新构建应用。如果此警告仍未消除,请从最新的桌面安装程序重新安装。',

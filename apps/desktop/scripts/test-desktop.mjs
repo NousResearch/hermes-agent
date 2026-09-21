@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { listPackage } from '@electron/asar'
 
 import PACKAGE_JSON from '../package.json' with { type: 'json' }
@@ -12,42 +12,66 @@ const ARCH = process.arch === 'arm64' ? 'arm64' : 'x64'
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const RELEASE_ROOT = path.join(DESKTOP_ROOT, 'release')
 const PLATFORM = process.platform
+const PRODUCT_NAME = PACKAGE_JSON.productName || PACKAGE_JSON.name
+const EXECUTABLE_NAME = PACKAGE_JSON.build?.executableName || PRODUCT_NAME
+const ARTIFACT_NAME =
+  PACKAGE_JSON.build?.artifactName || `${PRODUCT_NAME}-${PACKAGE_JSON.version}-${'${os}'}-${'${arch}'}.${'${ext}'}`
 
-// Platform-specific packaged-app layout. The thin installer ships an Electron
-// app shell plus extraResources (install-stamp.json + native-deps/) -- it
-// no longer bundles the Hermes Agent Python payload (that's fetched at first
-// launch via install.ps1 / install.sh, per the Phase 1 thin-installer flow).
-const APP = (() => {
-  if (PLATFORM === 'darwin') {
-    const appPath = path.join(RELEASE_ROOT, `mac-${ARCH}`, 'Hermes.app')
+export function artifactOsName(platform) {
+  if (platform === 'darwin') return 'mac'
+  if (platform === 'win32') return 'win'
+  if (platform === 'linux') return 'linux'
+  return platform
+}
+
+export function expandArtifactName(template, options) {
+  return template
+    .replaceAll('${version}', options.version)
+    .replaceAll('${os}', artifactOsName(options.platform))
+    .replaceAll('${arch}', options.arch)
+    .replaceAll('${ext}', options.ext)
+}
+
+export function resolveDesktopAppLayout(options) {
+  const releaseRoot = options.releaseRoot
+  const platform = options.platform
+  const arch = options.arch
+  const productName = options.productName
+  const executableName = options.executableName
+
+  if (platform === 'darwin') {
+    const appPath = path.join(releaseRoot, `mac-${arch}`, `${productName}.app`)
     return {
       appPath,
-      binary: path.join(appPath, 'Contents', 'MacOS', 'Hermes'),
+      binary: path.join(appPath, 'Contents', 'MacOS', executableName),
       resourcesPath: path.join(appPath, 'Contents', 'Resources'),
       asarPath: path.join(appPath, 'Contents', 'Resources', 'app.asar'),
       unpackedDistIndex: path.join(appPath, 'Contents', 'Resources', 'app.asar.unpacked', 'dist', 'index.html')
     }
   }
-  if (PLATFORM === 'win32') {
-    const unpacked = path.join(RELEASE_ROOT, 'win-unpacked')
-    return {
-      appPath: unpacked,
-      binary: path.join(unpacked, 'Hermes.exe'),
-      resourcesPath: path.join(unpacked, 'resources'),
-      asarPath: path.join(unpacked, 'resources', 'app.asar'),
-      unpackedDistIndex: path.join(unpacked, 'resources', 'app.asar.unpacked', 'dist', 'index.html')
-    }
-  }
-  // linux unpacked layout matches windows but with different binary name
-  const unpacked = path.join(RELEASE_ROOT, 'linux-unpacked')
+
+  const unpacked = path.join(releaseRoot, platform === 'win32' ? 'win-unpacked' : 'linux-unpacked')
+  const binaryName = platform === 'win32' ? `${executableName}.exe` : executableName
   return {
     appPath: unpacked,
-    binary: path.join(unpacked, 'Hermes'),
+    binary: path.join(unpacked, binaryName),
     resourcesPath: path.join(unpacked, 'resources'),
     asarPath: path.join(unpacked, 'resources', 'app.asar'),
     unpackedDistIndex: path.join(unpacked, 'resources', 'app.asar.unpacked', 'dist', 'index.html')
   }
-})()
+}
+
+// Platform-specific packaged-app layout. The thin installer ships an Electron
+// app shell plus extraResources (install-stamp.json + native-deps/) -- it
+// no longer bundles the Hermes Agent Python payload (that's fetched at first
+// launch via install.ps1 / install.sh, per the Phase 1 thin-installer flow).
+const APP = resolveDesktopAppLayout({
+  releaseRoot: RELEASE_ROOT,
+  platform: PLATFORM,
+  arch: ARCH,
+  productName: PRODUCT_NAME,
+  executableName: EXECUTABLE_NAME
+})
 
 // Default HERMES_HOME for non-sandboxed runs -- matches main.ts's
 // resolveHermesHome(). On Windows it's %LOCALAPPDATA%\hermes; elsewhere
@@ -109,9 +133,7 @@ function ensurePlatformBuilds() {
   if (PLATFORM === 'darwin') return
   if (PLATFORM === 'win32') return
   if (PLATFORM === 'linux') return
-  die(
-    `Desktop bundle validation is only wired for darwin / win32 / linux; platform=${PLATFORM} is not supported.`
-  )
+  die(`Desktop bundle validation is only wired for darwin / win32 / linux; platform=${PLATFORM} is not supported.`)
 }
 
 function ensurePackagedApp() {
@@ -123,11 +145,21 @@ function ensurePackagedApp() {
 }
 
 function resolveDmgPath() {
+  const fallback = path.join(
+    RELEASE_ROOT,
+    expandArtifactName(ARTIFACT_NAME, {
+      version: PACKAGE_JSON.version,
+      platform: 'darwin',
+      arch: ARCH,
+      ext: 'dmg'
+    })
+  )
+
   if (!exists(RELEASE_ROOT)) {
-    return path.join(RELEASE_ROOT, `Hermes-${PACKAGE_JSON.version}-${ARCH}.dmg`)
+    return fallback
   }
 
-  const prefix = `Hermes-${PACKAGE_JSON.version}`
+  const prefix = path.basename(fallback, '.dmg')
   const candidates = fs
     .readdirSync(RELEASE_ROOT)
     .filter(name => name.endsWith('.dmg'))
@@ -139,17 +171,24 @@ function resolveDmgPath() {
       return bMtime - aMtime
     })
 
-  return candidates.length > 0
-    ? path.join(RELEASE_ROOT, candidates[0])
-    : path.join(RELEASE_ROOT, `Hermes-${PACKAGE_JSON.version}-${ARCH}.dmg`)
+  return candidates.length > 0 ? path.join(RELEASE_ROOT, candidates[0]) : fallback
 }
 
 function resolveNsisPath() {
-  // electron-builder NSIS artifactName template is 'Hermes-${version}-${os}-${arch}.${ext}'
   if (!exists(RELEASE_ROOT)) return null
+  const expectedPrefix = path.basename(
+    expandArtifactName(ARTIFACT_NAME, {
+      version: PACKAGE_JSON.version,
+      platform: 'win32',
+      arch: ARCH,
+      ext: 'exe'
+    }),
+    '.exe'
+  )
   const candidates = fs
     .readdirSync(RELEASE_ROOT)
     .filter(name => /\.exe$/i.test(name) && /win/i.test(name))
+    .filter(name => name.startsWith(expectedPrefix))
     .sort((a, b) => {
       const aMtime = fs.statSync(path.join(RELEASE_ROOT, a)).mtimeMs
       const bMtime = fs.statSync(path.join(RELEASE_ROOT, b)).mtimeMs
@@ -300,9 +339,7 @@ function validateBundle() {
   // to fail loudly rather than re-introduce the 400MB delta we just removed.
   const staleFactoryMarker = path.join(APP.resourcesPath, 'hermes-agent', 'hermes_cli', 'main.py')
   if (exists(staleFactoryMarker)) {
-    die(
-      `Thin-installer regression: factory-payload file should NOT be in the package: ${staleFactoryMarker}`
-    )
+    die(`Thin-installer regression: factory-payload file should NOT be in the package: ${staleFactoryMarker}`)
   }
 
   // Positive assertion: install-stamp.json carries a sane commit + branch
@@ -341,18 +378,14 @@ function validateBundle() {
         `${native.prebuildsDir} nor ${native.buildReleaseDir} exists`
     )
   }
-  const nodeBinaries = nativeBinaryDirs.flatMap(dir =>
-    fs.readdirSync(dir).filter(name => name.endsWith('.node'))
-  )
+  const nodeBinaries = nativeBinaryDirs.flatMap(dir => fs.readdirSync(dir).filter(name => name.endsWith('.node')))
   if (nodeBinaries.length === 0) {
     die(`No .node native binaries found in: ${nativeBinaryDirs.join(', ')}`)
   }
   // Darwin requires a runtime-execed spawn-helper alongside pty.node; missing
   // it manifests as "ENOENT: spawn-helper" on first pty.spawn() call.
   if (PLATFORM === 'darwin') {
-    const spawnHelper = nativeBinaryDirs
-      .map(dir => path.join(dir, 'spawn-helper'))
-      .find(exists)
+    const spawnHelper = nativeBinaryDirs.map(dir => path.join(dir, 'spawn-helper')).find(exists)
     if (!spawnHelper) {
       die(`Missing node-pty spawn-helper (required on darwin) in: ${nativeBinaryDirs.join(', ')}`)
     }
@@ -410,33 +443,39 @@ Fast rerun (skip rebuild if the packaged app already exists):
 `)
 }
 
-ensurePlatformBuilds()
+function main() {
+  ensurePlatformBuilds()
 
-if (MODE === 'existing') {
-  ensurePackagedApp()
-  const result = validateBundle()
-  openApp()
-  printArtifacts(result)
-} else if (MODE === 'fresh') {
-  ensurePackagedApp()
-  const result = validateBundle()
-  printArtifacts({ ...launchFresh(), ...result })
-} else if (MODE === 'dmg') {
-  ensureDmg()
-  openDmg()
-  printArtifacts()
-} else if (MODE === 'nsis') {
-  ensureNsis()
-  printArtifacts(validateBundle())
-} else if (MODE === 'all') {
-  if (PLATFORM === 'darwin') {
-    ensureDmg()
-  } else if (PLATFORM === 'win32') {
-    ensureNsis()
-  } else {
+  if (MODE === 'existing') {
     ensurePackagedApp()
+    const result = validateBundle()
+    openApp()
+    printArtifacts(result)
+  } else if (MODE === 'fresh') {
+    ensurePackagedApp()
+    const result = validateBundle()
+    printArtifacts({ ...launchFresh(), ...result })
+  } else if (MODE === 'dmg') {
+    ensureDmg()
+    openDmg()
+    printArtifacts()
+  } else if (MODE === 'nsis') {
+    ensureNsis()
+    printArtifacts(validateBundle())
+  } else if (MODE === 'all') {
+    if (PLATFORM === 'darwin') {
+      ensureDmg()
+    } else if (PLATFORM === 'win32') {
+      ensureNsis()
+    } else {
+      ensurePackagedApp()
+    }
+    printArtifacts(validateBundle())
+  } else {
+    help()
   }
-  printArtifacts(validateBundle())
-} else {
-  help()
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main()
 }

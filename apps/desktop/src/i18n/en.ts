@@ -943,9 +943,16 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     about: {
-      heading: 'Hermes Desktop',
+      heading: 'AI Evolution Jarvis',
       version: value => `Version ${value}`,
       versionUnavailable: 'Version unavailable',
+      productTitle: 'AI Evolution Jarvis',
+      poweredBy: 'Powered by Hermes Agent — Nous Research',
+      attributionDesc: 'This desktop product shell runs on the Hermes Agent engine and keeps Hermes attribution visible.',
+      hermesLink: 'Hermes Agent repository',
+      nousLink: 'Nous Research',
+      licenseNotice: 'Hermes Agent is distributed under the MIT License.',
+      licenseLink: 'MIT license',
       bundleOutOfSync: 'App build out of date',
       bundleOutOfSyncDesc:
         'The Hermes runtime was updated, but the desktop app itself is still an older build — new interface features (like Bot Mode) will be missing until it updates. Run the update below to rebuild the app. If that doesn\u2019t clear this warning, reinstall from the latest desktop installer.',

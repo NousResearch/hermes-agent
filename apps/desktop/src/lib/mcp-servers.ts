@@ -1,6 +1,6 @@
 // Shape helpers for the `mcp_servers` config map, shared by everything that
 // reads or writes it: the MCP tab editor, the paste-anything importer, and the
-// `hermes://mcp/install` deeplink dialog. These agree on what a server entry
+// `aievolution-jarvis://mcp/install` deeplink dialog. These agree on what a server entry
 // looks like, so they belong in one place — a config written by one path has to
 // be readable by the others.
 

@@ -1,11 +1,37 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
 import { appIconCandidates, decodingFileProbe, resolveAppIcon } from './app-icon'
+
+const require = createRequire(import.meta.url)
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+const pkg = require('../package.json') as {
+  author: string
+  build: {
+    appId: string
+    artifactName: string
+    icon: string
+    linux: {
+      maintainer: string
+      synopsis: string
+    }
+    productName: string
+    protocols: readonly { name: string; schemes: readonly string[] }[]
+  }
+  description: string
+  productName: string
+  repository: {
+    type: string
+    url: string
+  }
+}
 
 // Regression: a packaged app.asar can contain a TRUNCATED apple-touch-icon.png
 // (interrupted electron-builder run, partial copy). Electron's
@@ -109,4 +135,36 @@ test('appIconCandidates keeps the documented precedence ladder', () => {
     3,
     'all three PNG rungs remain after the ico rungs'
   )
+})
+
+test('package metadata uses the AI Evolution Jarvis app identity consistently', () => {
+  assert.equal(pkg.productName, 'AI Evolution Jarvis')
+  assert.equal(pkg.description, 'AI Evolution Jarvis, powered by Hermes Agent.')
+  assert.equal(pkg.author, 'AI Evolution')
+  assert.equal(pkg.repository.url, 'git+https://github.com/aievolutionpl/hermes-agent.git')
+  assert.equal(pkg.build.productName, pkg.productName)
+  assert.equal(pkg.build.appId, 'pl.aievolution.jarvis')
+  assert.equal(pkg.build.linux.maintainer, 'AI Evolution')
+  assert.equal(pkg.build.linux.synopsis, pkg.description)
+
+  const schemes = pkg.build.protocols.flatMap(protocol => protocol.schemes)
+  assert.ok(schemes.includes('aievolution-jarvis'))
+  assert.ok(!schemes.includes('hermes'))
+
+  assert.ok(pkg.build.artifactName.startsWith('AI-Evolution-Jarvis-'))
+
+  for (const token of ['${version}', '${os}', '${arch}', '${ext}']) {
+    assert.ok(pkg.build.artifactName.includes(token), `artifactName keeps ${token}`)
+  }
+})
+
+test('build metadata keeps the existing neutral icon fallback assets present', () => {
+  assert.equal(pkg.build.icon, 'assets/icon')
+
+  const desktopRoot = path.resolve(__dirname, '..')
+  const iconBase = path.join(desktopRoot, pkg.build.icon)
+
+  for (const ext of ['.png', '.ico', '.icns']) {
+    assert.equal(fs.statSync(`${iconBase}${ext}`).isFile(), true)
+  }
 })

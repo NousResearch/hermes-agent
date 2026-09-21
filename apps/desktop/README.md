@@ -1,19 +1,18 @@
-# Hermes Desktop ☤
+# AI Evolution Jarvis Desktop
 
 <p align="center">
-  <a href="https://github.com/NousResearch/hermes-agent/releases"><img src="https://img.shields.io/badge/Download-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-FFD700?style=for-the-badge" alt="Download"></a>
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/aievolutionpl/hermes-agent/releases/latest"><img src="https://img.shields.io/badge/Download-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-FFD700?style=for-the-badge" alt="Download"></a>
+  <a href="https://github.com/aievolutionpl/hermes-agent/releases"><img src="https://img.shields.io/badge/Releases-AI%20Evolution%20Jarvis-FFD700?style=for-the-badge" alt="Releases"></a>
   <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
-**The native desktop app for [Hermes Agent](../../README.md) — the self-improving AI agent from [Nous Research](https://nousresearch.com).** Same agent, same skills, same memory as the CLI and gateway, in a polished native window — chat with streaming tool output, side-by-side previews, a file browser, voice, and settings, no terminal required. Available for **macOS, Windows, and Linux**.
+**AI Evolution Jarvis is a branded desktop app powered by [Hermes Agent](../../README.md), the self-improving AI agent from [Nous Research](https://nousresearch.com).** Same agent core, skills, and memory as the CLI and gateway, in a polished native window: chat with streaming tool output, side-by-side previews, a file browser, voice, and settings, no terminal required. Available for **macOS, Windows, and Linux**.
 
 <table>
-<tr><td><b>Chat with the full agent</b></td><td>Streaming responses, live tool activity, structured tool summaries, and the same conversation history as every other Hermes surface.</td></tr>
+<tr><td><b>Chat with the full agent</b></td><td>Streaming responses, live tool activity, structured tool summaries, and the same conversation history as every other Jarvis/Hermes surface.</td></tr>
 <tr><td><b>Side-by-side previews</b></td><td>Render web pages, files, and tool outputs in a right-hand pane while you keep chatting.</td></tr>
 <tr><td><b>File browser</b></td><td>Explore and preview the working directory without leaving the app.</td></tr>
-<tr><td><b>Voice</b></td><td>Talk to Hermes and hear it back.</td></tr>
+<tr><td><b>Voice</b></td><td>Talk to AI Evolution Jarvis and hear it back.</td></tr>
 <tr><td><b>Settings & onboarding</b></td><td>Manage providers, models, tools, and credentials from a real UI. First-run setup gets you to your first message in seconds.</td></tr>
 <tr><td><b>Stays current</b></td><td>Built-in updates pull the latest agent and rebuild the app in place.</td></tr>
 </table>
@@ -22,7 +21,7 @@
 
 ## Install
 
-### Install with Hermes (recommended)
+### Install with the Hermes CLI (development)
 
 Already have the Hermes CLI? Just run:
 
@@ -34,7 +33,7 @@ It builds and launches the GUI against your existing install — same config, ke
 
 ### Prebuilt installers
 
-Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/).
+Prebuilt AI Evolution Jarvis installers are distributed from [AI Evolution Jarvis releases](https://github.com/aievolutionpl/hermes-agent/releases/latest). Release notes are listed on [the releases page](https://github.com/aievolutionpl/hermes-agent/releases).
 
 ---
 
@@ -83,7 +82,7 @@ npm run dist:linux   # AppImage + deb + rpm
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+Installers are built and uploaded to [AI Evolution Jarvis GitHub Releases](https://github.com/aievolutionpl/hermes-agent/releases) manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 
 ### How it works
 
@@ -213,7 +212,7 @@ rm "$HOME/.hermes/hermes-agent/.hermes-bootstrap-complete"
 # Rebuild a broken Python venv
 rm -rf "$HOME/.hermes/hermes-agent/venv"
 # Reset a stuck macOS microphone prompt (macOS only)
-tccutil reset Microphone com.nousresearch.hermes
+tccutil reset Microphone pl.aievolution.jarvis
 ```
 
 **Windows (PowerShell):**
@@ -229,16 +228,25 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes\hermes-agent\venv"
 
 ---
 
-## Community
+## AI Evolution Jarvis support
 
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📖 [Documentation](https://hermes-agent.nousresearch.com/docs/)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
+- Product releases: [github.com/aievolutionpl/hermes-agent/releases](https://github.com/aievolutionpl/hermes-agent/releases)
+- Product downloads: [github.com/aievolutionpl/hermes-agent/releases/latest](https://github.com/aievolutionpl/hermes-agent/releases/latest)
+- Product issues: [github.com/aievolutionpl/hermes-agent/issues](https://github.com/aievolutionpl/hermes-agent/issues)
+
+## Hermes Agent upstream / attribution
+
+AI Evolution Jarvis is powered by Hermes Agent from Nous Research and keeps the upstream MIT License attribution.
+
+- Upstream Hermes Agent repository: [github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
+- Upstream documentation: [hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)
+- Upstream community: [Nous Research Discord](https://discord.gg/NousResearch)
+- License: [MIT](https://github.com/NousResearch/hermes-agent/blob/main/LICENSE)
 
 ---
 
 ## License
 
-MIT — see [LICENSE](../../LICENSE).
+MIT - see [LICENSE](../../LICENSE).
 
-Built by [Nous Research](https://nousresearch.com).
+AI Evolution Jarvis desktop packaging is maintained by AI Evolution. Powered by Hermes Agent © Nous Research; MIT License.

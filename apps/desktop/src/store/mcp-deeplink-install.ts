@@ -6,7 +6,7 @@ import { MCP_DEEPLINK_ERROR_KEYS, type McpInstallRequest, parseMcpInstallDeepLin
 import { notify } from './notifications'
 
 /**
- * Pending `hermes://mcp/install` request awaiting the user's explicit
+ * Pending `aievolution-jarvis://mcp/install` request awaiting the user's explicit
  * confirmation. Set by the deep-link listener, consumed by
  * `McpInstallDeepLinkDialog`; null means no dialog. Nothing is written to
  * config until the user confirms in the dialog.

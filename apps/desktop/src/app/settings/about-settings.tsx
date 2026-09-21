@@ -21,8 +21,11 @@ import {
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
 
-const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
-const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
+const RELEASE_NOTES_URL = 'https://github.com/aievolutionpl/hermes-agent/releases'
+const INSTALLER_URL = 'https://github.com/aievolutionpl/hermes-agent/releases/latest'
+const HERMES_REPO_URL = 'https://github.com/NousResearch/hermes-agent'
+const NOUS_RESEARCH_URL = 'https://nousresearch.com'
+const HERMES_LICENSE_URL = 'https://github.com/NousResearch/hermes-agent/blob/main/LICENSE'
 
 function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
   if (!ms) {
@@ -158,6 +161,60 @@ export function AboutSettings() {
       </div>
 
       <div className="mx-auto mt-4 w-full max-w-2xl">
+        <div className="rounded-xl border border-border/70 bg-muted/20 px-4 py-3 text-left text-sm">
+          <p className="font-medium">{a.productTitle}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{a.poweredBy}</p>
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{a.attributionDesc}</p>
+          <div className="mt-3 flex flex-wrap gap-4 text-xs">
+            <a
+              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+              href={HERMES_REPO_URL}
+              onClick={event => {
+                event.preventDefault()
+                void window.hermesDesktop?.openExternal?.(HERMES_REPO_URL)
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {a.hermesLink}
+              <ExternalLink className="size-3" />
+            </a>
+            <a
+              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+              href={NOUS_RESEARCH_URL}
+              onClick={event => {
+                event.preventDefault()
+                void window.hermesDesktop?.openExternal?.(NOUS_RESEARCH_URL)
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {a.nousLink}
+              <ExternalLink className="size-3" />
+            </a>
+          </div>
+        </div>
+
+        <ListRow
+          description={
+            <a
+              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+              href={HERMES_LICENSE_URL}
+              onClick={event => {
+                event.preventDefault()
+                void window.hermesDesktop?.openExternal?.(HERMES_LICENSE_URL)
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {a.licenseLink}
+              <ExternalLink className="size-3" />
+            </a>
+          }
+          title={a.licenseNotice}
+          wide
+        />
+
         <SectionHeading icon={RefreshCw} title={a.updates} />
 
         <div

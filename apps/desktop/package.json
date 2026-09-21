@@ -1,13 +1,13 @@
 {
   "name": "hermes",
-  "productName": "Hermes",
+  "productName": "AI Evolution Jarvis",
   "private": true,
   "version": "0.17.2",
-  "description": "Native desktop shell for Hermes Agent.",
-  "author": "Nous Research",
+  "description": "AI Evolution Jarvis, powered by Hermes Agent.",
+  "author": "AI Evolution",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NousResearch/hermes-agent.git"
+    "url": "git+https://github.com/aievolutionpl/hermes-agent.git"
   },
   "type": "module",
   "main": "dist/electron-main.mjs",
@@ -189,18 +189,18 @@
   },
   "build": {
     "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
+    "appId": "pl.aievolution.jarvis",
+    "productName": "AI Evolution Jarvis",
+    "executableName": "AI Evolution Jarvis",
     "protocols": [
       {
-        "name": "Hermes Protocol",
+        "name": "AI Evolution Jarvis Protocol",
         "schemes": [
-          "hermes"
+          "aievolution-jarvis"
         ]
       }
     ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
+    "artifactName": "AI-Evolution-Jarvis-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {
       "output": "release"
@@ -236,19 +236,19 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations.",
-        "NSCalendarsUsageDescription": "Hermes needs access to Calendar to provide requested meeting and scheduling support.",
-        "NSCalendarsFullAccessUsageDescription": "Hermes needs full access to Calendar to read and manage events when explicitly requested.",
-        "NSRemindersUsageDescription": "Hermes needs access to Reminders to provide requested personal-assistant and scheduling support.",
-        "NSRemindersFullAccessUsageDescription": "Hermes needs full access to Reminders to read and manage reminders when explicitly requested.",
-        "NSScreenCaptureUsageDescription": "Hermes captures the screen when you ask the agent to screenshot or record it.",
-        "NSLocalNetworkUsageDescription": "Hermes connects to devices on your local network when a plugin or feature you enable requests it.",
-        "NSAppleMusicUsageDescription": "Hermes accesses your music library when a plugin or feature you enable requests it."
+        "CFBundleDisplayName": "AI Evolution Jarvis",
+        "CFBundleExecutable": "AI Evolution Jarvis",
+        "CFBundleName": "AI Evolution Jarvis",
+        "NSAudioCaptureUsageDescription": "AI Evolution Jarvis uses audio capture for voice conversations.",
+        "NSCameraUsageDescription": "AI Evolution Jarvis uses the camera when a plugin or feature you enable requests it.",
+        "NSMicrophoneUsageDescription": "AI Evolution Jarvis uses the microphone for voice input and voice conversations.",
+        "NSCalendarsUsageDescription": "AI Evolution Jarvis uses Calendar to provide requested meeting and scheduling support.",
+        "NSCalendarsFullAccessUsageDescription": "AI Evolution Jarvis uses full Calendar access to read and manage events when explicitly requested.",
+        "NSRemindersUsageDescription": "AI Evolution Jarvis uses Reminders to provide requested personal-assistant and scheduling support.",
+        "NSRemindersFullAccessUsageDescription": "AI Evolution Jarvis uses full Reminders access to read and manage reminders when explicitly requested.",
+        "NSScreenCaptureUsageDescription": "AI Evolution Jarvis captures the screen when you ask the agent to screenshot or record it.",
+        "NSLocalNetworkUsageDescription": "AI Evolution Jarvis connects to devices on your local network when a plugin or feature you enable requests it.",
+        "NSAppleMusicUsageDescription": "AI Evolution Jarvis accesses your music library when a plugin or feature you enable requests it."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
@@ -258,7 +258,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install AI Evolution Jarvis",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -280,7 +280,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "AI Evolution Jarvis",
       "target": [
         "nsis",
         "msi"
@@ -289,8 +289,8 @@
     },
     "linux": {
       "category": "Development",
-      "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
+      "maintainer": "AI Evolution",
+      "synopsis": "AI Evolution Jarvis, powered by Hermes Agent.",
       "target": [
         "AppImage",
         "deb",
@@ -301,8 +301,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "AI Evolution Jarvis",
+      "uninstallDisplayName": "AI Evolution Jarvis",
       "warningsAsErrors": false
     }
   }

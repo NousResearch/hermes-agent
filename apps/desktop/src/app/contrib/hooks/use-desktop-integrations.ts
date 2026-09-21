@@ -245,7 +245,7 @@ export function useDesktopIntegrations({
 
   // Plugin OS notification body/action → optional callback + navigate. Activation
   // is user-driven (click), so this is offer-not-hijack. Paths share the
-  // hermes://index-network/intent/1 vocabulary with deep links.
+  // aievolution-jarvis://index-network/intent/1 vocabulary with deep links.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onNotificationActivate?.(payload => {
       if (!payload) {
@@ -275,7 +275,7 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [navigate])
 
-  // hermes:// deep links:
+  // aievolution-jarvis:// deep links:
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
@@ -324,7 +324,7 @@ export function useDesktopIntegrations({
       }
 
       // Not a core action — treat as a plugin-scoped or open/ navigation deep
-      // link (hermes://index-network/intent/1, hermes://open/…). The resolver
+      // link (aievolution-jarvis://index-network/intent/1, aievolution-jarvis://open/…). The resolver
       // rejects reserved kinds and unsafe paths.
       const path = pathFromHermesDeepLink(payload.kind, payload.name || '', payload.params || {})
 

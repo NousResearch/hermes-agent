@@ -1220,9 +1220,17 @@ export const pl = defineLocale({
       }
     }),
     about: {
-      heading: 'Hermes Desktop',
+      heading: 'AI Evolution Jarvis',
       version: value => `Wersja ${value}`,
       versionUnavailable: 'Wersja niedostępna',
+      productTitle: 'AI Evolution Jarvis',
+      poweredBy: 'Powered by Hermes Agent — Nous Research',
+      attributionDesc:
+        'Ten desktopowy shell produktu działa na silniku Hermes Agent i zachowuje widoczną atrybucję Hermesa.',
+      hermesLink: 'Repozytorium Hermes Agent',
+      nousLink: 'Nous Research',
+      licenseNotice: 'Hermes Agent jest rozpowszechniany na licencji MIT.',
+      licenseLink: 'Licencja MIT',
       bundleOutOfSync: 'Nieaktualna wersja aplikacji',
       bundleOutOfSyncDesc:
         'Środowisko Hermesa zostało zaktualizowane, ale sama aplikacja desktopowa to wciąż starsza kompilacja — nowe funkcje interfejsu (np. Bot Mode) będą niedostępne, dopóki się nie zaktualizuje. Uruchom poniższą aktualizację, aby przebudować aplikację. Jeśli to nie usunie tego ostrzeżenia, zainstaluj ją ponownie z najnowszego instalatora.',

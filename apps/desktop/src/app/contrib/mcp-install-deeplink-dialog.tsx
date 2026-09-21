@@ -23,7 +23,7 @@ import { notify, readableError } from '@/store/notifications'
 import { setHermesConfigCache } from '../hooks/use-config-record'
 
 /**
- * Explicit-confirm gate for `hermes://mcp/install` deep links. The payload is
+ * Explicit-confirm gate for `aievolution-jarvis://mcp/install` deep links. The payload is
  * arbitrary attacker-controllable input (any web page can open the link), so
  * this dialog shows the server name and the FULL pretty-printed config —
  * exactly what would be written — and nothing touches config until the user

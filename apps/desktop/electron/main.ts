@@ -275,6 +275,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
+import { decodeHttpBody } from './link-title-charset'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -6043,20 +6044,30 @@ function parseHtmlTitle(html) {
   return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
 }
 
-// `--write-out` trailer: `\n<mark><url_effective>` after the body.
+// `--write-out` trailer: `\n<mark><url_effective>\n<mark><content_type>` after the body.
 const URL_EFFECTIVE_MARK = 'hermes-url-effective:'
+const CONTENT_TYPE_MARK = 'hermes-content-type:'
 const URL_EFFECTIVE_TAIL_BYTES = 4096
 
-function splitUrlEffective(stdout: string): { effectiveUrl: string; html: string } {
-  const at = stdout.lastIndexOf(`\n${URL_EFFECTIVE_MARK}`)
+function splitUrlEffective(body: Buffer): { contentType: string; effectiveUrl: string; html: Buffer } {
+  const marker = Buffer.from(`\n${URL_EFFECTIVE_MARK}`, 'utf8')
+  const at = body.lastIndexOf(marker)
 
   if (at < 0) {
-    return { effectiveUrl: '', html: stdout }
+    return { contentType: '', effectiveUrl: '', html: body }
   }
 
+  // The trailer is curl's own write-out text — plain ASCII regardless of the
+  // page's charset — so a plain UTF-8 decode of it is always safe.
+  const [effectiveLine, contentTypeLine] = body
+    .subarray(at + 1 + URL_EFFECTIVE_MARK.length)
+    .toString('utf8')
+    .split(`\n${CONTENT_TYPE_MARK}`)
+
   return {
-    effectiveUrl: stdout.slice(at + 1 + URL_EFFECTIVE_MARK.length).trim(),
-    html: stdout.slice(0, at)
+    contentType: (contentTypeLine ?? '').trim(),
+    effectiveUrl: effectiveLine.trim(),
+    html: body.subarray(0, at)
   }
 }
 
@@ -6087,10 +6098,12 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
       '--header',
       'Accept-Encoding: identity',
       '--raw',
-      // Arrival URL after redirects, on its own line after the body: a sign-in
-      // wall is proven from where curl landed even when the page has no markup id.
+      // Arrival URL after redirects, and the declared charset, on their own
+      // lines after the body: a sign-in wall is proven from where curl landed
+      // even when the page has no markup id, and the charset is how a
+      // non-UTF-8 page's title avoids decoding as replacement-character mush.
       '--write-out',
-      `\n${URL_EFFECTIVE_MARK}%{url_effective}`,
+      `\n${URL_EFFECTIVE_MARK}%{url_effective}\n${CONTENT_TYPE_MARK}%{content_type}`,
       url
     ]
 
@@ -6124,15 +6137,16 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
       const body = Buffer.concat(chunks)
 
       // The trailer is inside `body` unless the budget cut it off; then it is in `tail`.
-      const { effectiveUrl, html } = splitUrlEffective(
-        (bytes >= TITLE_BYTE_BUDGET ? Buffer.concat([body, tail]) : body).toString('utf8')
+      const { contentType, effectiveUrl, html } = splitUrlEffective(
+        bytes >= TITLE_BYTE_BUDGET ? Buffer.concat([body, tail]) : body
       )
 
-      const title = parseHtmlTitle(html)
+      const text = decodeHttpBody(html, contentType)
+      const title = parseHtmlTitle(text)
 
       // A sign-in wall answers the cookieless title partition, and tier 2 must
       // never load it: the wall asks the OS for a passkey.
-      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), title })
+      resolve({ authWall: isAuthWall({ body: text, effectiveUrl, title }), title })
     })
   })
 }

@@ -66,9 +66,9 @@ class TestLoadGlobalAuthStoreMemo:
         reads = {"n": 0}
         orig = auth_mod._load_auth_store
 
-        def counting_load(store_path=None):
+        def counting_load(store_path=None, **kwargs):
             reads["n"] += 1
-            return orig(store_path)
+            return orig(store_path, **kwargs)
 
         monkeypatch.setattr(auth_mod, "_load_auth_store", counting_load)
 
@@ -90,9 +90,9 @@ class TestLoadGlobalAuthStoreMemo:
         reads = {"n": 0}
         orig = auth_mod._load_auth_store
 
-        def counting_load(store_path=None):
+        def counting_load(store_path=None, **kwargs):
             reads["n"] += 1
-            return orig(store_path)
+            return orig(store_path, **kwargs)
 
         monkeypatch.setattr(auth_mod, "_load_auth_store", counting_load)
 

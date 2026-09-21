@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -96,6 +97,26 @@ def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
     from agent.reasoning_effort import is_astra_model
 
     return [model for model in model_ids if not is_astra_model(model)]
+
+
+def codex_catalog_credential_identity() -> str:
+    """Stable, non-secret identity of the credential used for live discovery.
+
+    OAuth access and refresh tokens rotate in place, while the account-scoped
+    model catalog remains authoritative for the same ChatGPT principal. Unknown
+    token formats fall back to a token digest so a credential replacement still
+    invalidates the cache conservatively.
+    """
+    try:
+        from agent.credential_pool import _codex_principal_identity
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+
+        token = str(resolve_codex_runtime_credentials(read_only=True).get("api_key") or "")
+    except Exception:
+        return "missing"
+    principal = _codex_principal_identity(token)
+    basis = json.dumps(principal, separators=(",", ":")).encode() if principal else token.encode()
+    return hashlib.blake2b(basis, digest_size=8).hexdigest() if basis else "missing"
 
 
 def _ranked_slugs(entries: object) -> List[str]:

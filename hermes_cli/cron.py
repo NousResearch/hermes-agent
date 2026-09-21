@@ -307,10 +307,15 @@ def cron_tick():
     return 0
 
 
-def cron_runs(job_id: Optional[str] = None, limit: int = 20):
+def cron_runs(job_id: Optional[str] = None, limit: int = 20, json_output: bool = False):
     """Show indexed durable cron execution history."""
     from cron.executions import list_executions
     records = list_executions(job_id=job_id, limit=limit)
+    if json_output:
+        # Stable machine-readable form for external clients (#118072): always an array,
+        # `[]` on no records, never the human "No cron execution attempts recorded." prose.
+        print(json.dumps(records, indent=2))
+        return
     if not records:
         print("No cron execution attempts recorded.")
         return
@@ -875,7 +880,8 @@ _CRON_SUBCOMMANDS = {
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),
-    "runs": lambda a: cron_runs(getattr(a, "job_id", None), getattr(a, "limit", 20)) or 0,
+    "runs": lambda a: cron_runs(
+        getattr(a, "job_id", None), getattr(a, "limit", 20), getattr(a, "json", False)) or 0,
     "incidents": lambda a: cron_incidents(a),
     "notepad": lambda a: cron_notepad(a),
     "create": lambda a: cron_create(a),

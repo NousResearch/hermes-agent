@@ -841,7 +841,7 @@ def _kanban_board_db_paths() -> List[Path]:
 
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
-    home = Path(os.path.expanduser("~"))
+    home = Path(os.environ.get("HOME") or os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
             *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
@@ -863,7 +863,7 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
     A service home may equal a denied prefix (``/root``) or sit below one
     (``/var/lib/hermes``). More-specific credential paths under home stay blocked.
     """
-    home = _resolve_path(Path(os.path.expanduser("~")))
+    home = _resolve_path(Path(os.environ.get("HOME") or os.path.expanduser("~")))
     for denied in _media_delivery_denied_paths():
         resolved_denied = _resolve_path(denied, expand=True)
         if resolved_denied is None:

@@ -347,11 +347,11 @@ def test_spawn_without_pid_never_remains_running(board, monkeypatch):
     tid = kb.create_task(conn, title="no worker", assignee="worker", max_retries=1)
     kbd.dispatch_once(conn, spawn_fn=lambda *_args: None, max_spawn=1)
     task = kb.get_task(conn, tid)
-    assert task.status == "needs_user_action"
+    assert task.status == "ready"
     assert task.worker_pid is None
-    assert kua.get_user_action(conn, tid).payload["reason"]
-    event = [e for e in kb.list_events(conn, tid) if e.kind == "needs_user_action"][-1]
-    assert event.payload["material_fingerprint"] == kua.get_user_action(conn, tid).fingerprint
+    assert kua.get_user_action(conn, tid) is None
+    event = [e for e in kb.list_events(conn, tid) if e.kind == "recovery_scheduled"][-1]
+    assert event.payload["failure_disposition"] == "internal_transient"
 
 
 def test_preclaim_capability_failure_emits_actionable_event(board, monkeypatch):

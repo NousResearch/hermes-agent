@@ -3216,6 +3216,10 @@ def _block_task(
                 new_status, event_kind = "needs_user_action", "needs_user_action"
             payload["user_action"] = action_state.payload
             payload["material_fingerprint"] = action_state.fingerprint
+            set_sql += ",\n                       failure_disposition = 'user_action_required'"
+        else:
+            disposition = "internal_transient" if kind in {"dependency", "transient"} else "internal_terminal"
+            set_sql += f",\n                       failure_disposition = '{disposition}'"
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason

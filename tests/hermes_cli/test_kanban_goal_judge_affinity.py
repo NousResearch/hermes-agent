@@ -107,6 +107,6 @@ def test_goal_loop_judge_binds_per_task_affinity_scope():
             max_turns=2,
             first_response="first",
         )
-    assert result["outcome"] == "blocked_budget"
+    assert result["outcome"] == "retry_scheduled"
     assert seen == ["kanban:task-7", "kanban:task-7"]
     assert get_affinity_scope() is None

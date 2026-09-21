@@ -225,8 +225,10 @@ def test_dead_worker_is_reclaimed_with_bounded_retry_and_never_projected_running
     _expire(conn, task_id)
     assert kbd.detect_crashed_workers(conn) == [task_id]
     final = _task(conn, task_id)
-    assert final.status == "needs_user_action" and final.consecutive_failures == 2
-    assert kb.claim_task(conn, task_id) is None, "terminal breaker must remain sticky"
+    assert final.status == "ready" and final.consecutive_failures == 2
+    recovery = [e for e in kb.list_events(conn, task_id) if e.kind == "recovery_scheduled"][-1]
+    assert recovery.payload["attempt"] == 2
+    assert recovery.payload["deadline_at"] > recovery.created_at
     assert projected_before["status"] == "running"
     assert projected_before["operational_status"] == "recovering"
 

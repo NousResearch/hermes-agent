@@ -4087,12 +4087,31 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str, run_turn=None
         with _kbc.connect_closing() as c:
             _kb.block_task(c, task_id, reason=reason, expected_run_id=worker_run_id)
 
-    _run_loop(
+    loop_result = _run_loop(
         task_id=task_id, goal_text=goal_text, run_turn=run_turn or _quiet_turn,
         task_status_fn=_task_status, block_fn=_block,
         max_turns=task.goal_max_turns or _DEF_TURNS, first_response=first_response or "",
         log=log or (lambda m: logger.info("%s", m)),
     )
+    if loop_result.get("outcome") == "retry_scheduled":
+        from hermes_cli import kanban_db_dispatch as _kbd
+
+        with _kbc.connect_closing() as conn:
+            current = _kb.get_task(conn, task_id)
+            if current is not None and current.status == "running":
+                _kbd._record_task_failure(
+                    conn,
+                    task_id,
+                    loop_result.get("reason") or "goal continuation scheduled",
+                    outcome=loop_result.get("resume_state", {}).get("reason", "goal_retry"),
+                    release_claim=True,
+                    end_run=True,
+                    event_payload_extra={
+                        "goal_resume_state": loop_result.get("resume_state"),
+                        "turn_cursor": loop_result.get("turns_used", 0),
+                        "session_id": getattr(cli, "session_id", None),
+                    },
+                )
 
 
 def _run_kanban_goal_loop_chat(cli: "HermesCLI", first_response: str) -> None:

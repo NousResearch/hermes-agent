@@ -385,7 +385,7 @@ def test_interrupted_review_runs_retry_in_review_phase(
 
 def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     task_id, _review = _claimed_review(conn, "Reviewer repeatedly fails")
-    assert kbd._record_task_failure(
+    assert not kbd._record_task_failure(
         conn,
         task_id,
         "reviewer cannot start",
@@ -396,14 +396,10 @@ def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     )
     blocked = kb.get_task(conn, task_id)
     assert blocked is not None
-    assert blocked.status == "needs_user_action"
-    gave_up = _event(kb.list_events(conn, task_id), "gave_up")
-    assert gave_up.payload is not None
-    assert gave_up.payload["retry_status"] == "review"
-    assert kb.unblock_task(conn, task_id)
-    unblocked = kb.get_task(conn, task_id)
-    assert unblocked is not None
-    assert unblocked.status == "review"
+    assert blocked.status == "review"
+    recovery = _event(kb.list_events(conn, task_id), "recovery_scheduled")
+    assert recovery.payload is not None
+    assert recovery.payload["retry_status"] == "review"
 
 
 def test_review_escalation_unblocks_back_to_review(conn) -> None:
@@ -702,9 +698,9 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
     tripped = kbd._record_task_failure(
         conn, task_id, "worker crashed", outcome="crashed", failure_limit=2,
     )
-    assert tripped is True
+    assert tripped is False
     assert _failures(conn, task_id) == 2
-    assert kb.get_task(conn, task_id).status == "needs_user_action"
+    assert kb.get_task(conn, task_id).status == "ready"
 
     # Sanity: complete_task's success path still clears the counter.
     ok_id = kb.create_task(conn, title="healthy", assignee="builder")

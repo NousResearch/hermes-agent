@@ -1353,3 +1353,11 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 ## Out of scope
 
 Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
+Internal recovery is scheduler-owned. Provider throttles, judge transport failures,
+worker startup/heartbeat loss, and unavailable execution routes are persisted as
+`internal_transient` with an attempt counter and bounded next-at deadline (5 seconds
+exponential backoff, capped at 120 seconds). Goal-turn exhaustion schedules a fresh
+bounded continuation rather than asking a person to restart work. Only a genuine
+human prerequisite is classified `user_action_required`; those records include the
+reason, execution location, exact action, expected success, and automatic-continuation
+contract used by readiness supervision.

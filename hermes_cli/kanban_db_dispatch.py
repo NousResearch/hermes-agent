@@ -76,13 +76,6 @@ DEFAULT_RECOVERY_BACKOFF_BASE_SECONDS = 5
 DEFAULT_RECOVERY_BACKOFF_CAP_SECONDS = 120
 DEFAULT_STARTUP_GRACE_SECONDS = 120
 
-_INTERNAL_TRANSIENT_PATTERNS = (
-    "rate limit", "rate_limit", "429", "temporarily unavailable", "timeout",
-    "judge api", "judge error", "503", "not spawnable", "cannot load effective skill",
-    "command capability", "initial heartbeat", "no heartbeat", "stale_lock",
-)
-
-
 def _failure_kind(error: str, outcome: str) -> str:
     text = error.lower()
     if "rate limit" in text or "rate_limit" in text or "429" in text or outcome == "rate_limited":
@@ -96,11 +89,29 @@ def _failure_kind(error: str, outcome: str) -> str:
     return outcome
 
 
-def _recovery_delay(task_id: str, attempt: int) -> int:
+def _recovery_config_int(key: str, default: int) -> int:
+    try:
+        from hermes_cli.config import load_config_readonly
+        value = (load_config_readonly() or {}).get("kanban", {}).get(key, default)
+        return max(1, int(value))
+    except (TypeError, ValueError, OSError):
+        return default
+
+
+def _recovery_delay(task_id: str, attempt: int, *, jitter_fn=None) -> int:
     """Bounded exponential delay with stable per-task jitter."""
-    exponential = DEFAULT_RECOVERY_BACKOFF_BASE_SECONDS * (2 ** max(0, attempt - 1))
-    jitter = int(hashlib.sha256(f"{task_id}:{attempt}".encode()).hexdigest()[:4], 16) % 4
-    return min(DEFAULT_RECOVERY_BACKOFF_CAP_SECONDS, exponential + jitter)
+    base = _recovery_config_int(
+        "recovery_backoff_base_seconds", DEFAULT_RECOVERY_BACKOFF_BASE_SECONDS,
+    )
+    cap = _recovery_config_int(
+        "recovery_backoff_cap_seconds", DEFAULT_RECOVERY_BACKOFF_CAP_SECONDS,
+    )
+    exponential = base * (2 ** max(0, attempt - 1))
+    if jitter_fn is None:
+        jitter_fn = lambda: int(
+            hashlib.sha256(f"{task_id}:{attempt}".encode()).hexdigest()[:4], 16
+        ) % min(4, base)
+    return min(cap, exponential + max(0, int(jitter_fn())))
 
 
 def _schedule_internal_recovery(
@@ -125,6 +136,7 @@ def _schedule_internal_recovery(
         "attempt": attempt,
         "failure_kind": _failure_kind(error, outcome),
         "resume_status": retry_status,
+        "retry_status": retry_status,
         "deadline_at": deadline,
     }
     assignments = [
@@ -801,7 +813,10 @@ def detect_stale_running(
             continue
         elapsed = now - int(row["active_started_at"])
         last_hb = row["last_heartbeat_at"]
-        startup_timeout = min(stale_timeout_seconds, DEFAULT_STARTUP_GRACE_SECONDS)
+        startup_timeout = min(
+            stale_timeout_seconds,
+            _recovery_config_int("dispatch_startup_grace_seconds", DEFAULT_STARTUP_GRACE_SECONDS),
+        )
         effective_timeout = startup_timeout if last_hb is None else stale_timeout_seconds
         if elapsed < effective_timeout:
             continue
@@ -1277,10 +1292,21 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     for task_id in sweep.rate_limited:
+        row = conn.execute(
+            "SELECT consecutive_failures FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
         _record_task_failure(
-            conn, task_id, "provider API returned 429 rate limit",
+            conn, task_id, "provider API exited rate-limited (429)",
             outcome="rate_limited", release_claim=False, end_run=False,
         )
+        # Provider throttling advances the dedicated recovery attempt but does
+        # not consume the task-failure breaker budget.
+        if row is not None:
+            with _kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET consecutive_failures = ? WHERE id = ?",
+                    (int(row["consecutive_failures"]), task_id),
+                )
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
     # requeues did NOT count a failure and are NOT crashes.
@@ -1358,13 +1384,6 @@ def _record_task_failure(
         )
         failures = int(row["consecutive_failures"]) + 1
 
-        # Per-task override wins over caller-supplied and default thresholds.
-        task_override = _kb._row_get(row, "max_retries")
-        if task_override is not None:
-            effective_limit, limit_source = int(task_override), "task"
-        else:
-            effective_limit, limit_source = int(failure_limit), "dispatcher"
-
         # Dispatcher/runtime failures are internally recoverable even after the
         # old circuit-breaker threshold. Persist the cursor and deadline instead
         # of projecting a fabricated human prerequisite.
@@ -1375,75 +1394,6 @@ def _record_task_failure(
             event_payload_extra=event_payload_extra,
         )
         return False
-
-        # Spawn path (release_claim) is still running and also clears claim
-        # state; the timeout/crash path already did.
-        conn.execute(
-            "UPDATE tasks SET status = 'needs_user_action', "
-            + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-               if release_claim else "")
-            + "consecutive_failures = ?, last_failure_error = ? "
-            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-            (failures, error, task_id),
-        )
-        from hermes_cli.kanban_user_action import classify_capability_failure, persist_user_action
-        classification = classify_capability_failure(error)
-        action_state = persist_user_action(
-            conn, task_id, error,
-            {
-                "incomplete_status": (
-                    "The worker could not continue and exhausted its retry budget "
-                    f"({classification['class']})."
-                ),
-                "reason": error,
-                "execution_location": "The Hermes host or the affected provider/tool account.",
-                "action": "Fix the reported prerequisite, then unblock this Kanban task.",
-                "expected_success": "The prerequisite check succeeds and the worker can start normally.",
-                "automatic_continuation": (
-                    "No continue response is needed; the persisted task_unblocked trigger "
-                    "automatically resumes and dispatches the task."
-                ),
-            },
-            {"kind": "task_unblocked", "task_id": task_id},
-        )
-        payload = {
-            "failures": failures,
-            "effective_limit": effective_limit,
-            "limit_source": limit_source,
-            "error": error,
-            "trigger_outcome": outcome,
-            "retry_status": retry_status,
-            "user_action": action_state.payload,
-            "material_fingerprint": action_state.fingerprint,
-        }
-        run_id = None
-        if end_run:
-            # Only the spawn path has an open run to close.
-            run_id = _kb._end_run(
-                conn, task_id, outcome="gave_up", status="gave_up", error=error,
-                metadata={
-                    "failures": failures,
-                    "trigger_outcome": outcome,
-                    "effective_limit": effective_limit,
-                    "limit_source": limit_source,
-                    "retry_status": retry_status,
-                },
-            )
-        if event_payload_extra:
-            payload.update(event_payload_extra)
-        _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
-        _kb._append_event(
-            conn, task_id, "needs_user_action",
-            {
-                "reason": error,
-                "source": outcome,
-                "retry_status": retry_status,
-                "user_action": action_state.payload,
-                "material_fingerprint": action_state.fingerprint,
-            },
-            run_id=run_id,
-        )
-        return True
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
@@ -1472,8 +1422,9 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     """
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE tasks SET consecutive_failures = 0, "
-            "last_failure_error = NULL WHERE id = ?",
+            "UPDATE tasks SET consecutive_failures = 0, last_failure_error = NULL, "
+            "failure_disposition = NULL, recovery_attempt = 0, "
+            "recovery_next_at = NULL, recovery_state = NULL WHERE id = ?",
             (task_id,),
         )
 
@@ -1666,6 +1617,10 @@ def _route_to_eligible_profile(
         declared = _dispatch_profile_allowlist(normalize_profile_name)
     except Exception:
         declared = None
+    # A configured allowlist is an ownership boundary, not merely a fallback
+    # pool. Do not steal a card explicitly assigned outside this dispatcher.
+    if declared is not None and assignee not in declared:
+        return None
     candidates: list[str] = []
     for name in (assignee, *(declared or ())):
         if name and name not in candidates:

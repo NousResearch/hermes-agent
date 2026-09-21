@@ -270,9 +270,9 @@ def test_stale_claim_reclaim_without_spawn_counts_toward_breaker(kanban_home):
                 "SELECT status, consecutive_failures FROM tasks WHERE id = ?", (t,),
             ).fetchone()
             assert row["consecutive_failures"] == expected
-        assert row["status"] == "needs_user_action"
+        assert row["status"] == "ready"
         kinds = [e.kind for e in kb.list_events(conn, t)]
-        assert kinds[-3:] == ["reclaimed", "gave_up", "needs_user_action"]
+        assert kinds[-2:] == ["reclaimed", "recovery_scheduled"]
 
 
 def test_stale_claim_extend_live_worker_does_not_count_failure(

@@ -23,9 +23,11 @@ from urllib.parse import urljoin
 import httpx
 
 from hermes_constants import get_hermes_home
+from tools.skill_usage import skill_file_lock
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 from tools.skills_hub_models import _normalize_lock_install_path, _validate_skill_name
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -264,10 +266,20 @@ class HubLockFile(_JsonStateFile):
     DEFAULT_PATH = staticmethod(_lock_file)
 
     def load(self) -> dict:
-        return self._read()
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return json.loads(json.dumps(self.EMPTY))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid skills hub lock file {self.path}: {exc}") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("installed"), dict):
+            raise ValueError(
+                f"Invalid skills hub lock file {self.path}: expected an installed mapping"
+            )
+        return data
 
     def save(self, data: dict) -> None:
-        self._write(data, ensure_ascii=False)
+        atomic_json_write(self.path, data, fsync_dir=True)
 
     def record_install(
         self,
@@ -286,9 +298,8 @@ class HubLockFile(_JsonStateFile):
         # entry is the precondition for the uninstall_skill rmtree-escape.
         safe_name = _validate_skill_name(name)
         safe_install_path = _normalize_lock_install_path(install_path, safe_name)
-        data = self.load()
         now = datetime.now(timezone.utc).isoformat()
-        data["installed"][safe_name] = {
+        entry = {
             "source": source,
             "identifier": identifier,
             "trust_level": trust_level,
@@ -301,12 +312,16 @@ class HubLockFile(_JsonStateFile):
             "installed_at": now,
             "updated_at": now,
         }
-        self.save(data)
+        with skill_file_lock(self.path.with_suffix(".json.lock")):
+            data = self.load()
+            data["installed"][safe_name] = entry
+            self.save(data)
 
     def record_uninstall(self, name: str) -> None:
-        data = self.load()
-        data["installed"].pop(name, None)
-        self.save(data)
+        with skill_file_lock(self.path.with_suffix(".json.lock")):
+            data = self.load()
+            data["installed"].pop(name, None)
+            self.save(data)
 
     def get_installed(self, name: str) -> Optional[dict]:
         return self.load()["installed"].get(name)
@@ -374,7 +389,6 @@ def ensure_hub_dirs() -> None:
     _quarantine_dir().mkdir(exist_ok=True)
     _index_cache_dir().mkdir(exist_ok=True)
     for path, initial in (
-        (_lock_file(), '{"version": 1, "installed": {}}\n'),
         (_audit_log(), ""),
         (_taps_file(), '{"taps": []}\n'),
     ):

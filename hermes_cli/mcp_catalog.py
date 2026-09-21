@@ -6,8 +6,10 @@ approval (no community tier, no other trust signals). Manifests pin transport de
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -401,6 +403,28 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
             raise CatalogError(f"bootstrap step failed (exit {rc}): {cmd}")
 
 
+def _rmtree_make_writable(func, path, exc_info) -> None:
+    """Retry a failed tree removal after clearing Windows read-only attributes."""
+    exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    if not isinstance(exc, PermissionError):
+        raise exc
+    for target in (path, os.path.dirname(path)):
+        if target:
+            try:
+                os.chmod(target, os.stat(target).st_mode | stat.S_IWUSR)
+            except OSError:
+                pass
+    func(path)
+
+
+def _remove_git_tree(path: Path) -> None:
+    """Remove a catalog clone, including Git's read-only object files on Windows."""
+    try:
+        shutil.rmtree(path, onexc=_rmtree_make_writable)
+    except TypeError:  # Python 3.11 uses the legacy ``onerror`` callback name.
+        shutil.rmtree(path, onerror=_rmtree_make_writable)
+
+
 def _do_git_install(entry: CatalogEntry) -> Path:
     """Clone the entry's repo into ``~/.hermes/mcp-installs/<name>`` and run bootstrap. Returns the dir."""
     assert entry.install is not None and entry.install.type == "git"
@@ -413,7 +437,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if dest.exists():
         # Fresh checkout each install — the manifest ref is the source of truth.
         _say(f"  Removing existing install at {dest}", Colors.DIM)
-        shutil.rmtree(dest)
+        _remove_git_tree(dest)
     _say(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN)
 
     # `git clone --branch` only accepts branches/tags, NOT commit SHAs; detect SHA-shaped refs
@@ -433,7 +457,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if not is_sha_ref and _git("clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)) != 0:
         # Branch/tag form failed (e.g. ref deleted upstream): fall through to full-clone path.
         if dest.exists():
-            shutil.rmtree(dest)
+            _remove_git_tree(dest)
         is_sha_ref = True
     if is_sha_ref:
         if _git("clone", install.url, str(dest)) != 0:
@@ -749,6 +773,6 @@ def uninstall_entry(name: str, *, purge_install_dir: bool = True) -> bool:
     if purge_install_dir:
         clone = _install_root() / name
         if clone.exists():
-            shutil.rmtree(clone)
+            _remove_git_tree(clone)
             removed = True
     return removed

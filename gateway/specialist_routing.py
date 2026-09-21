@@ -357,7 +357,7 @@ def resolve_route(
 ) -> SpecialistRouteDecision:
     """Resolve an active specialist before using a fixed classifier fallback."""
     return apply_registry_resolution(
-        resolve_registry(signature, registry, profile_id=fallback.profile if fallback else None),
+        resolve_registry(signature, registry),
         fallback=fallback,
     )
 

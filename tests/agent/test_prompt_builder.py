@@ -370,6 +370,19 @@ class TestBuildSkillsSystemPrompt:
         full = build_skills_system_prompt()
         assert "Write threads" in full
 
+    def test_guarded_compaction_uses_neutral_category_wording(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "skills" / "development" / "formatter"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: formatter\ndescription: Format code\n---\n"
+        )
+
+        result = build_skills_system_prompt(compact_all_categories=True)
+
+        assert "development [names only]: formatter" in result
+        assert "descriptions omitted in compact mode" in result
+        assert "outside the current coding context" not in result
 
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):

@@ -51,8 +51,26 @@ def test_subject_encoding_cannot_collide_on_provider_user_delimiter():
     second = canonical_dashboard_subject(provider="portal", user_id="team:operator")
 
     assert first != second
-    assert first == '{"provider":"portal:team","user_id":"operator"}'
-    assert second == '{"provider":"portal","user_id":"team:operator"}'
+    assert first == "dashboard:portal%3Ateam:operator"
+    assert second == "dashboard:portal:team%3Aoperator"
+
+
+def test_dashboard_subject_is_accepted_by_durable_operator_approval():
+    _, canonical_dashboard_subject = _approval_api()
+    from agent.profile_benchmark import OperatorApproval
+
+    subject = canonical_dashboard_subject(provider="portal:team", user_id="operator")
+    approval = OperatorApproval(
+        candidate_id="candidate-1",
+        approval_id="approval-1",
+        operator_identity=subject,
+        verification_result_hash="a" * 64,
+        target_state="staged",
+        approved=True,
+        issued_at=1,
+    )
+
+    assert approval.operator_identity == subject
 
 
 def test_legacy_delimited_allowlist_value_does_not_authorize():

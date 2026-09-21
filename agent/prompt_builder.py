@@ -1362,11 +1362,16 @@ def _render_skills_index(
         frozenset(skills_by_category) if compact_all_categories
         else frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
     )
-    hidden_note = (
-        "\n(Categories marked [names only] are outside the current coding "
-        "context, so their descriptions are omitted — the skills work "
-        "normally and load with skill_view(name) as usual.)"
-    ) if demoted else ""
+    if compact_all_categories:
+        hidden_note = "\n(Categories marked [names only] have descriptions omitted in compact mode.)"
+    elif demoted:
+        hidden_note = "\n(Categories marked [names only] are outside the current coding context."
+        if available_tools is None or "skill_view" in available_tools:
+            hidden_note += " Their skills remain available and load with skill_view(name) as usual.)"
+        else:
+            hidden_note += " Their names remain available in this list.)"
+    else:
+        hidden_note = ""
     manage_guidance = (
         "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "

@@ -59,6 +59,7 @@ def test_specialist_handoff_creates_goal_mode_triage_root(kanban_home):
     assert task.goal_mode is True
     assert task.goal_max_turns == 12
     assert task.skills == ["exampleproject-worktree-navigation"]
+    assert result.assignee == task.assignee
 
 
 def test_specialist_handoff_explicit_board_ignores_database_environment_override(
@@ -102,6 +103,19 @@ def test_specialist_handoff_explicit_board_ignores_database_environment_override
         override_task = kb.get_task(override_conn, result.task_id)
     assert configured_task is not None
     assert override_task is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Why shouldn't we patch the exception burndown?",
+        "Do not patch this exception burndown.",
+    ),
+)
+def test_explicit_burndown_router_rejects_questions_and_negations(message):
+    from gateway.specialist_routing import classify_explicit_burndown_patch_request
+
+    assert classify_explicit_burndown_patch_request(message) is None
 
 
 def test_router_accepts_task_orchestrator_for_broad_actionable_work():

@@ -128,6 +128,44 @@ def _is_cron_approval_context() -> bool:
     return is_truthy_value(_session_env("HERMES_CRON_SESSION"))
 
 
+# Autonomous fleet-delegation flag. The gateway sets this True (via set_delegated_autonomous)
+# when the current turn is driven by a message from another bot (a fleet delegation) rather
+# than an interactive human -- there is no user present to answer an approval prompt, so a
+# dangerous non-allowlisted command would otherwise post to the room and hang until the consent
+# timeout (approvals.timeout, ~60s) before failing, during which the model often confabulates
+# "I have no terminal tool". A dedicated ContextVar (not the HERMES_SESSION_* env-bridge tuple
+# in gateway/session_context.py) since this is a single independent bool, not part of that
+# tightly-ordered, positionally-zipped session-identity vector.
+# Fail-closed: unset -> False -> unchanged behaviour; wrongly True -> extra denial (never an
+# approval), so this can never widen access.
+_delegated_autonomous: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "approval_delegated_autonomous", default=False,
+)
+
+
+def set_delegated_autonomous(value: bool) -> "contextvars.Token[bool]":
+    """Mark (or clear) the current turn as an autonomous fleet delegation."""
+    return _delegated_autonomous.set(bool(value))
+
+
+def reset_delegated_autonomous(token: "contextvars.Token[bool]") -> None:
+    """Restore the prior autonomous-delegation context."""
+    _delegated_autonomous.reset(token)
+
+
+def _is_autonomous_delegation_context() -> bool:
+    try:
+        return bool(_delegated_autonomous.get())
+    except LookupError:
+        return False
+
+
+def _get_autonomous_delegation_approval_mode() -> str:
+    """Approval mode for autonomous fleet delegations (turn driven by another bot, not a human).
+    Default deny — mirrors cron_mode: nobody is present to answer an unanswerable prompt."""
+    return _binary_approval_mode("autonomous_delegation_mode")
+
+
 # Programmatic/unattended platforms: no human can answer a prompt and the adapter has no ``send_exec_approval`` /
 # ``/approve`` surface. Governed by ``approvals.unattended_mode`` (default deny), mirroring ``cron_mode`` — never an
 # interactive round-trip that blocks for the full timeout with nobody to answer.

@@ -613,12 +613,19 @@ _CRON_CTX = _Unattended(
     "cron", "cron_mode", "cron jobs run without a user present to approve it",
     "in cron jobs", "this cron profile is intentionally trusted",
 )
+_AUTONOMOUS_DELEGATION_CTX = _Unattended(
+    "autonomous_delegation", "autonomous_delegation_mode",
+    "the turn is an autonomous fleet delegation (bot-to-bot) with no human present to approve it",
+    "for autonomous delegations", "this delegation is intentionally trusted",
+)
 
 
 def _unattended_contexts() -> list[_Unattended]:
     """Active unattended contexts in evaluation order: single-query first (``hermes chat -q``
     exports HERMES_INTERACTIVE=1 but nobody answers); cron beats a platform marker because
-    cron binds the platform for delivery routing only."""
+    cron binds the platform for delivery routing only; autonomous delegation last — it marks a
+    turn within an otherwise-normal gateway session (see set_delegated_autonomous), independent
+    of the cron/platform checks above."""
     contexts = []
     if _is_single_query_approval_context():
         contexts.append(_SINGLE_QUERY_CTX)
@@ -631,6 +638,8 @@ def _unattended_contexts() -> list[_Unattended]:
             f"({_get_session_platform()}) with no user present to approve it",
             "on unattended platforms", "sessions on this surface are intentionally trusted",
         ))
+    if approval_context._is_autonomous_delegation_context():
+        contexts.append(_AUTONOMOUS_DELEGATION_CTX)
     return contexts
 
 
@@ -934,16 +943,19 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 def _presence(approval_callback=None) -> tuple:
     """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context.
 
-    Single-query ``-q`` and cron clear the presence trio: ``hermes chat -q`` exports
-    HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
-    passes its environ to every external cron worker (#110932) — in neither can a human answer
-    the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
-    pending approval. Unattended *platforms* keep ``is_ask``: api_server relies on it for the
-    ``/v1/runs`` approval bridge (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
+    Single-query ``-q``, cron, and an autonomous fleet delegation clear the presence trio:
+    ``hermes chat -q`` exports HERMES_INTERACTIVE=1 for sudo prompts, a gateway sets
+    HERMES_EXEC_ASK=1 at startup and passes its environ to every external cron worker (#110932),
+    and an autonomous delegation IS a normal gateway session but driven by another bot, not a
+    human — in none of the three can a human answer the card, so the gate must resolve from
+    ``approvals.<ctx>_mode`` instead of parking on a pending approval. Unattended *platforms*
+    keep ``is_ask``: api_server relies on it for the ``/v1/runs`` approval bridge
+    (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context() or _is_cron_approval_context():
+    if (_is_single_query_approval_context() or _is_cron_approval_context()
+            or approval_context._is_autonomous_delegation_context()):
         is_cli = is_gateway = is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
@@ -983,6 +995,9 @@ def _run_approval_gate(
         deny_messages = {
             "single_query": single_query_deny_message, "cron": cron_deny_message,
             "unattended": unattended_deny_message,
+            # No caller currently overrides this one — falls through to the generic
+            # ctx.block_message(subject, noun, advice) below, same as an unset cron/single_query.
+            "autonomous_delegation": "",
         }
         for ctx in _unattended_contexts():
             if ctx.mode() == "deny":

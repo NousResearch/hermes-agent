@@ -1691,10 +1691,19 @@ class TurnRunner:
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
         from tools.approval import register_gateway_notify, unregister_gateway_notify
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from tools.approval_context import (
+            reset_current_session_key, reset_delegated_autonomous,
+            set_current_session_key, set_delegated_autonomous,
+        )
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
+        # Mark autonomous fleet delegations (turn driven by another bot, not a human) so
+        # dangerous non-allowlisted commands fail fast instead of hanging on an approval
+        # prompt nobody will answer. Fleet bots are @hermes_*; human operators (@eldov*)
+        # and others stay interactive.
+        _deleg_uid = getattr(ctx.source, "user_id", None) or ""
+        _deleg_token = set_delegated_autonomous(_deleg_uid.startswith("@hermes_"))
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
@@ -1731,6 +1740,7 @@ class TurnRunner:
             with suppress(Exception):
                 from tools.clarify_gateway import clear_session
                 clear_session(session_key)
+            reset_delegated_autonomous(_deleg_token)
             reset_current_session_key(token)
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):

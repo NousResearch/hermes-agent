@@ -270,7 +270,7 @@ class HubLockFile(_JsonStateFile):
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return json.loads(json.dumps(self.EMPTY))
-        except json.JSONDecodeError as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"Invalid skills hub lock file {self.path}: {exc}") from exc
         if not isinstance(data, dict) or not isinstance(data.get("installed"), dict):
             raise ValueError(
@@ -281,6 +281,7 @@ class HubLockFile(_JsonStateFile):
             if (
                 not isinstance(name, str)
                 or not isinstance(entry, dict)
+                or "name" in entry
                 or any(not isinstance(entry.get(field), str) for field in required_strings)
                 or ("identifier" in entry and not isinstance(entry["identifier"], str))
                 or ("content_hash" in entry and not isinstance(entry["content_hash"], str))

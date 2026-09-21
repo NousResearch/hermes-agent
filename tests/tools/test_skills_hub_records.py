@@ -89,6 +89,10 @@ def test_concurrent_record_updates_compose(uninstall):
         '{"version": 1, "installed": {"broken": []}}',
         '{"version": 1, "installed": {"broken": {}}}',
         '{"version": 1, "installed": {"broken": {"install_path": []}}}',
+        (
+            '{"version": 1, "installed": {"broken": {"source": "github", '
+            '"trust_level": "community", "install_path": "broken", "name": []}}}'
+        ),
     ],
 )
 def test_invalid_record_file_is_not_overwritten(tmp_path, payload):
@@ -100,6 +104,16 @@ def test_invalid_record_file_is_not_overwritten(tmp_path, payload):
         _install(HubLockFile(path), "failed")
 
     assert path.read_bytes() == before
+
+
+def test_invalid_utf8_record_file_is_not_overwritten(tmp_path):
+    path = tmp_path / "lock.json"
+    path.write_bytes(b"\xff")
+
+    with pytest.raises(ValueError, match="Invalid skills hub lock file"):
+        _install(HubLockFile(path), "failed")
+
+    assert path.read_bytes() == b"\xff"
 
 
 def test_failed_atomic_publication_preserves_record_file(tmp_path, monkeypatch):

@@ -19,13 +19,19 @@ from hermes_cli.skills_hub import handle_skills_slash
         '{"version": 1, "installed": {"broken": []}}',
         '{"version": 1, "installed": {"broken": {}}}',
         '{"version": 1, "installed": {"broken": {"install_path": []}}}',
+        (
+            '{"version": 1, "installed": {"broken": {"source": "github", '
+            '"trust_level": "community", "install_path": "broken", "name": []}}}'
+        ),
+        b"\xff",
     ]
 )
 def corrupt_record(request):
     path = get_hermes_home() / "skills" / ".hub" / "lock.json"
     path.parent.mkdir(parents=True)
-    path.write_text(request.param, encoding="utf-8")
-    return path, request.param
+    payload = request.param.encode() if isinstance(request.param, str) else request.param
+    path.write_bytes(payload)
+    return path, payload
 
 
 @pytest.mark.parametrize("args", [("list",), ("snapshot", "export", "-")])
@@ -38,7 +44,7 @@ def test_cli_reports_corrupt_provenance_and_recovers(corrupt_record, args):
     assert failed.returncode == 1
     assert "Invalid skills hub lock file" in output
     assert "Traceback" not in output
-    assert path.read_text(encoding="utf-8") == corrupt_bytes
+    assert path.read_bytes() == corrupt_bytes
 
     path.write_text(
         json.dumps({"version": 1, "installed": {}}), encoding="utf-8"
@@ -55,7 +61,7 @@ def test_chat_command_reports_corrupt_provenance_without_exiting(corrupt_record,
     console = Console(file=output, force_terminal=False, width=200)
     handle_skills_slash(f"/skills {command}", console=console)
     assert "Invalid skills hub lock file" in output.getvalue()
-    assert path.read_text(encoding="utf-8") == corrupt_bytes
+    assert path.read_bytes() == corrupt_bytes
 
     path.write_text(
         json.dumps({"version": 1, "installed": {}}), encoding="utf-8"

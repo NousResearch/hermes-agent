@@ -83,7 +83,10 @@ def test_failed_probe_keeps_timestamp_and_warns_about_uncached_slugs(mod, tmp_pa
     cat = _catalog(tmp_path, "https://github.com/a/one", "https://github.com/b/two")
     out = tmp_path / "plugin-stars.json"
     timestamp = "2026-01-01T00:00:00+00:00"
-    out.write_text(json.dumps({"fetched_at": timestamp, "stars": {"a/one": 7}}), encoding="utf-8")
+    out.write_text(json.dumps({
+        "fetched_at": timestamp,
+        "stars": {"a/one": 7, "retired/old": 99},
+    }), encoding="utf-8")
 
     def limited(query, token):
         raise urllib.error.HTTPError("u", 401, "unauthorized", hdrs=None, fp=None)

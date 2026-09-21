@@ -7,15 +7,15 @@ Subcommands:
   handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
 
-The vault backs the password-blind browser autofill tools
-(``browser_vault_list`` / ``browser_vault_fill``): the agent sees handles
-and login identifiers, types the identifier itself, and fills the password
-server-side without ever seeing it.
+The vault backs model-blind browser autofill tools
+(``browser_vault_list`` / ``browser_vault_fill``): the agent sees opaque
+handles while both the identifier and password are filled server-side.
 """
 
 from __future__ import annotations
 
 import getpass
+import os
 
 
 def _console():
@@ -33,9 +33,8 @@ def _cmd_add(args) -> None:
 
     c = _console()
     c.print(
-        "[bold]Add a vault item[/] (the password is encrypted at rest and the "
-        "agent never sees it; the identifier is visible metadata the agent "
-        "can type itself)"
+        "[bold]Add a vault item[/] (login identifiers and passwords are filled "
+        "server-side and never returned to the agent)"
     )
 
     kind = (args.kind or "").strip().lower()
@@ -164,8 +163,8 @@ def _cmd_sources(args) -> None:
             save_config(cfg)
             c.print("[green]Hermes vault[/] is now the credential write backend.")
             return
-        if args.write and name not in {"local", "bitwarden"}:
-            c.print("[red]Writable credential backends are local and bitwarden.[/]")
+        if args.write and name not in {"local", "bitwarden", "bitwarden_secrets"}:
+            c.print("[red]Writable credential backends are local, bitwarden and bitwarden_secrets.[/]")
             return
         if name not in classes:
             c.print(f"[red]Unknown password manager {name!r}[/] (expected one of {', '.join(classes)})")
@@ -195,7 +194,9 @@ def _cmd_sources(args) -> None:
     write_backend = str(vault_config().get("write_backend") or "local")
     for name, cls in classes.items():
         if name in enabled:
-            status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
+            status = "[green]configured[/] · unattended" if name == "bitwarden_secrets" else (
+                "[green]detected[/] · the agent asks you to unlock it when it needs a login"
+            )
         elif is_installed(name):
             status = "[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)".format(name=name)
         else:
@@ -269,6 +270,81 @@ def _cmd_migrate_local(args) -> None:
     c.print("[dim]Local source items were not deleted.[/]")
 
 
+def _sdk_endpoints(server_url: str) -> tuple[str, str]:
+    base = (server_url or "").strip().rstrip("/")
+    if not base or base == "https://vault.bitwarden.com":
+        return "", ""
+    if base == "https://vault.bitwarden.eu":
+        return "https://api.bitwarden.eu", "https://identity.bitwarden.eu"
+    return f"{base}/api", f"{base}/identity"
+
+
+def _cmd_setup_bitwarden_secrets(args) -> None:
+    """Configure a dedicated BSM project for model-blind login storage."""
+    from agent.secret_sources import bitwarden as bw
+    from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
+    from hermes_cli.secret_prompt import masked_secret_prompt
+    from hermes_cli.secrets_cli import _list_projects
+
+    c = _console()
+    binary = bw.find_bws(install_if_missing=True)
+    if binary is None:
+        c.print("[red]Could not install the Bitwarden Secrets Manager CLI.[/]")
+        return
+    token_env = "BWS_ACCESS_TOKEN"
+    token = os.environ.get(token_env, "").strip()
+    if not token:
+        if not os.isatty(0):
+            c.print(f"[red]{token_env} is required in non-interactive mode.[/]")
+            return
+        token = masked_secret_prompt(f"Paste the machine-account access token ({token_env}): ").strip()
+    if not token:
+        c.print("[red]Empty access token; nothing changed.[/]")
+        return
+    server_url = str(args.server_url or os.environ.get("BWS_SERVER_URL", "")).strip()
+    projects = _list_projects(binary, token, c, server_url=server_url)
+    if projects is None:
+        c.print("[red]The token could not be validated; nothing changed.[/]")
+        return
+    project_id = str(args.project_id or "").strip()
+    if project_id:
+        if not any(str(project.get("id")) == project_id for project in projects):
+            c.print("[red]The requested project is not visible to this machine account.[/]")
+            return
+    else:
+        if not projects:
+            c.print("[red]No project is visible to this machine account.[/]")
+            return
+        if not os.isatty(0):
+            c.print("[red]--project-id is required in non-interactive mode.[/]")
+            return
+        from hermes_cli._secrets_common import print_table, prompt_index
+        print_table(c, (("#", {"style": "cyan", "width": 4}), "Name", ("ID", {"style": "dim"})),
+                    ((str(i), p.get("name", "?"), p.get("id", "?")) for i, p in enumerate(projects, 1)))
+        choice = prompt_index(c, f"Select the dedicated credential project [1-{len(projects)}]: ", len(projects))
+        project_id = str(projects[choice - 1]["id"])
+
+    api_url, identity_url = _sdk_endpoints(server_url)
+    save_env_value(token_env, token)
+    cfg = load_config()
+    vault_cfg = cfg.setdefault("vault", {})
+    vault_cfg["write_backend"] = "bitwarden_secrets"
+    vault_cfg.setdefault("bitwarden", {})["enabled"] = False
+    vault_cfg["bitwarden_secrets"] = {
+        "enabled": True,
+        "organization_id": "",
+        "project_id": project_id,
+        "access_token_env": token_env,
+        "keychain_service": "",
+        "keychain_account": "",
+        "api_url": api_url,
+        "identity_url": identity_url,
+    }
+    save_config(cfg)
+    c.print(f"[green]Configured Bitwarden Secrets Manager credential storage.[/] Token: {get_env_path()}")
+    c.print("Restart the Hermes gateway, then run `hermes vault migrate-local` before `--execute`.")
+
+
 def register_cli(subparser) -> None:
     """Build the ``hermes vault`` argparse tree (called from main.py)."""
     subs = subparser.add_subparsers(dest="vault_action")
@@ -301,11 +377,19 @@ def register_cli(subparser) -> None:
     )
     p_migrate.set_defaults(_vault_handler=_cmd_migrate_local)
 
-    p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
+    p_bws = subs.add_parser(
+        "setup-bitwarden-secrets",
+        help="Use a dedicated Bitwarden Secrets Manager project for unattended login storage",
+    )
+    p_bws.add_argument("--project-id", help="Dedicated credential project UUID (interactive picker when omitted)")
+    p_bws.add_argument("--server-url", default="", help="Bitwarden vault URL; empty uses US Cloud")
+    p_bws.set_defaults(_vault_handler=_cmd_setup_bitwarden_secrets)
+
+    p_src = subs.add_parser("sources", help="Show password-manager login backends")
     group = p_src.add_mutually_exclusive_group()
-    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden")
+    group.add_argument("--disable", metavar="NAME", help="Stop using a manager: onepassword | bitwarden | bitwarden_secrets")
     group.add_argument("--enable", metavar="NAME", help="Undo --disable")
-    group.add_argument("--write", metavar="NAME", help="Save new/changed logins here: local | bitwarden")
+    group.add_argument("--write", metavar="NAME", help="Save new/changed logins here: local | bitwarden | bitwarden_secrets")
     p_src.set_defaults(_vault_handler=_cmd_sources)
 
 

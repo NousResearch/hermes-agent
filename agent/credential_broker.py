@@ -71,9 +71,14 @@ class CredentialBroker:
             raise VaultError("login items require identifier and password")
 
         backend = self.write_backend()
-        existing = next((item for item in backend.list_items()
-                         if item.kind == "login" and item.origin == origin
-                         and item.identifier == identifier), None)
+        finder = getattr(backend, "find_login", None)
+        if callable(finder):
+            existing = finder(origin, identifier)
+        else:
+            existing = next(
+                (item for item in backend.list_items() if item.origin == origin and item.identifier == identifier),
+                None,
+            )
         kwargs = {
             "label": label,
             "origin": origin,

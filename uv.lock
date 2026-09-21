@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-09-07T04:39:03.901155Z"
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
@@ -617,6 +617,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7f/45/8ae61209bb9015f516102fa559a2914178da1d5868428bd86a1b4421141d/base58-2.1.1.tar.gz", hash = "sha256:c5d0cb3f5b6e81e8e35da5754388ddcc6d0d14b6c6a132cb93d69ed580a7278c", size = 6528, upload-time = "2021-10-30T22:12:17.858Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/45/ec96b29162a402fc4c1c5512d114d7b3787b9d1c2ec241d9568b4816ee23/base58-2.1.1-py3-none-any.whl", hash = "sha256:11a36f4d3ce51dfc1043f3218591ac4eb1ceb172919cebe05b52a5bcc8d245c2", size = 5621, upload-time = "2021-10-30T22:12:16.658Z" },
+]
+
+[[package]]
+name = "bitwarden-sdk"
+version = "2.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/8b/561140803e14f5fcb461814af08efe686ff4f07eb0fe8d6721cb887008bf/bitwarden_sdk-2.1.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:659b7e3faaab067f38556ffaaa7edf217e581047234f9a748770fa2926d2664c", size = 3720715, upload-time = "2026-05-21T22:39:54.125Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/7c/b4d87586010d365c01cffe2e1b28814072fae3c7a59dcfd85c7a51d11b7e/bitwarden_sdk-2.1.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:8374ef97e481c17a0b65e1b8d700df492cb384ff5a4888bd2c697c37457fc332", size = 3516944, upload-time = "2026-05-21T22:39:56.418Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/56/44bdc84935648f735ce80df7e88cdaa133fb45a2fee745343ea2dfa26095/bitwarden_sdk-2.1.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:cdf85d309aecf21c563c9245322d49a344135761d03cffa43b8703f509bc0df7", size = 3315068, upload-time = "2026-05-21T22:39:58.075Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/f4/ccdcadee82f88ec3c52a3b6e0db11df4c5587db171a2c979e4e9eb76b1d4/bitwarden_sdk-2.1.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b6f6b2624e340307891edc20a2860ec0b7c2140683eec2ce2e20d1076ffe9268", size = 3519632, upload-time = "2026-05-21T22:39:59.861Z" },
+    { url = "https://files.pythonhosted.org/packages/58/49/cb3ed348f7bd35cc323021c11bee70304e446f3d5a6fca678987b4c47d23/bitwarden_sdk-2.1.0-cp39-abi3-win_amd64.whl", hash = "sha256:2c5de50af003b7b2d16a9a690d3111480d1b1962eb25f39e416812d6d9d4e4d6", size = 3453431, upload-time = "2026-05-21T22:40:01.481Z" },
 ]
 
 [[package]]
@@ -1803,6 +1818,9 @@ azure-identity = [
 bedrock = [
     { name = "boto3" },
 ]
+bitwarden-secrets = [
+    { name = "bitwarden-sdk" },
+]
 computer-use = [
     { name = "httpx2" },
     { name = "mcp" },
@@ -2003,6 +2021,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.87.0" },
     { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
+    { name = "bitwarden-sdk", marker = "extra == 'bitwarden-secrets'", specifier = "==2.1.0" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.2" },
     { name = "certifi", specifier = "==2026.5.20" },
@@ -2139,7 +2158,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
+provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "bitwarden-secrets", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -4283,7 +4302,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy" },
+    { name = "numpy", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -4338,7 +4357,7 @@ resolution-markers = [
     "python_full_version == '3.12.*'",
 ]
 dependencies = [
-    { name = "numpy" },
+    { name = "numpy", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [
@@ -4975,11 +4994,11 @@ name = "vercel-workers"
 version = "0.0.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "vercel" },
+    { name = "anyio", marker = "python_full_version >= '3.12'" },
+    { name = "httpx", marker = "python_full_version >= '3.12'" },
+    { name = "pydantic", marker = "python_full_version >= '3.12'" },
+    { name = "python-dotenv", marker = "python_full_version >= '3.12'" },
+    { name = "vercel", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/30/df/04d37021ad7ca53b7599c313e411d91623c7a005c741f491d1eefb7a9f0c/vercel_workers-0.0.25.tar.gz", hash = "sha256:212ded01400b524be51d251df49f801caf115ad7d48cca7eb168cbeceda3def3", size = 64149, upload-time = "2026-06-20T19:26:27.177Z" }
 wheels = [

@@ -119,10 +119,11 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
             assert out == {"success": True, "filled_fields": 1, "backend": "bitwarden", "kind": "login",
                            "origin": "https://example.com"}
             assert prompts == [("bitwarden", "Bitwarden")]
-            # Now unlocked: listing exposes metadata only, never the password.
+            # Now unlocked: listing exposes an opaque handle, never either credential value.
             listed = json.loads(browser_vault_list())
             assert listed["items"][0]["handle"] == "bw:abc"
-            assert listed["items"][0]["identifier"] == "jane@example.com"
+            assert "identifier" not in listed["items"][0]
+            assert "jane@example.com" not in json.dumps(listed)
             assert "plain sentence nobody would flag 7" not in json.dumps(listed)
             # The password reached the fill script, and only there.
             assert "plain sentence nobody would flag 7" in secret_eval.call_args.args[1]

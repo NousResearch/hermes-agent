@@ -27,6 +27,19 @@ const strList = (v: unknown): null | string[] =>
 export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (request: ServerRequest) => boolean {
   const { ringPromptBell, setStatus } = ctx
 
+  const revealSensitivePrompt = () =>
+    patchOverlayState({
+      agents: false,
+      journey: false,
+      modelPicker: false,
+      pager: null,
+      petPicker: false,
+      pluginsHub: false,
+      sessions: false,
+      skillsHub: false,
+      widget: null
+    })
+
   const open = (request: ServerRequest, status: string) => {
     rememberServerRequest(request)
     setStatus(status)
@@ -100,6 +113,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
         return true
 
       case 'vault.unlock_prompt':
+        revealSensitivePrompt()
         patchOverlayState({
           vaultUnlock: { backend: str(p.backend), displayName: str(p.display_name), requestId: request.id }
         })
@@ -109,6 +123,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
       case 'vault.save_login': {
         const origin = str(p.origin)
 
+        revealSensitivePrompt()
         patchOverlayState({
           vaultSaveLogin: {
             origin,

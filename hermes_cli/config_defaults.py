@@ -2372,7 +2372,7 @@ DEFAULT_CONFIG = {
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
         # New/changed website logins are saved here. Read/fill still aggregates every enabled backend.
-        "write_backend": "local",  # local | bitwarden
+        "write_backend": "local",  # local | bitwarden | bitwarden_secrets
         "onepassword": {
             # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
             "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.
@@ -2384,6 +2384,21 @@ DEFAULT_CONFIG = {
         "bitwarden": {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
+        },
+        "bitwarden_secrets": {
+            "enabled": False,
+            # Dedicated Secrets Manager project used only by the Credential Broker. Do not also
+            # configure this project under secrets.bitwarden (that path bulk-injects values).
+            # Optional: when empty the SDK derives it from project_id.
+            "organization_id": "",
+            "project_id": "",
+            "access_token_env": "BWS_ACCESS_TOKEN",
+            # Optional macOS Keychain fallback for the machine token. Empty disables Keychain lookup.
+            "keychain_service": "",
+            "keychain_account": "",
+            # Exact SDK endpoints; empty selects Bitwarden US Cloud defaults.
+            "api_url": "",
+            "identity_url": "",
         },
     },
     "secrets": {

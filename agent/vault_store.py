@@ -11,7 +11,7 @@ Design notes:
   file and vault file are created 0600 under ``<HERMES_HOME>/vault/``.
 - Ported design (opaque-handle vault fill) from Merit-Systems/OpenInstinct
   (MIT): lib/manager/server/secret-store.ts + vault services.
-- Three item kinds: ``login`` (password-only secret), ``payment`` (card fields) and
+- Three item kinds: ``login`` (identifier metadata plus encrypted password), ``payment`` (card fields) and
   ``address``; ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` are the canonical payload names.
 """
 
@@ -154,9 +154,9 @@ def normalize_origin(url_or_origin: str) -> str:
 class VaultItemMeta:
     """Metadata-only view of a vault item. Never contains secret values.
 
-    For ``kind='login'`` the identifier (email/username/phone) is metadata,
-    not a secret: the agent may see it and type it itself. Only the password
-    is vault-secret.
+    For ``kind='login'`` the identifier (email/username/phone) is retained as
+    metadata for matching and local administration. Model-facing tools omit
+    it; browser filling resolves both identifier and password server-side.
     """
 
     id: str
@@ -312,10 +312,10 @@ class VaultStore:
 
         For ``kind='login'``, ``origin`` is required and the payload must
         contain ``identifier_type``, ``identifier`` and ``password``. The
-        identifier fields are NOT secret — they are moved into item metadata
-        (the agent may see and type the identifier itself); only
-        ``password`` stays in the encrypted secret payload. ``payment`` and
-        ``address`` payloads remain fully secret.
+        identifier fields are moved into item metadata for backwards-compatible
+        matching and local administration; model-facing tools must still omit
+        them. ``password`` stays in the encrypted secret payload. ``payment``
+        and ``address`` payloads remain fully secret.
         """
         if kind not in VAULT_KINDS:
             raise VaultError(f"unknown vault kind {kind!r} (expected one of {VAULT_KINDS})")

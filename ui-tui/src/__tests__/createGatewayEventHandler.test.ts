@@ -1835,6 +1835,46 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('login details needed')
   })
 
+  it('reveals a vault unlock prompt by closing local panels that can hide PromptZone', () => {
+    patchOverlayState({
+      agents: true,
+      journey: true,
+      modelPicker: true,
+      pager: { lines: ['hidden'], offset: 0 },
+      petPicker: true,
+      pluginsHub: true,
+      sessions: true,
+      skillsHub: true,
+      widget: { id: 'test-widget' } as any
+    })
+
+    const { handled, respond } = serverRequest(
+      'vault.unlock_prompt',
+      { backend: 'bitwarden', display_name: 'Bitwarden' },
+      'vault-unlock-visible'
+    )
+
+    expect(handled).toBe(true)
+    expect(respond).not.toHaveBeenCalled()
+    expect(getOverlayState()).toMatchObject({
+      agents: false,
+      journey: false,
+      modelPicker: false,
+      pager: null,
+      petPicker: false,
+      pluginsHub: false,
+      sessions: false,
+      skillsHub: false,
+      vaultUnlock: {
+        backend: 'bitwarden',
+        displayName: 'Bitwarden',
+        requestId: 'vault-unlock-visible'
+      },
+      widget: null
+    })
+    expect(getUiState().status).toBe('unlock Bitwarden')
+  })
+
   it('clears a matching vault save card when the gateway withdraws it', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 

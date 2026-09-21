@@ -94,7 +94,9 @@ class GatewayInboundMixin:
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
+                    _capture = getattr(event, "_credential_capture", None)
                     event = dataclasses.replace(event, text=_new_text)
+                    event._credential_capture = _capture
                 break
             if _action == "allow":
                 break
@@ -213,6 +215,7 @@ class GatewayInboundMixin:
             and not is_internal
             and not getattr(event, "_hermes_startup_restore_replay", False)
         ):
+            event._credential_capture_deferred = getattr(event, "_credential_capture", None) is not None
             self._queue_startup_restore_event(event)
             return None
 
@@ -1260,10 +1263,28 @@ class GatewayInboundMixin:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.credential_capture import (
+            discard_credential_capture,
+            prepare_credential_capture,
+            save_authorized_credential_capture,
+        )
+        prepare_credential_capture(event)
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
+            if not getattr(event, "_credential_capture_deferred", False):
+                discard_credential_capture(event)
             return None
         event, source, is_internal = _admitted
+        event._credential_capture_deferred = False
+        if getattr(event, "_credential_capture", None) is not None:
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                from gateway.run import _async_profile_runtime_scope
+                async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                    capture_result = await asyncio.to_thread(save_authorized_credential_capture, event)
+            else:
+                capture_result = await asyncio.to_thread(save_authorized_credential_capture, event)
+            if capture_result.reply is not None:
+                return capture_result.reply
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel
         # guard, plugin hooks and user authorization all reject events above,

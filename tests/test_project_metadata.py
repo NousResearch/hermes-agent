@@ -72,7 +72,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "modal", "daytona", "vercel",
         "messaging", "slack", "matrix", "dingtalk", "feishu", "google-chat",
         "honcho", "hindsight",
-        "supermemory", "mem0",
+        "supermemory", "mem0", "bitwarden-secrets",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }
     all_extra_specs = optional_dependencies["all"]

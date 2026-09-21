@@ -585,6 +585,22 @@ read its exit status — books the same death the same way the gateway-embedded
 dispatcher does; a worker killed before it reaches that line is a plain
 `crashed` (`pid <n> not alive`).
 
+A different exit shape gets its own classification: a dispatcher-spawned
+worker that exits cleanly (rc=0) with **zero heartbeats ever recorded** — no
+`last_heartbeat_at` value and no `heartbeat` event — after the crash grace
+window has elapsed never reached the model at all. The dispatcher treats
+this as a **route failure**, not a protocol violation: the run metadata
+carries `route_failure: true` with the error text from `_ROUTE_FAILURE_ERROR`.
+Route failures get their own bounded streak of two attempts
+(`_ROUTE_FAILURE_FAILURE_LIMIT`) that deliberately does **not** consult the
+task's `max_retries` — a task's own retry budget for its agent work says
+nothing about how many times to re-attempt a broken route or credential.
+Below that budget the card is released back to `ready` streak-free (no
+failure recorded); at the budget the dispatcher emits `gave_up` with
+`route_failures` and `route_failure_limit` in the payload and blocks the
+card. Route failures neither consume nor reset the protocol-violation
+streak above — the two budgets are independent.
+
 **Agent-side prevention:** Before the worker exits, Hermes injects up to two
 synthetic nudges when it detects the model is about to stop without a terminal
 board tool call. This catches the common case where the model narrates the next
@@ -1413,14 +1429,14 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `spawned` | `{pid}` | Dispatcher successfully started a worker process. |
 | `heartbeat` | `{note?}` | Worker called `hermes kanban heartbeat $TASK` to signal liveness during long operations. |
 | `reclaimed` | `{stale_lock}` | Claim TTL expired without a completion; task goes back to `ready`. An automatic reclaim counts as one non-successful attempt toward the `gave_up` breaker (a claim that never spawned a worker would otherwise loop claim → reclaim → claim forever); an operator `reclaim` resets the counter instead. |
-| `crashed` | `{pid, claimer, exit_kind?, exit_code?, worker_output?}` | Worker PID no longer alive but TTL hadn't expired yet. `worker_output` is the tail of the worker's own log (its final response or the rendered provider error, chrome stripped, ≤ 400 chars) and is also appended to the task's `last_failure_error`, so the board shows *why* instead of only the exit code. |
+| `crashed` | `{pid, claimer, exit_kind?, exit_code?, worker_output?, route_failure?, exit_signal?}` | Worker PID no longer alive but TTL hadn't expired yet. `worker_output` is the tail of the worker's own log (its final response or the rendered provider error, chrome stripped, ≤ 400 chars) and is also appended to the task's `last_failure_error`, so the board shows *why* instead of only the exit code. `route_failure: true` with `exit_signal: "heartbeat_null"` marks a clean exit with zero heartbeats ever recorded — the worker never reached the model — booked against its own route-failure budget instead of the protocol-violation streak. |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |
 | `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, terminated}` | Task ran longer than `kanban.dispatch_stale_timeout_seconds` (default 4 h) AND no `kanban_heartbeat` arrived in the last hour. Dispatcher SIGTERM'd the host-local worker (if any), reset the task to `ready` for re-dispatch. Does NOT tick the failure counter (stale is dispatcher-side absence detection, not a worker fault). Workers running long operations should call `kanban_heartbeat` at least once an hour to avoid this. |
 | `reconciled` | `{reason, claim_lock, claim_expires, worker_pid}` | Orphaned-card reconciliation: the card was `running` with broken claim bookkeeping (`claim_lock` or `claim_expires` NULL — crash mid-claim, manual SQL, DB restore) and no live worker, so none of the TTL/crash/stale paths could ever recover it. The dispatcher requeued it to `ready` with an explanatory comment. Gated by `kanban.reconcile_orphans` in config.yaml (default `true`). |
 | `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `infrastructure_cooldown` (the host refused the last spawn — no restart-safe systemd scope — and the cooldown has not elapsed; never counted against the card), `rate_limit_cooldown` (the last run hit a quota wall; same cooldown, never counted), `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
 | `protocol_violation` | `{pid, claimer, exit_code, protocol_violation, worker_output?}` | Worker exited successfully while the task was still `running`, usually because it answered without a terminal board call (`kanban_complete`, `kanban_request_review` or `kanban_block`). Emitted on every violation (the payload's `protocol_violation: true` marker is copied into the run metadata and feeds the violation-only retry budget). Below the budget — up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` (default 3) *consecutive* violations, per-task `max_retries` overriding — the task simply returns to `ready` for another attempt; when the streak reaches the bound the dispatcher also emits `gave_up` and auto-blocks. `worker_output` carries the worker's own last printed text (usually its explanation of why it stopped), also folded into `last_failure_error` and shown to the retry worker as the prior-attempt error. |
-| `gave_up` | `{failures, effective_limit, limit_source, error, terminal_provider?}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. `terminal_provider: true` means the worker exited `78` on a provider error a retry cannot fix (credential revoked, model gone) and the breaker fired on that first attempt, sticky, regardless of the limit. |
+| `gave_up` | `{failures, effective_limit, limit_source, error, terminal_provider?, route_failures?, route_failure_limit?}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. `terminal_provider: true` means the worker exited `78` on a provider error a retry cannot fix (credential revoked, model gone) and the breaker fired on that first attempt, sticky, regardless of the limit. `route_failures` / `route_failure_limit` appear instead when the breaker fired on the separate route-failure budget (default 2, independent of `max_retries`). |
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.
 

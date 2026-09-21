@@ -1058,12 +1058,21 @@ class TurnRunner:
             # cached[3] = the session_id the snapshot was taken for.
             cached_mc = cached[2] if len(cached) > 2 else None
             cached_sid = cached[3] if len(cached) > 3 else None
+            state = self._runner._peek_session_state(ctx.session_key)
+            cache_refresh_required = bool(
+                state is not None and state.persistent.cache_refresh_required
+            )
             # Same session_key, other conversation: the counts track DIFFERENT DB rows, so the
             # comparison is meaningless — REUSE rather than bust the prompt cache on every switch.
             sid_mismatch = cached_sid is not None and ctx.session_id is not None and cached_sid != ctx.session_id
             # Re-validate the outside-lock dead-session peek against the tuple read under THIS lock:
             # a stale "dead" verdict must never be applied to a different (possibly live) agent.
-            if sid_mismatch and dead and cached_sid == peek_sid:
+            if cache_refresh_required:
+                logger.info(
+                    "Agent cache invalidated for session %s after detached context compaction",
+                    ctx.session_key,
+                )
+            elif sid_mismatch and dead and cached_sid == peek_sid:
                 logger.info(
                     "Agent cache invalidated for session %s: "
                     "cached agent's session_id %s is ended in "
@@ -1165,6 +1174,9 @@ class TurnRunner:
                     # can skip the meaningless count comparison if the active session_id switches.
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
+                state = runner._peek_session_state(ctx.session_key)
+                if state is not None:
+                    state.persistent.cache_refresh_required = False
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
         return agent, found.reused
 

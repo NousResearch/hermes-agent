@@ -1071,6 +1071,7 @@ class GatewayTurnMixin:
 
     async def _hmwa_hygiene_adopt_transcript(
         self, attempt, _compressed, history, plan, *, session_entry, source, _quick_key, run_generation,
+        commit_authority_check=None,
     ):
         """Adopt a finished compression (rotation / in-place / refused); publishes the transcript to
         continue with on ``attempt.history``. Returns ``(rotated, in_place, new_count, new_tokens)``.
@@ -1121,13 +1122,24 @@ class GatewayTurnMixin:
                 _hyg_rotated = False
                 _hyg_in_place = False
             else:
-                session_entry.session_id = _hyg_new_sid
-                # The held turn lease follows the rotation (alias keys still serialize on this turn).
-                self._rebind_turn_lease(_quick_key, run_generation, _hyg_new_sid)
-                await self.async_session_store._save()
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding, source, session_entry, reason="hygiene-compression",
-                )
+                if commit_authority_check is not None:
+                    live_entry = self.session_store._advance_compression_session_locked(
+                        session_entry.session_key, session_entry.session_id, _hyg_new_sid,
+                    )
+                    if live_entry is None or not commit_authority_check():
+                        _hyg_rotated = False
+                        _hyg_in_place = False
+                    else:
+                        session_entry = live_entry
+                else:
+                    session_entry.session_id = _hyg_new_sid
+                    await self.async_session_store._save()
+                if _hyg_rotated:
+                    # The held turn lease follows the rotation (alias keys still serialize on this turn).
+                    self._rebind_turn_lease(_quick_key, run_generation, _hyg_new_sid)
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding, source, session_entry, reason="hygiene-compression",
+                    )
 
         if _hyg_rotated or _hyg_in_place:
             # Rewritten (rotation) or persisted by archive_and_compact() (in-place): reset token count.
@@ -1156,14 +1168,19 @@ class GatewayTurnMixin:
     async def _hmwa_hygiene_apply_result(
         self, attempt, hs, _compressed, history, plan, *,
         session_entry, session_key, source, _quick_key, run_generation,
+        commit_authority_check=None,
     ):
         """Adopt a finished hygiene compression, rebind the session + turn lease, record
         streak/cooldown, and warn the user on abort."""
         from gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered
-        _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
-            attempt, _compressed, history, plan, session_entry=session_entry, source=source,
-            _quick_key=_quick_key, run_generation=run_generation,
-        )
+        try:
+            _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
+                attempt, _compressed, history, plan, session_entry=session_entry, source=source,
+                _quick_key=_quick_key, run_generation=run_generation,
+                commit_authority_check=commit_authority_check,
+            )
+        finally:
+            attempt.commit_fence.release_admission_lock()
         # Summary failure aborts the compressor (nothing dropped). Warn the user visibly — agent.log
         # is invisible on TG/Discord — so they know the chat is "frozen" and can /compress or /reset.
         _comp = getattr(attempt.agent, "context_compressor", None)
@@ -1274,7 +1291,8 @@ class GatewayTurnMixin:
     async def _hmwa_hygiene_detached_attempt(
         self, attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
         source, session_entry, session_key, _quick_key, run_generation,
-        commit_authority_check=None, cache_owner=None,
+        commit_authority_check=None, commit_authority_lock=None, cache_owner=None,
+        compression_in_place=None,
     ):
         """Run one detached hygiene compression attempt end to end; publishes the transcript to
         continue with (compressed or original) on ``attempt.history``."""
@@ -1285,7 +1303,9 @@ class GatewayTurnMixin:
         try:
             # Hygiene owns the session binding, so prefer in-place compaction over minting a
             # continuation child. Without a SessionDB this stays False.
-            _hyg_agent.compression_in_place = True
+            _hyg_agent.compression_in_place = (
+                True if compression_in_place is None else bool(compression_in_place)
+            )
             _bind_hyg_state = getattr(getattr(_hyg_agent, "context_compressor", None), "bind_session_state", None)
             if callable(_bind_hyg_state):
                 _bind_hyg_state(_hyg_session_db, session_entry.session_id)
@@ -1297,6 +1317,8 @@ class GatewayTurnMixin:
             _hyg_commit_fence = CompressionCommitFence(
                 total_ceiling_seconds=hs.total_ceiling_seconds,
                 admission_check=commit_authority_check,
+                admission_lock=commit_authority_lock,
+                retain_admission_lock_after_commit=commit_authority_lock is not None,
             )
             # Default executor (NOT self._get_executor): a hung summary must never occupy an
             # agent-work slot. MUST run in the caller's contextvars (multiplex secret scope).
@@ -1330,20 +1352,28 @@ class GatewayTurnMixin:
                 attempt, hs, _compressed, history, plan, session_entry=session_entry,
                 session_key=session_key, source=source, _quick_key=_quick_key,
                 run_generation=run_generation,
+                commit_authority_check=commit_authority_check,
             )
         finally:
             # Evict the cached agent so the next turn rebuilds its system prompt.
-            self._evict_cached_agent(
+            evicted = self._evict_cached_agent(
                 session_key,
                 expected_agent=cache_owner,
                 run_generation=run_generation if cache_owner is not None else None,
             )
+            if cache_owner is not None and not evicted:
+                state = self._peek_session_state(session_key)
+                if state is not None:
+                    state.persistent.cache_refresh_required = True
+            if attempt.commit_fence is not None:
+                attempt.commit_fence.release_admission_lock()
             if not attempt.cleanup_deferred:
                 await self._cleanup_agent_resources_off_loop(_hyg_agent, context="session hygiene")
 
     async def _hmwa_run_session_hygiene(
         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
-        *, trigger_tokens=None, commit_authority_check=None, cache_owner=None,
+        *, trigger_tokens=None, commit_authority_check=None, commit_authority_lock=None,
+        cache_owner=None, compression_in_place=None,
     ):
         """Auto-compress pathologically large transcripts before the agent starts so oversized
         histories don't cause repeated truncation/context failures. Token source: the API's
@@ -1380,7 +1410,10 @@ class GatewayTurnMixin:
                     await self._hmwa_hygiene_detached_attempt(
                         attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
                         source, session_entry, session_key, _quick_key, run_generation,
-                        commit_authority_check=commit_authority_check, cache_owner=cache_owner,
+                        commit_authority_check=commit_authority_check,
+                        commit_authority_lock=commit_authority_lock,
+                        cache_owner=cache_owner,
+                        compression_in_place=compression_in_place,
                     )
         except HygieneTurnHoldExceeded:
             # Availability boundary, not a failure — already logged at INFO by the turn-hold handler.

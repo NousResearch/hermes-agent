@@ -399,10 +399,18 @@ class GatewayAgentCacheMixin:
         from a worker /stop or /new invalidated is recognized and dropped."""
         if not session_key:
             return 0
-        persistent = self._session_state(session_key).persistent
-        # Monotonic by design (#28686): incremented here, NEVER reset.
-        persistent.run_generation = int(persistent.run_generation) + 1
-        return persistent.run_generation
+        route_lock = getattr(getattr(self, "session_store", None), "_lock", None)
+        if route_lock is not None:
+            route_lock.acquire()
+        try:
+            persistent = self._session_state(session_key).persistent
+            # Monotonic by design (#28686): incremented here, NEVER reset. The route lock is also
+            # the detached-compaction authority lock, so generation claims and commits linearize.
+            persistent.run_generation = int(persistent.run_generation) + 1
+            return persistent.run_generation
+        finally:
+            if route_lock is not None:
+                route_lock.release()
 
     def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
         """Invalidate any in-flight run token for ``session_key``.
@@ -714,7 +722,7 @@ class GatewayAgentCacheMixin:
             if _cache is not None:
                 evicted = _pop_if_owned(_cache)
         if (expected_agent is not None or run_generation is not None) and evicted is None:
-            return
+            return False
         # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
         # session-context bytes (the pin) and re-see the current voice-channel state once.
         state = self._peek_session_state(session_key)
@@ -724,11 +732,12 @@ class GatewayAgentCacheMixin:
         agent = _first_agent(evicted)
         # Never tear down an agent that's mid-turn — its client, sandbox and child subagents are in use.
         if agent is None or agent is _AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
-            return
+            return True
         self._spawn_release_thread(
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
             session_key=session_key,
         )
+        return True
 
     def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool,
                               session_key: Optional[str] = None) -> None:

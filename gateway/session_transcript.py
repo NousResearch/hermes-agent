@@ -93,15 +93,23 @@ class SessionTranscriptMixin:
         if not session_key or not expected_session_id or not target_session_id:
             return None
         with self._lock:
-            entry = self._entry_locked(session_key)
-            if entry is None:
-                return None
-            if entry.session_id == target_session_id:
-                return entry
-            if not self._heal_compression_tip_locked(entry, expected_session_id, target_session_id):
-                return None  # route moved (session_id != expected) or nothing to heal
-            self._save()  # bookkeeping, not user activity: leave ``updated_at`` alone
+            return self._advance_compression_session_locked(
+                session_key, expected_session_id, target_session_id,
+            )
+
+    def _advance_compression_session_locked(
+        self, session_key: str, expected_session_id: str, target_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """Lock-held implementation for a commit fence retaining route authority through adoption."""
+        entry = self._entry_locked(session_key)
+        if entry is None:
+            return None
+        if entry.session_id == target_session_id:
             return entry
+        if not self._heal_compression_tip_locked(entry, expected_session_id, target_session_id):
+            return None
+        self._save()  # bookkeeping, not user activity: leave ``updated_at`` alone
+        return entry
 
     def _get_transcript_drain_lock(self):
         """Return the lock that serializes pending-queue drain boundaries."""

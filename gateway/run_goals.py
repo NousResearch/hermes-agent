@@ -358,7 +358,7 @@ class GatewayGoalsMixin:
         # _handle_message_with_agent returns shaped text to this outer hook, so the original
         # result envelope (including ``failed``) is no longer available here. Require the
         # explicit success marker propagated on the event; missing/early-exit paths fail closed.
-        if not bool(getattr(event, "_agent_turn_succeeded", False)) or not final_response.strip():
+        if not bool(getattr(event, "_agent_turn_succeeded", False)):
             return None
         session_key = self._session_key_for_source(source)
         state = self._peek_session_state(session_key) if session_key else None
@@ -381,13 +381,19 @@ class GatewayGoalsMixin:
         if run_generation is None:
             return None
 
-        def _authority_current() -> bool:
-            live_entry = self.session_store.lookup_by_session_key(session_key)
+        route_lock = self.session_store._lock
+
+        def _authority_current_locked() -> bool:
+            live_entry = self.session_store._entries.get(session_key)
             return bool(
                 live_entry is not None
                 and live_entry.session_id == expected_session_id
                 and self._is_session_run_current(session_key, run_generation)
             )
+
+        def _authority_current() -> bool:
+            with route_lock:
+                return _authority_current_locked()
 
         async def _run() -> None:
             history = await self.async_session_store.load_transcript(expected_session_id)
@@ -398,8 +404,10 @@ class GatewayGoalsMixin:
             await self._hmwa_run_session_hygiene(
                 event, source, session_entry, session_key, history, session_key,
                 run_generation, trigger_tokens=trigger_tokens,
-                commit_authority_check=_authority_current,
+                commit_authority_check=_authority_current_locked,
+                commit_authority_lock=route_lock,
                 cache_owner=agent,
+                compression_in_place=bool(getattr(agent, "compression_in_place", True)),
             )
 
         task = self._retain_background_task(asyncio.create_task(

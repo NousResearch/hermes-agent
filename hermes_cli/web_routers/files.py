@@ -240,6 +240,11 @@ def _media_serve_roots() -> list[Path]:
     return out
 
 
+def _read_base64_file(path: Path) -> str:
+    """Read and encode a bounded file from a worker thread."""
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
 @router.get("/api/media")
 async def get_media(path: str):
     """Return a gateway-local image as a base64 data URL for remote clients
@@ -260,7 +265,7 @@ async def get_media(path: str):
     if target.stat().st_size > _MEDIA_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
 
-    encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    encoded = await asyncio.to_thread(_read_base64_file, target)
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
 
 

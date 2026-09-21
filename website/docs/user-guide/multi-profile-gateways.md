@@ -303,7 +303,10 @@ route *and* credentials, including mTLS `client_cert`/`client_key`) share one
 connection, and an owner's `/reload-mcp`
 re-registers the sharing profiles' tools without them reloading. `auth: oauth`
 servers are never shared across profiles: each profile holds its own token under
-its own `mcp-tokens/` and opens its own connection. Trust policy stays per
+its own `mcp-tokens/` and opens its own connection. Startup connects profiles one
+after another and, within a profile, at most `mcp.discovery_concurrency` servers at
+once (default 4, `0` = unlimited), so a fleet of profiles with many stdio servers
+no longer spawns every helper process in the same instant. Trust policy stays per
 profile: a `trust: untrusted` profile sharing a `trust: full` profile's
 connection is still asked before every write-capable call, and
 `supports_parallel_tool_calls` applies only to the profile that set it. Terminal settings
@@ -391,6 +394,7 @@ profile and never shares with the default or any sibling:
 | Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
 | Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, Copilot context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), Camofox VNC address, computer-use aux-vision routing, skill-sync push, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
 | Session-search knobs (`sessions.cjk_fts`, `sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
+| RoomLink capability catalog and the signed execution policy it advertises to a remote Bot (`approvals.mode`, `agent.max_turns`, `platform_toolsets.api_server`) | The served profile named by the request (`/p/<profile>/v1/room-members/...`, the RPC `profile` param); `target_profile` is **required** on every catalog — there is no `HERMES_PROFILE` fallback | Invitation/capabilities fail with the offending `target_profile` named; a profile that does not exist is refused, never resolved from the launch profile's config |
 | Platform proxies (`TELEGRAM_PROXY`, `DISCORD_PROXY`, `HTTPS_PROXY`, …) | The profile's own `.env` | Direct connection — never the default profile's proxy |
 | MCP discovery in the Desktop/dashboard backend | Once per served profile home | A profile selected after another has already built an agent still discovers its own `mcp_servers` |
 | Settings changed from a Desktop / TUI session (`/busy`, `/verbose`, `/approval`, `/cwd`, theme and display toggles) | The `config.yaml` of the profile that owns the session, even when the RPC carries only the session id | The session's own profile is written; the launch profile's `config.yaml` and its `TERMINAL_CWD` are never touched |

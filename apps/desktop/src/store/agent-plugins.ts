@@ -280,3 +280,34 @@ export async function updateAgentPlugin(
     $agentPluginBusy.set(null)
   }
 }
+
+/** Uninstall a user-installed agent plugin (backend `plugins.manage remove`;
+ *  deletes `<HERMES_HOME>/plugins/<name>` and its install metadata). Drops the
+ *  row locally on success — callers rescan so a unified package's desktop half
+ *  is pruned too. Returns whether the plugin was removed. */
+export async function removeAgentPlugin(
+  request: GatewayRequest,
+  name: string,
+  failMessage: string,
+  profile?: string | null
+): Promise<boolean> {
+  $agentPluginBusy.set(name)
+
+  try {
+    const result = await request<{ ok?: boolean }>('plugins.manage', withProfile({ action: 'remove', name }, profile))
+
+    if (!result?.ok) {
+      throw new Error(failMessage)
+    }
+
+    $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+
+    return true
+  } catch (e) {
+    notifyError(e, failMessage)
+
+    return false
+  } finally {
+    $agentPluginBusy.set(null)
+  }
+}

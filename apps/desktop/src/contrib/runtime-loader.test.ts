@@ -5,7 +5,13 @@ import type * as HermesModule from '@/hermes'
 
 import { emitGatewayEvent } from './events'
 import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
-import { discoverRuntimePlugins, loadRuntimePlugin, unloadRuntimePlugin, watchRuntimePlugins } from './runtime-loader'
+import {
+  discoverRuntimePlugins,
+  loadRuntimePlugin,
+  uninstallDiskPlugin,
+  unloadRuntimePlugin,
+  watchRuntimePlugins
+} from './runtime-loader'
 
 // getStatus would supply the connected backend's hermes_home — a REMOTE path in
 // remote mode. The disk scanner must NOT derive the plugin root from it (#66899).
@@ -381,6 +387,103 @@ describe('plugin source reads (512 KiB preview-cap bug)', () => {
       unloadRuntimePlugin('runtime-event-reload')
       delete counters[marker]
       restore()
+    }
+  })
+})
+
+describe('uninstallDiskPlugin (Plugins hub trash button)', () => {
+  const removeDesktopPlugin = vi.fn<(payload: { name: string }) => Promise<{ ok: boolean; error?: string }>>()
+
+  const blobToDataUrl = () => {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    return () => {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  }
+
+  /** One standalone folder `gone-soon` at the root, loaded as plugin id `gone`. */
+  const seedStandalone = async () => {
+    const root = '/local/.hermes/desktop-plugins'
+    desktopPluginsRoot.mockResolvedValue(root)
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: [{ isDirectory: true, name: 'gone-soon', path: `${root}/gone-soon` }] }
+      }
+
+      if (dir === `${root}/gone-soon`) {
+        return { entries: [{ isDirectory: false, name: 'plugin.js', path: `${root}/gone-soon/plugin.js` }] }
+      }
+
+      return { entries: [] }
+    })
+    readFileText.mockResolvedValue({ text: 'export default { id: "gone", register() {} }' })
+    watchPreviewFile.mockResolvedValue({ id: 'w-gone' })
+    removeDesktopPlugin.mockReset()
+    ;(window.hermesDesktop as unknown as { removeDesktopPlugin: unknown }).removeDesktopPlugin = removeDesktopPlugin
+
+    await discoverRuntimePlugins()
+    expect($pluginRecords.get().gone).toMatchObject({ kind: 'disk', status: 'loaded' })
+  }
+
+  it('asks Electron to delete the FOLDER by name, then retires the registration and its watch', async () => {
+    const restore = blobToDataUrl()
+
+    try {
+      await seedStandalone()
+      removeDesktopPlugin.mockResolvedValue({ ok: true })
+
+      expect(await uninstallDiskPlugin('gone')).toEqual({ ok: true })
+
+      // The folder name, never a path — Electron resolves it under the root.
+      expect(removeDesktopPlugin).toHaveBeenCalledWith({ name: 'gone-soon' })
+      expect($pluginRecords.get().gone).toBeUndefined()
+      expect(stopPreviewFileWatch).toHaveBeenCalledWith('w-gone')
+    } finally {
+      restore()
+      unloadRuntimePlugin('gone')
+    }
+  })
+
+  it('keeps the plugin loaded and reports the reason when Electron refuses', async () => {
+    const restore = blobToDataUrl()
+
+    try {
+      await seedStandalone()
+      removeDesktopPlugin.mockResolvedValue({ ok: false, error: 'gone-soon is not inside the desktop-plugins folder' })
+
+      expect(await uninstallDiskPlugin('gone')).toEqual({
+        ok: false,
+        error: 'gone-soon is not inside the desktop-plugins folder'
+      })
+      expect($pluginRecords.get().gone).toMatchObject({ kind: 'disk', status: 'loaded' })
+
+      // Unknown ids never reach the bridge.
+      expect(await uninstallDiskPlugin('never-installed')).toMatchObject({ ok: false })
+      expect(removeDesktopPlugin).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+      removeDesktopPlugin.mockResolvedValue({ ok: true })
+      await uninstallDiskPlugin('gone')
     }
   })
 })

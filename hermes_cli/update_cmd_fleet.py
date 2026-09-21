@@ -1509,6 +1509,15 @@ def _recover_after_restart_phase_abort(
     out.record_receipt(phase_error=str(e), fresh_recovery=_recovery_result)
 
 
+def _gateway_drain_budget() -> float:
+    """Seconds a drain-first (SIGUSR1) restart may wait for a gateway to exit; 45s floor."""
+    try:
+        from hermes_cli.gateway import _get_restart_exit_wait_budget
+        return max(float(_get_restart_exit_wait_budget()), 45.0)
+    except Exception:
+        return 45.0
+
+
 def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     """Restart every running gateway (systemd, launchd, manual) onto the pulled code.
 
@@ -1550,11 +1559,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         # Drain budget covers ``restart_after_turn_timeout`` and stop()'s
         # ``restart_drain_timeout`` so a gateway waiting on a turn isn't hard-killed;
         # units without SIGUSR1 wiring just time out into ``systemctl restart``.
-        try:
-            from hermes_cli.gateway import _get_restart_exit_wait_budget
-            _drain_budget = max(float(_get_restart_exit_wait_budget()), 45.0)
-        except Exception:
-            _drain_budget = 45.0
+        _drain_budget = _gateway_drain_budget()
 
         # Snapshot before any stop/drain so an empty survivor probe reads as "stopped
         # and never came back", not "nothing was running"; None fails closed.
@@ -1734,6 +1739,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
         if print_fleet_version_matrix(_fleet_snapshot):
             restart.incomplete = True
+            # A proven-stale survivor must not keep running (its ticker yields every tick and
+            # nothing else restarts it, #117275): hand it to the drain-first restart path.
+            from hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
+            signal_stale_fleet_survivors(_fleet_snapshot, restart, _gateway_drain_budget())
         elif not _fleet_snapshot and _fleet_rows_expected:
             # collect_fleet_versions() swallows every failure, so zero rows with
             # expected runtimes is indistinguishable from health — fail (partial, exit 1).

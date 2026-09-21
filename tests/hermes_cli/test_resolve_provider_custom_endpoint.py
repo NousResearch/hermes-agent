@@ -61,6 +61,15 @@ def isolated_home(tmp_path, monkeypatch):
             "openrouter",
             id="provider-openrouter-mirror",
         ),
+        # A bare ``model.provider`` naming a ``providers:`` entry is explicit intent too:
+        # has_named_custom_provider() already routes it at runtime (``hermes chat`` works), so the
+        # boot inventory must not discard the bare name.
+        pytest.param(
+            "model:\n  default: test-model\n  provider: CPA\n\n"
+            "providers:\n  CPA:\n    api: http://127.0.0.1:8317/v1\n    default_model: test-model\n",
+            "custom",
+            id="named-providers-pin",
+        ),
     ],
 )
 def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_block, expected):
@@ -73,28 +82,6 @@ def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_
     assert record.provider_configured is True
     assert record.other_providers is True
     assert record.inference_provider == expected
-
-
-def test_named_provider_pin_resolves_as_a_provider(isolated_home):
-    """A bare ``model.provider`` naming a ``providers:`` entry is explicit intent too.
-
-    Sibling of the openrouter rung above: ``has_named_custom_provider()`` already routes this
-    config at runtime (``hermes chat`` works against ``providers.CPA``), but the boot inventory
-    discarded the bare name, so ``setup.status`` reported ``provider_configured: False`` and the
-    dashboard parked sessions on Setup Required for a working endpoint.
-    """
-    (isolated_home / "config.yaml").write_text(
-        "model:\n  default: test-model\n  provider: CPA\n\n"
-        "providers:\n  CPA:\n    api: http://127.0.0.1:8317/v1\n    default_model: test-model\n",
-        encoding="utf-8",
-    )
-    from hermes_cli.auth import resolve_provider
-    from hermes_cli.free_tier_bootstrap import run_bootstrap
-
-    assert resolve_provider("auto") == "custom"
-    record = run_bootstrap(announce=False)
-    assert record.provider_configured is True
-    assert record.other_providers is True
 
 
 def test_stale_remote_base_url_without_a_custom_pin_is_not_a_provider(isolated_home):

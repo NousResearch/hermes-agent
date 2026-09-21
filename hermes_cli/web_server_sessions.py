@@ -9,16 +9,25 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
+from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
+
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
 
-_DESCENDANTS_SQL = """
+_DESCENDANTS_SQL = f"""
             WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
                 SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
                 UNION
                 SELECT s.id, s.parent_session_id, s.started_at
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
+                -- Continuation edges only (same predicate as the session list's chain CTE): a subagent run,
+                -- a /branch fork, a /new reset child or a tool-owned row is its own conversation, and resuming
+                -- INTO one parks the user's chat in a row the sidebar never lists (#115092).
+                WHERE {_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL
+                  AND {_sql_json_extract('s.model_config', '$._branched_from')} IS NULL
+                  AND NOT ({_RESET_CHILD_SQL.format(a='s')})
+                  AND COALESCE(s.source, '') != 'tool'
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """
@@ -180,20 +189,23 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             return _open_probed()
 
 
-def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
-    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
-
-    Access-mode semantics: see :func:`_open_session_db_at_path`.
-    """
+def _session_db_path_for_profile(profile: Optional[str]) -> Path:
+    """state.db path for ``profile`` (None/empty = this process's own)."""
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_state import _default_db_path
 
     if profile:
         _name, home = _cron_profile_home(profile)
-        db_path = Path(home) / "state.db"
-    else:
-        db_path = Path(_default_db_path())
-    return _open_session_db_at_path(db_path, read_only=read_only)
+        return Path(home) / "state.db"
+    return Path(_default_db_path())
+
+
+def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
+    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
+
+    Access-mode semantics: see :func:`_open_session_db_at_path`.
+    """
+    return _open_session_db_at_path(_session_db_path_for_profile(profile), read_only=read_only)
 
 
 # In-process throttle for the opportunistic auto-archive trigger, keyed by

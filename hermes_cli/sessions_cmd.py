@@ -9,10 +9,12 @@ import — must run without opening ``SessionDB()``, which a malformed schema pr
 import json
 import os
 import shutil
+import sqlite3
 import sys
 from functools import partial
 from pathlib import Path
 
+from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
 
 
@@ -44,7 +46,7 @@ def _confirm_prompt(prompt: str) -> bool:
 
 
 def _not_found(session_id) -> int:
-    print(f"Session '{session_id}' not found.")
+    print(f"No session '{session_id}'. Run: hermes sessions list to find the id.")
     return 1
 
 
@@ -54,7 +56,7 @@ def _print_dry_run_preview(candidates, filters) -> None:
     for row in candidates[:100]:
         print(f"  {row.get('id')}  {row.get('source', '')}")
     if len(candidates) > 100:
-        print(f"  ... {len(candidates) - 100} more")
+        print_truncated(len(candidates) - 100)
 
 
 _FILTER_ARGS = (
@@ -71,6 +73,17 @@ def _any_filter_args(args) -> bool:
 def _export_dir(output) -> Path:
     """``--output`` dir for multi-file exports; ``~/.hermes/session-exports`` when empty or ``-``."""
     return Path(output).expanduser() if output and output != "-" else get_hermes_home() / "session-exports"
+
+
+def _output_file_in_dir(output, default_name: str):
+    """Single-file exports accept a directory too (``--help`` calls the positional a path, and md/qmd take
+    one): an existing directory, or one spelled with a trailing separator, means ``<dir>/<default_name>``."""
+    if not output or output == "-":
+        return output
+    if output.endswith(("/", os.sep)) or os.path.isdir(output):
+        os.makedirs(output, exist_ok=True)
+        return os.path.join(output, default_name)
+    return output
 
 
 def _write_output(output, text, summary) -> None:
@@ -97,7 +110,7 @@ def _cmd_repair(args):
         return
     print(f"✗ {db_path} does not open cleanly: {reason}")
     if getattr(args, "check_only", False):
-        return
+        return 1
     print("Repairing (a backup copy is made first)…")
     report = repair_state_db_schema(db_path, backup=not getattr(args, "no_backup", False))
     if report.get("repaired"):
@@ -250,7 +263,14 @@ def _default_exclude(args):
 
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
-    sessions = db.list_sessions_rich(source=args.source, exclude_sources=_default_exclude(args), limit=args.limit)
+    # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
+    # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
+    limit = args.limit
+    sessions = db.list_sessions_rich(
+        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+    )
+    truncated = limit > 0 and len(sessions) > limit
+    sessions = sessions[:limit] if truncated else sessions
 
     # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
     _ws_filter = (getattr(args, "workspace", None) or "").strip()
@@ -273,7 +293,7 @@ def _cmd_list(db, args):
         return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
     _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
     _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
-    _ago = lambda s: _relative_time(s.get("last_active"))  # noqa: E731
+    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
     layouts = {  # (has_ws, has_titles): header, rule width, row formatter
         (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
                        lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
@@ -288,6 +308,8 @@ def _cmd_list(db, args):
     print(header + "\n" + "─" * rule)
     for s in sessions:
         print(fmt(s))
+    if truncated:
+        print_truncated(None, f"use --limit {limit * 2} to see more")
 
 
 # -- export -----------------------------------------------------------------
@@ -375,6 +397,10 @@ def _export_flat(kind, args, collect):
         return
     sessions = collect()
     if sessions is not None:
+        from hermes_cli.session_export import default_save_filename
+        name = (default_save_filename(sessions[0].get("id", ""), args.format) if len(sessions) == 1
+                else f"hermes_sessions.{args.format}")
+        args.output = _output_file_in_dir(args.output, name)
         _write_output(args.output, *render(args, sessions))
 
 
@@ -421,6 +447,7 @@ def _export_trace(db, args, filters):
             if not jsonl:
                 print(f"No transcript to export for session '{ids[0]}'.")
                 return
+            args.output = _output_file_in_dir(args.output, f"{ids[0]}.trace.jsonl")
             _write_output(args.output, jsonl, f"Exported 1 session trace to {args.output}")
         else:
             out_dir = _export_dir(args.output)
@@ -576,7 +603,7 @@ def _prune_never_active_keyed(db, args):
         print(f"  {s['id']}  {format_epoch(s.get('started_at')):<17} {(s.get('source') or '-'):<10} "
               f"{s.get('session_key') or '-'}")
     if len(candidates) > len(shown):
-        print(f"  … {len(candidates) - len(shown)} more")
+        print_truncated(len(candidates) - len(shown))
     if args.dry_run:
         print("Dry run — nothing deleted.")
         return
@@ -630,11 +657,14 @@ def _cmd_prune_or_archive(db, args, action):
     # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
     filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
     filters["include_pinned"] = getattr(args, "include_pinned", False)
+    # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
+    # never qualifies); the preview must show the same rows the archive will touch.
+    filters["lineage_tips_only"] = not prune
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
     candidates = db.list_prune_candidates(**filters)
-    # Archive expands each row to its compression lineage (may include open continuations), so a
-    # direct-open count would misdescribe its effect.
+    # Archive expands each matched tip to its compression lineage, so a direct-open count would
+    # misdescribe its effect.
     skipped_open = db.count_open_prune_matches(**filters) if prune else 0
     if skipped_open:
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
@@ -657,7 +687,7 @@ def _cmd_prune_or_archive(db, args, action):
             print(f"  {s['id']}  {format_epoch(s.get('last_active')):<17} {s['source']:<10} {model:<24} "
                   f"{s['message_count']:>4} msgs  {(s.get('title') or '')[:36]}")
         if len(candidates) > len(shown):
-            print(f"  … and {len(candidates) - len(shown)} more")
+            print_truncated(len(candidates) - len(shown))
         if args.dry_run:
             print(f"Dry run — nothing {'deleted' if prune else 'archived'}.")
             return
@@ -727,7 +757,7 @@ def _cmd_pinned(db, args):
     print(f"{'Title':<32} {'Last Active':<13} {'Src':<9} {'ID'}\n" + "─" * 100)
     for s in pinned_rows:
         title = (s.get("title") or s.get("preview", "") or "—")[:30]
-        print(f"{title:<32} {_relative_time(s.get('last_active')):<13} {(s.get('source') or '-'):<9} {s['id']}")
+        print(f"{title:<32} {_relative_time(s.get('last_active'), session_id=s['id']):<13} {(s.get('source') or '-'):<9} {s['id']}")
 
 
 def _cmd_retitle_skills(db, args):
@@ -936,7 +966,16 @@ def _cmd_stats(db, args):
 
 # -- dispatch -----------------------------------------------------------------
 
-_PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+def _cmd_repair_profiles(args):
+    from hermes_cli.sessions_cmd_repair_profiles import cmd_repair_profiles
+    return cmd_repair_profiles(args)
+
+
+_PRE_DB_HANDLERS = {
+    "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
+    "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
+}
+_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
@@ -947,22 +986,47 @@ _DB_HANDLERS = {
 }
 
 
+def _print_empty_store(action: str, args) -> None:
+    """A profile that never created state.db: report empty instead of opening a writer that creates it."""
+    if action == "stats":
+        print("Total sessions: 0\nTotal messages: 0")
+    elif action == "pinned":
+        print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
+    else:
+        print("No sessions found.")
+
+
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
     pre = _PRE_DB_HANDLERS.get(action)
     if pre is not None:
         return pre(args)
+    observational = action in _OBSERVATIONAL_DB_ACTIONS
+    from hermes_state import SessionDB, _default_db_path
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=observational)
     except Exception as e:
-        print(f"Error: Could not open session database: {e}")
+        # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
+        if observational and not _default_db_path().exists():
+            return _print_empty_store(action, args)
+        print("Could not open your session history database. "
+              "Run: hermes sessions repair to fix it (a backup is made first).")
+        print(f"Details: {e}")
         return 1
     try:
         handler = _DB_HANDLERS.get(action)
         if handler is None:
             sessions_parser.print_help()
             return
-        return handler(db, args)
+        try:
+            return handler(db, args)
+        except sqlite3.OperationalError as e:
+            from hermes_state_repair import _schema_not_built
+
+            if not observational or not _schema_not_built(e):
+                raise
+            # A read-only opener skips schema migration, so a store from an older release can lack a column.
+            print(f"Error: session database needs migration — run any writing hermes command first ({e})")
+            return 1
     finally:
         db.close()

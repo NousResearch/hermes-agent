@@ -16,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
+import { Tip } from '@/components/ui/tooltip'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
@@ -157,13 +158,16 @@ function OAuthPicker({
 
   const select = (p: OAuthProvider) => startManualProviderOAuth(p.id, profile)
 
-  const featured = ordered.find(p => p.id === FEATURED_ID && !p.status?.logged_in) ?? null
+  // The free tier holds a token but no account: it is never "connected"; the featured Nous row
+  // names it (Nous · free tier) and offers the sign-in that keeps its connectors.
+  const isConnected = (p: OAuthProvider) => Boolean(p.status?.logged_in) && p.status?.free_tier !== true
+  const featured = ordered.find(p => p.id === FEATURED_ID && !isConnected(p)) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
   // Keep connected accounts grouped and always visible; only the unconnected
   // providers hide behind the disclosure, so the page leads with what's set up.
   // Both lists preserve `sortProviders` order (curated priority, then name).
-  const connected = rest.filter(p => p.status?.logged_in)
-  const others = rest.filter(p => !p.status?.logged_in)
+  const connected = rest.filter(isConnected)
+  const others = rest.filter(p => !isConnected(p))
   const collapsible = others.length > 0
   const showOthers = !collapsible || showAll
 
@@ -279,7 +283,6 @@ function ConnectedProviderRow({
             disabled={disconnecting}
             onClick={() => onDisconnect(provider)}
             size="icon-xs"
-            title={`${t.common.remove} ${title}`}
             type="button"
             variant="ghost"
           >
@@ -287,16 +290,17 @@ function ConnectedProviderRow({
           </Button>
         )}
         {terminalDisconnect && (
-          <Button
-            aria-label={`${copy.disconnect} ${title}`}
-            onClick={() => onTerminalDisconnect(provider)}
-            size="icon-xs"
-            title={copy.disconnectInTerminal}
-            type="button"
-            variant="ghost"
-          >
-            <Trash2 className="size-3" />
-          </Button>
+          <Tip label={copy.disconnectInTerminal}>
+            <Button
+              aria-label={`${copy.disconnect} ${title}`}
+              onClick={() => onTerminalDisconnect(provider)}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <Trash2 className="size-3" />
+            </Button>
+          </Tip>
         )}
       </div>
     </div>

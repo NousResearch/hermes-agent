@@ -204,6 +204,17 @@ The check matrix is platform-aware: `bundle_identity` / `tcc_*` are
 `ax_capability` checks AX on macOS, UIA on Windows, AT-SPI on Linux —
 each with the right diagnostic hint when it can't reach.
 
+On Linux, where the daemon is a hand-written systemd user unit or XDG
+autostart entry rather than a managed autostart, doctor also reads those
+units: a `cua-driver` `ExecStart` pointing at a pruned
+`packages/releases/<version>/` directory is reported as a failing
+`daemon unit (...)` check (point it at `~/.cua-driver/packages/current/cua-driver`),
+and a unit that runs `cua-driver serve` gets a `daemon (...)` check that
+connects to its socket — `fail` when nothing is listening (crash loop,
+stopped, never started), `pass` when the daemon answers. Reinstalling the
+driver does not start a daemon; `systemctl --user status <unit>` does.
+`hermes computer-use status` prints the same dead-daemon line and exits 1.
+
 ## The agent cursor and sessions
 
 When the agent acts, you'll see a **tinted overlay cursor** glide
@@ -242,10 +253,11 @@ maintains directly:
 cua-driver skills install
 ```
 
-The command installs the pack under `~/.cua-driver/skills/cua-driver`. Hermes
-autodetection is a planned cua-driver follow-up, so currently point Hermes at
-that directory or symlink it into your skill space. The wrapper remains the
-workflow layer and points to Cua's installed skill for driver behavior. The
+The command links the pack into `~/.hermes/skills/cua-driver` (Hermes is one
+of the agents `cua-driver skills status` reports). The wrapper remains the
+workflow layer: the pack documents the driver's own MCP vocabulary
+(`get_window_state`, `element_token`, `snapshot_id`), which the `computer_use`
+wrapper translates to for you — keep calling `computer_use(action=...)`. The
 pack contains:
 
 | File | Topic |
@@ -340,8 +352,15 @@ magic-byte sniffing.
 Hermes applies multi-layer guardrails:
 
 - Destructive actions (click, type, drag, scroll, key, focus_app)
-  require approval — either interactively via the CLI dialog or via the
-  messaging-platform approval buttons.
+  require approval through the same gate as dangerous shell commands —
+  interactively via the CLI dialog or the messaging-platform approval
+  buttons. Once/session/always grants are keyed
+  `cua:<action>:<background|foreground>` and live in the shared
+  session/`command_allowlist` store (a background grant never covers the
+  visible foreground variant). Where nobody can answer — cron
+  (`approvals.cron_mode`), single-query, unattended platforms, or any
+  headless run — the action is refused rather than auto-approved;
+  `--yolo` / `/yolo` still bypass.
 - Hard-blocked key combos at the tool level: empty trash, force delete,
   lock screen, log out, force log out.
 - Hard-blocked type patterns: `curl | bash`, `sudo rm -rf /`, fork
@@ -357,9 +376,13 @@ want every action confirmed.
 
 Screenshots are expensive. Hermes applies four layers of optimisation:
 
-- **Screenshot eviction** — the Anthropic adapter keeps only the 3 most
-  recent screenshots in context; older ones become `[screenshot removed
-  to save context]` placeholders.
+- **Screenshot eviction** — on every provider, screenshots ride each
+  request until it would cross Anthropic's documented per-request image
+  limit (20 image blocks, or 24 MB of image data); then the oldest batch becomes
+  `[screenshot removed to save context]` placeholders. Below the limit
+  nothing is rewritten, so the prompt-cache prefix survives; at it, one
+  slower turn per batch instead of one per screenshot. Images you attach
+  yourself count against the limit but are never removed.
 - **Client-side compression pruning** — the context compressor detects
   multimodal tool results and strips image parts from old ones.
 - **Image-aware token estimation** — each image is counted as ~1500
@@ -400,6 +423,14 @@ of screenshot context, not ~600K.
   affects every Windows automation stack. To drive elevated windows,
   run the Hermes agent itself at High integrity (launch from an
   elevated terminal); otherwise target non-elevated windows.
+- **Windows: `hermes computer-use doctor` fails with "Access is denied"
+  while the tool works.** A cua-driver installed under
+  `C:\Program Files\WindowsApps` cannot be executed by the Hermes venv
+  interpreter (WinError 5 from `CreateProcess`), even though the shell
+  resolves the same binary fine. The doctor now reports this as a
+  diagnosis instead of a traceback. Fix once: reinstall with the upstream
+  installer (lands under your user profile) or set
+  `HERMES_CUA_DRIVER_CMD` to a copy outside `WindowsApps`.
 - **Platform-specific deployment gotchas:**
   - **macOS** uses private SkyLight SPIs. Apple can change them in any
     OS update. Hermes warns when the installed cua-driver is older than

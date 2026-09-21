@@ -51,6 +51,46 @@ def _route_signature(model, runtime: dict) -> tuple:
         runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
 
 
+def _cooldown_cause(entry) -> str:
+    """Why a benched (exhausted) row is cooling down, from what the pool recorded: a rate-limit or
+    quota response, a failed token refresh, or another HTTP failure."""
+    reason = (entry.last_error_reason or "").lower()
+    if entry.last_error_code in (402, 429) or any(k in reason for k in ("rate", "quota", "insufficient")):
+        return "after a rate-limit or quota response"
+    if entry.last_error_code is None or "refresh" in reason:
+        return "after a failed token refresh"
+    return f"after an HTTP {entry.last_error_code} response"
+
+
+def _credential_pool_notice(provider: str) -> tuple:
+    """``(cooling, lines)`` on why *provider*'s pool has nothing selectable right now, for the
+    startup notice. *cooling* is True when the first line is a live cooldown with its remaining
+    time; a dead (quarantined) sign-in adds a line naming the re-login."""
+    import time
+    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
+    try:
+        pool = load_pool(provider)
+        if not pool.has_credentials() or pool.has_available():
+            return False, []
+        next_at = pool.next_available_at()
+        entries = pool.entries()
+    except Exception:
+        return False, []
+    lines = []
+    if next_at is not None:
+        minutes = max(1, int((next_at - time.time() + 59) // 60))
+        benched = [e for e in entries if e.last_status == STATUS_EXHAUSTED]
+        cause = _cooldown_cause(benched[0]) if benched else "after a failed request"
+        lines.append(f"The {provider} credential is cooling down {cause}; "
+                     f"it re-enters rotation in about {minutes}m.")
+    dead = [e for e in entries if e.last_status == STATUS_DEAD]
+    if dead:
+        reason = dead[0].last_error_message or dead[0].last_error_reason or "sign-in lost"
+        lines.append(f"The {provider} sign-in was lost ({reason}); run `hermes auth add {provider}` "
+                     "to sign in again.")
+    return next_at is not None, lines
+
+
 def _keyless_custom_base(base_url) -> bool:
     """Custom/local endpoints (llama.cpp, ollama, vLLM) often need no auth; only a
     non-OpenRouter base_url qualifies."""
@@ -97,6 +137,7 @@ def _tool_calls_summary(tool_calls) -> str:
 _RESUME_EVENT_TEXT = {
     "model_switch": "model changed",
     "async_delegation_complete": "background delegation completed",
+    "process_complete": "background process finished",
     "auto_continue": "resumed interrupted turn"}
 
 def _collect_resume_entries(display_history, disp: dict, clean_assistant):
@@ -125,7 +166,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
             continue
         if display_kind in _RESUME_EVENT_TEXT:
             metadata = msg.get("display_metadata") or {}
-            label = metadata.get("display_text") if display_kind == "async_delegation_complete" else None
+            label = metadata.get("display_text") if display_kind in ("async_delegation_complete", "process_complete") else None
             entries.append(("event", _sanitize_display_text(label or _RESUME_EVENT_TEXT[display_kind])))
             continue
         if role == "user":
@@ -171,6 +212,16 @@ def _resume_panel_colors() -> tuple:
         return tuple(default for _, default in _RESUME_SKIN_COLORS)
 
 
+def _retire_agent(cli) -> None:
+    """Drop ``cli.agent`` so the next turn rebuilds it, releasing its LLM clients first: the Codex
+    app-server child (and MCP descendants) belongs to the instance, so ``self.agent = None`` alone
+    orphans it for the CLI process lifetime (#72548). Session tool state is kept (soft release)."""
+    agent = cli.agent
+    if agent is not None and hasattr(agent, "release_clients"):
+        agent.release_clients()
+    cli.agent = None
+
+
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
@@ -181,10 +232,16 @@ class CLIAgentSetupMixin:
         from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
         _primary_exc = None
         runtime = None
+        _model_at_entry = self.model
+        self._credentials_rate_limited = False
         try:
+            # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
+            # api_mode) must see the model this CLI will actually send, not config's `default`,
+            # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
+            # sent model cannot use (#112600).
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                explicit_base_url=self._explicit_base_url)
+                explicit_base_url=self._explicit_base_url, target_model=self.model or None)
         except Exception as exc:
             _primary_exc = exc
         if _primary_exc is not None:
@@ -192,12 +249,22 @@ class CLIAgentSetupMixin:
             if runtime is not None:
                 _primary_exc = None
         if runtime is None:
+            from hermes_cli.auth import is_rate_limited_auth_error
+            self._credentials_rate_limited = bool(_primary_exc) and is_rate_limited_auth_error(_primary_exc)
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
-            ChatConsole().print(f"[bold red]{message}[/]")
+            if getattr(self, "tool_progress_mode", "full") == "off":
+                print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
+            else:
+                ChatConsole().print(f"[bold red]{message}[/]")
             return False
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
+        if resolved_provider != "nous":
+            # An explicit provider carries inference. The free-tier identity (for connectors) was
+            # created by the boot bootstrap before this point, never here; this prints the one-time
+            # "free tier is here" notice the first time an identity is seen beside an own key.
+            self._maybe_print_free_tier_available_notice()
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
@@ -258,18 +325,42 @@ class CLIAgentSetupMixin:
         # Fixes #651.
         model_changed = self._normalize_model_for_provider(resolved_provider)
 
+        # Startup resolved reasoning_config for the launch model; whichever path above moved
+        # self.model (auth fallback, custom-entry model, provider default, normalization) leaves a
+        # per-model contract the lazily built agent would otherwise miss (an always-thinking model
+        # 400s on the primary's effort). Same chokepoint as /model, /new and --resume; an explicit
+        # --reasoning is the user's intent for this run and outranks the new model's config.
+        if self.model != _model_at_entry and getattr(self, "_explicit_reasoning_config", None) is None:
+            from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
+            _resolve_cli_reasoning(self)
+            logger.info("Model moved to %s: reasoning_config resolved: %s", self.model, self.reasoning_config)
+
         # AIAgent/OpenAI client holds auth at init, so rebuild on key/routing/model change.
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
-            self.agent = None
+            _retire_agent(self)
             self._active_agent_route_signature = None
         return True
+
+    def _maybe_print_free_tier_available_notice(self) -> None:
+        """One-time notice for installs whose inference is carried by an explicit provider: the free
+        tier (inference + connectors) now exists. Printed the first time an identity is present, then
+        flagged on that identity so it never repeats. Never blocks or raises."""
+        from cli import logger
+        try:
+            from hermes_cli import anon_auth
+            if not anon_auth.guest_notice_pending():
+                return
+            self._console_print(f"[dim]{anon_auth.FREE_TIER_AVAILABLE_NOTICE}[/]")
+            anon_auth.mark_guest_notice_shown()
+        except Exception as exc:
+            logger.debug("free tier availability notice skipped: %s", exc)
 
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in
         order and switch the CLI's requested_provider/model to the first that resolves.
         None when the error is not auth-related or no fallback resolves."""
         from cli import _cprint, logger
-        from hermes_cli.auth import AuthError
+        from hermes_cli.auth import AuthError, primary_failure_wording
         from hermes_cli.runtime_provider import resolve_runtime_provider
         if not isinstance(primary_exc, AuthError):
             return None
@@ -281,19 +372,26 @@ class CLIAgentSetupMixin:
                 continue
             try:
                 from hermes_cli.fallback_config import resolve_entry_api_key
-                _fb_kwargs = {"requested": _fb_provider}
+                # target_model: the fallback entry names the model that will be sent; without it the
+                # ladder keys off config `default` (see _ensure_runtime_credentials, #112600).
+                _fb_kwargs = {"requested": _fb_provider, "target_model": _fb_model}
                 if _fb.get("base_url"):
                     _fb_kwargs["explicit_base_url"] = _fb["base_url"]
                 _fb_api_key = resolve_entry_api_key(_fb)
                 if _fb_api_key:
                     _fb_kwargs["explicit_api_key"] = _fb_api_key
                 runtime = resolve_runtime_provider(**_fb_kwargs)
+                _why_log, _why = primary_failure_wording(primary_exc)  # #117482: quota is not auth
                 logger.warning(
-                    "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
-                    primary_exc, _fb_provider, _fb_model)
-                _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                    "Primary provider %s (%s). Falling through to fallback: %s/%s",
+                    _why_log, primary_exc, _fb_provider, _fb_model)
+                from gateway.warning_notifications import render_notification
+                render_notification(
+                    lambda: _cprint(f"⚠️  {_why} — switching to fallback: {_fb_provider} / {_fb_model}"),
+                    platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
+                # reasoning_config follows the swap in _ensure_runtime_credentials (the only caller).
                 return runtime
             except Exception:
                 continue
@@ -307,20 +405,60 @@ class CLIAgentSetupMixin:
 
         See #62935.
         """
+        return self._probe_runtime_credentials()[0]
+
+    def _probe_runtime_credentials(self) -> tuple:
+        """``(ready, error)``: *error* is the exception that stopped resolution — raised, or
+        swallowed by the "auto" ladder and stamped on a keyless fallback — ``None`` when a provider
+        resolved (usable or merely keyless). Never prints or mutates CLI state."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
         try:
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
                 explicit_base_url=self._explicit_base_url)
-        except Exception:
-            return False
+        except Exception as exc:
+            return False, exc
         if not isinstance(runtime, dict):
-            return False
+            return False, None
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         if callable(api_key) or (isinstance(api_key, str) and api_key):
-            return bool(base_url)
-        return _keyless_custom_base(base_url)
+            return bool(base_url), None
+        return _keyless_custom_base(base_url), runtime.get("auth_error")
+
+    def _maybe_offer_first_run_setup(self) -> None:
+        """Interactive startup gate: a blank install goes to the provider wizard; a configured
+        profile whose credential is benched or signed out gets the reason instead (#113720)."""
+        if not sys.stdin.isatty():
+            return
+        ready, error = self._probe_runtime_credentials()
+        if not ready and not self._explain_unusable_credentials(error):
+            self._offer_first_run_setup()
+
+    def _explain_unusable_credentials(self, error) -> bool:
+        """A configured profile whose credential is benched, quarantined or signed out is not a
+        blank install: print what is wrong (and the remaining cooldown) instead of the first-run
+        wizard, whose "nothing is configured" claim sends operators into a second login that can
+        rotate a single-use OAuth grant away from the session that was working (#113720).
+
+        True when the failure was explained; False when nothing is configured (the wizard's case).
+        """
+        from cli import _cprint
+        from hermes_cli.auth import format_auth_error
+        if error is None or getattr(error, "code", None) == "no_provider_configured":
+            return False
+        provider = getattr(error, "provider", None) or self.requested_provider
+        cooling, lines = _credential_pool_notice(provider) if provider and provider != "auto" else (False, [])
+        _cprint("")
+        if cooling:
+            # A live cooldown is a wait, not a lost login: lead with it and skip the re-auth hint.
+            _cprint(f"⚠️  {_escape(lines.pop(0))}")
+            _cprint(f"  {_escape(str(error))}")
+        else:
+            _cprint(f"⚠️  {_escape(format_auth_error(error))}")
+        for line in lines:
+            _cprint(f"  {_escape(line)}")
+        return True
 
     def _offer_first_run_setup(self) -> bool:
         """Offer the provider picker when no provider is configured at all (interactive
@@ -328,7 +466,7 @@ class CLIAgentSetupMixin:
         source of truth. True when a provider was configured."""
         from cli import _cprint, logger
         _cprint("")
-        _cprint("⚕ No inference provider is configured yet — let's fix that.")
+        _cprint("☤ No inference provider is configured yet — let's fix that.")
         _cprint("  You'll pick a provider (Nous Portal OAuth is the fastest; "
                 "no API key needed) and a model.")
         try:
@@ -360,10 +498,15 @@ class CLIAgentSetupMixin:
                 self.requested_provider = (_model_cfg.get("provider") or "").strip() or self.requested_provider
                 _new_model = (_model_cfg.get("default") or _model_cfg.get("model") or "").strip()
                 self.model = _new_model or self.model
+                # The picker's model has its own per-model reasoning contract (see
+                # _resolve_cli_reasoning); an explicit --reasoning stays the user's intent.
+                if _new_model and getattr(self, "_explicit_reasoning_config", None) is None:
+                    from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
+                    _resolve_cli_reasoning(self)
         except Exception as exc:
             logger.debug("first-run config re-sync failed: %s", exc)
         # Force credential re-resolution + agent rebuild on next use.
-        self.agent = None
+        _retire_agent(self)
         self._active_agent_route_signature = None
         if self._runtime_credentials_ready():
             _cprint("  ✓ Provider configured — you're ready to chat.")
@@ -494,8 +637,8 @@ class CLIAgentSetupMixin:
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
         if self._session_db is None:
             try:
-                from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                from hermes_state_registry import acquire
+                self._session_db = acquire()
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
         if (
@@ -556,6 +699,12 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
+            # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload
+            # thread rendered, so the shared prompt path never re-reads config or skill files.
+            _auto_result = getattr(self, "_auto_load_skills_result", None)
+            if _auto_result is not None:
+                self.agent._auto_load_skills_result = _auto_result
+                self.agent._auto_load_skills_resolved = True
             # Route agent status output through prompt_toolkit so ANSI escapes aren't garbled by
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
@@ -584,7 +733,8 @@ class CLIAgentSetupMixin:
             return True
         except Exception as e:
             console = ChatConsole()
-            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+            console.print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
             from hermes_constants import partial_update_hint
             for line in partial_update_hint(e):
                 console.print(line)

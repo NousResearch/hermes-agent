@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from agent.turn_context import extract_api_content_sidecar
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -23,14 +24,6 @@ class TranscriptReadError(RuntimeError):
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
         super().__init__(f"transcript read failed for session {session_id}")
-
-
-def _plain_text(content) -> str:
-    """Text of a message content (str or text-part list); "" for anything else."""
-    if isinstance(content, list):
-        parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-        return "\n".join(t for t in parts if t)
-    return content if isinstance(content, str) else ""
 
 
 def _spool_dropped(session_id: str, message: Dict[str, Any]):
@@ -55,6 +48,14 @@ class SessionTranscriptMixin:
     compression-reroute following, FTS corruption recovery, rewrite/rewind/load."""
 
     _MAX_PENDING_PER_SESSION = 200  # in-memory pending messages per session (DB broken)
+    # Cooldown between FTS5 rebuild attempts (see _rebuild_fts_once); avoids permanently
+    # disabling recovery after one failed attempt while still avoiding a rebuild storm against
+    # a database that is corrupt on every write.
+    _FTS_REBUILD_COOLDOWN_SECONDS = 300
+    # Consecutive transcript-append failures for one session before escalating from WARNING to
+    # ERROR (see _append_to_transcript_serialized); a session stalled past this many attempts is
+    # no longer a transient blip and needs operator attention.
+    _TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD = 3
 
     def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
         """Latest compression continuation for *session_id* (heals a mapping left pointing at a
@@ -107,8 +108,11 @@ class SessionTranscriptMixin:
         return self._lazy("_transcript_drain_lock", threading.RLock)
 
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Serialize transcript draining across queue migration boundaries."""
-        if not self._db_for_session_id(session_id) or skip_db:
+        """Serialize transcript draining across queue migration boundaries. A session with no usable
+        store is NOT skipped: the write is queued and counted like any other failed append, so a
+        dead/unopenable state.db escalates and spools instead of dropping turns silently
+        (#114266)."""
+        if skip_db:
             return
         with self._get_transcript_drain_lock():
             self._append_to_transcript_serialized(self._follow_reroutes(session_id), message)
@@ -240,6 +244,9 @@ class SessionTranscriptMixin:
 
         # DB write outside the retry lock so other sessions can append.
         while True:
+            # Spooled backlog (cap eviction or a stalled session) is older than ``msg``: replay it
+            # first so recovery keeps transcript order; a still-dead DB just fails both.
+            self._drain_spooled_drops(session_id)
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
@@ -293,9 +300,16 @@ class SessionTranscriptMixin:
                 with self._transcript_retry_lock:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1
                     self._transcript_append_failures[session_id] = failures
-                logger.warning(
-                    "Session DB transcript append failed for %s (failure_count=%d, pending=%d); "
-                    "will retry: %s", session_id, failures, len(pending), exc)
+                if failures >= self._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD:
+                    spooled = self._spool_stalled_backlog(session_id, queue_session_id)
+                    logger.error(
+                        "Session DB transcript append failed for %s (failure_count=%d, "
+                        "pending=%d, spooled_to_disk=%d); session is stalled and needs operator "
+                        "attention: %s", session_id, failures, len(pending), spooled, exc)
+                else:
+                    logger.warning(
+                        "Session DB transcript append failed for %s (failure_count=%d, pending=%d); "
+                        "will retry: %s", session_id, failures, len(pending), exc)
                 return
             else:
                 with self._transcript_retry_lock:
@@ -303,11 +317,29 @@ class SessionTranscriptMixin:
                     if not queue_empty:
                         msg = pending[0]
                 if queue_empty:
-                    # Backlog clear: replay cap-dropped messages spooled to disk.
-                    # See #78182.
-                    self._drain_spooled_drops(session_id)
                     return
                 continue
+
+    def _spool_stalled_backlog(self, session_id: str, queue_session_id: str) -> int:
+        """Move a stalled session's in-memory backlog (oldest first) to the on-disk pending spool so
+        a crash/restart during the outage no longer loses it (#114266): ``recover_pending_to_db``
+        replays it at boot, ``_drain_spooled_drops`` before the next live write. Stops at the first
+        spool failure so order holds; whatever stays in memory remains under the cap."""
+        with self._transcript_retry_lock:
+            pending = self._dirty_transcripts.get(queue_session_id, [])
+            backlog = list(pending)
+        spooled = 0
+        for message in backlog:
+            if _spool_dropped(session_id, message) is None:
+                break
+            spooled += 1
+        if spooled:
+            self._lazy("_spooled_drop_sessions", set).add(session_id)
+            with self._transcript_retry_lock:
+                del pending[:spooled]
+                if not pending:
+                    self._dirty_transcripts.pop(queue_session_id, None)
+        return spooled
 
     def _drain_spooled_drops(self, session_id: str) -> None:
         """Replay cap-dropped spooled transcript messages after DB recovery. Best-effort: replay
@@ -317,8 +349,13 @@ class SessionTranscriptMixin:
             return
         try:
             from gateway.shutdown_flush import drain_transcript_spool
+            # Inside an outage the append that follows logs/escalates the same failure; the
+            # replay attempt is only the order-preserving probe, so its failure stays at DEBUG.
+            with self._transcript_retry_lock:
+                known_failing = bool(self._transcript_append_failures.get(session_id))
             _replayed, remaining = drain_transcript_spool(
                 session_id, lambda message: self._append_transcript_message(session_id, message),
+                db_known_failing=known_failing,
             )
             if not remaining:
                 spooled_sessions.discard(session_id)
@@ -373,13 +410,23 @@ class SessionTranscriptMixin:
         return isinstance(exc, sqlite3.DatabaseError) and SessionDB._is_fts_write_corruption_error(exc)
 
     def _rebuild_fts_once(self) -> bool:
-        """Attempt FTS5 ``rebuild`` once per store lifetime; True if any index was rebuilt."""
-        if self._fts_rebuild_attempted:
+        """Attempt FTS5 ``rebuild``, at most once per ``_FTS_REBUILD_COOLDOWN_SECONDS`` window;
+        True if any index was rebuilt.
+
+        A permanent one-shot flag meant a single rebuild failure (e.g. a transient WAL
+        split-brain guard hit) permanently disabled recovery for the life of the process, even
+        though later corruption on the same store could be fixable. Retrying on a cooldown lets
+        the store try again after the underlying condition (e.g. a foreign holder) has likely
+        cleared, without hammering a database that is corrupt on every write.
+        """
+        now = time.monotonic()
+        last_attempt = self._fts_rebuild_last_attempt_at
+        if last_attempt is not None and (now - last_attempt) < self._FTS_REBUILD_COOLDOWN_SECONDS:
             return False
-        self._fts_rebuild_attempted = True
         db = self._db
         if db is None or not hasattr(db, "rebuild_fts"):
             return False
+        self._fts_rebuild_last_attempt_at = now
         # WAL split-brain guard: skip when a foreign process holds state.db.
         foreign_holders = None
         if hasattr(db, "_foreign_state_db_holders"):
@@ -418,6 +465,19 @@ class SessionTranscriptMixin:
         except Exception:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
+
+    def transcript_tail_role(self, session_id: str) -> Optional[str]:
+        """Role of the newest live conversation row on the route ``load_transcript`` reads (``None``
+        when empty, no DB, or the read fails — the boundary write would fail the same way)."""
+        session_id = self._compression_tip_for_session_id(self._follow_reroutes(session_id))
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return None
+        try:
+            return db.latest_conversation_role(session_id)
+        except Exception:
+            logger.debug("transcript tail lookup failed for %s", session_id, exc_info=True)
+            return None
 
     def rewrite_transcript(
         self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
@@ -503,60 +563,28 @@ class SessionTranscriptMixin:
         self, session_id: str, n: int = 1, *, require_retryable_composite: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete (``active=0``), mirroring CLI ``/undo [N]``.
-        Returns ``{"rewound_count", "turns_undone", "target_text"}`` or ``None`` (no DB / no user
-        turn); ``n`` clamps to the oldest user turn. ``require_retryable_composite`` is the gateway
-        ``/retry`` guard: the selected turn must be a composite carrier whose live payload is
-        losslessly replayable as text before anything changes."""
+        Returns ``{"rewound_count", "turns_undone", "target_text"}`` or ``None`` (no DB / no rewindable
+        turn / persistence failure); ``n`` clamps to the oldest user turn. ``require_retryable_composite``
+        is the gateway ``/retry`` guard: the selected turn must be a composite carrier whose live payload
+        is losslessly replayable as text — that replay-policy ``ValueError`` propagates so /retry can
+        explain why the carrier is unsafe."""
         db = self._db_for_session_id(session_id)
         if not db:
             return None
+        from hermes_state_rewind import RewindTargetUnavailableError
         with self._get_transcript_drain_lock():
-            n = max(n, 1)
-            from agent.context_compressor import (
-                retryable_user_text, split_user_originated_turn, user_originated_turn_view,
-            )
             try:
-                expected_active_ids = db.get_active_message_ids(session_id)
-                durable = db.get_messages_as_conversation(session_id, include_row_ids=True)
-                user_indices = [
-                    index for index, message in enumerate(durable)
-                    if user_originated_turn_view(message) is not None
-                ]
-                if not user_indices:
-                    return None
-                turns_undone = min(n, len(user_indices))
-                target = durable[user_indices[-turns_undone]]
-                target_id = target.get("_row_id")
-                if not isinstance(target_id, int):
-                    return None
-                handoff, target_view = split_user_originated_turn(target)
-                if target_view is None:
-                    return None
-                if require_retryable_composite and handoff is None:
-                    return None
-            except Exception as e:
-                logger.debug("rewind_session: failed to resolve canonical target: %s", e)
+                outcome = db.rewind_user_turn(
+                    session_id, -max(n, 1), require_retryable=require_retryable_composite,
+                    require_composite=require_retryable_composite)
+            except RewindTargetUnavailableError as e:
+                logger.debug("rewind_session: %s", e)
                 return None
-            if require_retryable_composite:
-                # Keep replay-policy failures distinct from persistence errors so /retry can explain
-                # why the selected carrier is unsafe.
-                target_text = retryable_user_text(target_view.get("content"))
-            try:
-                result = db.rewind_to_message(
-                    session_id, target_id, preserve_compaction_handoff=handoff is not None,
-                    expected_active_ids=expected_active_ids,
-                    expected_target_content=target_view.get("content"))
+            except ValueError:
+                raise
             except Exception as e:
-                prefix = "" if isinstance(e, ValueError) else "rewind_to_message failed: "
-                logger.debug("rewind_session: %s%s", prefix, e)
+                logger.debug("rewind_session: rewind failed: %s", e)
                 return None
             self._clear_dirty_transcript(session_id)
-            # ``target_view`` is the live projection; a composite carrier's raw row holds the
-            # summary wrapper and must not be echoed as prompt.
-            if not require_retryable_composite:
-                target_text = _plain_text(target_view.get("content") or "")
-            return {
-                "rewound_count": result.get("rewound_count", 0),
-                "turns_undone": turns_undone,
-                "target_text": target_text,
-            }
+            return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
+                    "target_text": outcome.live_text}

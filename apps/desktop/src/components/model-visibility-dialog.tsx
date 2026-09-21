@@ -1,3 +1,4 @@
+import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
@@ -25,7 +26,6 @@ import {
   toggleModelVisibility
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelVisibilityDialogProps {
   gw?: HermesGateway
@@ -54,7 +54,7 @@ export function ModelVisibilityDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, profile, sessionId }),
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway: gw, profile, sessionId }),
     enabled: open
   })
 

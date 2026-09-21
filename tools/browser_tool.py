@@ -20,7 +20,7 @@ import time
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
 from agent.redact import redact_cdp_url
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from utils import env_int
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 
@@ -37,11 +37,30 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
-    harnesses stub the ``tools`` package)."""
-    from tools.environments.local import hermes_subprocess_env
+    harnesses stub the ``tools`` package). The passthrough keys are re-added from the active
+    profile's secret scope, never ``os.environ``: under multiplex that holds the LAUNCH profile's
+    Browserbase/Firecrawl keys, and a served profile's browser must run on its own (or none)."""
+    from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
+    from tools.environments.local import served_profile_child_env
 
-    env = hermes_subprocess_env(inherit_credentials=False)
-    env.update({k: os.environ[k] for k in _BROWSER_PASSTHROUGH_KEYS if k in os.environ})
+    from agent.proxy_bypass import add_loopback_no_proxy
+
+    env = served_profile_child_env(inherit_credentials=False)
+    # A routed profile (multiplex, or a Desktop/dashboard backend serving ``?profile=B`` with the
+    # flag off) resolves from its bound scope only — a miss is "no key", never the launch profile's
+    # ``os.environ`` value that ``get_secret`` falls through to while multiplexing is inactive.
+    routed = serves_routed_profile()
+    scope = (current_secret_scope() or {}) if routed else None
+    for key in _BROWSER_PASSTHROUGH_KEYS:
+        value = scope.get(key) if routed else get_secret(key)
+        if value is not None:
+            env[key] = value
+    # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
+    # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
+    env = add_loopback_no_proxy(env)
+    # Chrome puts its SingletonSocket under $TMPDIR; a deep scratch dir overflows the AF_UNIX
+    # path cap and Chrome dies at startup ("Socket path too long"), so browsers get the short root.
+    env["TMPDIR"] = _socket_safe_tmpdir()
     return env
 
 
@@ -52,16 +71,16 @@ except Exception:
 
 try:
     from tools.url_safety import (
+        _is_declared_fake_ip,
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
         normalize_url_for_request as _normalize_url_for_request,
-        sensitive_query_param_name as _sensitive_query_param_name,
     )
 except Exception:
+    _is_declared_fake_ip = lambda ip: False  # noqa: E731 — no declaration known: keep the private verdict
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
-    _sensitive_query_param_name = lambda url: None  # noqa: E731 — best-effort fallback
 # Browser-provider ABC + registry; per-vendor providers live under
 # ``plugins/browser/<vendor>/``. The dispatcher consults the registry. See #25214.
 from agent.browser_provider import BrowserProvider
@@ -127,11 +146,14 @@ AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
 
 # Process caches (``_cached_X`` + ``_X_resolved`` pairs) for config-derived lookups;
 # reset by ``cleanup_all_browsers``. Written/read by the sibling modules via ``browser_tool_origin``.
-_cached_command_timeout: Optional[int] = None
+# The config-derived ones are keyed by profile home (``hermes_home_key()``): the multiplexed
+# gateway serves every profile from one process, so a single slot would hand the launch
+# profile's browser settings to every other profile.
+_cached_command_timeout: Optional[Dict[str, int]] = None
 # Flip the resolved flag BEFORE nulling the cache so a concurrent reader never sees ``resolved=True`` with
 # ``cache=None`` (#14331).
 _command_timeout_resolved = False
-_cached_snapshot_threshold: Optional[int] = None
+_cached_snapshot_threshold: Optional[Dict[str, int]] = None
 _snapshot_threshold_resolved = False
 _cached_cloud_provider: Optional[BrowserProvider] = None
 _cloud_provider_resolved = False
@@ -169,14 +191,18 @@ def _browser_cfg(key: str, default, parse, log_label: str):
 
 
 def _cached_browser_cfg(cache_name: str, flag_name: str, key: str, default, parse, log_label: str):
-    """Process-cached ``_browser_cfg`` read (cleared by ``cleanup_all_browsers``). The value is
-    stored BEFORE the resolved flag flips so a concurrent reader never sees ``resolved=True``
-    with a ``None`` cache."""
+    """Process-cached ``_browser_cfg`` read, one slot per profile home (cleared by
+    ``cleanup_all_browsers``). The value is stored BEFORE the resolved flag flips so a
+    concurrent reader never sees ``resolved=True`` with an empty cache."""
     g = globals()
-    if g[flag_name] and g[cache_name] is not None:
-        return g[cache_name]
+    home = hermes_home_key()
+    cache = g[cache_name]
+    if cache is None:
+        cache = g[cache_name] = {}
+    if g[flag_name] and cache.get(home) is not None:
+        return cache[home]
     result = _browser_cfg(key, default, parse, log_label)
-    g[cache_name] = result
+    cache[home] = result
     g[flag_name] = True
     return result
 
@@ -243,7 +269,9 @@ _PRIVATE_HOST_SUFFIXES = (".localhost", ".local", ".lan", ".internal")
 def _url_is_private(url: str) -> bool:
     """True when the URL's host is (or resolves to) a private/LAN/loopback/CGNAT address.
     Routing oracle only: DNS failures are NOT private (the configured backend surfaces the
-    error); obvious names short-circuit the DNS hop."""
+    error); obvious names short-circuit the DNS hop. A local proxy's declared fake-ip sentinel
+    (``security.fake_ip_ranges``) is not private: the name is public, the cloud browser resolves
+    it itself, so routing it to the local sidecar would send every URL local on such a host."""
     import ipaddress
     import socket
     from urllib.parse import urlparse
@@ -253,6 +281,8 @@ def _url_is_private(url: str) -> bool:
             ip = ipaddress.ip_address(host)
         except ValueError:
             return None
+        if _is_declared_fake_ip(ip):
+            return False
         return ip.is_private or ip.is_loopback or ip.is_link_local or ip in ipaddress.ip_network("100.64.0.0/10")
 
     try:
@@ -326,9 +356,10 @@ def _last_session_key(task_id: str) -> str:
 
 
 def _socket_safe_tmpdir() -> str:
-    """Short temp dir for Unix sockets: macOS ``TMPDIR`` + ``agent-browser-hermes_…``
-    exceeds the 104-byte AF_UNIX limit (silent screenshot failures), so use /tmp there."""
-    return "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+    """Temp root short enough for the agent-browser socket dir and Chrome's SingletonSocket
+    (``hermes_constants.socket_safe_tmpdir``)."""
+    from hermes_constants import socket_safe_tmpdir
+    return socket_safe_tmpdir()
 
 
 # Active sessions keyed by "session key": the bare task_id, or f"{task_id}::local"
@@ -432,7 +463,7 @@ atexit.register(_lifecycle._stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer a lightweight retrieval tool when one is available (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer an available text-extraction or terminal-fetch tool; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -598,18 +629,15 @@ def _secret_url_error(url: str) -> Optional[dict]:
 
 def _url_policy_error(url: str, *, auto_local: bool = False) -> Optional[dict]:
     """Backend-aware URL checks on an already-normalized URL; None if allowed. Ordered floors:
-    (1) credential-like query params refused for cloud backends (third-party readers);
-    (2) cloud metadata / IMDS refused UNCONDITIONALLY (a local Chromium on a cloud VM still
-    reaches the host IMDS); (3) private addresses refused unless local, sidecar-routed, or
-    ``browser.allow_private_urls``; (4) website policy allow/deny lists."""
+    (1) cloud metadata / IMDS refused UNCONDITIONALLY (a local Chromium on a cloud VM still
+    reaches the host IMDS); (2) private addresses refused unless local, sidecar-routed, or
+    ``browser.allow_private_urls``; (3) website policy allow/deny lists.
+
+    Credential-NAMED query params (``?token=``, ``?signature=``) are deliberately NOT a floor:
+    magic links, OAuth callbacks and signed CDN assets are how the agent signs in and browses, and
+    a cloud browser already sees every cookie and typed password of the session — refusing the
+    URL protects nothing. Hermes' own secrets leaking into a URL are caught by ``_secret_url_error``."""
     local = _cloud._is_local_backend()
-    sensitive_query_key = _sensitive_query_param_name(url)
-    if sensitive_query_key and not local and not auto_local:
-        return _err(
-            "Blocked: URL contains a credential-like query parameter "
-            f"({sensitive_query_key}). Cloud browser backends are third-party "
-            "readers; use a local browser/CDP session or remove the sensitive "
-            "query parameter before navigating.")
     # Always-blocked floor: cloud metadata / IMDS endpoints are denied regardless of backend, hybrid
     # routing, or allow_private_urls. There's no legitimate agent use case for navigating to 169.254.169.254
     # / metadata.google.internal / ECS task metadata via a browser, and routing those to a local Chromium
@@ -1135,11 +1163,7 @@ def _maybe_stop_recording(task_id: str):
             _recording_sessions.discard(task_id)
 
 
-_GET_IMAGES_JS = """JSON.stringify(
-        [...document.images].map(img => ({
-            src: img.src, alt: img.alt || '', width: img.naturalWidth, height: img.naturalHeight
-        })).filter(img => img.src && !img.src.startsWith('data:'))
-    )"""
+_GET_IMAGES_JS = "JSON.stringify([...document.images].map(img => ({src: img.src, alt: img.alt || '', width: img.naturalWidth, height: img.naturalHeight})).filter(img => img.src && !img.src.startsWith('data:')))"
 
 
 def browser_get_images(task_id: Optional[str] = None) -> str:

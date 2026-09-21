@@ -69,13 +69,9 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     return (matches[0] if matches else None), False
 
 
-# Optional third value of an _edit _apply closure: (payload field name, extractor).
-# Surfaced in the success response so an entry-level replace shows the full text it
-# overwrote — a whole-entry write is never silent about the loss (#117952).
-_REPLACED_ENTRY = ("replaced_entry", lambda result: result[2] if len(result) > 2 else None)
-# Batch twin: op index -> full entry text that op's replace overwrote, same reason.
-# Empty dict -> None so add/remove-only batches don't carry a noise field.
-_BATCH_REPLACED_ENTRIES = ("replaced_entries", lambda result: (result[2] if len(result) > 2 else None) or None)
+# Optional third value of an _apply closure: a dict merged into the success payload —
+# e.g. the full text an entry-level replace overwrote, so a whole-entry write is never
+# silent about the loss (#117952). Same convention as _error(**extra).
 
 
 class MemoryStore:
@@ -235,16 +231,15 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message + " No operations were applied (batch is all-or-nothing).", usage=self._usage(target)))
 
-    def _mutate(self, target: str, mutate, *, skip_drift: bool = False,
-                extra: Optional[Tuple[str, Any]] = None) -> Dict[str, Any]:
+    def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
         file) and, unless *skip_drift*, on external drift (flushing would discard
         un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
-        a failed second read used to count as "no drift". When *extra* is passed, the
-        closure may return a third value; it is extracted and added to the success
-        payload under the named field."""
+        a failed second read used to count as "no drift". The closure may return a
+        third value, a dict merged into the success payload (``_error``'s ``**extra``
+        convention) — e.g. the full text a replace overwrote (#117952)."""
         path = self._path_for(target)
         with self._file_lock(path):
             raw, read_ok = self._read_raw_checked(path)
@@ -262,12 +257,8 @@ class MemoryStore:
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            response = self._success_response(target, result[1])
-            if extra is not None:
-                name, extract = extra
-                if (value := extract(result)) is not None:
-                    response[name] = value
-            return response
+            extra_fields = result[2] if len(result) > 2 else {}
+            return self._success_response(target, result[1], **extra_fields)
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -330,8 +321,8 @@ class MemoryStore:
                     f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
-            return replaced, "Entry replaced.", entries[idx]
-        return self._mutate(target, _apply, extra=_REPLACED_ENTRY)
+            return replaced, "Entry replaced.", {"replaced_entry": entries[idx]}
+        return self._mutate(target, _apply)
 
     @staticmethod
     def _apply_batch_op(working: List[str], act: str, content: str, old_text: str,
@@ -402,24 +393,28 @@ class MemoryStore:
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                     f"entries in the same batch, then retry."))
-            return working, f"Applied {len(operations)} operation(s).", replaced
-        return self._mutate(target, _apply, extra=_BATCH_REPLACED_ENTRIES)
+            replaced_fields = {"replaced_entries": replaced} if replaced else {}
+            return working, f"Applied {len(operations)} operation(s).", replaced_fields
+        return self._mutate(target, _apply)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """Frozen load-time snapshot (NOT live state — mid-session writes don't touch
         it, preserving the prefix cache); None if empty."""
         return self._system_prompt_snapshot.get(target, "") or None
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None, **extra) -> Dict[str, Any]:
         """TERMINAL and WITHOUT the entries list: echoing entries invites the model to
         "find more to fix" and re-issue the same ops. A successful write resets the
-        per-turn failure budget."""
+        per-turn failure budget. ``**extra`` mirrors ``_error``'s convention — e.g. the
+        full text a replace overwrote (#117952), deliberately visible despite the
+        no-entries rule: silent data loss is the failure this field exists to prevent."""
         # A successful write means the consolidation loop made progress, so the per-turn failure budget
         # resets (the cap counts consecutive failures, not lifetime ones within a turn) (#42405).
         self._consolidation_failures = 0
         return {"success": True, "done": True, "target": target,
                 "usage": self._usage_pct(target, self._char_count(target)),
                 "entry_count": len(self._entries_for(target)), **({"message": message} if message else {}),
+                **extra,
                 "note": "Write saved. This update is complete — do not repeat it."}
 
     def _render_block(self, target: str, entries: List[str]) -> str:

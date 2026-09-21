@@ -31,6 +31,7 @@ SAMPLE_RATE = 16000  # 16 kHz mono int16 — Whisper-native and what every engin
 # several frames while the caller is still reacting.
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
+_STREAM_RESTART_DELAYS = (1.0, 2.0, 4.0)
 
 # Ambient-speech rejection: N consecutive over-threshold frames before firing
 # (a stray phoneme spikes one frame; a real phrase holds several).
@@ -465,6 +466,8 @@ class WakeWordDetector:
         # True when the stream is open but every frame is (near-)silence, so status
         # surfaces can tell "armed" from "deaf".
         self.audio_silent, self._silent_frames = False, 0
+        self._stream_restart_attempt = 0
+        self._last_stream_error = "microphone stream closed unexpectedly"
 
     @property
     def running(self) -> bool:
@@ -523,6 +526,7 @@ class WakeWordDetector:
         self._halt_thread()
 
     def resume(self) -> None:
+        self._stream_restart_attempt = 0
         self.start()
 
     def stop(self) -> None:
@@ -577,6 +581,7 @@ class WakeWordDetector:
                                         dtype="int16", blocksize=cap.frame_length)
             cap.stream.start()
         except Exception as e:
+            cap.close()
             logger.error("wake word: failed to open microphone: %s", e)
             raise
         return cap
@@ -636,6 +641,7 @@ class WakeWordDetector:
                     data = cap.read()
                 except Exception as e:
                     logger.warning("wake word: stream read error: %s", e)
+                    self._last_stream_error = str(e)
                     failed = not self._stop.is_set()
                     break
                 if data is None:  # no client frames yet — counts as silence for status
@@ -726,15 +732,65 @@ def _owned_detector(owner: object) -> Optional[WakeWordDetector]:
     return _detector if _detector is not None and _detector_owner is owner else None
 
 
-def _detector_failed(detector: WakeWordDetector) -> None:
-    """Release ownership if the active microphone stream dies unexpectedly."""
-    with _detector_lock:
-        if _detector is detector:
+def _notify_listener_state(callback: Optional[Callable[[str, Dict[str, Any]], None]],
+                           state: str, **details: Any) -> None:
+    if callback is None:
+        return
+    try:
+        callback(state, details)
+    except Exception as e:
+        logger.debug("wake word: listener state callback failed: %s", e)
+
+
+def _detector_failed(detector: WakeWordDetector,
+                     on_state: Optional[Callable[[str, Dict[str, Any]], None]]) -> None:
+    """Retry a failed capture without surrendering the owner's microphone lease."""
+    def _restart() -> None:
+        while not detector.external_audio and detector._stream_restart_attempt < len(_STREAM_RESTART_DELAYS):
+            attempt = detector._stream_restart_attempt + 1
+            detector._stream_restart_attempt = attempt
+            delay = _STREAM_RESTART_DELAYS[attempt - 1]
+            _notify_listener_state(on_state, "retrying", attempt=attempt,
+                                   max_attempts=len(_STREAM_RESTART_DELAYS), delay_seconds=delay,
+                                   message=detector._last_stream_error)
+            if detector._stop.wait(delay):
+                return
+            with _detector_lock:
+                if _detector is not detector:
+                    return
+                try:
+                    detector.start()
+                except Exception as e:
+                    detector._last_stream_error = str(e)
+                    # start() halts its failed thread; ownership is still ours and the
+                    # remaining bounded attempts must be allowed to open a fresh stream.
+                    detector._stop.clear()
+                    logger.warning("wake word: stream restart %d/%d failed: %s", attempt,
+                                   len(_STREAM_RESTART_DELAYS), e)
+                    continue
+            logger.info("wake word: microphone stream recovered on attempt %d/%d", attempt,
+                        len(_STREAM_RESTART_DELAYS))
+            _notify_listener_state(on_state, "listening", attempt=attempt,
+                                   max_attempts=len(_STREAM_RESTART_DELAYS), delay_seconds=0,
+                                   message="")
+            return
+
+        with _detector_lock:
+            if _detector is not detector:
+                return
             _teardown_locked(detector.engine.close)
+        logger.error("wake word: microphone stream recovery exhausted after %d attempts: %s",
+                     len(_STREAM_RESTART_DELAYS), detector._last_stream_error)
+        _notify_listener_state(on_state, "failed", attempt=len(_STREAM_RESTART_DELAYS),
+                               max_attempts=len(_STREAM_RESTART_DELAYS), delay_seconds=0,
+                               message=detector._last_stream_error)
+
+    threading.Thread(target=_restart, daemon=True, name="wake-word-restart").start()
 
 
 def start_listening(on_wake: Callable[[], None], *, owner: object, config: Optional[Dict[str, Any]] = None,
-                    external_audio: bool = False) -> WakeWordDetector:
+                    external_audio: bool = False,
+                    on_state: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> WakeWordDetector:
     """Claim, build, and start the detector. Idempotent for the same owner; a different owner
     (or process) gets :class:`WakeWordInUse`. Raises if engine construction fails (missing deps /
     access key / model) — callers should probe :func:`check_wake_word_requirements` first."""
@@ -752,8 +808,11 @@ def start_listening(on_wake: Callable[[], None], *, owner: object, config: Optio
         _detector_file_lock = _acquire_machine_lock()
         try:
             cfg = config if config is not None else load_wake_word_config()
-            _detector = WakeWordDetector(_build_engine(cfg), on_wake, on_failure=_detector_failed,
-                                         input_device=_input_device(cfg), external_audio=external_audio)
+            _detector = WakeWordDetector(
+                _build_engine(cfg), on_wake,
+                on_failure=lambda detector: _detector_failed(detector, on_state),
+                input_device=_input_device(cfg), external_audio=external_audio,
+            )
             _detector_owner = owner
             _detector.start()
             return _detector

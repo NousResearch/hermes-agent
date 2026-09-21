@@ -113,6 +113,13 @@ export interface WakeStartResponse {
   started?: boolean
 }
 
+export interface WakeStateEvent {
+  attempt?: number
+  max_attempts?: number
+  message?: string
+  state?: 'failed' | 'listening' | 'retrying'
+}
+
 export interface WakeStopResponse {
   disabled_persisted?: boolean
   reason?: string | null
@@ -189,6 +196,30 @@ export function applyWakeStatus(status: WakeStatusResponse | null | undefined): 
     notice: listening && !silent ? '' : noticeFrom(status),
     phrase: status?.phrase?.trim() || current.phrase
   })
+}
+
+/** Apply an unsolicited backend recovery transition after the mic stream dies. */
+export function applyWakeState(event: WakeStateEvent | null | undefined): void {
+  const current = $wakeWord.get()
+
+  if (event?.state === 'listening') {
+    $wakeWord.set({ ...current, listening: true, notice: '' })
+    return
+  }
+
+  if (event?.state === 'retrying') {
+    const progress = event.attempt && event.max_attempts ? ` (${event.attempt}/${event.max_attempts})` : ''
+    $wakeWord.set({ ...current, listening: false, notice: `microphone disconnected — retrying${progress}` })
+    return
+  }
+
+  if (event?.state === 'failed') {
+    $wakeWord.set({
+      ...current,
+      listening: false,
+      notice: event.message?.trim() || 'microphone disconnected — click to retry'
+    })
+  }
 }
 
 /** Sync the atom from a `wake.start` response. A `{started:false, reason}`

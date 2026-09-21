@@ -4140,6 +4140,14 @@ export interface WakeDetectedPayload {
   profile?: string | null
   start_new_session: boolean
 }
+/** Bounded microphone-stream recovery state for the owning wake-word client. */
+export interface WakeStatePayload {
+  state: string
+  attempt: number
+  max_attempts: number
+  delay_seconds: number
+  message: string
+}
 /** ``change_watcher._pet_changed_payload`` — ``pet.info.meta``-shaped; ``{enabled: false}`` when off. */
 export interface PetChangedPayload {
   enabled: boolean
@@ -5015,6 +5023,8 @@ export interface BackendGatewayEventMap {
   'voice.transcript': VoiceTranscriptPayload
   /** A wake phrase fired. */
   'wake.detected': WakeDetectedPayload
+  /** The wake-word microphone stream is recovering or exhausted. */
+  'wake.state': WakeStatePayload
 }
 export type BackendGatewayEventName = keyof BackendGatewayEventMap
 export const GATEWAY_EVENT_TYPES = [
@@ -5086,5 +5096,6 @@ export const GATEWAY_EVENT_TYPES = [
   'voice.interrupted',
   'voice.status',
   'voice.transcript',
-  'wake.detected'
+  'wake.detected',
+  'wake.state'
 ] as const satisfies readonly BackendGatewayEventName[]

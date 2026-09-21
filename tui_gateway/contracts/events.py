@@ -635,9 +635,20 @@ class WakeDetectedPayload(Payload):
     start_new_session: bool
 
 
+class WakeStatePayload(Payload):
+    """Bounded microphone-stream recovery state for the owning wake-word client."""
+
+    state: str  # retrying | listening | failed
+    attempt: int
+    max_attempts: int
+    delay_seconds: float
+    message: str
+
+
 event("voice.status", VoiceStatusPayload, doc="Voice recorder state changed.")
 event("voice.transcript", VoiceTranscriptPayload, doc="A voice capture produced text (or a stop phrase / silence limit).")
 event("wake.detected", WakeDetectedPayload, doc="A wake phrase fired.")
+event("wake.state", WakeStatePayload, doc="The wake-word microphone stream is recovering or exhausted.")
 
 
 # ── pets ──────────────────────────────────────────────────────────────────────────────────────
@@ -706,5 +717,5 @@ __all__ = [
     "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
     "ToolGeneratingPayload", "ToolOutputRiskPayload", "ToolStartPayload", "TurnStatus", "VoiceStatusPayload",
-    "VoiceTranscriptPayload", "WakeDetectedPayload",
+    "VoiceTranscriptPayload", "WakeDetectedPayload", "WakeStatePayload",
 ]

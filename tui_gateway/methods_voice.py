@@ -431,6 +431,25 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
     return _on_detect
 
 
+def _wake_state_handler(transport, sid: str):
+    """Publish capture recovery so the owning client never shows a dead listener as armed."""
+    def _on_state(state: str, details: dict) -> None:
+        global _wake_owner_transport, _wake_owner_surface
+        if _transport_is_dead(transport):
+            _release_wake_for_transport(transport)
+            return
+        if state == "failed":
+            with _wake_lock:
+                if _wake_owner_transport is transport:
+                    _wake_owner_transport, _wake_owner_surface = None, ""
+        token = bind_transport(transport)
+        try:
+            _emit("wake.state", sid, {"state": state, **details})
+        finally:
+            reset_transport(token)
+    return _on_state
+
+
 @method("gateway.capabilities")
 def _(rid, params: dict) -> dict:
     """What THIS BUILD enforces (a client withholds unless advertised), sourced from the enforcing
@@ -489,8 +508,11 @@ def _(rid, params: dict) -> dict:
     try:
         on_detect = _wake_detect_handler(transport, str(params.get("session_id") or ""),
                                          wake_phrase(cfg), bool(cfg.get("start_new_session", True)))
-        start_listening(on_detect, owner=transport, config=cfg,
-                        external_audio=capture_mode == "client")
+        start_listening(
+            on_detect, owner=transport, config=cfg,
+            external_audio=capture_mode == "client",
+            on_state=_wake_state_handler(transport, str(params.get("session_id") or "")),
+        )
     except WakeWordInUse:
         return refused("owned", owner_surface=existing_surface or None)
     except Exception as e:

@@ -33288,6 +33288,41 @@
         "title": "WakeStartResult",
         "type": "object"
       },
+      "WakeStatePayload": {
+        "additionalProperties": false,
+        "description": "Bounded microphone-stream recovery state for the owning wake-word client.",
+        "properties": {
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "max_attempts": {
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "delay_seconds": {
+            "title": "Delay Seconds",
+            "type": "number"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "attempt",
+          "max_attempts",
+          "delay_seconds",
+          "message"
+        ],
+        "title": "WakeStatePayload",
+        "type": "object"
+      },
       "WakeStatusParams": {
         "additionalProperties": false,
         "properties": {
@@ -34551,6 +34586,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/WakeDetectedPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "wake.state",
+      "summary": "The wake-word microphone stream is recovering or exhausted.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/WakeStatePayload"
           }
         }
       ]

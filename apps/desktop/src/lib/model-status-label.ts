@@ -73,8 +73,18 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 function prettifyBase(base: string): string {
-  if (/^deepseek-flash$/i.test(base)) {
+  // `deepseek-flash` (catalog shortcut) and `deepseek-v4.1-flash` (raw id) are
+  // the same model; naive title-case of the latter produced "Deepseek V4.1 Flash"
+  // beside the hardcoded catalog name (#118083).
+  if (/^deepseek-(?:v4\.1-)?flash$/i.test(base)) {
     return 'DeepSeek V4.1 Flash'
+  }
+
+  if (/^deepseek/i.test(base)) {
+    const rest = base.replace(/^deepseek-?/i, '').replace(/-/g, ' ')
+    const pretty = titleCase(rest)
+
+    return pretty ? `DeepSeek ${pretty}` : 'DeepSeek'
   }
 
   if (/^claude-/i.test(base)) {

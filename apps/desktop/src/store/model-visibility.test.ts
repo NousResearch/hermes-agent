@@ -83,6 +83,18 @@ describe('model visibility', () => {
     expect(families.map(f => f.id)).toEqual(['claude-opus-4-5'])
   })
 
+  it('folds deepseek-flash into deepseek-v4.1-flash when both are listed (#118083)', () => {
+    const families = collapseModelFamilies(['deepseek-flash', 'deepseek-v4.1-flash', 'deepseek-chat'])
+
+    expect(families.map(f => f.id)).toEqual(['deepseek-v4.1-flash', 'deepseek-chat'])
+  })
+
+  it('keeps deepseek-flash when its expanded twin is absent', () => {
+    const families = collapseModelFamilies(['deepseek-flash', 'deepseek-chat'])
+
+    expect(families.map(f => f.id)).toEqual(['deepseek-flash', 'deepseek-chat'])
+  })
+
   it('keeps a date-pinned snapshot standing alone when it has no alias', () => {
     const families = collapseModelFamilies(['claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'])
 

@@ -12,9 +12,15 @@ describe('model-status-label', () => {
   it('formats display names consistently', () => {
     expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
-    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
+    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('DeepSeek V4 Pro')
     expect(displayModelName('deepseek/deepseek-flash')).toBe('DeepSeek V4.1 Flash')
+    expect(displayModelName('deepseek/deepseek-v4.1-flash')).toBe('DeepSeek V4.1 Flash')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+  })
+
+  it('keeps the DeepSeek brand capitalisation on every surface (#118083)', () => {
+    expect(displayModelName('deepseek-chat')).toBe('DeepSeek Chat')
+    expect(displayModelName('deepseek-v4.1-flash')).toBe('DeepSeek V4.1 Flash')
   })
 
   it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {

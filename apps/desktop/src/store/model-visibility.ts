@@ -55,6 +55,15 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
       continue
     }
 
+    // `deepseek-flash` is the short catalog alias of `deepseek-v4.1-flash`;
+    // keep the expanded id when both are listed (#118083).
+    if (
+      /^deepseek-flash$/i.test(model) &&
+      [...present].some(candidate => /^deepseek-v4\.1-flash$/i.test(candidate))
+    ) {
+      continue
+    }
+
     const fastId = `${model}-fast`
     const hasFast = present.has(fastId)
     families.push({ fastId: hasFast ? fastId : null, id: model })

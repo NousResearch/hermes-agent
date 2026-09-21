@@ -24,10 +24,11 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _strip_images_from_messages, _strip_non_ascii, image_model_key,
+    _strip_images_from_messages, _strip_non_ascii,
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
+from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
     CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
     provider_label_for, site_copy, stamp_failure,
@@ -246,7 +247,7 @@ def recover_before_classification(
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
     # Guarded PER MODEL, not by a turn-global flag: in a fallback chain the next model can reject
     # images too, and a turn-wide flag would skip its recovery and fail the turn.
-    _model_key = image_model_key(agent)
+    _model_key = _provider_model_key(agent)
     _rejected = getattr(agent, "_image_rejecting_models", None)
     if not isinstance(_rejected, set):
         _rejected = agent._image_rejecting_models = set()

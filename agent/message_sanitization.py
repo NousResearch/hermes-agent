@@ -14,6 +14,8 @@ import re
 from functools import partial
 from typing import Any, Callable
 
+from agent.vision_message_prep import _provider_model_key
+
 logger = logging.getLogger(__name__)
 
 # Lone surrogates are invalid UTF-8 and crash json.dumps in the OpenAI SDK; also used for
@@ -411,12 +413,6 @@ _IMAGE_CORRUPT_PHRASES = (
 _IMAGE_REJECTION_PHRASES = _IMAGE_REJECTION_PHRASES + _IMAGE_CORRUPT_PHRASES
 
 
-def image_model_key(agent: Any) -> tuple:
-    """``(provider, model)`` the agent is currently talking to — the key image rejections are
-    tracked by, so each model in a fallback chain is judged on its own."""
-    return (getattr(agent, "provider", None), getattr(agent, "model", None))
-
-
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     """Send-path image strip for a model that rejected image content (see turn_recovery).
 
@@ -427,7 +423,7 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     that accepts images gets them again.
     """
     rejected = getattr(agent, "_image_rejecting_models", None)
-    if not isinstance(rejected, set) or image_model_key(agent) not in rejected:
+    if not isinstance(rejected, set) or _provider_model_key(agent) not in rejected:
         return False
     return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
 
@@ -451,7 +447,7 @@ __all__ = [
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
-    "strip_images_for_rejecting_model", "image_model_key",
+    "strip_images_for_rejecting_model",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
     "tool_result_id_variants", "uniquify_tool_call_ids",

@@ -80,6 +80,7 @@ import {
   transcriptBackfillAvailable
 } from './transcript-backfill'
 import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
+import { useTranscriptRetention } from './use-transcript-retention'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -325,6 +326,17 @@ export function ChatRuntimeBoundary({
   }, [messages, windowPages])
 
   const currentMessages = history.page?.messages ?? windowedMessages
+  // Release the store's paged-through history (persisted rows older than the
+  // window) instead of retaining it for the window's lifetime (#77311). A
+  // static history page is not the live store, and neither is a suppressed
+  // transcript, so both opt out.
+  useTranscriptRetention({
+    anchorId: windowed ? windowedMessages[0]?.id ?? null : null,
+    enabled: !suppressMessages && !history.page,
+    profile: tailProfile,
+    runtimeId,
+    storedSessionId: storedId
+  })
   const runtimeMessageRepository = useRuntimeMessageRepository(currentMessages)
   // Subscribed (not read imperatively) so the "Show earlier" affordance
   // appears/retires as tail hydrations and backfill pages record their state.

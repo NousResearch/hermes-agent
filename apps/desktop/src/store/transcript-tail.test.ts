@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $transcriptTailBySessionId, clearTranscriptTailPaging, recordTranscriptTail } from './transcript-tail'
+import {
+  $transcriptTailBySessionId,
+  clearTranscriptTailPaging,
+  recordTranscriptTail,
+  rewindTranscriptTail
+} from './transcript-tail'
 
 const page = (count: number, limit = 10) => ({
   messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
@@ -60,5 +65,43 @@ describe('recordTranscriptTail no-op suppression', () => {
 
     expect($transcriptTailBySessionId.get().active).toBeDefined()
     expect($transcriptTailBySessionId.get()['other-0']).toBeUndefined()
+  })
+})
+
+describe('rewindTranscriptTail', () => {
+  beforeEach(() => {
+    $transcriptTailBySessionId.set({})
+  })
+
+  it('points the next older page at the retained prefix', () => {
+    recordTranscriptTail('s1', page(10))
+
+    expect(rewindTranscriptTail('s1', 4)).toBe(true)
+    expect($transcriptTailBySessionId.get().s1).toMatchObject({ nextOffset: 4, possiblyTruncated: true })
+  })
+
+  it('keeps a rewind on the same route the tail was hydrated with', () => {
+    recordTranscriptTail('s1', page(10), { connectionId: 'c1', profile: 'work' }, { connectionId: 'c1', profile: 'work' })
+
+    expect(rewindTranscriptTail('s1', 4, { connectionId: 'c1', profile: 'work' })).toBe(true)
+
+    const entry = $transcriptTailBySessionId.get()[JSON.stringify(['c1', 'work', 's1'])]
+
+    expect(entry).toMatchObject({ nextOffset: 4, possiblyTruncated: true })
+    expect(entry.profile).toEqual({ connectionId: 'c1', profile: 'work' })
+  })
+
+  it('refuses to rewind a session with no recorded page route', () => {
+    // No entry means no route to fetch a page from: the caller must keep its
+    // rows rather than release history nothing can bring back.
+    expect(rewindTranscriptTail('unknown', 4)).toBe(false)
+    expect($transcriptTailBySessionId.get()).toEqual({})
+  })
+
+  it('refuses an ambiguous rewind when the session has several owner scopes', () => {
+    recordTranscriptTail('s1', page(10), { connectionId: 'c1', profile: 'work' }, { connectionId: 'c1', profile: 'work' })
+    recordTranscriptTail('s1', page(10), { connectionId: 'c2', profile: 'work' }, { connectionId: 'c2', profile: 'work' })
+
+    expect(rewindTranscriptTail('s1', 4)).toBe(false)
   })
 })

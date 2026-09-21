@@ -180,6 +180,50 @@ export function recordTranscriptBackfillPage(
   setTranscriptTailEntry(key, tailStateFromPage(page, previous.profile))
 }
 
+/**
+ * Re-arm the older-page fetch after in-store history was released.
+ *
+ * `boundRetainedTranscript` (app/chat/transcript-retention) drops rows that are
+ * older than the live window once they are persisted — but they stay reachable
+ * only while the transcript still reports older rows as fetchable. Point the
+ * entry at the retained prefix so the next "Show earlier" fetches them back
+ * instead of treating the in-memory store as the whole transcript.
+ *
+ * Returns false when the session has no entry: without one there is no route
+ * recorded to fetch a page from, so the caller must keep its rows rather than
+ * release history nothing can bring back.
+ */
+export function rewindTranscriptTail(
+  storedSessionId: string,
+  retainedRows: number,
+  profile?: TranscriptProfileScope
+): boolean {
+  if (!storedSessionId || retainedRows < 0) {
+    return false
+  }
+
+  const current = $transcriptTailBySessionId.get()
+
+  const selected: Array<[string, TranscriptTailState | undefined]> =
+    profile === undefined
+      ? matchingTailEntries(storedSessionId)
+      : [[transcriptTailKey(storedSessionId, profile), current[transcriptTailKey(storedSessionId, profile)]]]
+
+  if (selected.length !== 1 || !selected[0][1]) {
+    return false
+  }
+
+  const [key, previous] = selected[0]
+
+  setTranscriptTailEntry(key, {
+    nextOffset: retainedRows,
+    possiblyTruncated: true,
+    profile: previous.profile
+  })
+
+  return true
+}
+
 export function transcriptTailState(
   storedSessionId: null | string | undefined,
   profile?: TranscriptProfileScope

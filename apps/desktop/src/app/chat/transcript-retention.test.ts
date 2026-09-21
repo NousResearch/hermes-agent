@@ -1,0 +1,119 @@
+import { describe, expect, it } from 'vitest'
+
+import type { ChatMessage } from '@/lib/chat-messages'
+import { messageStoreWeight, RENDER_WEIGHT_CHARS } from '@/lib/render-weight'
+
+import { boundRetainedTranscript, TRANSCRIPT_RETAIN_SLACK } from './transcript-retention'
+
+interface RowOptions {
+  group?: string
+  /** Persisted rows carry the store's only durable handle back to the backend. */
+  persisted?: boolean
+  textUnits?: number
+}
+
+const row = (index: number, options: RowOptions = {}): ChatMessage => {
+  const { group, persisted = true, textUnits = 1 } = options
+
+  return {
+    ...(group ? { branchGroupId: group } : {}),
+    id: `m${index}`,
+    parts: [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * textUnits) }],
+    role: 'assistant',
+    ...(persisted ? { rowId: index + 1 } : {})
+  }
+}
+
+const transcript = (count: number, each: (index: number) => ChatMessage = index => row(index)): ChatMessage[] =>
+  Array.from({ length: count }, (_, index) => each(index))
+
+/** Rows the slack buys behind the window, at the weight every `heavy` row carries. */
+const slackRows = (sample: ChatMessage): number =>
+  Math.ceil(TRANSCRIPT_RETAIN_SLACK / messageStoreWeight(sample.parts))
+
+const heavy = (index: number) => row(index, { textUnits: 100 })
+
+describe('boundRetainedTranscript', () => {
+  it('releases the persisted rows older than the window and its slack', () => {
+    const messages = transcript(60, heavy)
+    const anchor = messages[40].id
+    const keep = slackRows(messages[40])
+
+    const retention = boundRetainedTranscript(messages, anchor)
+
+    expect(retention.releasedRows).toBe(40 - keep)
+    expect(retention.messages[0].id).toBe(`m${40 - keep}`)
+    expect(retention.retainedPersistedRows).toBe(messages.length - retention.releasedRows)
+    expect(retention.messages).toHaveLength(messages.length - retention.releasedRows)
+  })
+
+  it('keeps a fixed amount of history behind the window, however long the session is', () => {
+    const short = transcript(60, heavy)
+    const long = transcript(600, heavy)
+    const shortRetention = boundRetainedTranscript(short, short[40].id)
+    const longRetention = boundRetainedTranscript(long, long[560].id)
+
+    const behind = (retention: typeof shortRetention, anchorId: string) =>
+      retention.messages.findIndex(message => message.id === anchorId)
+
+    // The window itself holds different amounts here; what must not grow with
+    // the session is the history retained BEHIND it.
+    expect(behind(longRetention, long[560].id)).toBe(behind(shortRetention, short[40].id))
+    expect(behind(longRetention, long[560].id)).toBeLessThanOrEqual(slackRows(long[560]))
+
+    // ...and the longer session releases proportionally more rows.
+    expect(longRetention.releasedRows).toBeGreaterThan(shortRetention.releasedRows)
+    expect(longRetention.messages.length).toBeLessThan(long.length / 2)
+  })
+
+  it('leaves the transcript whole when a released row cannot be fetched back', () => {
+    // Rows 27-29 were never persisted: releasing the prefix around them would
+    // drop content nothing can restore, so nothing is released at all.
+    const messages = transcript(60, index =>
+      index >= 27 && index <= 29 ? row(index, { persisted: false, textUnits: 100 }) : heavy(index)
+    )
+
+    const retention = boundRetainedTranscript(messages, messages[40].id)
+
+    expect(retention.messages).toBe(messages)
+    expect(retention.releasedRows).toBe(0)
+  })
+
+  it('does not split an assistant branch group', () => {
+    // The slack boundary lands inside one three-message branch group; keeping
+    // the whole group is what stops a branch being re-parented onto a fork
+    // point that is no longer in the store.
+    const messages = transcript(60, index => row(index, { group: index >= 26 && index <= 28 ? 'g1' : undefined, textUnits: 100 }))
+    const keep = slackRows(messages[40])
+
+    const retention = boundRetainedTranscript(messages, messages[40].id)
+
+    expect(40 - keep).toBeGreaterThan(25)
+    expect(40 - keep).toBeLessThanOrEqual(28)
+    expect(retention.messages.filter(message => message.branchGroupId === 'g1')).toHaveLength(3)
+    expect(retention.messages[0].id).toBe('m26')
+  })
+
+  it('returns the store array untouched when nothing precedes the window', () => {
+    const messages = transcript(30, heavy)
+
+    for (const anchor of [null, messages[0].id]) {
+      const retention = boundRetainedTranscript(messages, anchor)
+
+      expect(retention.messages).toBe(messages)
+      expect(retention.releasedRows).toBe(0)
+      expect(retention.retainedPersistedRows).toBe(30)
+    }
+  })
+
+  it('returns the store array untouched when the retained rows carry no durable id', () => {
+    // Offset bookkeeping is measured from persisted rows; without one in the
+    // retained slice there is nothing to re-fetch against.
+    const messages = transcript(30, index => row(index, { persisted: index >= 20, textUnits: 100 }))
+
+    const retention = boundRetainedTranscript(messages, messages[25].id)
+
+    expect(retention.messages).toBe(messages)
+    expect(retention.releasedRows).toBe(0)
+  })
+})

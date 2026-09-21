@@ -396,7 +396,7 @@ def register(ctx):
 | `on_skill_lifecycle` | 观察者 | 权威 skill 使用状态变更后；忽略返回值。 | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | 暴露本地 skill 名和 provenance。 |
 | `subagent_start` | 观察者 | 子 agent 已构造、即将运行；忽略返回值。 | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal 可能含用户/项目内容。 |
 | `subagent_stop` | 观察者 | 子 agent 退出；忽略返回值。 | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary 和已脱敏 tool-history metadata 仍可能暴露项目结构。 |
-| `pre_gateway_dispatch` | 指令/控制 | 非 internal 入站消息在 auth/pairing/dispatch 前；第一个有效 `skip`、`rewrite` 或 `allow` 控制流程。 | `event`, `gateway`, `session_store` | 极高权限的进程内对象会暴露入站用户/routing 数据和 host handle。 |
+| `pre_gateway_dispatch` | 指令/控制 | 非 internal 入站消息在 auth/pairing/dispatch 前；第一个有效 `skip`、`rewrite`、`allow` 或 `authorize` 控制流程。 | `event`, `gateway`, `session_store` | 极高权限的进程内对象会暴露入站用户/routing 数据和 host handle。 |
 | `pre_approval_request` | 观察者 | Prompted 或 smart approval 前；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | 命令可能含 secret；smart observer preparation 会强制脱敏，但各 surface 并非完全相同。 |
 | `post_approval_response` | 观察者 | 决策、timeout 或 gateway 通知失败后；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`；smart 路径可增加 `decided_by` | 同样的命令敏感性，加决策 metadata。 |
 | `kanban_task_claimed` | 观察者 | Claim commit 后，在 dispatcher 进程 spawn worker 前；忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee 标识。 |
@@ -897,8 +897,9 @@ def my_callback(event, gateway, session_store, **kwargs):
 | `{"action": "skip", "reason": "..."}` | 丢弃消息——无 agent 回复、无配对流程、无认证。假定插件已处理（如静默摄入到转录）。 |
 | `{"action": "rewrite", "text": "new text"}` | 替换 `event.text`，然后以修改后的事件继续正常分发。适用于将缓冲的环境消息合并为单个 prompt。 |
 | `{"action": "allow"}` / `None` | 正常分发——运行完整的认证/配对/agent 循环链。 |
+| `{"action": "authorize"}` | 跳过平台 allowlist 检查并正常分发。当 hook 本身就是授权层时使用——例如，一个身份/访问插件已认证了发送者，并可能将 `source.user_id` 重写为规范身份，该身份不在（也不需要存在于）平台 allowlist 中。 |
 
-**使用场景：** 只听不回的群聊（仅在被 @ 时响应；将环境消息缓冲为上下文）；人工接管（所有者手动处理聊天时静默摄入客户消息）；按 profile 速率限制；策略驱动的路由。
+**使用场景：** 只听不回的群聊（仅在被 @ 时响应；将环境消息缓冲为上下文）；人工接管（所有者手动处理聊天时静默摄入客户消息）；按 profile 速率限制；策略驱动的路由；插件管理的身份与访问控制（`authorize`）。
 
 **示例——静默丢弃未授权的私信，不触发配对代码：**
 

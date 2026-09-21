@@ -1300,6 +1300,7 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
 def _config_model_provider() -> Tuple[Any, Optional[str]]:
     """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names a registry provider
     or a custom OpenAI-compatible endpoint (``custom``, ``custom:<name>``, ``vllm``/``ollama``/...).
+    A ``model.provider: openrouter`` pin and a bare ``providers:`` entry name are explicit intent too.
 
     The normal chat/gateway path resolves config.provider upstream in resolve_requested_provider();
     this is the safety net for the direct ``resolve_provider("auto")`` callers. A configured custom
@@ -1316,26 +1317,14 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
         if provider == "custom" or provider.startswith("custom:"):
             return model_cfg, "custom"
-        # ``openrouter`` is a first-class aggregator identity in resolve_provider() but, like
-        # ``custom``, it is intentionally absent from PROVIDER_REGISTRY (runtime_provider relies on
-        # that absence). A config that pins ``model.provider: openrouter`` is explicit intent and
-        # must read the same as a registry pin here, otherwise the boot inventory treats it as
-        # "nothing configured" and the dashboard parks sessions on Setup Required (#109397).
-        # A non-openrouter ``base_url`` under the openrouter pin is NOT contradictory: the runtime
-        # treats it as a deliberate mirror/proxy (runtime_provider_backends.py #10622, pinned by
-        # test_explicit_openrouter_honors_config_base_url_mirror), so carry that intent forward
-        # regardless of the mirror host.
+        # openrouter is absent from PROVIDER_REGISTRY on purpose, so it needs its own rung (#109397);
+        # a non-openrouter base_url under it is a deliberate mirror (#10622), not a contradiction.
         if provider == "openrouter":
             return model_cfg, "openrouter"
         if provider in PROVIDER_REGISTRY:
             return model_cfg, provider
-        # A bare name matching an enabled ``providers:`` / ``custom_providers:`` entry is the same
-        # explicit intent, spelled by name instead of by the ``custom:<name>`` form. The runtime
-        # resolver already routes it (``hermes chat`` works), so without this rung the two paths
-        # disagree and the dashboard parks on Setup Required for a working config — the #109397
-        # symptom, one rung over. has_named_custom_provider() is the runtime's own lookup: it
-        # ignores disabled entries and entries without a usable endpoint, and covers both the
-        # current ``providers:`` and the legacy ``custom_providers:`` spellings.
+        # Bare ``providers:`` name (the ``custom:<name>`` intent spelled without the prefix); reuse the
+        # runtime's own lookup so disabled / endpoint-less entries stay excluded.
         if provider:
             from hermes_cli.runtime_provider_custom import has_named_custom_provider
             if has_named_custom_provider(provider):

@@ -97,6 +97,9 @@ gateway:
     switch_failed:         "ブランチは作成されましたが、切り替えに失敗しました。"
     branched_one:          "⑂ **{title}** に分岐しました ({count} メッセージをコピー)\n元: `{parent}`\nブランチ: `{new}`\n元のセッションに戻るには `/resume` を使用してください。"
     branched_many:         "⑂ **{title}** に分岐しました ({count} メッセージをコピー)\n元: `{parent}`\nブランチ: `{new}`\n元のセッションに戻るには `/resume` を使用してください。"
+    branched_thread_one:   "⑂ 新しいスレッドで **{title}** に分岐しました（{count} 件のメッセージをコピー）\nスレッド: {thread}\n元: `{parent}` — このチャットは元のまま\n分岐: `{new}`\nこのチャット内で分岐するには `/branch --here` を使用してください。"
+    branched_thread_many:  "⑂ 新しいスレッドで **{title}** に分岐しました（{count} 件のメッセージをコピー）\nスレッド: {thread}\n元: `{parent}` — このチャットは元のまま\n分岐: `{new}`\nこのチャット内で分岐するには `/branch --here` を使用してください。"
+    thread_fallback:       "ここではスレッドを作成できなかったため、分岐がこのチャットのセッションを置き換えました。"
 
   commands:
     usage:                 "使い方: `/commands [page]`"

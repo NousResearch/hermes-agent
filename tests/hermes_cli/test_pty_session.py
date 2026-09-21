@@ -325,6 +325,48 @@ async def test_new_key_at_capacity_raises_when_none_reapable():
 
 
 @pytest.mark.asyncio
+async def test_concurrent_attach_on_one_token_forks_one_pty():
+    """Two connections racing one attach token must share ONE registered PTY.
+
+    The get-or-spawn decision spans awaits (reap, the spawn thread, start()), so
+    both racing callers used to see "no session" and fork their own: the token
+    then mapped to whichever registered last, the other tab's live session fell
+    out of the registry (never reaped) and a reattach landed on the wrong
+    terminal (#115304).
+    """
+    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED
+
+    reg = make_registry()
+    spawned = []
+
+    def spawn():
+        bridge = FakeBridge([b"", b""])
+        spawned.append(bridge)
+        return bridge
+
+    (s1, created1), (s2, created2) = await asyncio.gather(
+        reg.attach_or_spawn("tok", spawn=spawn),
+        reg.attach_or_spawn("tok", spawn=spawn),
+    )
+
+    assert len(spawned) == 1                    # one token, one PTY
+    assert (s1, created1) == (s2, True)
+    assert created2 is False
+    assert s1.bridge is spawned[0]
+    assert list(reg._sessions.values()) == [s1]  # every handed-out session is tracked
+
+    # Whichever socket attached last owns the terminal; the loser is superseded
+    # by contract, so no viewer is left writing into an untracked PTY.
+    ws_a, ws_b = FakeWS(), FakeWS()
+    await s1.attach(ws_a)
+    await s2.attach(ws_b)
+    assert reg._sessions["tok"] is s1
+    assert s1._ws is ws_b and ws_b.close_code is None
+    assert ws_a.close_code == WS_CLOSE_SUPERSEDED
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
 async def test_reaper_loop_invokes_reap(monkeypatch):
     from hermes_cli.pty_session import run_reaper
     reg = make_registry()

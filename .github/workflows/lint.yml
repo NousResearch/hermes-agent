@@ -185,6 +185,20 @@ jobs:
       - name: Forbid in-tree use of plugin-compat pointers
         run: python scripts/check_compat_pointers.py
 
+      # /tmp is not portable (Termux has none, native Windows has none, macOS aliases it to
+      # /private/tmp, Linux mounts it as a small tmpfs). Production code resolves scratch space
+      # through the scratch-dir helper; skills, docs and prompts must not teach the model a
+      # literal /tmp either. `no-tmp: ok — <why>` marks a deliberate line; _BASELINE in the
+      # script is the burn-down list of pre-existing hits.
+      - name: Forbid literal /tmp paths outside the baseline
+        run: python scripts/check_no_tmp_literals.py
+
+      # The OS lanes import only files carrying the matching marker, so a test that fakes
+      # macOS (is_macos -> True, sys.platform -> "darwin") without `macos_only` is green on
+      # Linux over a faked branch and never runs on macOS (#111866, AGENTS.md § Don't fake the host OS).
+      - name: Forbid unmarked macOS fakes in tests
+        run: python scripts/ci/check_os_marker_fakes.py
+
       # Advisory: profile-scope hazard shapes on the lines this PR adds (child env from os.environ,
       # raw os.getenv of a platform credential, HOME-only RPC binding, bare-PID liveness). One
       # process serves many profiles; every pattern leaked the launch profile at least once. Printed

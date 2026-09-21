@@ -26,6 +26,7 @@ from typing import Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.gitlock import clear_stale_tmp_packs
 from utils import env_int
 
 logger = logging.getLogger(__name__)
@@ -608,6 +609,20 @@ class CheckpointManager:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
 
+    def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
+        """Explain why host checkpoints are off limits for a container-backed session.
+
+        Classifies the task's backend at call time (nothing is remembered), so /rollback is
+        refused before the first mutation and follows a backend change within the session."""
+        from tools.file_tools_paths import container_backend_for_task
+        backend = container_backend_for_task(task_id)
+        if backend is None:
+            return None
+        return (
+            f"Checkpoints are not taken for terminal.backend={backend}: "
+            "file paths belong to the container, not this host."
+        )
+
     # --- public API ---
 
     def record_agent_write(self, file_path: str) -> None:
@@ -620,7 +635,7 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            store, dir_hash = _store_path(), _project_hash(self.get_working_dir_for_path(str(path)))
+            store, dir_hash = _store_path(), self._ledger_key(str(path))
             _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
@@ -637,7 +652,9 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not compute changed files: {err}"}
 
-        ledger = _load_ledger(p.store, p.dir_hash)
+        # p.dir_hash is the exact restore dir; the ledger was written under the walked key. Reading
+        # the wrong key looked like "no ledger" and degraded to a full restore over user edits.
+        ledger = _load_ledger(p.store, self._ledger_key(p.abs_dir))
         if not ledger:
             return {"success": True, "restore": [], "skipped": [], "ledger_empty": True}
         out: Dict[str, List[str]] = {"restore": [], "skipped": []}
@@ -818,6 +835,10 @@ class CheckpointManager:
                     logger.warning("Safe restore: could not remove %s: %s", rel, exc)
                     targets.failed_deletes.append(rel)
         return targets
+
+    def _ledger_key(self, path: str) -> str:
+        """Agent-write ledger key: hash of the marker-walked project dir, for writer and reader alike."""
+        return _project_hash(self.get_working_dir_for_path(path))
 
     def get_working_dir_for_path(self, file_path: str) -> str:
         """Resolve a file path to its working directory (nearest project-marker ancestor)."""
@@ -1106,6 +1127,10 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
     _prune_pre_v2_repos(base, cutoff, delete_orphans, orphan_allowlist, result)
     store = _store_path(base)
     if _store_has_head(store):
+        # A gc killed by the store timeout strands tmp_pack_* files that gc.auto=0 means git
+        # itself never reclaims; sweep them even when no ref moved (a sweep is a directory
+        # listing, unlike the pack-rewriting gc gated on refs below).
+        clear_stale_tmp_packs(store)
         # gc rewrites the whole pack — the entire cost of a prune on a large store — so it runs
         # only when a ref moved: deleted here, or rewritten by a checkpoint that left it pending.
         deleted_before = result["deleted_orphan"] + result["deleted_stale"]

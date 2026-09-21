@@ -1308,28 +1308,35 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._log_tag, Path(src_path).name, Path(wav_path).stat().st_size)
         return wav_path
 
-    def _resolve_stt_config(self) -> Optional[Dict[str, str]]:
+    def _resolve_stt_config(self) -> Optional[Dict[str, Any]]:
         """Resolve STT backend: ``extra["stt"]`` config first, then ``QQ_STT_*`` env
-        vars; None when unconfigured (QQ's built-in ASR still works)."""
+        vars; None when unconfigured (QQ's built-in ASR still works). ``timeout`` (seconds,
+        default 60) follows the shared STT client default so a self-hosted model's cold start
+        is not cut off at 30s (#112939)."""
+        from tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number  # lazy: keep adapter light
         stt_cfg = (self.config.extra or {}).get("stt")
         if isinstance(stt_cfg, dict) and stt_cfg.get("enabled") is not False:
             base_url = stt_cfg.get("baseUrl") or stt_cfg.get("base_url", "")
             api_key = stt_cfg.get("apiKey") or stt_cfg.get("api_key", "")
             model = stt_cfg.get("model", "")
+            timeout = _config_number(stt_cfg, "timeout", DEFAULT_STT_TIMEOUT)
             if base_url and api_key:
-                return {"base_url": base_url.rstrip("/"), "api_key": api_key, "model": model or "whisper-1"}
+                return {"base_url": base_url.rstrip("/"), "api_key": api_key, "model": model or "whisper-1",
+                        "timeout": timeout}
             if api_key:  # provider-only config
                 provider = stt_cfg.get("provider", "zai")
                 base_url = _STT_PROVIDER_BASE_URLS.get(provider, "")
                 if base_url:
                     default_model = "glm-asr" if provider in {"zai", "glm"} else "whisper-1"
-                    return {"base_url": base_url, "api_key": api_key, "model": model or default_model}
+                    return {"base_url": base_url, "api_key": api_key, "model": model or default_model,
+                            "timeout": timeout}
 
         qq_stt_key = _resolve_qq_secret("QQ_STT_API_KEY", "")
         if qq_stt_key:
             base_url = _resolve_qq_secret("QQ_STT_BASE_URL", _STT_PROVIDER_BASE_URLS["zai"])
             model = _resolve_qq_secret("QQ_STT_MODEL", "glm-asr")
-            return {"base_url": base_url.rstrip("/"), "api_key": qq_stt_key, "model": model}
+            return {"base_url": base_url.rstrip("/"), "api_key": qq_stt_key, "model": model,
+                    "timeout": DEFAULT_STT_TIMEOUT}
         return None
 
     async def _call_stt(self, wav_path: str) -> Optional[str]:
@@ -1347,7 +1354,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     headers={"Authorization": f"Bearer {api_key}"},
                     files={"file": (Path(wav_path).name, f, "audio/wav")},
                     data={"model": model},
-                    timeout=30.0)
+                    timeout=stt_cfg["timeout"])
             resp.raise_for_status()
             result = resp.json()
             # Zhipu/GLM: {"choices": [{"message": {"content": ...}}]}; OpenAI/Whisper: {"text": ...}

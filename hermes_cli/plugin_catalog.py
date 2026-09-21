@@ -32,10 +32,23 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
+LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
+# Catalog images may only come from GitHub: the Desktop catalog browser never fans out to
+# third-party hosts, and a raw URL pinned to the entry's commit is as immutable as the sha.
+IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
+IMAGE_HOST_SUFFIX = ".githubusercontent.com"
+
+
+def is_allowed_image_url(url: str) -> bool:
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
 _NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 
@@ -67,6 +80,10 @@ class PluginCatalogEntry:
     requires_hermes: str = ""
     subdir: str = ""
     docs_url: str = ""
+    version: str = ""            # human label for the pinned sha ("1.4.0"); cosmetic, never parsed
+    image: str = ""              # https image URL on a GitHub host; shown on catalog cards
+    screenshots: List[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
+    readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
     platforms: List[str] = field(default_factory=list)  # empty = all OSes
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
 
@@ -81,7 +98,9 @@ class PluginCatalogEntry:
             "name": self.name, "repo": self.repo, "sha": self.sha, "description": self.description,
             "maintainer": self.maintainer, "tier": self.tier, "category": self.category,
             "requires_hermes": self.requires_hermes,
-            "subdir": self.subdir, "docs_url": self.docs_url, "platforms": list(self.platforms),
+            "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
+            "screenshots": list(self.screenshots), "readme": self.readme,
+            "platforms": list(self.platforms),
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -123,12 +142,24 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         return None
     caps_raw = data.get("capabilities")
     caps: Dict[str, Any] = caps_raw if isinstance(caps_raw, dict) else {}
+    version = str(data.get("version") or "").strip()
+    if version and not _VERSION_RE.match(version):
+        logger.warning("Plugin catalog: %s: ignoring version %r (max 32 chars of [A-Za-z0-9._+-])", label, version)
+        version = ""
+    image = str(data.get("image") or "").strip()
+    if image and not is_allowed_image_url(image):
+        logger.warning("Plugin catalog: %s: ignoring image %r (must be https on a GitHub host)", label, image)
+        image = ""
+    screenshots = [s for s in _str_list(data.get("screenshots")) if is_allowed_image_url(s)]
+    if len(screenshots) != len(_str_list(data.get("screenshots"))):
+        logger.warning("Plugin catalog: %s: ignoring screenshots off GitHub hosts", label)
     return PluginCatalogEntry(
         name=name, repo=repo, sha=sha,
         description=str(data.get("description") or "").strip(),
         maintainer=str(data.get("maintainer") or "").strip(), tier=tier, category=category,
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
+        version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
@@ -211,10 +242,31 @@ def find_removed(name_or_repo: str, catalog_dir: Optional[Path] = None) -> Optio
     """
     if not name_or_repo:
         return None
-    candidate = name_or_repo.strip()
-    candidate_repo = _normalize_repo(candidate)
-    for entry in load_removed_list(catalog_dir) + (live_removed_list() if catalog_dir is None else []):
-        if candidate == entry.name or (entry.repo and candidate_repo == _normalize_repo(entry.repo)):
+    entries = load_removed_list(catalog_dir)
+    if catalog_dir is None:
+        entries = entries + live_removed_list()
+    return match_removed(name_or_repo, entries)
+
+
+def resolved_removed_entries() -> List[RemovedEntry]:
+    """The full kill list (in-tree UNION live) in one resolution. Callers that match many candidates
+    — e.g. a plugins-hub rebuild annotating every installed plugin — resolve the list once instead
+    of paying a live-catalog fetch per candidate."""
+    return load_removed_list() + live_removed_list()
+
+
+def match_removed(
+    candidate: str, entries: List[RemovedEntry]
+) -> Optional[RemovedEntry]:
+    """One candidate against a pre-resolved kill list: exact name or normalized repo URL match."""
+    if not candidate:
+        return None
+    text = candidate.strip()
+    text_repo = _normalize_repo(text)
+    for entry in entries:
+        if text == entry.name or (
+            entry.repo and text_repo == _normalize_repo(entry.repo)
+        ):
             return entry
     return None
 
@@ -226,18 +278,39 @@ def _live_cache_path() -> Path:
     return get_hermes_home() / "cache" / "plugin-catalog.json"
 
 
+# Wall-clock deadline of the last failed live fetch. Without it a dead catalog host costs one
+# full request timeout PER CALL (the plugins hub and ``plugins list`` used to ask once per
+# installed plugin), so the dashboard event loop stalled for minutes.
+_live_fetch_failed_until = 0.0
+
+
+def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
+    """A previously fetched copy still beats the in-tree one when the network is down."""
+    try:
+        return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
+    except Exception:
+        return None
+
+
 def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     """The published ``plugin-catalog.json`` (``{"entries": [...], "removed": [...]}``), cached under
     ``HERMES_HOME/cache`` for :data:`LIVE_CATALOG_TTL_SECONDS`. ``None`` on ANY failure — callers fall
-    back to the in-tree catalog."""
+    back to the in-tree catalog. A failed network attempt is remembered for
+    :data:`LIVE_CATALOG_FAILURE_TTL_SECONDS` so a dead host costs one timeout per TTL window, not one
+    per call (``force`` bypasses both caches)."""
+    global _live_fetch_failed_until
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
             return json.loads(cache.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
+    if not force and time.time() < _live_fetch_failed_until:
+        return _stale_live_cache(cache)
     try:
         import httpx
+        from hermes_constants import mkdir_under_hermes_home
+
         resp = httpx.get(LIVE_CATALOG_URL, timeout=_REQUEST_TIMEOUT, follow_redirects=True)
         resp.raise_for_status()
         if len(resp.content) > _MAX_LIVE_BYTES:
@@ -245,15 +318,13 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         data = resp.json()
         if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
             raise ValueError("unexpected live catalog payload")
-        cache.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_under_hermes_home(cache.parent)
         cache.write_text(json.dumps(data), encoding="utf-8")
         return data
     except Exception as exc:
         logger.debug("Plugin catalog: live fetch failed: %s", exc)
-        try:  # stale cache still beats the in-tree copy when the network is down
-            return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
-        except Exception:
-            return None
+        _live_fetch_failed_until = time.time() + LIVE_CATALOG_FAILURE_TTL_SECONDS
+        return _stale_live_cache(cache)
 
 
 def load_catalog_live() -> List[PluginCatalogEntry]:

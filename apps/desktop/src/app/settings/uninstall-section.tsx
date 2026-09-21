@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useContext, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-import { SectionHeading } from './primitives'
+import { SectionHeading, SettingsBreadcrumbContext } from './primitives'
 
 interface ModeOption {
   mode: DesktopUninstallMode
@@ -47,6 +47,7 @@ const OPTIONS: ModeOption[] = [
 ]
 
 export function UninstallSection() {
+  const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const { t } = useI18n()
   const [summary, setSummary] = useState<DesktopUninstallSummary | null>(null)
   const [loading, setLoading] = useState(true)
@@ -123,8 +124,8 @@ export function UninstallSection() {
   const pendingOption = OPTIONS.find(opt => opt.mode === pending) ?? null
 
   return (
-    <div className="mx-auto mt-8 w-full max-w-2xl">
-      <SectionHeading icon={AlertTriangle} title={t.settings.uninstallSection.dangerZone} />
+    <div className={cn('mx-auto w-full max-w-2xl', !hasBreadcrumb && 'mt-8')}>
+      <SectionHeading icon={AlertTriangle} page title={t.settings.uninstallSection.dangerZone} />
 
       <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3">
         {loading ? (

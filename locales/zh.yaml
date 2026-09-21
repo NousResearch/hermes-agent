@@ -97,6 +97,9 @@ gateway:
     switch_failed:         "分支已创建，但无法切换到它。"
     branched_one:          "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
     branched_many:         "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
+    branched_thread_one:   "⑂ 已在新话题中分支到 **{title}**（已复制 {count} 条消息）\n话题：{thread}\n原始：`{parent}` — 本聊天保持在原会话\n分支：`{new}`\n使用 `/branch --here` 可在本聊天中分支。"
+    branched_thread_many:  "⑂ 已在新话题中分支到 **{title}**（已复制 {count} 条消息）\n话题：{thread}\n原始：`{parent}` — 本聊天保持在原会话\n分支：`{new}`\n使用 `/branch --here` 可在本聊天中分支。"
+    thread_fallback:       "此处无法创建话题，因此分支替换了本聊天的会话。"
 
   commands:
     usage:                 "用法：`/commands [page]`"

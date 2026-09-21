@@ -8,6 +8,7 @@ import { deferred } from '../test/deferred'
 
 const $activeGatewayProfile = atom('default')
 const $newChatProfile = atom<null | string>(null)
+const $freshSessionRequest = atom(0)
 const $showAllProfiles = atom(false)
 
 const $connection = atom<null | {
@@ -59,7 +60,7 @@ const endGatewaySwitch = vi.fn((token?: number) => {
 
 const recoverActiveSourceAfterFailedGatewaySwitch = vi.fn()
 
-vi.mock('@/store/session', () => ({ $connection }))
+vi.mock('@/store/session', () => ({ $connection, $activeSessionId, $selectedStoredSessionId: atom(null) }))
 vi.mock('@/store/gateway-switch', () => ({
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -69,6 +70,7 @@ vi.mock('@/store/gateway-switch', () => ({
 }))
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile,
+  $freshSessionRequest,
   $newChatProfile,
   $showAllProfiles,
   captureNewChatSource: vi.fn(),
@@ -148,7 +150,7 @@ beforeEach(() => {
   api.mockResolvedValue({ profiles: [] })
   setApiRequestConnection(null)
   setApiRequestProfile(null)
-  vi.stubGlobal('window', { hermesDesktop: { api, connections: { list, setLastUsed } }, localStorage })
+  vi.stubGlobal('window', { hermesDesktop: { api, connections: { list, setLastUsed } }, localStorage, location: window.location })
 })
 
 afterEach(() => vi.unstubAllGlobals())

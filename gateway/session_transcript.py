@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from agent.turn_context import extract_api_content_sidecar
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -47,6 +48,14 @@ class SessionTranscriptMixin:
     compression-reroute following, FTS corruption recovery, rewrite/rewind/load."""
 
     _MAX_PENDING_PER_SESSION = 200  # in-memory pending messages per session (DB broken)
+    # Cooldown between FTS5 rebuild attempts (see _rebuild_fts_once); avoids permanently
+    # disabling recovery after one failed attempt while still avoiding a rebuild storm against
+    # a database that is corrupt on every write.
+    _FTS_REBUILD_COOLDOWN_SECONDS = 300
+    # Consecutive transcript-append failures for one session before escalating from WARNING to
+    # ERROR (see _append_to_transcript_serialized); a session stalled past this many attempts is
+    # no longer a transient blip and needs operator attention.
+    _TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD = 3
 
     def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
         """Latest compression continuation for *session_id* (heals a mapping left pointing at a
@@ -99,8 +108,11 @@ class SessionTranscriptMixin:
         return self._lazy("_transcript_drain_lock", threading.RLock)
 
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Serialize transcript draining across queue migration boundaries."""
-        if not self._db_for_session_id(session_id) or skip_db:
+        """Serialize transcript draining across queue migration boundaries. A session with no usable
+        store is NOT skipped: the write is queued and counted like any other failed append, so a
+        dead/unopenable state.db escalates and spools instead of dropping turns silently
+        (#114266)."""
+        if skip_db:
             return
         with self._get_transcript_drain_lock():
             self._append_to_transcript_serialized(self._follow_reroutes(session_id), message)
@@ -232,6 +244,9 @@ class SessionTranscriptMixin:
 
         # DB write outside the retry lock so other sessions can append.
         while True:
+            # Spooled backlog (cap eviction or a stalled session) is older than ``msg``: replay it
+            # first so recovery keeps transcript order; a still-dead DB just fails both.
+            self._drain_spooled_drops(session_id)
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
@@ -285,9 +300,16 @@ class SessionTranscriptMixin:
                 with self._transcript_retry_lock:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1
                     self._transcript_append_failures[session_id] = failures
-                logger.warning(
-                    "Session DB transcript append failed for %s (failure_count=%d, pending=%d); "
-                    "will retry: %s", session_id, failures, len(pending), exc)
+                if failures >= self._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD:
+                    spooled = self._spool_stalled_backlog(session_id, queue_session_id)
+                    logger.error(
+                        "Session DB transcript append failed for %s (failure_count=%d, "
+                        "pending=%d, spooled_to_disk=%d); session is stalled and needs operator "
+                        "attention: %s", session_id, failures, len(pending), spooled, exc)
+                else:
+                    logger.warning(
+                        "Session DB transcript append failed for %s (failure_count=%d, pending=%d); "
+                        "will retry: %s", session_id, failures, len(pending), exc)
                 return
             else:
                 with self._transcript_retry_lock:
@@ -295,11 +317,29 @@ class SessionTranscriptMixin:
                     if not queue_empty:
                         msg = pending[0]
                 if queue_empty:
-                    # Backlog clear: replay cap-dropped messages spooled to disk.
-                    # See #78182.
-                    self._drain_spooled_drops(session_id)
                     return
                 continue
+
+    def _spool_stalled_backlog(self, session_id: str, queue_session_id: str) -> int:
+        """Move a stalled session's in-memory backlog (oldest first) to the on-disk pending spool so
+        a crash/restart during the outage no longer loses it (#114266): ``recover_pending_to_db``
+        replays it at boot, ``_drain_spooled_drops`` before the next live write. Stops at the first
+        spool failure so order holds; whatever stays in memory remains under the cap."""
+        with self._transcript_retry_lock:
+            pending = self._dirty_transcripts.get(queue_session_id, [])
+            backlog = list(pending)
+        spooled = 0
+        for message in backlog:
+            if _spool_dropped(session_id, message) is None:
+                break
+            spooled += 1
+        if spooled:
+            self._lazy("_spooled_drop_sessions", set).add(session_id)
+            with self._transcript_retry_lock:
+                del pending[:spooled]
+                if not pending:
+                    self._dirty_transcripts.pop(queue_session_id, None)
+        return spooled
 
     def _drain_spooled_drops(self, session_id: str) -> None:
         """Replay cap-dropped spooled transcript messages after DB recovery. Best-effort: replay
@@ -309,8 +349,13 @@ class SessionTranscriptMixin:
             return
         try:
             from gateway.shutdown_flush import drain_transcript_spool
+            # Inside an outage the append that follows logs/escalates the same failure; the
+            # replay attempt is only the order-preserving probe, so its failure stays at DEBUG.
+            with self._transcript_retry_lock:
+                known_failing = bool(self._transcript_append_failures.get(session_id))
             _replayed, remaining = drain_transcript_spool(
                 session_id, lambda message: self._append_transcript_message(session_id, message),
+                db_known_failing=known_failing,
             )
             if not remaining:
                 spooled_sessions.discard(session_id)
@@ -365,13 +410,23 @@ class SessionTranscriptMixin:
         return isinstance(exc, sqlite3.DatabaseError) and SessionDB._is_fts_write_corruption_error(exc)
 
     def _rebuild_fts_once(self) -> bool:
-        """Attempt FTS5 ``rebuild`` once per store lifetime; True if any index was rebuilt."""
-        if self._fts_rebuild_attempted:
+        """Attempt FTS5 ``rebuild``, at most once per ``_FTS_REBUILD_COOLDOWN_SECONDS`` window;
+        True if any index was rebuilt.
+
+        A permanent one-shot flag meant a single rebuild failure (e.g. a transient WAL
+        split-brain guard hit) permanently disabled recovery for the life of the process, even
+        though later corruption on the same store could be fixable. Retrying on a cooldown lets
+        the store try again after the underlying condition (e.g. a foreign holder) has likely
+        cleared, without hammering a database that is corrupt on every write.
+        """
+        now = time.monotonic()
+        last_attempt = self._fts_rebuild_last_attempt_at
+        if last_attempt is not None and (now - last_attempt) < self._FTS_REBUILD_COOLDOWN_SECONDS:
             return False
-        self._fts_rebuild_attempted = True
         db = self._db
         if db is None or not hasattr(db, "rebuild_fts"):
             return False
+        self._fts_rebuild_last_attempt_at = now
         # WAL split-brain guard: skip when a foreign process holds state.db.
         foreign_holders = None
         if hasattr(db, "_foreign_state_db_holders"):

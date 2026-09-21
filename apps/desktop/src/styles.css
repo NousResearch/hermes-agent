@@ -45,7 +45,8 @@
     .pet-wobble,
     .progress-slide,
     .kanban-arc,
-    .glyph-spinner__strip
+    .glyph-spinner__strip,
+    .decode-cursor-blink
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
@@ -821,7 +822,11 @@
      · things you point at (paths)          → neutral, they're the common case
      · things you fetch (links, media)      → secondary
      · things that act (commands, tools)    → accent
-     · things that change code (skills, git)→ warm */
+     · things that change code (skills, git)→ warm
+   The fallback is declared FIRST: it shares specificity with every kind rule
+   below, so source order alone decides the cascade — declared after them it
+   would repaint every kinded reference in the raw primary (#114612). */
+.ref,
 [data-ref] {
   --ref-color: var(--dt-primary);
 }
@@ -852,9 +857,22 @@
   --ref-color: color-mix(in srgb, var(--ui-warm) 82%, var(--foreground));
 }
 
-.ref {
-  --ref-color: var(--dt-primary);
+/* Bot Mode group-room mentions (#91359): a routed @bot reads as an agent
+   reference, @user as a human handoff the room is waiting on, and
+   @everyone/@all as a quieter broadcast. Text, not pills — same contract. */
+[data-ref='agent'] {
+  --ref-color: color-mix(in srgb, var(--ui-accent) 82%, var(--foreground));
+}
 
+[data-ref='human'] {
+  --ref-color: color-mix(in srgb, var(--ui-warm) 82%, var(--foreground));
+}
+
+[data-ref='broadcast'] {
+  --ref-color: color-mix(in srgb, var(--foreground) 70%, var(--ui-accent));
+}
+
+.ref {
   /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
      sets `prose a { font-weight: 500 }`, which outranks a utility class on the
      anchor — so the override belongs here, on the shared class. */
@@ -994,6 +1012,25 @@
 }
 
 @layer utilities {
+  /* Keep relational selectors on their owning row, not inside a universal
+     group-has descendant match: that invalidates unrelated chat panes. */
+  .row-hover:has([data-pr-link]:hover) .session-row-tail {
+    opacity: 1;
+  }
+
+  .row-hover:has([data-pr-link]:hover) .session-row-kebab {
+    pointer-events: none;
+    opacity: 0;
+  }
+
+  [data-sidebar='menu-item']:has(> [data-sidebar='menu-action']) > [data-sidebar='menu-button'] {
+    padding-right: calc(var(--spacing) * 8);
+  }
+
+  [data-tab-key-hint] + .tab-key-hint-icon {
+    visibility: hidden;
+  }
+
   [class*='rounded-full'],
   [class*=':rounded-full'] {
     border-radius: calc(var(--radius-scalar) * 9999rem);
@@ -1204,6 +1241,40 @@
   }
 }
 
+/* Keyframes live here, not in per-instance <style> tags: inserting or removing an
+   @keyframes rule invalidates every animating element in the document (#99889). */
+@keyframes decode-cursor {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.decode-cursor-blink {
+  animation: decode-cursor 1s step-end infinite;
+}
+/* 0.001 start mirrors ZonesOverlay::GetAnimationAlpha's clamp(t / 200ms, 0.001, 1). */
+@keyframes hermes-zone-fade {
+  from {
+    opacity: 0.001;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes starmap-twinkle {
+  0%,
+  100% {
+    opacity: var(--o, 1);
+  }
+  50% {
+    opacity: calc(var(--o, 1) * 0.35);
+  }
+}
+
 /* No focus rings, anywhere. Kills the native outline plus Tailwind's
    `focus-visible:ring-*` (a box-shadow driven by --tw-ring-*). Unlayered so it
    beats the utilities layer without !important on the outline. The composer /
@@ -1356,51 +1427,45 @@ body.guest-pointer-lock :is(webview, iframe) {
      https://developer.chrome.com/docs/css-ui/scrollbar-styling
      https://syntackle.com/blog/changes-to-scrollbar-styling-in-chrome-121/
 
-     Any author rule on ::-webkit-scrollbar switches that scroller from
-     platform overlay (fade in on scroll, zero gutter) to classic always-on
-     gutters. `.scrollbar-overlay` opts a surface out of the themed rules so
-     Electron keeps native overlay — used by conversation code blocks where a
-     permanent 8px track eats the card and always draws a bar. */
+     Every native scroller, including portaled menus and code regions, uses
+     the same hover-only thumb. Keep its geometry fixed across hover so
+     revealing the scrollbar never changes the content width. */
 
-  .scrollbar-dt::-webkit-scrollbar,
-  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar {
+  *::-webkit-scrollbar {
     width: 0.5rem;
     height: 0.5rem;
   }
 
-  .scrollbar-dt::-webkit-scrollbar-track,
-  .scrollbar-dt::-webkit-scrollbar-corner,
-  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-track,
-  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-corner {
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
     background: transparent;
   }
 
-  .scrollbar-dt::-webkit-scrollbar-thumb,
-  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent);
+  *::-webkit-scrollbar-thumb {
+    background: transparent;
     border-radius: 9999rem;
     background-clip: padding-box;
+    transition: none;
   }
 
-  .scrollbar-dt::-webkit-scrollbar-thumb:hover,
-  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb:hover {
+  *:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent);
+  }
+
+  *:hover::-webkit-scrollbar-thumb:hover {
     background: color-mix(in srgb, var(--dt-scrollbar-thumb) 40%, transparent);
     background-clip: padding-box;
   }
 
-  .scrollbar-dt::-webkit-scrollbar-button,
-  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-button {
+  *::-webkit-scrollbar-button {
     display: none;
   }
 
-  /* Hover-only bars. A thumb sitting on a list you aren't touching is chrome,
-     not information — the gutter is reserved either way, so fading it in and
-     out costs no reflow. Opt-in per surface: the sidebar wants it, a document
-     you're reading down wants its bar where you can see it. */
+  /* Retain the existing opt-in class as an alias for the global behavior. */
   .scrollbar-fade::-webkit-scrollbar-thumb,
   .scrollbar-dt .scrollbar-fade::-webkit-scrollbar-thumb {
     background-color: transparent;
-    transition: background-color 150ms ease-out;
+    transition: none;
   }
 
   .scrollbar-fade:hover::-webkit-scrollbar-thumb,
@@ -1457,12 +1522,16 @@ body.guest-pointer-lock :is(webview, iframe) {
   }
 
   .dt-portal-scrollbar::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent);
+    background: transparent;
     border-radius: 9999rem;
     background-clip: padding-box;
   }
 
-  .dt-portal-scrollbar::-webkit-scrollbar-thumb:hover {
+  .dt-portal-scrollbar:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent);
+  }
+
+  .dt-portal-scrollbar:hover::-webkit-scrollbar-thumb:hover {
     background: color-mix(in srgb, var(--dt-scrollbar-thumb) 50%, transparent);
     background-clip: padding-box;
   }
@@ -1472,21 +1541,29 @@ body.guest-pointer-lock :is(webview, iframe) {
   }
 
   @supports not selector(::-webkit-scrollbar) {
-    .scrollbar-dt,
-    .scrollbar-dt *:not(.scrollbar-overlay) {
+    * {
       scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+    }
+
+    *:hover {
       scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent) transparent;
     }
 
     .dt-portal-scrollbar {
       scrollbar-width: thin;
-      scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent) transparent;
+      scrollbar-color: transparent transparent;
     }
 
     /* Firefox has no real overlay mode; thin + transparent track is the closest
        match to the Chromium overlay opt-out above. */
     .scrollbar-overlay {
       scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+    }
+
+    .dt-portal-scrollbar:hover,
+    .scrollbar-overlay:hover {
       scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 28%, transparent) transparent;
     }
 
@@ -1499,6 +1576,20 @@ body.guest-pointer-lock :is(webview, iframe) {
       scrollbar-color: color-mix(in srgb, var(--dt-scrollbar-thumb) 18%, transparent) transparent;
     }
   }
+}
+
+/* Custom scrollbars follow their own region, not hover anywhere in the app. */
+[data-slot='scroll-area-scrollbar'],
+[data-slot='scroll-area-thumb'],
+.xterm .xterm-scrollable-element > .scrollbar,
+.xterm .xterm-scrollable-element > .scrollbar.invisible.fade {
+  transition: none;
+}
+
+[data-slot='scroll-area']:not(:hover) > [data-slot='scroll-area-scrollbar'],
+.xterm:not(:hover) .xterm-scrollable-element > .scrollbar {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* Bottom clearance lives on [data-slot='aui_composer-clearance'] —
@@ -1785,7 +1876,7 @@ body.guest-pointer-lock :is(webview, iframe) {
    already-painted layer instead of repainting descendants. */
 [data-chat-surface][data-chat-unfocused] {
   opacity: var(--chat-unfocused-opacity);
-  filter: grayscale(1);
+  filter: grayscale(0.2);
 }
 
 [data-chat-surface] {
@@ -1843,22 +1934,18 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* ── Composer fill — ONE var painted by the surface AND anything docked to it
    (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
-   `background: var(--composer-fill)`, so every state matches by construction.
-   The :has() rule is last on purpose: while a completion drawer is open it
-   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
-   translucent glass can never match across the two layers because they sample
-   different backdrops. */
+   `background: var(--composer-fill)`, so every state matches by construction. */
 :root {
   /* Fallback for drawers outside the main composer (e.g. edit-message). */
   --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 [data-slot='composer-root'] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -1941,7 +2028,11 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
+/* Themed at the renderer root so every `aui-md` consumer (assistant turns,
+   system-message reports, session-import previews) inherits it; the room
+   selector covers the plugin's raw-Streamdown fallback, which has no `.aui-md`. */
+.aui-md :not(pre) > code,
+[data-slot='group-chat-message-content'] :not(pre) > code {
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);
 }
@@ -1996,7 +2087,9 @@ body.guest-pointer-lock :is(webview, iframe) {
    one row (an open diff) could not stay lit while its siblings dimmed. Hence
    the tool group wrapper carries no mark and each row inside it carries its
    own — no two marked elements nest, so the fade never compounds. */
-[data-slot='aui_assistant-message-content'] [data-conversation-scaffold] {
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold],
+[data-slot='aui_background-result'] [data-conversation-scaffold],
+[data-slot='aui_background-resume'] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
@@ -2004,7 +2097,9 @@ body.guest-pointer-lock :is(webview, iframe) {
 /* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
    focus a mouse click leaves on the disclosure toggle, which kept a row lit
    after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
-[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)) {
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)),
+[data-slot='aui_background-result'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)),
+[data-slot='aui_background-resume']:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 
@@ -2065,6 +2160,12 @@ body.guest-pointer-lock :is(webview, iframe) {
    while the row is open. */
 [data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row][data-file-edit] {
   opacity: 1;
+}
+
+/* Tool-only continuation bubbles have no independent line while the approval
+   activity row represents them. An explicitly opened result remains in place. */
+[data-approval-activity-only]:not(:has([data-tool-open])) {
+  display: none;
 }
 
 /* Conversation block rhythm. assistant-ui renders each range as a direct child
@@ -2810,7 +2911,7 @@ button[data-slot='aui_msg-reactions'] svg {
    the tinted sheet is the thing that reads as a desktop window parked on the
    action, and it is most of the HUD's rectangle. Streaming shows words on the
    game; sitting down to read promotes the surface. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+[data-hud-shell][data-hud-typing] [data-hud-glass] {
   translate: none;
   opacity: 1;
   transition-duration: var(--hud-reveal);
@@ -2862,7 +2963,7 @@ button[data-slot='aui_msg-reactions'] svg {
 /* Engaged, the field steps up the same way the docked thread's does — but
    never below the resting tint, so a high lever cannot make focusing the
    composer paint MORE transparent than glancing at it. */
-:root[data-hermes-glass-on] [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+:root[data-hermes-glass-on] [data-hud-shell][data-hud-typing] [data-hud-glass] {
   background: rgb(12 14 18 / 0.72);
 }
 
@@ -2872,7 +2973,7 @@ button[data-slot='aui_msg-reactions'] svg {
    to use it, and the transcript flew open every time it was moved. Hit-testing
    below stays on :focus-within — being permissive about what can be clicked is
    harmless, being permissive about what lights up is not. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+[data-hud-shell][data-hud-typing] [data-hud-glass] {
   background: rgb(12 14 18 / 0.82);
 }
 
@@ -2906,7 +3007,7 @@ button[data-slot='aui_msg-reactions'] svg {
    so an interactive band IS a dead zone over the action). Sitting down in the
    composer is the deliberate act that makes the transcript a surface you can
    scroll and click links in. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-bounds'] {
+[data-hud-shell][data-hud-typing] [data-slot='composer-bounds'] {
   pointer-events: auto;
 }
 
@@ -3049,7 +3150,7 @@ button[data-slot='aui_msg-reactions'] svg {
   color: var(--hud-overlay-ink-user) !important;
 }
 
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-bounds'] {
+[data-hud-shell][data-hud-typing] [data-slot='composer-bounds'] {
   opacity: 1;
   translate: none;
   transition-duration: var(--hud-reveal);
@@ -3062,7 +3163,7 @@ button[data-slot='aui_msg-reactions'] svg {
    goes fully opaque and the band falls back behind it: dimmer, fractionally
    smaller, slightly out of focus. Scaled from the bar's edge, so it reads as
    depth rather than as the panel shrinking. */
-[data-hud-shell]:has([data-slot='composer-completion-drawer']) :is([data-slot='composer-bounds'], [data-hud-glass]) {
+[data-hud-shell][data-hud-drawer] :is([data-slot='composer-bounds'], [data-hud-glass]) {
   opacity: 0.25 !important;
   scale: 0.97;
   filter: blur(1.5px);
@@ -3095,7 +3196,7 @@ button[data-slot='aui_msg-reactions'] svg {
 /* No bubble in the HUD, ever. The band's ink already distinguishes the two
    voices (white agent / gold yours), and a light card behind gold text is the
    one thing in here that fights the overlay's own contrast. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) {
+[data-hud-shell][data-hud-typing] {
   --hud-bubble-fill: transparent;
   --hud-bubble-stroke: transparent;
 }
@@ -3367,8 +3468,7 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* The composer surface paints TWO layers: the surface itself, plus an
-   `absolute inset-0 -z-10` fill+glass div behind it (composerFill /
-   composerSurfaceGlass). Two stacked fills read as a box inside a box, so the
+   `absolute inset-0 -z-10` fill div behind it (composerInputBacking). Two stacked fills read as a box inside a box, so the
    backing layer goes and the surface carries the single fill. */
 [data-hud-shell] [data-slot='composer-surface'] > .pointer-events-none.absolute.inset-0 {
   display: none !important;
@@ -3404,7 +3504,7 @@ button[data-slot='aui_msg-reactions'] svg {
    shadow is sawn off by the window before any CSS can shape it, and paying for
    the clearance moves the bar. Recolouring what is already drawn costs no
    space, cannot be clipped, and leaves the working arc as the only ring. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-surface'] {
+[data-hud-shell][data-hud-typing] [data-slot='composer-surface'] {
   border-color: var(--dt-primary) !important;
 }
 
@@ -3557,16 +3657,16 @@ button[data-slot='aui_msg-reactions'] svg {
    (1) is ours to fix in CSS; inner scrollers yield to the window instead of
    their own floor. (2) is why the menus are compact here rather than roomy —
    a HUD is a small window and a 400px menu cannot fit in it. */
-html:has([data-hud-shell]) [data-slot='dropdown-menu-content'] [class*='max-h-'],
-html:has([data-hud-shell]) [data-slot='popover-content'] [class*='max-h-'] {
+html[data-hud-window] [data-slot='dropdown-menu-content'] [class*='max-h-'],
+html[data-hud-window] [data-slot='popover-content'] [class*='max-h-'] {
   max-height: max(5rem, calc(100dvh - 9rem)) !important;
 }
 
 /* The menu panels themselves: never taller than the window minus the bar.
    Portalled out of the shell, they must still take the pointer — the HUD
    defaults to none and a right-click menu that cannot be clicked is dead. */
-html:has([data-hud-shell]) [data-slot='dropdown-menu-content'],
-html:has([data-hud-shell]) [data-slot='popover-content'] {
+html[data-hud-window] [data-slot='dropdown-menu-content'],
+html[data-hud-window] [data-slot='popover-content'] {
   max-height: calc(100dvh - 4.5rem) !important;
   overflow-y: auto;
   pointer-events: auto;

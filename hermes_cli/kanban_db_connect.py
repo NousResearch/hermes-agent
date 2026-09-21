@@ -767,6 +767,26 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     return path
 
 
+# Nullable/defaulted columns of the v1 ``tasks`` CREATE TABLE that external
+# harnesses seeding a board with a reduced schema have omitted. Hermes's own
+# DBs always carry them, so this is a no-op there; without it a board that
+# also has ``task_runs`` fails every ``connect()`` inside
+# ``_backfill_legacy_inflight_runs`` ("no such column: claim_lock") — before
+# ``_INITIALIZED_PATHS`` caches, so the dispatcher re-raises each tick (#112953).
+# DDL must match SCHEMA_SQL exactly.
+_BASE_TASK_COLUMNS = (
+    ("body", "body TEXT"),
+    ("assignee", "assignee TEXT"),
+    ("priority", "priority INTEGER DEFAULT 0"),
+    ("created_by", "created_by TEXT"),
+    ("started_at", "started_at INTEGER"),
+    ("completed_at", "completed_at INTEGER"),
+    ("workspace_kind", "workspace_kind TEXT NOT NULL DEFAULT 'scratch'"),
+    ("workspace_path", "workspace_path TEXT"),
+    ("claim_lock", "claim_lock TEXT"),
+    ("claim_expires", "claim_expires INTEGER"),
+)
+
 # Additive ``tasks`` columns in the order legacy DBs receive them (= physical
 # column order for ``SELECT *`` on migrated boards).
 _EARLY_TASK_COLUMNS = (
@@ -851,7 +871,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after v1 to legacy DBs (called via ``init_db``)."""
     cols = _column_names(conn, "tasks")
-    for name, ddl in _EARLY_TASK_COLUMNS:
+    for name, ddl in _BASE_TASK_COLUMNS + _EARLY_TASK_COLUMNS:
         if name not in cols:
             _add_column_if_missing(conn, "tasks", name, ddl)
 
@@ -878,6 +898,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # so a ``CREATE INDEX`` over a missing column in SCHEMA_SQL would abort
     # init on legacy boards before the ALTER TABLE pass runs. ``IF NOT EXISTS``
     # keeps re-running here cheap and correct on fresh DBs.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")

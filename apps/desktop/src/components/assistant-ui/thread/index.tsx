@@ -6,6 +6,7 @@ import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
 import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { SystemMessage } from '@/components/assistant-ui/thread/system-message'
 import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
+import { useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserEditComposer } from '@/components/assistant-ui/thread/user-edit-composer'
 import { UserMessage } from '@/components/assistant-ui/thread/user-message'
@@ -71,6 +72,14 @@ export const Thread = memo(function Thread({
 }: ThreadProps) {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const { isHistorical } = useTranscriptWindow()
+
+  if (isHistorical) {
+    onBranchInNewChat = undefined
+    onCancel = undefined
+    onDismissError = undefined
+    onRestoreToMessage = undefined
+  }
 
   const [restoreConfirmTarget, setRestoreConfirmTarget] = useState<
     (RestoreMessageTarget & { messageId: string }) | null

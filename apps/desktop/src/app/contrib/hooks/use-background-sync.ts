@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -21,10 +22,11 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
-import type { SessionProfileRoute } from '@/store/session-request-router'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
+  confirmReconnectSettlesExcept,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
@@ -35,12 +37,39 @@ import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
 interface ActiveTranscriptSession {
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionOwnerRoute
   profile?: string | null
 }
 
-/** Resolve an active transcript from visible rows or its unique hidden owner. */
-export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
+/** Profile/connection scope used to read an active transcript from storage. */
+export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession | undefined): ProfileScope {
+  if (!stored) {
+    return undefined
+  }
+
+  if (stored.ownerRoute) {
+    return {
+      connectionId: stored.ownerRoute.connectionId,
+      profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
+    }
+  }
+
+  return stored.profile
+}
+
+/** Only a runtime-matched explicit tile owner overrides visible rows; unique hints are the last fallback. */
+export function resolveActiveTranscriptSession(
+  storedSessionId: string,
+  runtimeSessionId: string
+): ActiveTranscriptSession | undefined {
+  const verifiedOwner = $sessionTiles.get().find(
+    tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId
+  )?.ownerRoute
+
+  if (verifiedOwner) {
+    return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
+  }
+
   const visible = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
 
   if (visible) {
@@ -57,7 +86,7 @@ export interface ActiveTranscriptRefreshDeps {
   busyRef: MutableRefObject<boolean>
   requestSequenceRef: MutableRefObject<number>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
-  resolveSession: (storedSessionId: string) => ActiveTranscriptSession | null | undefined
+  resolveSession: (storedSessionId: string, runtimeSessionId: string) => ActiveTranscriptSession | null | undefined
   signatureRef: MutableRefObject<Map<string, string>>
   updateSessionState: (
     sessionId: string,
@@ -72,7 +101,7 @@ function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
 }
 
-type TileTranscriptTarget = { ownerRoute?: SessionProfileRoute; storedSessionId: string; runtimeId?: string }
+type TileTranscriptTarget = { ownerRoute?: SessionOwnerRoute; storedSessionId: string; runtimeId?: string }
 
 /** Signature key per tile — carries the owner route so two connections/profiles
  *  sharing a stored id (or a tile re-homed to another owner) never alias. */
@@ -152,12 +181,7 @@ export async function reconcileTileTranscripts({
     // Bot tiles are pinned to an exact owner (connection + target profile);
     // read from that backend, not whichever profile is foreground. Tiles
     // without a route keep the legacy local read.
-    const profileScope: ProfileScope = tile.ownerRoute
-      ? {
-          connectionId: tile.ownerRoute.connectionId,
-          profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile
-        }
-      : undefined
+    const profileScope = profileScopeForTranscriptSession(tile)
 
     const signatureKey = tileTranscriptSignatureKey(tile)
 
@@ -192,8 +216,15 @@ export async function reconcileTileTranscripts({
         runtimeSessionId,
         state => ({
           ...state,
+          // An un-acked optimistic `user-*` row exists only here, so a
+          // background refresh that lands mid-send would drop it and the
+          // message would have to be retyped. Same composition order as
+          // reconcileAuthoritativeChatMessages (use-session-actions/index.ts).
           messages: preserveLocalAssistantErrors(
-            graftRefreshedTailOntoBackfill(messages, state.messages),
+            preserveLocalPendingTurnMessages(
+              graftRefreshedTailOntoBackfill(messages, state.messages),
+              state.messages
+            ),
             state.messages
           )
         }),
@@ -222,7 +253,7 @@ export async function reconcileActiveTranscript({
     return
   }
 
-  const stored = resolveSession(storedSessionId)
+  const stored = resolveSession(storedSessionId, runtimeSessionId)
 
   if (!stored) {
     return
@@ -232,12 +263,7 @@ export async function reconcileActiveTranscript({
   requestSequenceRef.current = requestId
 
   try {
-    const profileScope: ProfileScope = stored.ownerRoute
-      ? {
-          connectionId: stored.ownerRoute.connectionId,
-          profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
-        }
-      : stored.profile
+    const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 
@@ -276,7 +302,13 @@ export async function reconcileActiveTranscript({
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
-        messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+        messages: preserveLocalAssistantErrors(
+          preserveLocalPendingTurnMessages(
+            graftRefreshedTailOntoBackfill(messages, state.messages),
+            state.messages
+          ),
+          state.messages
+        )
       }),
       storedSessionId
     )
@@ -382,9 +414,11 @@ export function resetTypingActivityTracking(): void {
 export function rehydrateLiveSessionStatuses(
   response: LiveSessionStatusResponse,
   nowMs = Date.now(),
-  profileKey = 'default'
+  profileKey = 'default',
+  stateAtRequest = $sessionStates.get()
 ): void {
   const seen = new Set<string>()
+  const workingStoredIds = new Set<string>()
 
   for (const session of response.sessions ?? []) {
     const runtimeSessionId = session.id?.trim()
@@ -398,7 +432,19 @@ export function rehydrateLiveSessionStatuses(
 
     seen.add(runtimeSessionId)
 
+    if (working) {
+      workingStoredIds.add(storedSessionId)
+    }
+
     const existing = $sessionStates.get()[runtimeSessionId]
+
+    // The active-list response is an async snapshot. Stream events can start
+    // or finish this turn after the request begins but before its response is
+    // applied. In that case the event state is newer: an old idle row must not
+    // finish a live turn, and an old working row must not revive a terminal one.
+    if (existing !== stateAtRequest[runtimeSessionId]) {
+      continue
+    }
 
     // A turn we just submitted is not yet running as far as the backend is
     // concerned, so the snapshot honestly reports it idle — but the local
@@ -458,6 +504,12 @@ export function rehydrateLiveSessionStatuses(
 
       const existing = $sessionStates.get()[runtimeSessionId]
 
+      if (existing !== stateAtRequest[runtimeSessionId]) {
+        seen.add(runtimeSessionId)
+
+        continue
+      }
+
       if (existing?.busy || existing?.needsInput || existing?.awaitingResponse) {
         publishSessionState(runtimeSessionId, {
           ...existing,
@@ -478,6 +530,12 @@ export function rehydrateLiveSessionStatuses(
   }
 
   liveRuntimeIdsByProfile.set(profileKey, seen)
+
+  // Completions the reconnect reconcile downgraded blind: this snapshot is the
+  // terminal fact it lacked. Every parked session not reported working is
+  // over, whether or not an earlier poll ever saw its runtime (a turn that
+  // started just before the drop was never polled).
+  confirmReconnectSettlesExcept(workingStoredIds)
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
@@ -699,16 +757,23 @@ export function useBackgroundSync({
       }
 
       inFlight = true
+      const stateAtRequest = $sessionStates.get()
 
       try {
         const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
 
         if (!cancelled) {
-          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile)
+          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)
         }
       } catch {
         // Older gateways may not expose session.active_list. Live stream events
-        // still work as before; leave the current sidebar state untouched.
+        // still work as before; leave the current sidebar state untouched —
+        // except completions the reconnect reconcile parked awaiting this
+        // snapshot: with no snapshot to confirm them they light now (the
+        // pre-#113029 behaviour) rather than never.
+        if (!cancelled) {
+          confirmReconnectSettlesExcept(new Set())
+        }
       } finally {
         inFlight = false
 

@@ -206,8 +206,8 @@ Common fields include `command`, `description`, `pattern_key`,
 `pattern_keys`, `session_key`, and `surface`.
 
 `post_approval_response` also includes `choice`, with values such as `once`,
-`session`, `always`, `deny`, `timeout`, and `cancelled` (prompt withdrawn before an
-answer — turn interrupted or ended).
+`session`, `always`, `deny`, `timeout`, and `cancelled` (nobody answered: the prompt
+was withdrawn — turn interrupted or ended — or never reached the user on the CLI).
 
 Approval hooks are observer-only. Plugins cannot pre-answer or veto approvals
 from these hooks. To prevent a tool from reaching approval, use

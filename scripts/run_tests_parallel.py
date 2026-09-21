@@ -29,6 +29,9 @@ Usage:
     (e.g. ``-q``, ``-v``, ``-x``, ``--tb=long``, ``-k 'pattern'``, ``--lf``)
     with no special separator — a bare ``-q`` "just works". Anything after
     a literal ``--`` is also passed through, and stacks with bare flags.
+    ``-h``/``--help`` prints this usage; a bare flag pytest does not know
+    (a typo like ``--jbs``) is a usage error here rather than a per-file
+    pytest failure. Tokens after ``--`` are never validated.
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
@@ -53,7 +56,22 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+def _runner_scratch_root() -> str:
+    """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
+    gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
+    the FHS disk-backed temp root and is used because the alternatives fail tests that assume
+    the root's shape: under the Hermes home conftest relocates the basetemp; under a dot-dir
+    (~/.cache) the hidden-dir search tests see every fixture as hidden; anything longer than
+    the old /tmp root pushes AF_UNIX test sockets past sun_path."""
+    if os.name == "nt" or not os.path.isdir("/var/tmp"):  # no-tmp: ok — probing the disk-backed FHS root
+        root = os.path.join(tempfile.gettempdir(), "hermes-pytest")
+    else:
+        root = "/var/tmp/hermes-pytest"  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
+    os.makedirs(root, exist_ok=True)
+    return root
+
 
 
 # Default test discovery roots.
@@ -144,6 +162,29 @@ def _split_pathspec(value: str) -> List[str]:
 # this runner never executes them, by construction. The summary calls that
 # out explicitly so a local run isn't misread as covering macOS/Windows
 # behaviour, and names the CI lane where those tests actually execute.
+
+
+def _read_files_from(spec: str) -> List[str]:
+    """Read an explicit test-file list from *spec* - a path, or ``-`` for stdin.
+
+    One path per line, blank lines ignored. This is the file-backed
+    counterpart of ``--files`` for lists that exceed the kernel's
+    per-argument cap (``MAX_ARG_STRLEN``, 128 KiB on Linux): the
+    whole-suite list is already ~210 KB, so passing it as one ``--files``
+    argv element dies with ``E2BIG`` in ``execve`` before the runner's
+    first line can even run.
+    """
+    if spec == "-":
+        text = sys.stdin.read()
+    else:
+        try:
+            text = Path(spec).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"error: --files-from: cannot read {spec!r}: {exc}", file=sys.stderr)
+            sys.exit(2)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 _OS_MARKERS = {
     "linux_only": ("linux", "the main Linux CI lane"),
     "macos_only": ("darwin", "the tests-os CI lane (macos-latest)"),
@@ -396,6 +437,10 @@ def _run_one_file(
         file, pytest_args, repo_root, file_timeout
     )
     attempt = 0
+    # A worker killed by signal (OOM, SIGKILL) or the file timeout is a runaway, not a flake:
+    # relaunching it doubles the damage while the first tree is still being reaped.
+    if rc < 0 or rc == 124:
+        retries = 0
     while rc != 0 and attempt < retries:
         attempt += 1
         first_output = output
@@ -449,8 +494,11 @@ def _run_one_file_once(
     # One root for each subprocess removes the shared directory that the race
     # needs. The parent deletes the root after the attempt.
     env = os.environ.copy()
-    temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-")
+    temproot = tempfile.mkdtemp(prefix="r-", dir=_runner_scratch_root())
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
+    # Every tempfile.* call inside the test process lands in the same per-run root, so the
+    # parent's cleanup of ``temproot`` removes them too instead of leaving them in /tmp.
+    env["TMPDIR"] = temproot
 
     subproc_start = time.monotonic()
     # launch the pytest process
@@ -519,6 +567,12 @@ def _run_one_file_once(
         # (venv without pytest, -k that matches nothing) can't report green.
         rc = 0
     summary = _parse_pytest_summary(output)
+    crash = _describe_interpreter_crash(rc, output) if rc != 0 else None
+    if crash:
+        # Same convention as the timeout path: the diagnosis leads the
+        # captured output, so the failure dump reads correctly on its own.
+        summary["crashed"] = 1
+        output = f"(interpreter crashed: {crash})\n{output}"
     subproc_wall = time.monotonic() - subproc_start
     return file, rc, output, summary, subproc_wall
 
@@ -554,6 +608,35 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
         if line.startswith("FAILED") or line.startswith("SHORT TEST SUMMARY"):
             break
     return result
+
+
+def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
+    """Return a one-line description when the pytest subprocess died instead of exiting.
+
+    A native fault (sqlite stepping a connection another thread closed,
+    #113186) kills the interpreter mid-file: faulthandler prints ``Fatal
+    Python error: Segmentation fault`` and the process dies by signal, so
+    there is no summary line and every count parses to 0. Without this the
+    file is reported as "no tests ran (collection/import error)" under a
+    summary that says ``0 failed`` — the wrong diagnosis in both places.
+    """
+    fatal = next(
+        (line.strip() for line in output.splitlines() if "Fatal Python error:" in line),
+        None,
+    )
+    if fatal:
+        # The faulthandler banner is appended to the progress dots of the
+        # last test; keep only the banner.
+        fatal = fatal[fatal.index("Fatal Python error:"):]
+    if rc < 0:
+        import signal as _signal
+
+        try:
+            name = _signal.Signals(-rc).name
+        except ValueError:
+            name = f"signal {-rc}"
+        return f"{fatal} ({name})" if fatal else f"killed by {name}"
+    return fatal
 
 
 def _format_file(file: Path, repo_root: Path) -> str:
@@ -618,6 +701,8 @@ def _print_progress(
             parts.append(f"{xf}xf")
         if xp:
             parts.append(f"{xp}xp")
+        if file_summary.get("crashed"):
+            parts.append("CRASHED")
         test_str = " ".join(parts) + ", " if parts else ""
     else:
         n_tests = test_counts.get(file, 0)
@@ -821,6 +906,38 @@ def _make_stdio_glyph_safe() -> None:
                 pass
 
 
+def _pytest_flag_error(tokens: List[str]) -> Optional[str]:
+    """Return pytest's own complaint about the bare passthrough tokens, if any.
+
+    A mistyped flag (``--jbs``) that is not one of OUR options used to be
+    forwarded to every per-file pytest, so the run discovered the whole suite
+    and each file died with ``unrecognized arguments`` — an hours-long way to
+    learn about a typo. Ask pytest's own argparse parser (with the installed
+    plugins loaded, so ``-n``/``--timeout`` count) which tokens it does not
+    know; argparse handles the attached-value (``-rA``), combined-flag
+    (``-xvs``) and ``-k expr`` forms for us. A known flag with a bad or
+    missing value (``--tb`` alone) makes that parser raise ``UsageError``;
+    it is reported the same way instead of once per discovered file. Only
+    if the parser cannot be built is the check skipped and tokens forwarded
+    as before.
+    """
+    try:
+        from _pytest.config import UsageError, get_config
+
+        config = get_config()
+        config.pluginmanager.load_setuptools_entrypoints("pytest11")
+        parser = config._parser.optparser
+    except Exception:
+        return None
+    try:
+        _, unknown = parser.parse_known_args(tokens)
+    except UsageError as exc:
+        # "usage: ...\n<prog>: error: argument --tb: expected one argument"
+        return str(exc).rsplit("error: ", 1)[-1].strip()
+    unknown = [tok for tok in unknown if tok.startswith("-")]
+    return f"unrecognized arguments: {' '.join(unknown)}" if unknown else None
+
+
 def main() -> int:
     _make_stdio_glyph_safe()
     parser = argparse.ArgumentParser(
@@ -903,7 +1020,20 @@ def main() -> int:
             "Explicit colon-separated list of test files to run (on "
             "Windows, ';' also separates and drive letters are kept "
             "intact). Bypasses discovery entirely — used by CI matrix "
-            "jobs that receive their file list from the generate job."
+            "jobs that receive their file list from the generate job. "
+            "A whole-suite list (~210 KB) exceeds the kernel's "
+            "per-argument cap (MAX_ARG_STRLEN, 128 KiB) and dies with "
+            "E2BIG before this script starts — pass it via --files-from."
+        ),
+    )
+    parser.add_argument(
+        "--files-from",
+        metavar="PATH",
+        help=(
+            "Read the explicit list of test files from PATH (one per "
+            "line, blank lines ignored), or from stdin when PATH is '-'. "
+            "File-backed counterpart of --files for lists that exceed "
+            "the per-argv-element cap; mutually exclusive with --files."
         ),
     )
     parser.add_argument(
@@ -933,8 +1063,9 @@ def main() -> int:
     # it never reaches our positional ``paths``. ``=``-joined forms
     # (``-k=expr``, ``--tb=long``) are self-contained and need no lookahead.
     OUR_FLAGS = {
-        "-j", "--jobs", "--paths", "--include-integration",
+        "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
+        "--files-from",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
@@ -953,6 +1084,13 @@ def main() -> int:
         return False
 
     argv = sys.argv[1:]
+    # argparse treats a bare "-" as a positional, so "--files-from -"
+    # would die with "expected one argument" before our code ever runs.
+    # Normalize to the "="-joined form, which argparse accepts.
+    if "--files-from" in argv:
+        i = argv.index("--files-from")
+        if i + 1 < len(argv) and argv[i + 1] == "-":
+            argv[i : i + 2] = ["--files-from=-"]
     if "--" in argv:
         sep = argv.index("--")
         before, explicit_passthrough = argv[:sep], argv[sep + 1 :]
@@ -976,6 +1114,14 @@ def main() -> int:
         i += 1
 
     args = parser.parse_args(our_args)
+
+    # Bare tokens are validated against pytest's option set so a typo fails
+    # here with usage instead of once per discovered file. Anything after a
+    # literal ``--`` is the caller's explicit choice and is forwarded as-is.
+    if bare_passthrough:
+        flag_error = _pytest_flag_error(bare_passthrough)
+        if flag_error:
+            parser.error(flag_error)
 
     # ── Node-id selectors → file + ``-k`` filter ────────────────────────────
     # This runner is FILE-granular: it spawns one ``pytest <file>`` per test
@@ -1036,9 +1182,18 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    # --files: explicit file list from the CI generate job — skip discovery.
+    # --files / --files-from: explicit file list (argv or file-backed) from
+    # the CI generate job — skip discovery.
+    if args.files and args.files_from:
+        print(
+            "error: --files and --files-from are mutually exclusive", file=sys.stderr
+        )
+        sys.exit(2)
     if args.files:
         files = [repo_root / f for f in _split_pathspec(args.files)]
+        roots = []
+    elif args.files_from:
+        files = [repo_root / f for f in _read_files_from(args.files_from)]
         roots = []
     else:
         # Resolve discovery roots: positional path args override --paths if any
@@ -1122,11 +1277,12 @@ def main() -> int:
     # nothing-ran guard, whereas a file that died before collection reports
     # nothing at all and must.
     tests_collected = 0
+    files_crashed = 0
     lock = threading.Lock()
 
     def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, Dict[str, int], float]]") -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
-        nonlocal tests_collected
+        nonlocal tests_collected, files_crashed
         n_tests = test_counts.get(file, 0)
         try:
             fpath, rc, output, summary, subproc_wall = fut.result()
@@ -1151,6 +1307,7 @@ def main() -> int:
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
             tests_skipped += summary.get("skipped", 0)
+            files_crashed += summary.get("crashed", 0)
             tests_collected += sum(
                 summary.get(k, 0)
                 for k in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
@@ -1199,7 +1356,13 @@ def main() -> int:
     print()
     pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
     skipped_note = f", {tests_skipped} skipped" if tests_skipped else ""
-    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+    # A crashed interpreter has no failed-test count; say so on the one line
+    # everyone reads, or "0 failed" + exit 1 looks like a runner bug.
+    crashed_note = (
+        f", {files_crashed} file{'s' if files_crashed != 1 else ''} CRASHED"
+        if files_crashed else ""
+    )
+    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{crashed_note}{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
     # Host-OS gating note: tests marked for another OS were skipped by the
     # conftest hook, not run. Say so explicitly — a green local run on Linux
@@ -1222,7 +1385,7 @@ def main() -> int:
     # The summary line above reads green at a glance ("0 failed ... 100%
     # complete"), which has been misread as a successful verification, so say
     # it plainly AND fail the exit code.
-    no_tests_ran_at_all = bool(files) and tests_collected == 0
+    no_tests_ran_at_all = bool(files) and tests_collected == 0 and not files_crashed
     if no_tests_ran_at_all:
         print()
         print(
@@ -1290,11 +1453,17 @@ def main() -> int:
             print(output.rstrip())
         print()
         # Split: files with actual test failures vs non-zero exit for other reasons
-        test_fail_files = [(f, s) for f, _o, s in failures if s.get("failed", 0) > 0]
-        all_passed_but_nonzero = [(f, s) for f, _o, s in failures
+        crashed_files = [(f, o, s) for f, o, s in failures if s.get("crashed")]
+        rest = [(f, s) for f, _o, s in failures if not s.get("crashed")]
+        test_fail_files = [(f, s) for f, s in rest if s.get("failed", 0) > 0]
+        all_passed_but_nonzero = [(f, s) for f, s in rest
                                   if s.get("failed", 0) == 0 and s.get("passed", 0) > 0]
-        no_tests_ran = [(f, s) for f, _o, s in failures
+        no_tests_ran = [(f, s) for f, s in rest
                         if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
+        if crashed_files:
+            print(f"=== {len(crashed_files)} file{'s' if len(crashed_files) != 1 else ''} where the interpreter CRASHED mid-run (native fault — a real bug, not a collection error; the tests that did run are not counted) ===")
+            for file, output, _s in crashed_files:
+                print(f"  {_format_file(file, repo_root)}  {output.splitlines()[0]}")
         if test_fail_files:
             total_tf = sum(s.get("failed", 0) for _, s in test_fail_files)
             print(f"=== {len(test_fail_files)} file{'s' if len(test_fail_files) != 1 else ''} with test failures ({total_tf} test{'s' if total_tf != 1 else ''} failed) ===")

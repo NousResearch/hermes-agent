@@ -1,6 +1,5 @@
-"""Fresh-process recovery after the update's in-process restart phase aborts (the fleet restart
-runs in the interpreter that started before ``git pull``). Separate owner from ``update_cmd``: its
-own vocabulary (``verified`` / ``relaunch_attempted`` / ``failed``, serve units, survivors) and
+"""Fresh-process recovery after the update's in-process restart phase aborts. Separate owner
+from ``update_cmd``: its own vocabulary (``verified`` / ``relaunch_attempted`` / ``failed``, serve units, survivors) and
 its own fail-closed contract."""
 
 from __future__ import annotations
@@ -149,8 +148,8 @@ def _parse_serve_units(raw_serve, *, recover_serve: bool) -> dict[str, list]:
 def _recover_gateway_restart_after_abort(
     plan, *, gateway_mode: bool, skip_profiles: set[str] | None = None,
     skip_units: set[str] | None = None) -> dict[str, list]:
-    """Retry supervised gateway restarts from a clean Python process (the in-process restart ran
-    in the pre-``git pull`` interpreter). Only inventory-classified supervisor-owned profiles.
+    """Retry supervised gateway restarts from a clean Python process. Only inventory-classified
+    supervisor-owned profiles.
 
     ``skip_units`` names the units the aborted phase already settled, as ``<scope>/<unit>``. The scope is
     part of the identity, not decoration: ``hermes-serve.service`` can exist in both the user and the system
@@ -228,16 +227,20 @@ def _warn_stale_serve_runtimes(rows) -> None:
         print(
             f"      pid {row.get('pid')} — {row.get('kind')}"
             f" (profile {row.get('profile') or 'default'}, {row.get('supervisor') or 'unknown'})")
-    print(
-        "    Restart them before using Hermes again, e.g. `systemctl --user restart hermes-serve.service`"
-        " or by relaunching `hermes serve` / the Desktop app.")
+    print("    Ask their owner to relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend.")
+    if sys.platform == "linux" and any(row.get("supervisor") == "systemd" for row in rows):
+        print("    For unit-managed backends: `systemctl --user restart hermes-serve.service`.")
+    if sys.platform == "darwin" and any(row.get("supervisor") == "launchd" for row in rows):
+        print("    For launchd-managed backends: `launchctl kickstart -k gui/$UID/<label>`.")
 
 
 def _owed_stale_serve_rows(rows) -> list[dict]:
     """Survivors the updater itself owes a restart for. A Desktop-supervised serve is excluded: the
-    recovery pass is forbidden to restart it (it hosts the live Desktop chats), so counting it keeps
-    ``fleet_restart_pending`` armed forever with nothing that could ever discharge it. It is still
-    named by :func:`_warn_stale_serve_runtimes` and recorded in the receipt. See #111494."""
+    recovery pass is forbidden to restart it (it hosts the live Desktop chats), so counting it would
+    end every update with the Desktop open as incomplete/exit 1. It is still named by
+    :func:`_warn_stale_serve_runtimes` and recorded in the receipt. See #111494. (The
+    fleet-restart-pending marker draws the same boundary for its own inventory, so a supervisor-owned
+    serve row no longer keeps that warning armed either.)"""
     return [row for row in (rows or []) if row.get("supervisor") != "desktop"]
 
 

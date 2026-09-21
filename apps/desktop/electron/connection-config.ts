@@ -39,28 +39,6 @@ import { readStatusCode } from './api-transport'
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
-// The Nous portal (NAS) does NOT use Hermes gateway session cookies — it is a
-// Privy-authed Next.js app. NAS `auth()` (src/server/auth/session.ts) reads the
-// `privy-token` access-token cookie (with `privy-id-token` alongside), which is
-// also exactly what the `/api/agents` cookie-auth path validates. So portal
-// sign-in / discovery liveness must look for the Privy cookie, NOT the gateway
-// cookies above. `privy-token` is the access token (the required signal);
-// variants cover the secured-prefix forms and the older `privy-session` name.
-const PRIVY_SESSION_COOKIE_VARIANTS = [
-  '__Host-privy-token',
-  '__Secure-privy-token',
-  'privy-token',
-  'privy-session',
-  'privy-refresh-token'
-]
-
-// The short-lived Privy ACCESS token only — the credential `/api/agents`
-// actually validates. `privy-session` / `privy-refresh-token` are long-lived
-// renewal material: their presence means the session is RENEWABLE (signed in,
-// no interactive login needed), but discovery still 401s until a fresh
-// `privy-token` is minted. Distinguishing the two is what lets a cold start
-// silently renew instead of demanding a re-login (#73495).
-const PRIVY_ACCESS_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token']
 // Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
 // is the built-in root alias; these names cannot be created as profiles.
 const RESERVED_REMOTE_PROFILES = new Set(['hermes', 'test', 'tmp', 'root', 'sudo'])
@@ -318,6 +296,23 @@ const FORBIDDEN_REMOTE_HEADER_NAMES = new Set([
   'x-hermes-session-token'
 ])
 
+/**
+ * Strip CR/LF from a header VALUE. Clipboard pastes of access-proxy service
+ * tokens routinely carry a trailing newline, and a bare CR/LF inside a header
+ * value is a request-splitting vector once it reaches setHeader/extraHeaders.
+ * Header NAMES are already constrained by REMOTE_HEADER_NAME_RE above, which
+ * admits no whitespace, so values are the only gap.
+ *
+ * Applied at BOTH ends because a safeStorage envelope stores ciphertext: this
+ * call sanitizes plaintext on the way in, and decryptRemoteHeaders sanitizes
+ * again on the way out so encrypted-at-rest values get the same treatment.
+ */
+function sanitizeRemoteHeaderValue(value) {
+  return String(value || '')
+    .replace(/[\r\n]+/g, '')
+    .trim()
+}
+
 function normalizeRemoteHeaders(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return {}
@@ -334,7 +329,7 @@ function normalizeRemoteHeaders(raw) {
     }
 
     if (typeof secret === 'string') {
-      const value = secret.trim()
+      const value = sanitizeRemoteHeaderValue(secret)
 
       if (value) {
         out[headerName] = { encoding: 'plain', value }
@@ -1008,38 +1003,6 @@ function cookiesHaveLiveSession(cookies) {
   return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
 }
 
-/**
- * True if the cookie jar holds a live Nous PORTAL (Privy) session — a non-empty
- * `privy-token` (access-token) cookie, or a variant. This is the portal
- * analogue of `cookiesHaveLiveSession`: the portal authenticates via Privy, not
- * the Hermes gateway session cookies, so cloud sign-in / discovery liveness
- * must check THIS, not the gateway helpers. (NAS `auth()` and the `/api/agents`
- * cookie path both key off `privy-token`.)
- */
-function cookiesHavePrivySession(cookies) {
-  if (!Array.isArray(cookies)) {
-    return false
-  }
-
-  return cookies.some(c => c && c.value && PRIVY_SESSION_COOKIE_VARIANTS.includes(c.name))
-}
-
-/**
- * True only when the short-lived Privy ACCESS token (`privy-token`) is present
- * — the exact cookie `/api/agents` validates. A jar can satisfy
- * `cookiesHavePrivySession` (renewable session: `privy-session` /
- * `privy-refresh-token`) while failing this check; that gap is the cold-start
- * "Signed in" + "No agents found" contradiction, and the signal that a silent
- * renewal (not an interactive re-login) is the right recovery (#73495).
- */
-function cookiesHavePrivyAccessToken(cookies) {
-  if (!Array.isArray(cookies)) {
-    return false
-  }
-
-  return cookies.some(c => c && c.value && PRIVY_ACCESS_COOKIE_VARIANTS.includes(c.name))
-}
-
 export {
   apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
@@ -1048,8 +1011,6 @@ export {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
-  cookiesHavePrivyAccessToken,
-  cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
@@ -1064,8 +1025,6 @@ export {
   pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
-  PRIVY_ACCESS_COOKIE_VARIANTS,
-  PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
@@ -1076,6 +1035,7 @@ export {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
   translateSelfProfileQuery,

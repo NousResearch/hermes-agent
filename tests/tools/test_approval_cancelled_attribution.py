@@ -127,3 +127,29 @@ def test_coalesced_follower_inherits_the_leaders_cancellation(gateway_session):
     assert not leader_thread.is_alive() and not follower_thread.is_alive()
     _assert_withdrawn(leader["result"], "parent delegation ended")
     _assert_withdrawn(follower["result"], "parent delegation ended")
+
+
+@pytest.fixture
+def cli_session(monkeypatch):
+    mod._session_approved.clear()
+    for k in ("HERMES_CRON_SESSION", "HERMES_YOLO_MODE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "manual", "timeout": 60})
+    hooks = []
+    monkeypatch.setattr(approval_context, "_fire_approval_hook", lambda name, **kw: hooks.append((name, kw)))
+    return hooks
+
+
+def test_cli_callback_failure_reports_undelivered_prompt_not_user_deny(cli_session):
+    """The CLI residual of #22992: a prompt that never reached a human (the approval callback
+    raised) is 'cancelled' with its cause, not 'User denied this command'."""
+    def broken_callback(command, description, **kwargs):
+        raise TypeError("callback signature mismatch")
+
+    result = mod.check_all_command_guards("rm -rf .git", "local", approval_callback=broken_callback)
+    _assert_withdrawn(result, "the approval callback failed: TypeError")
+    assert "user denied" not in result["message"].lower()
+    posts = [kw for name, kw in cli_session if name == "post_approval_response"]
+    assert posts[-1]["choice"] == "cancelled"

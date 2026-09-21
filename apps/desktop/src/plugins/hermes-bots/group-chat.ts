@@ -64,6 +64,7 @@ interface GroupChatSyncRoom {
   name?: string
   revision?: number
   roomId?: string
+  userName?: null | string
 }
 
 /** The v3 envelope stored under the default profile's `hermes-bots-groups`
@@ -245,6 +246,11 @@ export function groupChatSyncSnapshot(
       ...(typeof room?.roomId === 'string' && room.roomId
         ? {
             roomId: String(room.roomId).slice(0, 128)
+          }
+        : {}),
+      ...(typeof room?.userName === 'string' && room.userName
+        ? {
+            userName: room.userName.slice(0, 64)
           }
         : {}),
       log,
@@ -434,15 +440,18 @@ export function mergeGroupChatSyncSnapshots(
     let identity: GroupChatSyncRoom | undefined
     let members: GroupMember[]
     let image: null | string | undefined
+    let userName: null | string | undefined
 
     if (localRevision > remoteRevision) {
       identity = localRoom
       members = [...(localRoom?.members || [])]
       image = localRoom?.image
+      userName = localRoom?.userName
     } else if (remoteRevision > localRevision) {
       identity = remoteRoom
       members = [...(remoteRoom?.members || [])]
       image = remoteRoom?.image
+      userName = remoteRoom?.userName
     } else {
       identity = localRoom || remoteRoom
       const byId = new Map<string, GroupMember>()
@@ -453,6 +462,9 @@ export function mergeGroupChatSyncSnapshots(
 
       members = [...byId.values()]
       image = Object.prototype.hasOwnProperty.call(localRoom || {}, 'image') ? localRoom.image : remoteRoom?.image
+      userName = Object.prototype.hasOwnProperty.call(localRoom || {}, 'userName')
+        ? localRoom.userName
+        : remoteRoom?.userName
     }
 
     rooms[key] = {
@@ -476,6 +488,11 @@ export function mergeGroupChatSyncSnapshots(
       ...(typeof image === 'string' && image
         ? {
             image
+          }
+        : {}),
+      ...(typeof userName === 'string' && userName
+        ? {
+            userName
           }
         : {})
     }
@@ -686,6 +703,11 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
         : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'image')
           ? projected.image || null
           : existing.image || null,
+      userName: isPreserved
+        ? existing.userName || null
+        : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'userName')
+          ? projected.userName || null
+          : existing.userName || null,
       syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
@@ -755,6 +777,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       // already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       image: room.image || null,
+      userName: room.userName || null,
       rosterOrder: room.rosterOrder,
       pinned: room.pinned,
       // Sidebar filing (user-sections) is room-local; keep it across sync.
@@ -1403,6 +1426,10 @@ export function updateGroupChat(
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,
+        // The human participant's room-local display name (#105194): same
+        // durable contract as the picture — without it a window reload
+        // reverts every address back to the 'You' sentinel.
+        userName: room.userName || null,
         rosterOrder: room.rosterOrder,
         pinned: room.pinned,
         // Sidebar filing (user-sections) is room-local; keep it durable.

@@ -246,6 +246,7 @@ export default {
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
+                  userName: typeof room.userName === 'string' && room.userName ? room.userName : null,
                   rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
                   pinned: Boolean(room.pinned),
                   sectionId: room.sectionId ?? null,

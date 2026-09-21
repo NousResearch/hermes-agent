@@ -202,6 +202,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
           members: Array.isArray(room.members) ? room.members : [],
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
           image: room.image || null,
+          userName: room.userName || null,
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
         }
       }

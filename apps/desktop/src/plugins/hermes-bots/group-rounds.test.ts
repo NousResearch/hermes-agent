@@ -1273,4 +1273,24 @@ describe('room-local user name', () => {
 
     expect(chat.groupUserDisplayName('Room')).toBe('You')
   })
+
+  it('the room-local name rides the durable group-chats record — the same record a reload hydrates rooms from', async () => {
+    const room = await loadRoom()
+
+    room.chat.setGroupChatUserName('Room', 'Mary')
+
+    expect(room.chat.groupUserDisplayName('Room')).toBe('Mary')
+
+    // The durable record in plugin storage carries it — without this field a
+    // window reload reverts the name to the 'You' sentinel while log entries
+    // stamped before the reload keep showing it (#105194).
+    const durable = room.gateway.storage.get('group-chats') as Record<string, { userName?: null | string }>
+
+    expect(durable.Room?.userName).toBe('Mary')
+
+    // Clearing the name persists the clear the same way.
+    room.chat.setGroupChatUserName('Room', '   ')
+
+    expect((room.gateway.storage.get('group-chats') as Record<string, { userName?: null | string }>).Room?.userName).toBeNull()
+  })
 })

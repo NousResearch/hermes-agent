@@ -160,7 +160,13 @@ class GatewayNotificationsMixin:
         proceed: bool = True
         early_result: Optional[bool] = None
 
-    async def _deliver_platform_notice(self, source, content: str) -> None:
+    async def _deliver_platform_notice(
+        self,
+        source,
+        content: str,
+        *,
+        event_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         from gateway.run import _is_slack_ignored_channel
         adapter = self._delivery_adapter_for(source)
@@ -183,7 +189,25 @@ class GatewayNotificationsMixin:
                 config.get_notice_delivery(source.platform) if config and hasattr(config, "get_notice_delivery")
                 else "public"
             )
-        metadata = self._thread_metadata_for_source(source)
+        metadata = self._thread_metadata_for_source(
+            source,
+            event_metadata=event_metadata,
+        )
+        business_scope = str(getattr(source, "scope_id", "") or "")
+        if (
+            getattr(source, "platform", None) == Platform.TELEGRAM
+            and business_scope.startswith("telegram-business:")
+        ):
+            connection_id = business_scope.removeprefix("telegram-business:")
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("allow_business_send_as_account") is not True
+                or metadata.get("business_connection_id") != connection_id
+            ):
+                logger.info(
+                    "Skipping Telegram Business platform notice without event-bound send authority"
+                )
+                return
         if notice_delivery == "private" and getattr(source, "user_id", None):
             with _log_suppressed(
                 logging.DEBUG, "[%s] send_private_notice failed, falling back to public",
@@ -364,7 +388,11 @@ class GatewayNotificationsMixin:
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
-                else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+                else self._thread_metadata_for_source(
+                    event.source,
+                    self._reply_anchor_for_event(event),
+                    getattr(event, "metadata", None),
+                )
             )
             chat_id = event.source.chat_id
             # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
@@ -421,14 +449,18 @@ class GatewayNotificationsMixin:
                 # a plain send here would duplicate it.
                 _reconciled = False
                 _sc_msg_id = getattr(stream_consumer, "message_id", None)
+                _sc_edit_message = getattr(stream_consumer, "_edit_message", None)
                 if (
                     _sc_msg_id
                     and _sc_msg_id != "__no_edit__"
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
+                    and callable(_sc_edit_message)
                 ):
                     try:
-                        _edit_res = await adapter.edit_message(
-                            chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
+                        _edit_res = await cast(Any, _sc_edit_message)(
+                            message_id=_sc_msg_id,
+                            content=text_content,
+                            finalize=True,
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True

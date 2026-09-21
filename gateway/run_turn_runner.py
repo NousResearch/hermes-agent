@@ -188,8 +188,20 @@ class TurnRunner:
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
                     duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )
+                def _present_failure_notice():
+                    try:
+                        self._schedule(
+                            self._runner._deliver_platform_notice(
+                                ctx.source,
+                                line,
+                                event_metadata=ctx.event_metadata,
+                            ),
+                            "subagent failure notice scheduling error",
+                        )
+                    except Exception:
+                        logger.debug("subagent failure notice delivery failed", exc_info=True)
                 render_notification(
-                    lambda: self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error"),
+                    _present_failure_notice,
                     platform=ctx.source.platform, user_config=ctx.user_config)
         except Exception:
             logger.debug("subagent failure notice failed", exc_info=True)
@@ -1185,7 +1197,14 @@ class TurnRunner:
                 logger.debug("render_notice_line failed", exc_info=True)
                 return
             if line:
-                self._schedule(self._runner._deliver_platform_notice(self._ctx.source, line), "notice_callback delivery scheduling error")
+                self._schedule(
+                    self._runner._deliver_platform_notice(
+                        self._ctx.source,
+                        line,
+                        event_metadata=self._ctx.event_metadata,
+                    ),
+                    "notice_callback delivery scheduling error",
+                )
         render_notification(present, platform=self._ctx.source.platform,
                             user_config=self._ctx.user_config, diagnostic=diagnostic)
 

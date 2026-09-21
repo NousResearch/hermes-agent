@@ -812,6 +812,29 @@ def _resolve_sequential_tool_timeout() -> float | None:
     return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
 
 
+# A tool that declares a per-call budget (ToolEntry.deadline_floor) gets the generic deadline
+# raised to it plus this grace, so the tool's OWN timeout is the one that fires: it returns the
+# partial output and exit code it collected, where the generic guard discards both and reports
+# only ``tool_timeout``.
+_DECLARED_DEADLINE_GRACE_S = 5.0
+
+
+def _declared_deadline_floor(name: str, args: dict) -> float | None:
+    """Lower bound this call's deadline must clear, from the tool's own declaration."""
+    from tools.registry import registry
+
+    floor = registry.get_deadline_floor(name, args)
+    return None if floor is None else floor + _DECLARED_DEADLINE_GRACE_S
+
+
+def _deadline_with_floor(generic: float | None, floor: float | None) -> float | None:
+    """Raise *generic* to *floor*. A disabled generic deadline (``None``) stays unbounded —
+    a floor only ever lengthens a deadline, it never introduces one."""
+    if generic is None or floor is None:
+        return generic
+    return max(generic, floor)
+
+
 # Tools whose call blocks on a long-running operation that supervises its own liveness: no generic
 # sequential deadline. ``delegate_task`` in a nested orchestrator blocks for the whole batch by design
 # (children carry heartbeats, the stale monitor, and ``delegation.child_timeout_seconds``); under the
@@ -871,7 +894,8 @@ def _run_sequential_tool_execution_middleware(
     generic deadline would report ``tool_timeout`` while the prompt is still live. They
     are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
     they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
-    timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
+    timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _deadline_with_floor(
+        _resolve_sequential_tool_timeout(), _declared_deadline_floor(function_name, function_args))
     ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
     from agent.terminal_approval_batch import take_prepared_call
@@ -1521,7 +1545,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
 
     # Resolved before the batch is built so the start-order gate can clamp under the deadline.
+    # One deadline covers the whole batch, so it has to clear the longest budget any member
+    # declared — otherwise one slow-but-valid call takes every sibling down with it.
     timeout_s = _resolve_concurrent_tool_timeout()
+    for _pc in parsed_calls:
+        if _pc.parse_error is None:
+            timeout_s = _deadline_with_floor(timeout_s, _declared_deadline_floor(_pc.name, _pc.args))
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")

@@ -2527,12 +2527,32 @@ def _handle_process(args, **kw):
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 
 
+def _process_deadline_floor(args: dict) -> float | None:
+    """Only ``wait`` blocks; it mirrors :meth:`ProcessRegistry.wait` — the requested window
+    clamped by ``TERMINAL_TIMEOUT``, or that default when none was requested."""
+    if args.get("action") != "wait":
+        return None
+    try:
+        max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+    except (ValueError, TypeError):
+        max_timeout = 180
+    requested = args.get("timeout")
+    if requested is None:
+        return float(max_timeout)
+    try:
+        requested = float(requested)
+    except (TypeError, ValueError):
+        return float(max_timeout)
+    return min(requested, float(max_timeout)) if requested > 0 else None
+
+
 registry.register(
     name="process_manage",
     toolset="terminal",
     schema=PROCESS_SCHEMA,
     handler=_handle_process,
     emoji="⚙️",
+    deadline_floor=_process_deadline_floor,
 )
 
 

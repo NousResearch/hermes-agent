@@ -1446,6 +1446,32 @@ def _handle_terminal(args, **kw):
     )
 
 
+def _terminal_deadline_floor(args: dict) -> float | None:
+    """How long this call actually blocks the tool worker, so the executor's generic
+    deadline can be raised to clear it (see ToolEntry.deadline_floor).
+
+    A background spawn and an over-cap foreground timeout (promoted to background by
+    ``_build_exec_plan``) both return at once, so neither declares a floor. A foreground
+    call blocks for ``timeout or TERMINAL_TIMEOUT`` — which the schema tells the model to
+    set high, promising "Returns INSTANTLY when command finishes".
+    """
+    if args.get("background"):
+        return None
+    requested = args.get("timeout")
+    try:
+        requested = int(requested) if requested else 0
+    except (TypeError, ValueError):
+        requested = 0
+    if requested > FOREGROUND_MAX_TIMEOUT:
+        return None
+    if requested > 0:
+        return float(requested)
+    try:
+        return float(_parse_env_var("TERMINAL_TIMEOUT", "180"))
+    except ValueError:
+        return None
+
+
 registry.register(
     name="terminal",
     toolset="terminal",
@@ -1454,6 +1480,7 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    deadline_floor=_terminal_deadline_floor,
 )
 
 

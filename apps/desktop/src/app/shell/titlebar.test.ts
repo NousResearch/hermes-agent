@@ -5,11 +5,14 @@ import {
   TITLEBAR_CONTROL_OFFSET_X,
   TITLEBAR_CONTROL_SIZE,
   TITLEBAR_EDGE_INSET,
+  TITLEBAR_EXTERNAL_BUTTON_FALLBACK_WIDTH,
   TITLEBAR_FALLBACK_WINDOW_BUTTON_X,
   TITLEBAR_ICON_SIZE,
   TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE,
+  titlebarContentInsetCss,
   titlebarControlsPosition,
   titlebarControlsYNudge,
+  titlebarExternalButtonsWidth,
   titlebarIconSizeCss,
   titlebarToolsRightCss,
   titlebarToolsWidthCss
@@ -76,5 +79,37 @@ describe('titlebarToolsRightCss', () => {
 
   it('keeps the default chrome inset otherwise', () => {
     expect(titlebarToolsRightCss(0)).toBe('0.75rem')
+  })
+
+  it('adds a third-party reservation on top of the measured overlay, and still moves the cluster while it is unmeasured', () => {
+    expect(titlebarToolsRightCss(144, {}, 66)).toBe('210px')
+    expect(titlebarToolsRightCss(0, {}, 66)).toBe('calc(0.75rem + 66px)')
+  })
+})
+
+describe('titlebarExternalButtonsWidth', () => {
+  it('scales a third-party button off the measured overlay, so DPI and UI zoom are followed', () => {
+    // 138px of overlay = 3 native caption buttons; a third-party one is ~0.72 of that.
+    expect(titlebarExternalButtonsWidth(138, 2)).toBe(66)
+  })
+
+  it('tracks the same window through a UI scale change', () => {
+    // At 75% UI scale the measured overlay shrinks in CSS px by the same factor,
+    // and so must the reservation — a fixed px constant would under-reserve.
+    expect(titlebarExternalButtonsWidth(103.5, 2)).toBe(50)
+  })
+
+  it('falls back to a fixed width before the overlay is measured', () => {
+    expect(titlebarExternalButtonsWidth(0, 2)).toBe(2 * TITLEBAR_EXTERNAL_BUTTON_FALLBACK_WIDTH)
+  })
+
+  it('reserves nothing when no external buttons are configured', () => {
+    expect(titlebarExternalButtonsWidth(138, 0)).toBe(0)
+  })
+})
+
+describe('titlebarContentInsetCss', () => {
+  it('clears the left tool cluster', () => {
+    expect(titlebarContentInsetCss(14, 4)).toBe('calc(14px + calc(4 * var(--titlebar-control-size)) + 0.75rem)')
   })
 })

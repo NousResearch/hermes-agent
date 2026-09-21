@@ -778,6 +778,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'developer-guide/contributing',
         'developer-guide/worktree-ui-dev',
+        'developer-guide/third-party-titlebar-buttons',
         {
           type: 'category',
           label: 'Architecture',

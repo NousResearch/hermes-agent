@@ -464,6 +464,11 @@ import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
+  armScheduledUpdate,
+  decideScheduledAttempt,
+  parseUnattendedSchedule
+} from './unattended-update'
+import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
   observeUpdaterHandoff,
@@ -3143,15 +3148,51 @@ function recentHermesLog() {
 
 // ─── Self-update (git-pull against the running backend's hermes root) ──────
 
-function readDesktopUpdateConfig() {
+function readUpdatesConfigRaw(): Record<string, unknown> {
   try {
     const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
+
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeUpdatesConfigRaw(patch: Record<string, unknown>): void {
+  const cfg = readUpdatesConfigRaw()
+
+  fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CONFIG_PATH), { recursive: true })
+  writeFileAtomic(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify({ ...cfg, ...patch }, null, 2))
+}
+
+function readDesktopUpdateConfig() {
+  try {
+    const parsed = readUpdatesConfigRaw()
     const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
 
     return { branch: branch || DEFAULT_UPDATE_BRANCH }
   } catch {
     return { branch: DEFAULT_UPDATE_BRANCH }
   }
+}
+
+// ── Unattended (scheduled) self-update — LOCAL opt-in, Windows-only ─────────
+// Persisted in the same local userData JSON (`updates.json`) as `branch`, so
+// the schedule never lives on a remote backend or in any config a remote agent
+// can reach. See electron/unattended-update.ts for the pure scheduling model.
+
+function writeUnattendedSchedule(schedule) {
+  writeUpdatesConfigRaw({ unattended: parseUnattendedSchedule(schedule) })
+}
+
+function readScheduledLastRun(): number | null {
+  const value = readUpdatesConfigRaw().unattendedLastRunAt
+
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function writeScheduledLastRun(ms: number): void {
+  writeUpdatesConfigRaw({ unattendedLastRunAt: ms })
 }
 
 // Atomic file write: temp + rename (atomic on all platforms). Prevents
@@ -3163,8 +3204,124 @@ function writeFileAtomic(targetPath, data, encoding?: BufferEncoding) {
 }
 
 function writeDesktopUpdateConfig(config) {
-  fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CONFIG_PATH), { recursive: true })
-  writeFileAtomic(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
+  // Merge into the local updates.json so the unattended schedule (and any
+  // future sibling fields) survive a branch-only write from this IPC handler.
+  writeUpdatesConfigRaw(config)
+}
+
+// ── Unattended (scheduled) self-update — run/arm logic ──────────────────────
+// Guarded every attempt: Windows-only, schedule enabled + due, no live update
+// lock, an update not already in flight, and a REAL local Hermes updater
+// present (binary or repo hand-off script) — so an unattended run can never
+// fall back to a "run this CLI command yourself" path. All refusals FAIL
+// CLOSED: they skip the slot and re-arm for the next day, never mutate the
+// install.
+
+const UNATTENDED_COOLDOWN_MS = 6 * 60 * 60 * 1000 // ≥1/fire per window; never double-run
+const UNATTENDED_GRACE_MS = 5 * 60 * 1000 // fire within ±5 min of the target minute
+
+function readUnattendedSchedule() {
+  return parseUnattendedSchedule(readUpdatesConfigRaw().unattended)
+}
+
+// Attempt the scheduled update now, returning true only if a real hand-off was
+// actually launched. Every decision reads the CURRENT local config (not a
+// cached copy), so a Schedule toggle or a previous run this window applies
+// immediately.
+async function runScheduledUpdateIfDue(): Promise<boolean> {
+  if (!IS_WINDOWS) {
+    rememberLog('[updates] unattended: disabled — this build is not a Windows Desktop')
+    return false
+  }
+
+  const schedule = readUnattendedSchedule()
+
+  if (!schedule.enabled) {
+    rememberLog(`[updates] unattended: off (default); not attempting`)
+    return false
+  }
+
+  const decision = decideScheduledAttempt({
+    schedule,
+    now: new Date(),
+    lastRunAtMs: readScheduledLastRun(),
+    cooldownMs: UNATTENDED_COOLDOWN_MS,
+    isWindows: true,
+    graceMs: UNATTENDED_GRACE_MS
+  })
+
+  if (!decision.shouldRun) {
+    rememberLog(`[updates] unattended: skip (${decision.reason}) at local ${new Date().toLocaleTimeString()}`)
+    return false
+  }
+
+  if (updateInFlight) {
+    rememberLog('[updates] unattended: skip — an update is already in flight upstream')
+    return false
+  }
+
+  const conflict = updateHandoffConflict(HERMES_HOME)
+
+  if (conflict) {
+    rememberLog(`[updates] unattended: skip — update lock held (${conflict.message})`)
+    return false
+  }
+
+  const updateRoot = resolveUpdateRoot()
+  const hasOwnUpdater = Boolean(resolveUpdaterBinary() || resolveUpdateScriptHandoff(updateRoot))
+
+  if (!hasOwnUpdater) {
+    rememberLog(`[updates] unattended: skip — no local Hermes updater at ${updateRoot}`)
+    return false
+  }
+
+  // Persist the attempt timestamp BEFORE applying: if the hand-off throws or
+  // the process dies mid-update, we must not re-enter this same slot into a
+  // duplicate update on the next launch/arm.
+  writeScheduledLastRun(Date.now())
+  rememberLog(
+    `[updates] unattended: due (${schedule.hour}:${String(schedule.minute).padStart(2, '0')}): handing off to the Hermes updater`
+  )
+
+  try {
+    await applyUpdates({})
+
+    return true
+  } catch (error: any) {
+    rememberLog(`[updates] unattended: attempted but did not apply — ${error?.message || String(error)}`)
+
+    return false
+  }
+}
+
+// (Re)arm the daily timer for the locally-configured schedule. Cancels any
+// existing handle first so repeated calls are idempotent.
+function armUnattendedUpdateScheduler(): void {
+  if (unattendedScheduler) {
+    unattendedScheduler.cancel()
+    unattendedScheduler = null
+  }
+
+  if (!IS_WINDOWS) {
+    return
+  }
+
+  const schedule = readUnattendedSchedule()
+
+  if (!schedule.enabled) {
+    rememberLog('[updates] unattended: default OFF — scheduler not armed')
+    return
+  }
+
+  unattendedScheduler = armScheduledUpdate({
+    schedule,
+    onDue: () => void runScheduledUpdateIfDue()
+  })
+
+  const delayMin = Math.max(0, Math.round((unattendedScheduler.delayMs ?? 0) / 60_000))
+  rememberLog(
+    `[updates] unattended: armed for ${schedule.hour}:${String(schedule.minute).padStart(2, '0')} local time (next attempt ≈${delayMin} min out)`
+  )
 }
 
 // ─── Main-window geometry persistence (window-state.json) ──────────────────
@@ -3597,6 +3754,10 @@ function fetchGitHubApiOnce(url, accept, token) {
 }
 
 let updateInFlight = false
+
+// Handle for the armed unattended-update timer (electron/unattended-update.ts),
+// so a Settings change can cancel and re-arm it. Local opt-in, Windows-only.
+let unattendedScheduler: { delayMs: number; cancel: () => void } | null = null
 
 // Set to true when the desktop is about to quit so a detached swap/install/
 // uninstall script can take over. On macOS, app.quit() closes windows but
@@ -18080,6 +18241,19 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
+// Unattended (scheduled) self-update — local opt-in. The renderer only ever
+// writes through this native IPC (it has no filesystem/shell access), and the
+// value is hand-validated here: invalid input FEEDS parseUnattendedSchedule(),
+// which fails closed to `enabled:false`. See electron/unattended-update.ts.
+ipcMain.handle('hermes:updates:schedule:get', () => readUnattendedSchedule())
+
+ipcMain.handle('hermes:updates:schedule:set', (_event, payload) => {
+  const schedule = parseUnattendedSchedule(payload)
+  writeUnattendedSchedule(schedule)
+  armUnattendedUpdateScheduler() // apply the toggle/src immediately
+  return schedule
+})
+
 // Resolve the canonical Hermes version (the one `release.py` bumps in
 // hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
 // real Hermes version instead of the Electron app's own package.json version,
@@ -18712,6 +18886,12 @@ app.whenReady().then(() => {
     setApplicationMenu: menu => Menu.setApplicationMenu(menu),
     createWindow
   })
+
+  // Unattended self-update: arm the daily timer and run an immediate due-check
+  // so a late app start inside the ±grace window still catches its slot. Both
+  // are no-ops when the schedule is OFF (the default) or on non-Windows builds.
+  armUnattendedUpdateScheduler()
+  void runScheduledUpdateIfDue()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

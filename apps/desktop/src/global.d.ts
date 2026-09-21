@@ -591,6 +591,8 @@ declare global {
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
+        getSchedule: () => Promise<DesktopUnattendedSchedule>
+        setSchedule: (schedule: DesktopUnattendedScheduleInput) => Promise<DesktopUnattendedSchedule>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
       uninstall: {
@@ -760,6 +762,21 @@ export interface DesktopUpdateApplyOptions {
   /** User confirmed that Desktop may stop freshly re-scanned safe local preview servers. */
   stopSafeBlockers?: boolean
 }
+
+/** Local-opt-in schedule for unattended (e.g. nightly) Windows Desktop
+ *  self-update. Default OFF; persisted only in the local userData
+ *  `updates.json`, never on a remote backend. The main process re-validates
+ *  and fails closed (to `enabled:false`) on any malformed input. */
+export interface DesktopUnattendedSchedule {
+  enabled: boolean
+  /** 0-23, local wall-clock hour. */
+  hour: number
+  /** 0-59, local minute within that hour. */
+  minute: number
+}
+
+/** Renderer → main payload; identical fields, validated in the main process. */
+export type DesktopUnattendedScheduleInput = DesktopUnattendedSchedule
 
 export interface DesktopUpdateApplyResult {
   ok: boolean

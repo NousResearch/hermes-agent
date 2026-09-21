@@ -6,6 +6,8 @@
 import { atom } from 'nanostores'
 
 import type {
+  DesktopUnattendedSchedule,
+  DesktopUnattendedScheduleInput,
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
   DesktopUpdateBlocker,
@@ -73,6 +75,19 @@ export const openUpdateOverlayFor = (target: UpdateTarget) => {
 export const resetUpdateApplyState = () => {
   $updateApply.set(IDLE)
   $backendUpdateApply.set(IDLE)
+}
+
+// Local, unattended self-update schedule. Never reaches a backend: it is set
+// and read through native IPC, persisted only in the user's local `updates.json`,
+// and default OFF. Used by the Settings UI (local Desktop only).
+export async function getUnattendedSchedule(): Promise<DesktopUnattendedSchedule> {
+  return window.hermesDesktop.updates.getSchedule()
+}
+
+export async function setUnattendedSchedule(
+  schedule: DesktopUnattendedScheduleInput
+): Promise<DesktopUnattendedSchedule> {
+  return window.hermesDesktop.updates.setSchedule(schedule)
 }
 
 const UPDATE_TOAST_ID = 'desktop-update-available'

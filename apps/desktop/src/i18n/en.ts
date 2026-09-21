@@ -989,6 +989,14 @@ export const en: Translations = {
       automaticUpdates: 'Automatic updates',
       automaticUpdatesDesc:
         'Hermes checks for updates automatically in the background and lets you know when one is ready.',
+      unattendedTitle: 'Nightly update',
+      unattendedDesc:
+        'On the Windows desktop build, automatically update Hermes to the latest version at a local time you choose, while you\u2019re away. Off by default.',
+      unattendedEnabled: 'Enable timed automatic update',
+      unattendedHourLabel: 'Hour',
+      unattendedMinuteLabel: 'Minute',
+      unattendedWindowsOnly: 'Available only on the Windows desktop build.',
+      unattendedSaved: 'Schedule saved',
       branchCommit: (branch, commit) => `Branch ${branch} · Commit ${commit}`,
       never: 'never',
       justNow: 'just now',

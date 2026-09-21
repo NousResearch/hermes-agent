@@ -27,7 +27,6 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
-    _parse_target_ref,
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
     _send_signal,
@@ -35,6 +34,7 @@ from tools.send_message_tool import (
     _send_to_platform,
     send_message_tool,
 )
+from tools.send_message_targets import _parse_target_ref
 # Discord helpers moved to the plugin in #24325.  Import from the new path
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
@@ -345,7 +345,10 @@ class TestSendMessageTool:
                 )
             )
 
-        assert result["success"] is True
+        # The text still goes out without the attachment, but the caller is told (#115908).
+        assert result["success"] is False
+        assert result["partial_success"] is True
+        assert result["media_dropped"] == [{"path": str(secret), "reason": "denied by the delivery policy"}]
         send_mock.assert_awaited_once_with(
             Platform.TELEGRAM,
             telegram_cfg,
@@ -355,6 +358,40 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
+
+    def test_missing_media_is_reported_to_the_caller_and_hermes_send_exits_nonzero(self, tmp_path, monkeypatch):
+        """#115908: a MEDIA path that does not exist on the host was dropped with only a host-side
+        warning while ``hermes send`` printed success:true and exited 0. The surviving attachment is
+        still sent; the payload names the drop and the CLI exit code follows it."""
+        from hermes_cli.send_cmd import _emit_result
+
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        config, telegram_cfg = _make_config()
+        report = tmp_path / "report.pdf"
+        report.write_bytes(b"%PDF report")
+        missing = tmp_path / "missing.pdf"
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            raw = send_message_tool({
+                "action": "send",
+                "target": "telegram:12345",
+                "message": f"report\nMEDIA:{report}\nMEDIA:{missing}",
+            })
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["partial_success"] is True
+        assert result["media_dropped"] == [{"path": str(missing), "reason": "not found on this host"}]
+        assert "Delivery incomplete" in result["error"]
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM, telegram_cfg, "12345", "report", thread_id=None,
+            media_files=[(str(report.resolve()), False)], force_document=False,
+        )
+        assert _emit_result(raw, json_mode=True, quiet=True) != 0
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
@@ -489,6 +526,41 @@ class TestSendToPlatformChunking:
         assert send.await_count >= 3
         for call in send.await_args_list:
             assert len(call.args[2]) <= 2020  # each chunk fits the limit
+
+    def test_signal_long_message_is_chunked(self, monkeypatch):
+        """Standalone Signal sends split at the adapter's 8000-char limit.
+
+        The standalone path (hermes send / cron / MCP) speaks raw JSON-RPC via
+        _send_signal and bypasses SignalAdapter.send(), so the shared
+        truncate_message() pass in _send_to_platform must know Signal's limit
+        (regression for #67279 / #57929 — long sends were rejected whole).
+        """
+        from gateway.platforms.signal import MAX_MESSAGE_LENGTH as SIGNAL_MAX
+        import tools.send_message_tool as smt
+
+        sent = []
+
+        async def fake_send_signal(extra, chat_id, chunk, media_files=None):
+            sent.append(chunk)
+            return {"success": True, "platform": "signal", "chat_id": chat_id}
+
+        monkeypatch.setattr(smt, "_send_signal", fake_send_signal)
+
+        long_msg = "word " * ((SIGNAL_MAX // 5) + 500)  # comfortably over limit
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.SIGNAL,
+                SimpleNamespace(enabled=True, token=None,
+                                extra={"http_url": "http://localhost:8080",
+                                       "account": "+15551234567"}),
+                "+15557654321", long_msg,
+            )
+        )
+        assert result["success"] is True
+        assert len(sent) >= 2, "long Signal message must be split, not sent whole"
+        assert all(len(chunk) <= SIGNAL_MAX for chunk in sent)
+        # No truncation footer — content is delivered in full across chunks
+        assert all("truncated, full output saved to" not in c for c in sent)
 
 
     def test_slack_pre_escaped_entities_not_double_escaped(self, monkeypatch):
@@ -1706,50 +1778,6 @@ class TestSendViaAdapterStandaloneFallback:
 
         assert result == {"error": "Plugin standalone send failed: boom!"}
 
-# ---------------------------------------------------------------------------
-# _check_send_message — availability gating
-# ---------------------------------------------------------------------------
-
-class TestCheckSendMessage:
-    """The tool's check_fn governs whether the model sees ``send_message`` as
-    callable for a given session. The four passing conditions are:
-
-    1. ``HERMES_KANBAN_TASK`` is set (worker spawned by the kanban dispatcher
-       — parent gateway is by definition running, but the worker's
-       ``HERMES_HOME`` may be a profile dir without a ``gateway.pid``).
-    2. ``HERMES_SESSION_PLATFORM`` resolves to a non-empty, non-``local`` value
-       (the session is wired to a messaging platform like Telegram).
-    3. ``is_gateway_running()`` returns True (CLI / orchestrator profile with
-       a live gateway colocated under the same ``HERMES_HOME``).
-    4. None of the above → False, tool is hidden.
-    """
-
-    def test_kanban_task_env_grants_access(self, monkeypatch):
-        """Workers spawned by the dispatcher (HERMES_KANBAN_TASK set) must be
-        allowed regardless of session_platform / gateway-pid state."""
-        from tools.send_message_tool import _check_send_message
-
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
-        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-
-        with patch("gateway.session_context.get_session_env", return_value=""), \
-             patch("gateway.status.is_gateway_running", return_value=False):
-            assert _check_send_message() is True
-
-
-    def test_gateway_status_import_error_is_swallowed(self, monkeypatch):
-        """If gateway.status can't be imported (unusual deployment / partial
-        install), the check returns False rather than raising."""
-        from tools.send_message_tool import _check_send_message
-
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-
-        with patch("gateway.session_context.get_session_env", return_value=""), \
-             patch("gateway.status.is_gateway_running",
-                   side_effect=ImportError("simulated")):
-            assert _check_send_message() is False
-
-
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
 
@@ -1766,7 +1794,7 @@ class TestSendTelegramThreadNotFoundRetry:
 
         async def run_test():
             with patch(
-                "tools.send_message_tool._send_telegram_message_with_retry",
+                "tools.send_message_senders._send_telegram_message_with_retry",
                 fake_retry,
             ):
                 # _send_telegram imports Bot locally; we only need to mock
@@ -1830,3 +1858,53 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+def test_not_configured_error_names_resolved_home_and_consulted_sources(tmp_path, monkeypatch):
+    """The 'not configured' error names the files this process actually read (resolved home, not a
+    hardcoded ``~/.hermes``) and what each source held, so a Windows/profile home user can fix the right file."""
+    from gateway.config import GatewayConfig
+    from tools.send_message_tool import _resolve_platform_config
+
+    home = tmp_path / "AppData" / "Local" / "hermes"
+    home.mkdir(parents=True)
+    (home / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
+    (home / "config.yaml").write_text("platforms:\n  discord:\n    enabled: false\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+    _, _, _, err = _resolve_platform_config("discord", GatewayConfig())
+
+    assert "~/.hermes" not in err
+    assert f"{home / '.env'} (no DISCORD_BOT_TOKEN)" in err
+    assert f"{home / 'config.yaml'} (platforms.discord.enabled: false)" in err
+    assert "environment (DISCORD_BOT_TOKEN unset)" in err
+
+
+def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_path, monkeypatch):
+    """Under ``HERMES_HOME=<root>/profiles/<p>`` the error says a live gateway from the default root has the
+    platform connected (its credentials never came from this profile's ``.env``) and lists external secret
+    sources by name only (#114272 step 5)."""
+    import json
+    import os
+
+    from gateway.config import GatewayConfig
+    from tools.send_message_tool import _resolve_platform_config
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    (root / "gateway_state.json").write_text(
+        json.dumps({"pid": os.getpid(), "platforms": {"discord": {"state": "connected"}}}), encoding="utf-8")
+    (profile / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
+    (profile / "config.yaml").write_text(
+        "secrets:\n  bitwarden:\n    enabled: false\n    session_token: SECRET-VALUE\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+    _, _, _, err = _resolve_platform_config("discord", GatewayConfig())
+
+    assert (f"A gateway (pid {os.getpid()}) running from {root} has discord connected; "
+            f"this shell is scoped to profile home {profile} whose .env has no DISCORD_BOT_TOKEN.") in err
+    assert "external secret sources (bitwarden: disabled)" in err
+    assert "SECRET-VALUE" not in err

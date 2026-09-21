@@ -9,6 +9,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
@@ -24,6 +25,7 @@ import { paneChrome } from './track-model'
 
 export function NarrowOverlays() {
   const narrow = useStore($narrowViewport)
+  const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
@@ -37,8 +39,10 @@ export function NarrowOverlays() {
   const inTree = useMemo(() => new Set(tree ? allPaneIds(tree) : []), [tree])
 
   const collapsibles = useMemo(
-    () => panes.filter(p => paneChrome(p).collapsible && inTree.has(p.id) && !hiddenPanes.has(p.id)),
-    [panes, inTree, hiddenPanes]
+    // Solo adopts sidebar panes without their surrounding sidebar chrome.
+    // Suppress every reveal path while those panes are intentionally hidden.
+    () => (solo ? [] : panes.filter(p => paneChrome(p).collapsible && inTree.has(p.id) && !hiddenPanes.has(p.id))),
+    [solo, panes, inTree, hiddenPanes]
   )
 
   const collapsiblesRef = useRef(collapsibles)
@@ -47,7 +51,7 @@ export function NarrowOverlays() {
   // ⌘B / ⌘G's narrow branch dispatches the app's toggle-reveal event with the
   // REAL pane id — accept those via each contribution's revealAliases.
   useEffect(() => {
-    if (!narrow) {
+    if (!narrow || solo) {
       setReveal(null)
 
       return
@@ -99,9 +103,9 @@ export function NarrowOverlays() {
       window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onToggle)
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [narrow])
+  }, [narrow, solo])
 
-  if (!narrow || collapsibles.length === 0) {
+  if (!narrow || solo || collapsibles.length === 0) {
     return null
   }
 
@@ -150,6 +154,10 @@ export function NarrowOverlays() {
               ? 'left-0 border-r border-(--ui-stroke-secondary)'
               : 'right-0 border-l border-(--ui-stroke-secondary)'
           )}
+          // Floats OVER the layout, so under glass its surface must mask the
+          // panes beneath it — a see-through overlay reads as text bleeding
+          // through text. Contract: `[data-glass-opaque]` in styles.css.
+          data-glass-opaque=""
           onMouseLeave={() => setReveal(current => (current?.pinned ? current : null))}
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.

@@ -11,11 +11,15 @@ import { isSilentTool } from '@/lib/tool-render-class'
 export const TURN_QUIET_S = 2
 
 export interface ActivityPart {
+  completedAt?: number
   result?: unknown
   text?: unknown
   toolName?: string
   type: string
 }
+
+// A sealed call carries a completion marker and no result.
+const settled = (part: ActivityPart): boolean => part.result !== undefined || part.completedAt !== undefined
 
 /**
  * What the tail message has produced so far, as a value that changes exactly
@@ -36,7 +40,7 @@ export function activitySignature(content: readonly ActivityPart[]): string {
       textLength += part.text.length
     }
 
-    if (part.type === 'tool-call' && part.result !== undefined) {
+    if (part.type === 'tool-call' && settled(part)) {
       settledTools += 1
     }
   }
@@ -54,7 +58,5 @@ export function activitySignature(content: readonly ActivityPart[]): string {
  * of those is as unnarrated as a wait on nothing at all.
  */
 export function toolNarratesWait(content: readonly ActivityPart[]): boolean {
-  return content.some(
-    part => part.type === 'tool-call' && part.result === undefined && !isSilentTool(part.toolName ?? '')
-  )
+  return content.some(part => part.type === 'tool-call' && !settled(part) && !isSilentTool(part.toolName ?? ''))
 }

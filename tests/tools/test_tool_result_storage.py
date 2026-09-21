@@ -9,12 +9,10 @@ from tools.budget_config import (
     BudgetConfig,
 )
 from tools.tool_result_storage import (
-    HEREDOC_MARKER,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
     _build_persisted_message,
-    _heredoc_marker,
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
@@ -43,20 +41,6 @@ class TestGeneratePreview:
         assert has_more is False
 
 
-# ── _heredoc_marker ───────────────────────────────────────────────────
-
-class TestHeredocMarker:
-    def test_default_marker_when_no_collision(self):
-        assert _heredoc_marker("normal content") == HEREDOC_MARKER
-
-    def test_uuid_marker_on_collision(self):
-        content = f"some text with {HEREDOC_MARKER} embedded"
-        marker = _heredoc_marker(content)
-        assert marker != HEREDOC_MARKER
-        assert marker.startswith("HERMES_PERSIST_")
-        assert marker not in content
-
-
 # ── _write_to_sandbox ─────────────────────────────────────────────────
 
 class TestWriteToSandbox:
@@ -65,14 +49,15 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         result = _write_to_sandbox("hello world", "/tmp/hermes-results/abc.txt", env)
         assert result is True
-        env.execute.assert_called_once()
-        cmd = env.execute.call_args[0][0]
+        # First call is the write; a second call round-trip-verifies the
+        # persisted size (unparseable probe output = best-effort success).
+        cmd = env.execute.call_args_list[0][0][0]
         assert "mkdir -p" in cmd
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).
         assert "hello world" not in cmd
-        assert env.execute.call_args[1]["stdin_data"] == "hello world"
+        assert env.execute.call_args_list[0][1]["stdin_data"] == "hello world"
 
 
     def test_large_content_via_stdin(self):
@@ -82,9 +67,9 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         big = "x" * 200_000
         _write_to_sandbox(big, "/tmp/hermes-results/big.txt", env)
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[0][0][0]
         assert len(cmd) < 1_000  # cmd is just `mkdir -p X && cat > Y`
-        assert env.execute.call_args[1]["stdin_data"] == big
+        assert env.execute.call_args_list[0][1]["stdin_data"] == big
 
 
     def test_path_with_spaces_is_quoted(self):
@@ -92,7 +77,7 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         remote_path = "/tmp/hermes results/abc file.txt"
         _write_to_sandbox("content", remote_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[0][0][0]
         assert "'/tmp/hermes results'" in cmd
         assert "'/tmp/hermes results/abc file.txt'" in cmd
 
@@ -102,7 +87,7 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         malicious_path = "/tmp/hermes-results/$(whoami).txt"
         _write_to_sandbox("content", malicious_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[0][0][0]
         # The $() must not appear unquoted — shlex.quote wraps it
         assert "'/tmp/hermes-results/$(whoami).txt'" in cmd
 
@@ -111,9 +96,69 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         malicious_path = "/tmp/x; rm -rf /; echo .txt"
         _write_to_sandbox("content", malicious_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[0][0][0]
         # The semicolons must be inside quotes, not acting as command separators
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
+
+    @pytest.mark.parametrize(
+        "stdin_mode, probed, ok",
+        [
+            ("pipe", 512, False),      # short write: bytes lost
+            ("pipe", 171, False),      # pipe backends must be exact
+            ("heredoc", 171, True),    # heredoc appends exactly one newline
+            ("host", 3, False),        # host spillover: os.stat says only 3 bytes landed
+            ("host", None, True),      # host spillover: real write, real stat
+        ],
+    )
+    def test_size_probe_decides_lossless(self, stdin_mode, probed, ok):
+        """An archive that is not byte-exact (modulo the heredoc newline) is discarded — never
+        referenced to the model (port of lobehub/lobehub#18258). Multibyte content pins the
+        comparison to UTF-8 bytes (170 here, 130 chars), on both the sandbox and host paths."""
+        import os
+
+        from tools.tool_result_storage import _write_to_spillover
+
+        content = "héllo wörld ✓" * 10
+        assert len(content.encode("utf-8")) == 170 != len(content)
+        if stdin_mode == "host":
+            filename = "tc_verify_host.txt"
+            real_stat = os.stat
+
+            def fake_stat(p, *a, **kw):
+                if probed is not None and str(p).endswith(filename):
+                    return type("S", (), {"st_size": probed})()
+                return real_stat(p, *a, **kw)
+
+            with patch("tools.tool_result_storage.os.stat", side_effect=fake_stat):
+                path = _write_to_spillover(content, filename)
+            assert (path is not None) is ok
+            assert (get_spillover_dir() / filename).exists() is ok
+            if path is not None:
+                with open(path, encoding="utf-8") as fh:
+                    assert fh.read() == content
+            return
+        env = MagicMock()
+        env._stdin_mode = stdin_mode
+        env.execute.side_effect = [
+            {"output": "", "returncode": 0},          # write
+            {"output": f"{probed}\n", "returncode": 0},  # wc -c
+            {"output": "", "returncode": 0},          # rm -f cleanup (mismatch only)
+        ]
+        assert _write_to_sandbox(content, "/tmp/hermes-results/p.txt", env) is ok
+        if not ok:
+            rm_cmd = env.execute.call_args_list[2][0][0]
+            assert rm_cmd.startswith("rm -f ") and "/tmp/hermes-results/p.txt" in rm_cmd
+        else:
+            assert env.execute.call_count == 2
+
+    def test_unprobeable_backend_is_best_effort_success(self):
+        """No wc / probe crash must not discard a likely-good archive."""
+        env = MagicMock()
+        env.execute.side_effect = [
+            {"output": "", "returncode": 0},
+            RuntimeError("exec transport gone"),
+        ]
+        assert _write_to_sandbox("data", "/tmp/hermes-results/np.txt", env) is True
 
 
 class TestResolveStorageDir:
@@ -201,10 +246,12 @@ class TestMaybePersistToolResult:
         """Content is persisted verbatim — no JSON extraction."""
         import json
         env = MagicMock()
-        # Readability probe fails -> falls back to the in-sandbox write.
+        # Readability probe fails -> falls back to the in-sandbox write,
+        # whose size probe returns unparseable output (best-effort success).
         env.execute.side_effect = [
             {"output": "", "returncode": 1},
             {"output": "", "returncode": 0},
+            {"output": "", "returncode": 1},  # wc -c size probe: no answer
         ]
         env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
@@ -219,7 +266,7 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args[1]["stdin_data"] == content
+        assert env.execute.call_args_list[1][1]["stdin_data"] == content
 
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
@@ -228,6 +275,7 @@ class TestMaybePersistToolResult:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},
             {"output": "", "returncode": 0},
+            {"output": "", "returncode": 1},  # wc -c size probe: no answer
         ]
         env.get_temp_dir.return_value = ""
         content = "x" * 60_000
@@ -238,12 +286,14 @@ class TestMaybePersistToolResult:
             env=env,
             threshold=30_000,
         )
-        cmd = env.execute.call_args[0][0]
+        cmd = env.execute.call_args_list[1][0][0]
         target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
 
-        assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
-        assert "/tmp/hermes-results/../" not in result
-        assert target.startswith("/tmp/hermes-results/outside_whoami_x_")
+        from tools.tool_result_storage import STORAGE_DIR
+
+        assert f"Full output saved to: {STORAGE_DIR}/outside_whoami_x_" in result
+        assert f"{STORAGE_DIR}/../" not in result
+        assert target.startswith(f"{STORAGE_DIR}/outside_whoami_x_")
         assert "/../" not in target
         assert "$(whoami)" not in target
         assert ";" not in target
@@ -340,7 +390,7 @@ class TestSpillover:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         # Reset the once-per-process prune flag so each test is independent.
         import tools.tool_result_storage as trs
-        monkeypatch.setattr(trs, "_spillover_pruned_once", False)
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
         yield
 
     def test_env_none_persists_to_spillover(self):
@@ -406,6 +456,7 @@ class TestSpillover:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},  # probe: not readable
             {"output": "", "returncode": 0},  # cat > sandbox path
+            {"output": "60000\n", "returncode": 0},  # wc -c verification
         ]
         env.get_temp_dir.return_value = "/tmp"
         content = "z" * 60_000
@@ -418,7 +469,7 @@ class TestSpillover:
         )
         assert PERSISTED_OUTPUT_TAG in result
         assert "/tmp/hermes-results/tc_remote_2.txt" in result
-        assert env.execute.call_count == 2
+        assert env.execute.call_count == 3
         # Host canonical copy exists regardless.
         assert (get_spillover_dir() / "tc_remote_2.txt").exists()
 
@@ -444,8 +495,8 @@ class TestSpillover:
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "old.txt"
         new = spill_dir / "new.txt"
-        old.write_text("old")
-        new.write_text("new")
+        old.write_text("old", encoding="utf-8")
+        new.write_text("new", encoding="utf-8")
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
 
@@ -466,7 +517,7 @@ class TestSpillover:
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "ancient.txt"
-        old.write_text("ancient")
+        old.write_text("ancient", encoding="utf-8")
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
 
@@ -480,3 +531,22 @@ class TestSpillover:
 
         assert not old.exists()
         assert (spill_dir / "tc_prune_1.txt").exists()
+
+
+# ── recovery hint in the persisted preview ────────────────────────────
+
+class TestRecoveryHint:
+    def test_preview_teaches_recovery_not_refetch(self):
+        msg = _build_persisted_message(
+            preview="preview text",
+            has_more=True,
+            original_size=60_000,
+            file_path="/tmp/hermes-results/r.txt",
+        )
+        assert "Recovery:" in msg
+        assert "execute_code" in msg
+        assert "re-request" in msg
+        # Structure preserved: tag, size, path, read_file guidance all intact.
+        assert msg.startswith(PERSISTED_OUTPUT_TAG)
+        assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
+        assert "read_file" in msg

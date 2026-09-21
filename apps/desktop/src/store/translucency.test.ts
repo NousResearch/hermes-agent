@@ -16,13 +16,17 @@ import { onPersistenceEvent, type PersistenceEvent } from '@/lib/storage'
 
 import {
   $translucency,
+  $translucencyBook,
   $translucencyPeek,
   beginTranslucencyPeek,
+  defaultTranslucencyValues,
   endTranslucencyPeek,
   GLASS_SUPPORTED,
   isChatWindow,
   resetTranslucencyPeek,
+  setAppearance,
   setTranslucency,
+  setTranslucencyFade,
   setTranslucencyMaterial,
   setTranslucencyMode,
   setTranslucencyScope,
@@ -31,7 +35,15 @@ import {
   TRANSLUCENCY_STEP
 } from './translucency'
 
-const KEY = 'hermes.desktop.translucency.v1'
+const KEY = 'hermes.desktop.translucency.v2'
+const LEGACY_KEY = 'hermes.desktop.translucency.v1'
+
+// The book is per-appearance; the tests below drive one appearance at a time.
+// Dark is the store's initial appearance, so it is also the reset target.
+// This suite pins navigator.platform to a Mac before import, so the Mac table
+// is the one in play — `GLASS_IS_WINDOWS` resolves false throughout.
+const DARK = defaultTranslucencyValues('dark', false)
+const LIGHT = defaultTranslucencyValues('light', false)
 
 const glassAttr = () => document.documentElement.hasAttribute('data-hermes-glass')
 const clearAttr = () => document.documentElement.hasAttribute('data-hermes-clear')
@@ -56,13 +68,8 @@ describe('window translucency lever', () => {
   // NB: this asserts the module's INITIAL value, so it deliberately reads the
   // atom before the beforeEach above can touch it — the previous version of
   // this test ran after the reset and so proved nothing about the default.
-  it('starts off, with glass pre-selected on macOS', () => {
-    expect(initialTranslucency).toEqual({
-      intensity: TRANSLUCENCY_MIN,
-      mode: GLASS_SUPPORTED ? 'glass' : 'clear',
-      material: DEFAULT_GLASS_MATERIAL,
-      scope: DEFAULT_GLASS_SCOPE
-    })
+  it('starts on the dark appearance defaults, glass-backed on macOS', () => {
+    expect(initialTranslucency).toEqual({ ...DARK, mode: GLASS_SUPPORTED ? 'glass' : 'clear' })
   })
 
   it('accepts every step the slider can emit', () => {
@@ -115,17 +122,13 @@ describe('window translucency lever', () => {
 
       vi.advanceTimersByTime(200)
 
-      // One write, carrying the value the hand landed on.
+      // One write, carrying the value the hand landed on — recorded against
+      // the appearance being painted, not against the shared base.
       expect(writes).toHaveLength(1)
       expect(writes.at(-1)).toEqual({
         key: KEY,
         op: 'write',
-        value: JSON.stringify({
-          intensity: 23,
-          mode: 'clear',
-          material: DEFAULT_GLASS_MATERIAL,
-          scope: DEFAULT_GLASS_SCOPE
-        })
+        value: JSON.stringify({ ...$translucencyBook.get(), dark: { intensity: 23 } })
       })
     } finally {
       stop()
@@ -148,12 +151,7 @@ describe('window translucency lever', () => {
       }
 
       expect(calls).toHaveLength(5)
-      expect(calls.at(-1)).toEqual({
-        intensity: 40,
-        mode: 'clear',
-        material: DEFAULT_GLASS_MATERIAL,
-        scope: DEFAULT_GLASS_SCOPE
-      })
+      expect(calls.at(-1)).toEqual({ ...DARK, intensity: 40, mode: 'clear' })
     } finally {
       vi.useRealTimers()
     }
@@ -191,7 +189,7 @@ describe('glass mode', () => {
     setTranslucency(TRANSLUCENCY_MIN)
   })
 
-  it('rejects glass off macOS and applies it on macOS', () => {
+  it('rejects glass when the platform cannot back it', () => {
     setTranslucency(50)
     setTranslucencyMode('glass')
 
@@ -350,10 +348,7 @@ describe('cross-window sync', () => {
   // Under glass main touches nothing native on an intensity change, so a
   // sibling window's storage event is the ONLY way this window hears about it.
   it("adopts a sibling window's persisted state", () => {
-    window.localStorage.setItem(
-      KEY,
-      JSON.stringify({ intensity: 77, mode: 'clear', material: DEFAULT_GLASS_MATERIAL, scope: DEFAULT_GLASS_SCOPE })
-    )
+    window.localStorage.setItem(KEY, JSON.stringify({ mode: 'clear', base: {}, light: {}, dark: { intensity: 77 } }))
 
     window.dispatchEvent(new StorageEvent('storage', { key: KEY, newValue: 'x' }))
 
@@ -362,7 +357,7 @@ describe('cross-window sync', () => {
 
   it('ignores storage events for other keys', () => {
     setTranslucency(12)
-    window.localStorage.setItem(KEY, JSON.stringify({ intensity: 99, mode: 'clear' }))
+    window.localStorage.setItem(KEY, JSON.stringify({ mode: 'clear', base: {}, light: {}, dark: { intensity: 99 } }))
 
     window.dispatchEvent(new StorageEvent('storage', { key: 'hermes.desktop.zoom.v1', newValue: 'x' }))
 
@@ -397,6 +392,28 @@ describe('glass is confined to chat windows', () => {
     // The mode is still the user's choice — only the page rewrite is withheld.
     expect($translucency.get().mode).toBe('glass')
     expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+  })
+
+  // The HUD paints its band from the app's field mix, so it needs the setting
+  // and the tint number even though its surfaces must not be rewritten. The
+  // two flags are what keep those separable: keying the band off
+  // `data-hermes-glass` would silently never match.
+  it('still publishes the live setting and the tint to a special-purpose window', () => {
+    setSearch('?win=hud')
+    setTranslucency(60)
+    setTranslucencyMode('glass')
+
+    expect(document.documentElement.hasAttribute('data-hermes-glass-on')).toBe(true)
+    expect(document.documentElement.style.getPropertyValue('--translucency-glass-keep')).toBe('40%')
+  })
+
+  it('withdraws both flags when glass is switched off', () => {
+    setSearch('?win=hud')
+    setTranslucency(60)
+    setTranslucencyMode('glass')
+    setTranslucencyMode('clear')
+
+    expect(document.documentElement.hasAttribute('data-hermes-glass-on')).toBe(false)
     expect(document.documentElement.style.getPropertyValue('--translucency-glass-keep')).toBe('')
   })
 
@@ -424,5 +441,165 @@ describe('isChatWindow', () => {
     for (const win of ['hud', 'pet', 'quick-entry', 'wake', 'anything-new']) {
       expect(isChatWindow(`?win=${win}`), win).toBe(false)
     }
+  })
+})
+
+// A tint that reads as a whisper over a dark palette is a milky sheet over a
+// light one, so the same lever has to mean a different amount in each
+// appearance. These are the contract for that split.
+describe('per-appearance settings', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $translucencyBook.set({ mode: 'glass', base: {}, light: {}, dark: {} })
+    setAppearance('dark')
+  })
+
+  afterEach(() => setAppearance('dark'))
+
+  it('ships each appearance its own defaults', () => {
+    expect($translucency.get()).toEqual({ ...DARK, mode: 'glass' })
+
+    setAppearance('light')
+    expect($translucency.get()).toEqual({ ...LIGHT, mode: 'glass' })
+  })
+
+  it('ships glass ON, so the feature is visible without being found first', () => {
+    expect($translucency.get().mode).toBe('glass')
+    expect($translucency.get().intensity).toBeGreaterThan(0)
+
+    setAppearance('light')
+    expect($translucency.get().intensity).toBeGreaterThan(0)
+  })
+
+  it('scopes an edit to the appearance it was made in', () => {
+    setAppearance('light')
+    setTranslucency(90)
+    setTranslucencyFade(7)
+
+    expect($translucency.get().intensity).toBe(90)
+    expect($translucency.get().fade).toBe(7)
+
+    // Dark never heard about it and keeps its own default.
+    setAppearance('dark')
+    expect($translucency.get().intensity).toBe(DARK.intensity)
+    expect($translucency.get().fade).toBe(DARK.fade)
+
+    // ...and light still holds the edit on the way back.
+    setAppearance('light')
+    expect($translucency.get().intensity).toBe(90)
+  })
+
+  it('carries an unset key over from the shared base', () => {
+    $translucencyBook.set({ mode: 'glass', base: { intensity: 44, scope: 'sidebar' }, light: {}, dark: {} })
+
+    // Neither appearance has an opinion, so both inherit base.
+    expect($translucency.get().intensity).toBe(44)
+    expect($translucency.get().scope).toBe('sidebar')
+
+    setAppearance('light')
+    expect($translucency.get().intensity).toBe(44)
+
+    // An edit overrides only the key it touches; the rest keeps inheriting.
+    setTranslucency(12)
+    expect($translucency.get().intensity).toBe(12)
+    expect($translucency.get().scope).toBe('sidebar')
+
+    setAppearance('dark')
+    expect($translucency.get().intensity).toBe(44)
+  })
+
+  // Clear vs glass is a choice about the window, not about the palette —
+  // splitting it would mean flipping appearance silently changed the mode.
+  it('keeps the mode global across appearances', () => {
+    setTranslucencyMode('clear')
+    expect($translucency.get().mode).toBe('clear')
+
+    setAppearance('light')
+    expect($translucency.get().mode).toBe('clear')
+  })
+
+  // Switching appearance changes what is painted but not what is stored, so
+  // it must not schedule a write.
+  it('does not persist on an appearance switch alone', () => {
+    vi.useFakeTimers()
+    const writes: PersistenceEvent[] = []
+
+    const stop = onPersistenceEvent(event => {
+      if (event.op === 'write') {
+        writes.push(event)
+      }
+    })
+
+    try {
+      setAppearance('light')
+      setAppearance('dark')
+      vi.advanceTimersByTime(400)
+
+      expect(writes).toHaveLength(0)
+    } finally {
+      stop()
+      vi.useRealTimers()
+    }
+  })
+})
+
+// A window someone already tuned must survive the upgrade unchanged — the new
+// per-appearance defaults may only fill in where nothing was ever set.
+describe('v1 → v2 migration', () => {
+  afterEach(() => {
+    window.localStorage.clear()
+    setAppearance('dark')
+  })
+
+  it('lands a tuned v1 state in base, so both appearances inherit it', async () => {
+    window.localStorage.clear()
+    window.localStorage.setItem(
+      LEGACY_KEY,
+      JSON.stringify({ intensity: 31, fade: 4, mode: 'glass', material: 'popover', scope: 'sidebar' })
+    )
+
+    vi.resetModules()
+    const fresh = await import('./translucency')
+
+    expect(fresh.$translucencyBook.get()).toEqual({
+      mode: 'glass',
+      base: { intensity: 31, fade: 4, material: 'popover', scope: 'sidebar' },
+      light: {},
+      dark: {}
+    })
+
+    fresh.setAppearance('light')
+    expect(fresh.$translucency.get()).toEqual({
+      intensity: 31,
+      fade: 4,
+      mode: 'glass',
+      material: 'popover',
+      scope: 'sidebar'
+    })
+  })
+
+  // The legacy rule: a non-zero v1 intensity with no mode was rendering as
+  // clear all along and has to keep doing so.
+  it('keeps a legacy mode-less state on clear', async () => {
+    window.localStorage.clear()
+    window.localStorage.setItem(LEGACY_KEY, JSON.stringify({ intensity: 25 }))
+
+    vi.resetModules()
+    const fresh = await import('./translucency')
+
+    expect(fresh.$translucency.get().mode).toBe('clear')
+    expect(fresh.$translucency.get().intensity).toBe(25)
+  })
+
+  it('prefers a v2 book over a stale v1 state', async () => {
+    window.localStorage.clear()
+    window.localStorage.setItem(LEGACY_KEY, JSON.stringify({ intensity: 25, mode: 'clear' }))
+    window.localStorage.setItem(KEY, JSON.stringify({ mode: 'glass', base: {}, light: {}, dark: { intensity: 8 } }))
+
+    vi.resetModules()
+    const fresh = await import('./translucency')
+
+    expect(fresh.$translucency.get().mode).toBe('glass')
+    expect(fresh.$translucency.get().intensity).toBe(8)
   })
 })

@@ -14,12 +14,16 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
+import type { WorkspaceMode } from '@/contrib/types'
 import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
+  focusedSessionWorkspaceScope,
   focusOpenSession,
   openSessionTile,
-  reuseBlankDraftTile
+  reuseBlankDraftTile,
+  setSessionTileWorkspaceScope
 } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
@@ -28,6 +32,13 @@ import { $workspaceIsPage, sessionRoute } from './routes'
 export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
+
+export interface OpenSessionWorkspaceScope {
+  ownerRoute?: SessionProfileRoute
+  workspaceMode: WorkspaceMode
+  workspaceOwnerKey?: string
+  workspaceTabTitle?: string
+}
 
 /**
  * Is the main tab holding a conversation worth preserving?
@@ -65,6 +76,23 @@ export function openSessionIntentFromModifiers(
   return base
 }
 
+/** Every door that opens a saved chat from a picker-like surface (the /resume
+ * overlay, ⌘K session search, an artifact's "open chat") preserves the
+ * workspace of the tab the user acted from. `intent` is the caller's unmodified
+ * meaning (`in-place` for the overlay and artifacts, `stack` for ⌘K, or the
+ * ⌘/⇧⌘ modifier result); a Bot-scoped `in-place` becomes `stack` so the chat
+ * lands in the Bot tab instead of the Sessions main. */
+export function openSessionFromPicker(
+  storedSessionId: string,
+  navigate: OpenSessionNavigate,
+  intent: OpenSessionIntent = 'in-place'
+): void {
+  const workspaceScope = focusedSessionWorkspaceScope()
+  const resolved = workspaceScope.workspaceMode === 'bots' && intent === 'in-place' ? 'stack' : intent
+
+  openSession(storedSessionId, navigate, resolved, workspaceScope)
+}
+
 /**
  * @param navigate Required for `in-place` (route into main when not on screen).
  *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
@@ -72,7 +100,8 @@ export function openSessionIntentFromModifiers(
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
-  intent: OpenSessionIntent = 'in-place'
+  intent: OpenSessionIntent = 'in-place',
+  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' }
 ): void {
   if (!storedSessionId) {
     return
@@ -83,6 +112,8 @@ export function openSession(
   // already on screen (open tile, or the main session) would otherwise return
   // at focusOpenSession and never clear its unread dot.
   markSessionRead(storedSessionId)
+  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+  const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
 
   let resolved: OpenSessionIntent = intent
 
@@ -113,7 +144,13 @@ export function openSession(
   let spendBlankDraft = false
 
   if (resolved === 'stack') {
-    spendBlankDraft = mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
+    // A Bot-scoped picker is already inside a session tab, so its blank draft
+    // is the surface the user expects `/resume` to replace. Main may be empty
+    // or hidden behind the Bots workspace; treating that as an in-place open
+    // routes the saved chat elsewhere while leaving the visible blank tab
+    // active. Force the tab path so it first focuses an existing target, then
+    // spends the scoped blank draft before stacking a new tab.
+    spendBlankDraft = Boolean(botWorkspaceScope) || mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
     resolved = spendBlankDraft ? 'tab' : 'in-place'
   }
 
@@ -121,18 +158,35 @@ export function openSession(
     // Already on screen? Front it. openSessionTile would no-op on main without
     // focusing, or try to relocate an existing tile — neither is right for a
     // soft "open beside" link.
-    if (focusOpenSession(storedSessionId)) {
+    const focused = focusOpenSession(storedSessionId, workspaceScope)
+
+    if (focused) {
+      if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
+        navigate(sessionRoute(storedSessionId))
+      }
+
       return
     }
 
     // Nothing to jump to, but an open tab may still be an empty "New session" —
     // that's the tab the user would have typed into, so spend it rather than
     // stacking a second blank one beside it.
-    if (spendBlankDraft && reuseBlankDraftTile(storedSessionId)) {
+    if (
+      spendBlankDraft &&
+      (botWorkspaceScope
+        ? reuseBlankDraftTile(storedSessionId, botWorkspaceScope)
+        : reuseBlankDraftTile(storedSessionId))
+    ) {
       return
     }
 
-    openSessionTile(storedSessionId, 'center')
+    if (botWorkspaceScope) {
+      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
+    } else {
+      openSessionTile(storedSessionId, 'center')
+    }
+
+    focusOpenSession(storedSessionId, workspaceScope)
 
     return
   }
@@ -141,7 +195,7 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId), $workspaceIsPage.get())) {
+  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
 }

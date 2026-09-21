@@ -1,10 +1,18 @@
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
+import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { _resetLegacyDiscardForTests } from '@/store/session'
+import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
+
+import { makeSessionInfo } from '../../../test/session-info'
+import { sessionRoute } from '../../routes'
 
 import { useDesktopIntegrations } from './use-desktop-integrations'
 
@@ -15,6 +23,14 @@ const { hudWindowMock } = vi.hoisted(() => ({ hudWindowMock: vi.fn(() => false) 
 
 vi.mock('@/store/mcp-deeplink-install', () => ({
   requestMcpInstallFromDeepLink: vi.fn()
+}))
+
+vi.mock('@/store/plugin-catalog-install', () => ({
+  requestPluginCatalogInstallFromDeepLink: vi.fn()
+}))
+
+vi.mock('@/store/plugin-install-request', () => ({
+  openPluginInstallRequest: vi.fn()
 }))
 
 vi.mock('@/store/windows', async importOriginal => {
@@ -36,24 +52,7 @@ vi.mock('@/store/windows', async importOriginal => {
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
 
-const session = (over: Partial<SessionInfo> = {}): SessionInfo => ({
-  archived: false,
-  cwd: null,
-  ended_at: null,
-  id: 'live',
-  input_tokens: 0,
-  is_active: false,
-  last_active: 0,
-  message_count: 0,
-  model: null,
-  output_tokens: 0,
-  preview: null,
-  source: null,
-  started_at: 0,
-  title: null,
-  tool_call_count: 0,
-  ...over
-})
+const session = (over: Partial<SessionInfo> = {}): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 
 describe('useDesktopIntegrations', () => {
   let navigate: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>
@@ -95,6 +94,8 @@ describe('useDesktopIntegrations', () => {
     locationPathname = '/',
     profileReady = false,
     resumeExhaustedSessionId = null as string | null,
+    // null = config record still loading (the hook takes undefined; null dodges the destructuring default).
+    resumeLastSession = true as boolean | null,
     routedSessionId = null as string | null,
     sessions = [] as readonly SessionInfo[]
   } = {}) {
@@ -104,6 +105,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname,
         profileReady,
         resumeExhaustedSessionId,
+        resumeLastSession,
         routedSessionId,
         sessions
       }: {
@@ -111,6 +113,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname: string
         profileReady: boolean
         resumeExhaustedSessionId: string | null
+        resumeLastSession: boolean | null
         routedSessionId: string | null
         sessions: readonly SessionInfo[]
       }) =>
@@ -123,6 +126,7 @@ describe('useDesktopIntegrations', () => {
           profileReady,
           refreshSessions: vi.fn(),
           resumeExhaustedSessionId,
+          resumeLastSession: resumeLastSession ?? undefined,
           routedSessionId,
           runtimeIdByStoredSessionId: { current: new Map() },
           sessions
@@ -133,6 +137,7 @@ describe('useDesktopIntegrations', () => {
           locationPathname,
           profileReady,
           resumeExhaustedSessionId,
+          resumeLastSession,
           routedSessionId,
           sessions
         }
@@ -173,6 +178,19 @@ describe('useDesktopIntegrations', () => {
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
     })
 
+    it('announces the restored session so the pre-session draft follows the cold-start navigation', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      // Typed on the fresh chat while the backend was still coming up.
+      stashSessionDraft(null, 'typed while booting', [])
+
+      render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
+
+      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+      // The composer's scope swap may only carry the draft when the restore announced this key.
+      expect(adoptNewSessionDraft('remembered-session')).toBe(true)
+      expect(takeSessionDraft('remembered-session').text).toBe('typed while booting')
+    })
+
     it('waits for sessions before validating a remembered session route', () => {
       window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
 
@@ -186,8 +204,56 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/',
         profileReady: true,
         resumeExhaustedSessionId: null,
+        resumeLastSession: true,
         routedSessionId: null,
         sessions: [session({ id: 'remembered-session', profile: 'default' })]
+      })
+
+      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
+    })
+  })
+
+  describe('display.resume_last_session', () => {
+    it('stays on the fresh chat when the setting is off, and keeps remembering the open chat', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      const sessions = [session({ id: 'remembered-session', profile: 'default' })]
+      const result = render({ profileReady: true, resumeLastSession: false, sessions })
+
+      expect(navigate).not.toHaveBeenCalled()
+
+      // The user opens another chat: it is still remembered for the next launch
+      // (and for notifications), so flipping the switch back on resumes it.
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/other-session',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: false,
+        routedSessionId: 'other-session',
+        sessions: [...sessions, session({ id: 'other-session', profile: 'default' })]
+      })
+
+      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('other-session')
+    })
+
+    it('holds the restore until the config record answers, then restores when on', () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+
+      const sessions = [session({ id: 'remembered-session', profile: 'default' })]
+      const result = render({ profileReady: true, resumeLastSession: null, sessions })
+
+      expect(navigate).not.toHaveBeenCalled()
+
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: true,
+        routedSessionId: null,
+        sessions
       })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
@@ -344,6 +410,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/ops-session',
         profileReady: true,
         resumeExhaustedSessionId: null,
+        resumeLastSession: true,
         routedSessionId: 'ops-session',
         sessions
       })
@@ -375,15 +442,15 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('route-scoped restoration', () => {
-    it('restores a non-session route like /skills', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/skills')
+    it('restores a non-session route like /capabilities', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
 
       const sessions = [session({ id: 'some-session', profile: 'default' })]
 
       render({ profileReady: true, sessions })
 
       // /skills is not a session route — no ownership validation needed.
-      expect(navigate).toHaveBeenCalledWith('/skills', { replace: true })
+      expect(navigate).toHaveBeenCalledWith('/capabilities', { replace: true })
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {
@@ -410,6 +477,7 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/settings',
         profileReady: true,
         resumeExhaustedSessionId: null,
+        resumeLastSession: true,
         routedSessionId: null,
         sessions: []
       })
@@ -524,6 +592,88 @@ describe('useDesktopIntegrations', () => {
       deepLink?.({ kind: 'mcp', name: 'install', params: { name: 'context7' } })
       expect(requestMcpInstallFromDeepLink).toHaveBeenCalledWith({ name: 'context7' })
       expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('routes hermes://plugin/install?catalog= to the catalog lookup, not the git-path modal', () => {
+      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
+          deepLink = cb
+
+          return () => undefined
+        },
+        signalDeepLinkReady: vi.fn()
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      deepLink?.({ kind: 'plugin', name: 'install', params: { catalog: 'weather', repo: 'evil/repo' } })
+      expect(requestPluginCatalogInstallFromDeepLink).toHaveBeenCalledWith('weather')
+      expect(openPluginInstallRequest).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('notification click -> focus-session id translation', () => {
+    function withFocusSession(): (sessionId: string) => void {
+      let handler: ((sessionId: string) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onFocusSession: (cb: (sessionId: string) => void) => {
+          handler = cb
+
+          return () => undefined
+        }
+      } as unknown as Window['hermesDesktop']
+
+      return sessionId => handler?.(sessionId)
+    }
+
+    function renderWithRuntimeMap(map: Map<string, string>) {
+      return renderHook(
+        ({ sessions }: { sessions: readonly SessionInfo[] }) =>
+          useDesktopIntegrations({
+            activeProfile: 'default',
+            chatOpen: false,
+            hasPreview: false,
+            locationPathname: '/',
+            navigate,
+            profileReady: true,
+            refreshSessions: vi.fn(),
+            resumeExhaustedSessionId: null,
+            resumeLastSession: false,
+            routedSessionId: null,
+            runtimeIdByStoredSessionId: { current: map },
+            sessions
+          }),
+        { initialProps: { sessions: [] as readonly SessionInfo[] } }
+      )
+    }
+
+    it('translates a runtime id via the window map before navigating', () => {
+      const fire = withFocusSession()
+
+      renderWithRuntimeMap(new Map([['stored-abc', 'runtime-123']]))
+      fire('runtime-123')
+
+      // 'stack' intent spends the unoccupied main draft → in-place navigate.
+      expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-abc'))
+    })
+
+    it('falls back to the durable per-runtime state mirror when the window map has no binding', () => {
+      const fire = withFocusSession()
+      const { unmount } = renderWithRuntimeMap(new Map())
+
+      // Simulate a main-pane runtime whose ensureSessionState binding lives in
+      // the shared store mirror, not this window's map (window reload /
+      // pop-out window / gateway respawn).
+      publishSessionState('runtime-999', createClientSessionState('stored-xyz'))
+      fire('runtime-999')
+
+      expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-xyz'))
+
+      unmount()
+      dropSessionState('runtime-999')
     })
   })
 })

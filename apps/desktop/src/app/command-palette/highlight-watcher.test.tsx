@@ -9,18 +9,12 @@ import { render } from '@testing-library/react'
 import { Command } from 'cmdk'
 import { describe, expect, it, vi } from 'vitest'
 
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
+
 import { HighlightWatcher } from './highlight-watcher'
 
-// cmdk observes group headings with a ResizeObserver, which jsdom lacks.
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-
-Element.prototype.scrollIntoView = function scrollIntoView() {}
+stubResizeObserver()
+stubMenuDomApis()
 
 const palette = (onValue: (value: string) => void, onRootValueChange?: (value: string) => void) => (
   <Command onValueChange={onRootValueChange}>

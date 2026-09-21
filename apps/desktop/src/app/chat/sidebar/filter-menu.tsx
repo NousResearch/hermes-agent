@@ -25,11 +25,13 @@ import {
   $sidebarCardRows,
   $sidebarFiltersActive,
   $sidebarGrouping,
+  $sidebarListGroupIds,
   $sidebarOrdering,
   $sidebarPrFilter,
   $sidebarProfileFilter,
   $sidebarProjectFilter,
   $sidebarRowMeta,
+  $sidebarShowAllSessions,
   $sidebarShowArchived,
   $sidebarStatusFilter,
   $sidebarViewCustomized,
@@ -38,8 +40,10 @@ import {
   setSidebarCardRows,
   setSidebarGrouping,
   setSidebarOrdering,
+  setSidebarShowAllSessions,
   setSidebarShowArchived,
   setWorkspaceNodesOpen,
+  SIDEBAR_GROUPING_ORDER,
   type SidebarGrouping,
   type SidebarOrdering,
   type SidebarRowMeta,
@@ -56,6 +60,7 @@ import {
   requestProfileCreate,
   toggleShowAllProfiles
 } from '@/store/profile'
+import { $profileRailVisible, toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
@@ -71,12 +76,14 @@ interface Option<T extends string = string> {
   label: string
 }
 
-const GROUPINGS: Option<SidebarGrouping>[] = [
-  { icon: 'clock', id: 'date', label: 'Updated' },
-  { icon: 'root-folder', id: 'project', label: 'Project' },
-  { icon: 'pulse', id: 'status', label: 'Status' },
-  { icon: 'account', id: 'profile', label: 'Profile' }
-]
+const GROUPING_OPTIONS: Record<SidebarGrouping, Omit<Option<SidebarGrouping>, 'id'>> = {
+  date: { icon: 'clock', label: 'Updated' },
+  profile: { icon: 'account', label: 'Profile' },
+  project: { icon: 'root-folder', label: 'Project' },
+  status: { icon: 'pulse', label: 'Status' }
+}
+
+const GROUPINGS: Option<SidebarGrouping>[] = SIDEBAR_GROUPING_ORDER.map(id => ({ id, ...GROUPING_OPTIONS[id] }))
 
 const ORDERINGS: Option<SidebarOrdering>[] = [
   { icon: 'clock', id: 'updated', label: 'Updated' },
@@ -154,6 +161,8 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const ordering = useStore($sidebarOrdering)
   const rowMeta = useStore($sidebarRowMeta)
   const cardRows = useStore($sidebarCardRows)
+  const profileRailVisible = useStore($profileRailVisible)
+  const showAllSessions = useStore($sidebarShowAllSessions)
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
@@ -165,6 +174,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const filtersActive = useStore($sidebarFiltersActive)
   const viewCustomized = useStore($sidebarViewCustomized)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
+  const listGroupIds = useStore($sidebarListGroupIds)
   const projects = useStore($projectTree)
   const hasCost = useStore($sessionsHaveCost)
   const unreadIds = useStore($unreadFinishedSessionIds)
@@ -172,11 +182,24 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   // locally, the gateway's REST mirror remotely. Resolved per render, not once
   // at module load: switching to a remote profile swaps the bridge underneath.
   const prAvailable = Boolean(desktopGit()?.review?.prList)
-  // Project rows default open, so "all collapsed" means every one of them has
-  // been explicitly shut.
-  const projectsCollapsed = projects.length > 0 && projects.every(project => nodeOpen[project.id] === false)
 
-  const groupingLabel = GROUPINGS.find(option => option.id === grouping)?.label
+  // Fold the level in view: project rows, or the date/status buckets. Project
+  // rows default open, so "all collapsed" means every one of them has been
+  // explicitly shut. Never sweeps Pinned or Cron.
+  const foldIds =
+    grouping === 'project'
+      ? projects.map(project => project.id)
+      : grouping === 'date' || grouping === 'status'
+        ? listGroupIds
+        : []
+
+  const foldCollapsed = foldIds.length > 0 && foldIds.every(id => nodeOpen[id] === false)
+
+  const groupings = GROUPINGS.map(option =>
+    option.id === 'profile' ? { ...option, label: t.sidebar.gatewayGroups.grouping } : option
+  )
+
+  const groupingLabel = groupings.find(option => option.id === grouping)?.label
 
   // Two options are conditional: dragging a row is what picks manual, so it
   // only appears as a way back out once there's a hand-picked order to leave;
@@ -238,7 +261,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
                 onValueChange={value => setSidebarGrouping(value as SidebarGrouping)}
                 value={grouping}
               >
-                {GROUPINGS.map(option => (
+                {groupings.map(option => (
                   <OptionRadio key={option.id} option={option} />
                 ))}
               </DropdownMenuRadioGroup>
@@ -273,12 +296,29 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             </DropdownMenuSubContent>
           </DropdownMenuSub>
 
+          {grouping === 'project' && (
+            <OptionCheckbox
+              checked={showAllSessions}
+              onCheck={() => setSidebarShowAllSessions(!showAllSessions)}
+              option={{ icon: 'list-unordered', id: 'all-sessions', label: t.sidebar.projects.showAllSessions }}
+            />
+          )}
+
           {/* A render variant, not a grouping: three-line cards (project · age /
               title / model · size) compose with whichever grouping is active. */}
           <OptionCheckbox
             checked={cardRows}
             onCheck={() => setSidebarCardRows(!cardRows)}
             option={{ icon: 'inbox', id: 'card-rows', label: 'Inbox style' }}
+          />
+
+          {/* The colored strip at the sidebar foot. Off, the statusbar grows a
+              profile dropdown beside the gateway switcher, so nobody loses the
+              door — this is for people whose profiles are bots, not workspaces. */}
+          <OptionCheckbox
+            checked={profileRailVisible}
+            onCheck={toggleProfileRailVisible}
+            option={{ icon: 'organization', id: 'profile-rail', label: t.sidebar.profileRail }}
           />
         </DropdownMenuGroup>
 
@@ -392,20 +432,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
         <DropdownMenuSeparator />
 
-        {/* Only the project rows fold, and only when they're what you're
-            looking at — sweeping Pinned and Cron shut alongside them is not
-            what "collapse all" means here. Their lanes underneath keep their
-            own state, so re-opening a project shows it as you left it. */}
-        {grouping === 'project' && projects.length > 0 && (
-          <DropdownMenuItem
-            onSelect={() =>
-              setWorkspaceNodesOpen(
-                projects.map(project => project.id),
-                projectsCollapsed
-              )
-            }
-          >
-            {projectsCollapsed ? 'Expand all' : 'Collapse all'}
+        {foldIds.length > 0 && (
+          <DropdownMenuItem onSelect={() => setWorkspaceNodesOpen(foldIds, foldCollapsed)}>
+            {foldCollapsed ? 'Expand all' : 'Collapse all'}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem disabled={unreadIds.length === 0} onSelect={markAllSessionsRead}>

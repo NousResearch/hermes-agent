@@ -77,6 +77,7 @@ import {
 } from './selection.js'
 import {
   needsAltScreenResizeScrollbackClear,
+  skipKittyKeyboardProtocol,
   supportsExtendedKeys,
   SYNC_OUTPUT_SUPPORTED,
   type Terminal,
@@ -103,6 +104,7 @@ import {
   type MouseTrackingMode,
   SHOW_CURSOR
 } from './termio/dec.js'
+import { isDashboardHosted } from './termio/host.js'
 import {
   CLEAR_ITERM2_PROGRESS,
   CLEAR_TAB_STATUS,
@@ -633,12 +635,21 @@ export default class Ink {
     // watchdog's next 2s probe. reassertTerminalModes(false) is the
     // non-destructive form — extended keys + mouse preset, no alt-screen
     // re-entry, no erase — so it costs a few idempotent bytes and no flicker.
+    //
+    // Under the dashboard the emulator is xterm.js over a WebSocket: it never
+    // drops hidden-tab writes, so the clear+repaint is only a flash on every
+    // OS app-switch. Re-assert modes and stop; the focus report still reaches
+    // TerminalFocusProvider.
     queueMicrotask(() => {
       if (this.isUnmounted || this.isPaused || !this.options.stdout.isTTY || this.currentNode === null) {
         return
       }
 
       this.reassertTerminalModes(false)
+
+      if (isDashboardHosted()) {
+        return
+      }
 
       if (this.altScreenActive) {
         this.resetFramesForAltScreen()
@@ -733,7 +744,11 @@ export default class Ink {
     // without the pop we'd accumulate depth on each editor round-trip).
     this.options.stdout.write(
       '\x1b[?1004h' +
-        (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : '')
+        (supportsExtendedKeys()
+          ? DISABLE_KITTY_KEYBOARD +
+            (skipKittyKeyboardProtocol() ? '' : ENABLE_KITTY_KEYBOARD) +
+            ENABLE_MODIFY_OTHER_KEYS
+          : '')
     )
   }
   onRender() {
@@ -1472,7 +1487,9 @@ export default class Ink {
     // Pop-before-push keeps Kitty stack depth at 1 instead of accumulating
     // on each call.
     if (supportsExtendedKeys()) {
-      this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS)
+      this.options.stdout.write(
+        DISABLE_KITTY_KEYBOARD + (skipKittyKeyboardProtocol() ? '' : ENABLE_KITTY_KEYBOARD) + ENABLE_MODIFY_OTHER_KEYS
+      )
     }
 
     if (!this.altScreenActive) {

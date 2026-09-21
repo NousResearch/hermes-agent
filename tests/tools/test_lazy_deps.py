@@ -483,3 +483,164 @@ class TestInstallSpecs:
         result = ld.install_specs(["honcho-ai==2.2.0"])
         assert result.ok is False
         assert "disk on fire" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Post-install bytecode warm (#100461)
+# ---------------------------------------------------------------------------
+
+
+class TestWarmInstalledBytecode:
+    """A pip/uv install leaves ``.py`` sources with no ``__pycache__``.
+
+    Whoever imports next pays the whole compile, and for a lazily installed
+    backend that is the foreground of a user request. These tests pin that
+    the installer pays it instead.
+    """
+
+    @staticmethod
+    def _package(tmp_path):
+        pkg = tmp_path / "zzzfakepkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (pkg / "mod.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+        return pkg
+
+    def test_compiles_the_installed_package(self, tmp_path, monkeypatch):
+        pkg = self._package(tmp_path)
+        monkeypatch.setattr(ld, "_installed_dist_roots", lambda spec, target: {pkg})
+
+        assert not list(pkg.rglob("*.pyc"))
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)
+        assert len(list(pkg.rglob("*.pyc"))) == 2
+
+    def test_honors_dont_write_bytecode(self, tmp_path, monkeypatch):
+        pkg = self._package(tmp_path)
+        monkeypatch.setattr(ld, "_installed_dist_roots", lambda spec, target: {pkg})
+        monkeypatch.setattr(ld.sys, "dont_write_bytecode", True)
+
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)
+        assert not list(pkg.rglob("*.pyc"))
+
+    def test_compile_failure_never_propagates(self, tmp_path, monkeypatch):
+        # An unwritable tree (read-only mount, --target on a sealed image)
+        # must not turn a successful install into a failed one.
+        def boom(spec, target):
+            raise OSError("read-only file system")
+        monkeypatch.setattr(ld, "_installed_dist_roots", boom)
+
+        ld._warm_installed_bytecode(("zzzfake==1.0",), None)  # no exception
+
+    def test_dist_roots_resolve_from_metadata_not_the_spec_name(self):
+        # The import name is read off the distribution's own file list, so
+        # specs whose package name differs from their module name still warm.
+        roots = ld._installed_dist_roots("pytest>=8", None)
+        assert roots, "pytest is a test dependency and must resolve"
+        assert all(r.is_dir() for r in roots)
+        assert any(list(r.glob("*.py")) for r in roots)
+
+    def test_unknown_distribution_resolves_to_nothing(self):
+        assert ld._installed_dist_roots("zzz-not-installed==9.9", None) == set()
+
+    def test_dist_roots_exclude_metadata_dirs(self):
+        # ``*.dist-info`` owns RECORD/METADATA/licenses, never importable
+        # code — compiling it is wasted work on every install.
+        roots = ld._installed_dist_roots("pytest>=8", None)
+        assert roots
+        assert not any(r.name.endswith((".dist-info", ".egg-info")) for r in roots)
+
+
+class TestInstallWarmsBytecode:
+    """The warm runs on install success, and only on success."""
+
+    @staticmethod
+    def _install(monkeypatch, returncode):
+        calls = []
+        cmds = []
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "uv" if name == "uv" else None)
+        monkeypatch.setattr(
+            "hermes_cli.managed_uv.resolve_uv", lambda *a, **kw: "uv", raising=False
+        )
+
+        class _Completed:
+            def __init__(self):
+                self.returncode = returncode
+                self.stdout = "out"
+                self.stderr = "err"
+
+        def fake_run(cmd, *a, **kw):
+            cmds.append(list(cmd))
+            return _Completed()
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            ld, "_warm_installed_bytecode",
+            lambda specs, target: calls.append((specs, target)),
+        )
+        result = ld._venv_pip_install(("zzzfake==1.0",))
+        return result, calls, cmds
+
+    def test_success_warms_once_with_the_installed_specs(self, monkeypatch):
+        result, calls, _ = self._install(monkeypatch, 0)
+        assert result.success is True
+        assert calls == [(("zzzfake==1.0",), None)]
+
+    def test_failed_install_does_not_warm(self, monkeypatch):
+        result, calls, _ = self._install(monkeypatch, 1)
+        assert result.success is False
+        assert calls == []
+
+    def test_uv_tier_compiles_bytecode_for_the_whole_install(self, monkeypatch):
+        # uv does not write __pycache__ unless asked (pip does). The flag
+        # covers transitive deps too, which the per-spec warm never sees.
+        _, _, cmds = self._install(monkeypatch, 0)
+        uv_cmds = [c for c in cmds if c[:3] == ["uv", "pip", "install"]]
+        assert len(uv_cmds) == 1
+        cmd = uv_cmds[0]
+        assert "--compile-bytecode" in cmd
+        assert cmd.index("--compile-bytecode") < cmd.index("zzzfake==1.0")
+
+
+# ---------------------------------------------------------------------------
+# pip.conf index-url bridge for the uv tier (#95608)
+# ---------------------------------------------------------------------------
+
+class TestPipConfIndexBridge:
+    MIRROR = "https://user:p%40ss@mirror.example/simple"  # percent-encoded credential, the mirrored-host shape
+
+    def _run_with_fake_uv(self, monkeypatch, tmp_path, **env):
+        """Run _venv_pip_install against a stubbed uv (with *env* set) and return the env it was spawned with."""
+        conf = tmp_path / "pip.conf"
+        conf.write_text(f"[global]\nindex-url = {self.MIRROR}\n", encoding="utf-8")
+        # PIP_CONFIG_FILE is pip's highest file tier, so it wins over any host /etc file.
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        monkeypatch.setattr(ld.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(ld.sys, "prefix", str(tmp_path / "venv"))
+        for var in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX"):
+            monkeypatch.delenv(var, raising=False)
+        for var, value in env.items():
+            monkeypatch.setenv(var, value)
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            return ld.subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ld, "_run_installer", fake_run)
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
+        monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **k: None)
+        result = ld._venv_pip_install(("somepkg==1.0",))
+        assert result.success
+        return captured["env"]
+
+    def test_pip_conf_index_url_bridged_unless_uv_has_its_own_index(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
+        assert self._run_with_fake_uv(monkeypatch, tmp_path)["UV_INDEX_URL"] == self.MIRROR
+
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, UV_DEFAULT_INDEX="https://custom.example/simple")
+        assert "UV_INDEX_URL" not in env
+
+    def test_pip_index_url_env_beats_pip_conf(self, monkeypatch, tmp_path):
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, PIP_INDEX_URL="https://env.example/simple")
+        assert env["UV_INDEX_URL"] == "https://env.example/simple"

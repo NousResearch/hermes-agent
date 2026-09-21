@@ -23,7 +23,7 @@ import {
   sortConnectionsForDisplay
 } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Loader2, Monitor, Network, Terminal } from '@/lib/icons'
+import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import {
@@ -36,6 +36,9 @@ import {
 } from '@/store/connections'
 import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
+import { isAuxiliaryWindow, isPeerInstanceWindow } from '@/store/windows'
+
+import { ConnectionGlyph } from './connection-glyph'
 
 export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: boolean; onConnect: () => void }) {
   const { t } = useI18n()
@@ -64,8 +67,10 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     // The primary boot owns its initial config/session fetches. Restoring a
     // different source before those settle lets a late primary response repaint
     // the sidebar under the new source label. Switch only after boot completes,
-    // then the normal source reset/refetch remains the final writer.
-    if (!boot.running) {
+    // then the normal source reset/refetch remains the final writer. Peer and
+    // auxiliary windows already boot into their intended runtime; replaying the
+    // primary window's app-launch preference would move them away from it.
+    if (!boot.running && !isAuxiliaryWindow() && !isPeerInstanceWindow()) {
       void initializeConnectionsRegistry().catch(() => undefined)
     }
   }, [boot.running])
@@ -286,28 +291,6 @@ function ManageGatewaysLabel({ label }: { label: string }) {
     <span className="flex min-w-0 items-center gap-1.5 text-(--ui-text-secondary)">
       <Codicon aria-hidden="true" name="settings-gear" size="0.875rem" />
       <span className="truncate">{label}</span>
-    </span>
-  )
-}
-
-function ConnectionGlyph({ connection }: { connection: DesktopRegistryConnection }) {
-  const Icon =
-    connection.kind === 'local'
-      ? Monitor
-      : connection.kind === 'cloud'
-        ? Cloud
-        : connection.kind === 'ssh'
-          ? Terminal
-          : Network
-
-  return (
-    <span
-      aria-hidden="true"
-      className="grid size-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)"
-      data-connection-kind={connection.kind}
-      data-slot="connection-glyph"
-    >
-      <Icon className="size-3" />
     </span>
   )
 }

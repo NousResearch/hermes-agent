@@ -5,6 +5,8 @@ import {
   canFastAppendShape,
   canFastBackspaceShape,
   colorizeEcho,
+  colorizeHint,
+  hintCursorCell,
   supportsFastEchoTerminal
 } from '../components/textInput.js'
 
@@ -205,6 +207,40 @@ describe('colorizeEcho', () => {
   it('passes through on a non-color value (never emit a garbage SGR)', () => {
     expect(colorizeEcho('x', 'red')).toBe('x')
     expect(colorizeEcho('x', '#fff')).toBe('x')
+  })
+})
+
+describe('colorizeHint / hintCursorCell', () => {
+  // The placeholder bypass writes raw bytes past Ink too. Hand-rolling
+  // `38;2;r;g;b` here was WORSE than the gray-accent bug colorizeEcho had:
+  // legacy Terminal.app walks compound params one by one, so the literal `2`
+  // in `38;2;…` landed as SGR 2 (dim ON) with no closing `22m` — every
+  // frame that painted the placeholder left the terminal's dim flag stuck,
+  // and later unstyled cells rendered randomly dimmed. Both helpers must
+  // route through Ink's own colorize so depth downgrades with the terminal.
+
+  it('hint matches Ink exactly, never a hand-rolled truecolor escape', () => {
+    for (const tone of ['#8a8094', '#e77fa3']) {
+      expect(colorizeHint('Try it', tone)).toBe(colorize('Try it', tone, 'foreground'))
+    }
+  })
+
+  it('hint falls back to the neutral gray on junk, still through colorize', () => {
+    expect(colorizeHint('x')).toBe(colorize('x', '#808080', 'foreground'))
+    expect(colorizeHint('x', 'nope')).toBe(colorize('x', '#808080', 'foreground'))
+  })
+
+  it('cursor chip composes bg+fg through colorize only', () => {
+    expect(hintCursorCell('T', '#8a8094')).toBe(
+      colorize(colorize('T', '#ffffff', 'foreground'), '#8a8094', 'background')
+    )
+  })
+
+  it('never emits a raw 38;2/48;2 the depth layer did not choose', () => {
+    // chalk is level 0 under vitest, so ANY escape byte here means the
+    // helper bypassed colorize and hand-rolled the sequence.
+    expect(colorizeHint('x', '#8a8094')).not.toContain('\u001b')
+    expect(hintCursorCell('x', '#8a8094')).not.toContain('\u001b')
   })
 })
 

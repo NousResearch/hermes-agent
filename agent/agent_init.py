@@ -873,8 +873,8 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     from hermes_constants import profile_cli_selector
     _sel = profile_cli_selector()
     raise RuntimeError(
-        f"No LLM provider configured. Run `hermes {_sel}model` to "
-        f"select a provider, or run `hermes {_sel}setup` for first-time "
+        "No LLM provider configured. Run `hermes model` to "
+        "select a provider, or run `hermes setup` for first-time "
         "configuration."
     )
 

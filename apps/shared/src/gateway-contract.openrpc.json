@@ -19232,7 +19232,7 @@
       },
       "ProfileMirrored": {
         "additionalProperties": false,
-        "description": "What was copied from the launch profile.",
+        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
         "properties": {
           "env": {
             "default": false,
@@ -19240,9 +19240,17 @@
             "type": "boolean"
           },
           "auth": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "const": "shared",
+                "type": "string"
+              }
+            ],
             "default": false,
-            "title": "Auth",
-            "type": "boolean"
+            "title": "Auth"
           },
           "model_inherited": {
             "default": false,

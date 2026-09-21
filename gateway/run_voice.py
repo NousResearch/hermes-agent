@@ -371,9 +371,10 @@ class GatewayVoiceMixin:
     def _should_send_voice_reply(
         self, event: MessageEvent, response: str, agent_messages: list, already_sent: bool = False
     ) -> bool:
-        """False when voice_mode is off for this chat, the response is empty/an error, the agent
-        already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
-        — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
+        """False when voice_mode is off for this chat, TTS is disabled (``tts.provider: none``),
+        the response is empty/an error, the agent already called text_to_speech this turn, or voice
+        input + base adapter auto-TTS handled it — UNLESS streaming consumed the response
+        (already_sent): then the runner must do it."""
         if not response or response.startswith("Error:"):
             return False
         # A2A is agent-to-agent text. The adapter has no native send_voice, so
@@ -386,6 +387,9 @@ class GatewayVoiceMixin:
         # A local session's speech plays in its own client: LocalSessionAdapter has no audio delivery,
         # so an owner-side synthesis would be a paid provider call nobody hears.
         if event.source.platform == Platform.LOCAL:
+            return False
+        from tools.tts_tool import _get_provider, _load_tts_config
+        if _get_provider(_load_tts_config()) == "none":
             return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))

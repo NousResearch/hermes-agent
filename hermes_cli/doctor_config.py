@@ -162,9 +162,10 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
             f.issues.append("Run 'hermes setup' to create .env")
 
 
-def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
-    """Return (known ids, custom providers, resolve_auth, normalize, resolve_full); any import failure leaves
-    the matching resolver as None so validation degrades to "unavailable" rather than crashing doctor."""
+def _known_provider_ids(cfg: dict) -> tuple[set, set, list, object, object, object]:
+    """Return (known ids, user-defined provider ids, custom providers, resolve_auth, normalize,
+    resolve_full); any import failure leaves the matching resolver as None so validation degrades
+    to "unavailable" rather than crashing doctor."""
     known: set = set()
     resolve_auth = normalize = resolve_full = aliases = None
     custom_providers: list = []
@@ -177,15 +178,17 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
         with warn_on_error(""):
             custom_providers = get_compatible_custom_providers(cfg)
     user_providers = cfg.get("providers")
+    user_provider_ids: set = set()
     if isinstance(user_providers, dict):
         from hermes_cli.config import is_provider_enabled
-        known.update(str(name).strip().lower() for name, prov_cfg in user_providers.items()
-                     if str(name).strip() and is_provider_enabled(prov_cfg))
+        user_provider_ids = {str(name).strip().lower() for name, prov_cfg in user_providers.items()
+                             if str(name).strip() and is_provider_enabled(prov_cfg)}
+        known.update(user_provider_ids)
     for entry in custom_providers if aliases is not None else ():
         name = str(entry.get("name") or "").strip() if isinstance(entry, dict) else ""
         if name:
             known.update(aliases(name, str(entry.get("provider_key") or "").strip()))
-    return known, custom_providers, resolve_auth, normalize, resolve_full
+    return known, user_provider_ids, custom_providers, resolve_auth, normalize, resolve_full
 
 
 # Vendor/model slugs are valid on aggregators and any custom provider; Fireworks' native IDs are slash-form
@@ -219,7 +222,7 @@ def _validate_model_config(config_path, issues: list) -> None:
     provider_raw = (model_section.get("provider") or "").strip()
     provider = provider_raw.lower()
     default_model = (model_section.get("default") or model_section.get("model") or "").strip()
-    known_providers, custom_providers, resolve_auth, normalize, resolve_full = _known_provider_ids(cfg)
+    known_providers, user_provider_ids, custom_providers, resolve_auth, normalize, resolve_full = _known_provider_ids(cfg)
     valid_provider_ids = set(known_providers)
     accept = {provider} if provider else set()
     for known_provider in known_providers if normalize is not None else ():
@@ -245,7 +248,13 @@ def _validate_model_config(config_path, issues: list) -> None:
                         f"model.provider '{provider_raw}' is unknown. Valid providers: {known_list}. "
                         f"Fix: run 'hermes config set model.provider <valid_provider>'", issues)
     policy_id = str(runtime_provider or catalog_provider or "").strip().lower()
-    accepts_vendor_slug = policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+    # A user-defined providers: entry owns its own model namespace (same reasoning as the
+    # custom:/custom:* string-prefix branch below) -- vendor/model ids are correct there,
+    # not a sign the user confused it with an aggregator (#118009).
+    accepts_vendor_slug = (
+        policy_id in _VENDOR_SLUG_PROVIDERS or policy_id == "custom" or policy_id.startswith("custom:")
+        or policy_id in user_provider_ids
+    )
     # openai-api pointed at a non-OpenAI endpoint (local router, proxy) is an aggregator in all but name:
     # the router owns the model namespace, so vendor/model slugs are the correct IDs there.
     model_base_url = str(model_section.get("base_url") or "").strip()

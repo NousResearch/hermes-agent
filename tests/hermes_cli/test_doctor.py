@@ -733,6 +733,79 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
     assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
 
 
+def test_run_doctor_accepts_vendor_slugs_for_providers_key_entry(monkeypatch, tmp_path):
+    """Regression for issue #118009: a provider declared under config.yaml's `providers:`
+    key (the shape `hermes model` -> Custom Endpoints actually writes, config v45) owns
+    its own model namespace, so a vendor/model default is correct there -- not a sign the
+    user confused it with an aggregator. Distinct from the custom:-prefix test above:
+    here the provider id ("polza") carries no prefix at all."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  default: deepseek/deepseek-v4.1-flash\n"
+        "  provider: polza\n"
+        "  base_url: https://polza.ai/api/v1\n"
+        "  key_env: POLZA_API_KEY\n"
+        "providers:\n"
+        "  polza:\n"
+        "    name: Polza.ai\n"
+        "    base_url: https://polza.ai/api/v1\n"
+        "    key_env: POLZA_API_KEY\n"
+        "    api_mode: chat_completions\n"
+        "    default_model: deepseek/deepseek-v4.1-flash\n"
+        "    models:\n"
+        "      deepseek/deepseek-v4.1-flash: {}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+    monkeypatch.setenv("POLZA_API_KEY", "test-key")
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert (
+        "model.default 'deepseek/deepseek-v4.1-flash' uses a vendor/model slug but provider is "
+        "'polza'" not in out
+    )
+    assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
+
+
+def test_validate_model_config_still_warns_for_a_genuine_native_provider_mismatch(monkeypatch):
+    """A genuinely misconfigured native provider (deepseek's own vendor-prefixed slug on
+    provider: deepseek, not an aggregator or a user-defined providers: entry) must still
+    warn -- the fix for #118009 only exempts entries the user actually declared under
+    providers:."""
+    from hermes_cli import doctor_config as dc
+
+    config = {"model": {"default": "deepseek/deepseek-v4.1-flash", "provider": "deepseek"}}
+    monkeypatch.setattr("hermes_cli.config.read_user_config_raw", lambda path: config)
+
+    issues = []
+    dc._validate_model_config("config.yaml", issues)
+    assert any("vendor-prefixed but model.provider is 'deepseek'" in issue for issue in issues)
+
+
 @pytest.mark.parametrize(
     ("base_url", "expects_warning"),
     [

@@ -363,6 +363,7 @@ def _register_child(
     _register_subagent({
         "subagent_id": _subagent_id,
         "parent_id": _str_or_none(getattr(child, "_parent_subagent_id", None)),
+        "display_name": _str_or_none(getattr(child, "_subagent_display_name", None)),  # presentation-only (#118081)
         "depth": max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0,
         "goal": goal,
         "delegation_id": _str_or_none(getattr(child, "_delegation_id", None)),

@@ -195,6 +195,14 @@ def _build_child_agent(
     subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
 
+    # Presentation-only identity (#118081): stable for the child's lifetime,
+    # unique among concurrently-live children. subagent_id stays the routing key.
+    from tools.delegate_names import assign_display_name
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    with _active_subagents_lock:
+        _taken = {rec.get("display_name") for rec in _active_subagents.values()}
+    display_name = assign_display_name(_taken)
+
     # General delegation behavior (reasoning, compression, capabilities) stays
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
@@ -215,6 +223,7 @@ def _build_child_agent(
         task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
         depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
         model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
+        display_name=display_name,
     )
     rt = _resolve_child_runtime(
         parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
@@ -263,6 +272,7 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    child._subagent_display_name = display_name  # presentation identity (#118081)
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.

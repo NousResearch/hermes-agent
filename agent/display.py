@@ -361,11 +361,29 @@ _PRIMARY_ARGS = {
 _FALLBACK_PREVIEW_KEYS = ("query", "text", "command", "path", "name", "prompt", "code", "goal")
 
 
+def _delegate_display_target(subagent_id: str) -> str:
+    """Human-facing target label: the subagent's display name when the live
+    registry has one, else the raw id (#118081). Lookup failures never break
+    the preview."""
+    if not subagent_id:
+        return ""
+    try:  # display layer may run without the delegation registry present
+        from tools.delegate_tool_registry import get_subagent_display_name
+        return get_subagent_display_name(subagent_id) or subagent_id
+    except Exception:
+        return subagent_id
+
+
 def _delegate_action_preview(args: dict) -> str | None:
-    """Shared ``list/steer/stop <id>`` preview for delegate_task, or None for spawn calls."""
+    """Shared ``list/steer/stop`` preview for delegate_task, or None for spawn calls.
+    steer/stop name the child by its friendly display name when known (#118081)."""
     action = str(args.get("action") or "").strip().lower()
     if action in ("list", "steer", "stop"):
-        return f"{action} {str(args.get('subagent_id') or '').strip()}".strip()
+        target = _delegate_display_target(str(args.get('subagent_id') or '').strip())
+        if action == "steer":
+            note = _clip(_oneline(str(args.get("message") or "")), 24)
+            return f"steer {target}: \"{note}\"" if note else f"steer {target}"
+        return f"{action} {target}".strip()
     return None
 
 

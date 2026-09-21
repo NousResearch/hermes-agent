@@ -65,9 +65,20 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         sid = record.get("subagent_id")
         if not sid:
             return
-        _recent_subagents[sid] = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")}
+        _recent_subagents[sid] = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id", "display_name")}
         while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
             _recent_subagents.pop(next(iter(_recent_subagents)), None)
+
+def get_subagent_display_name(subagent_id: Optional[str]) -> Optional[str]:
+    """Presentation name for a live or recently-finished child (#118081); None when unknown.
+    Callers render the raw ``subagent_id`` in that case — the name is a display alias only."""
+    sid = (subagent_id or "").strip()
+    if not sid:
+        return None
+    with _active_subagents_lock:
+        record = _active_subagents.get(sid) or _recent_subagents.get(sid)
+    name = record.get("display_name") if record else None
+    return str(name) if name else None
 
 def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
     """Atomically close steer acceptance and drain its final durable artifact. ``steer_subagent`` holds the same
@@ -244,6 +255,7 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
         started = r.get("started_at")
         entries.append({
             "subagent_id": r.get("subagent_id"),
+            "display_name": r.get("display_name"),  # presentation identity (#118081); steer/stop keep using subagent_id
             "parent_id": r.get("parent_id"),
             "goal": r.get("goal"),
             "model": r.get("model"),
@@ -287,7 +299,12 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     status, note, failure = outcome
     ok = interrupt_subagent(sid) if action == "stop" else steer_subagent(sid, message.strip())
     if ok:
-        return json.dumps({"action": action, "subagent_id": sid, "status": status, "note": note}, ensure_ascii=False)
+        # display_name rides along so the model's transcript reads "steered Hypatia"
+        # while subagent_id stays the routing identity (#118081).
+        return json.dumps(
+            {"action": action, "subagent_id": sid, "display_name": record.get("display_name"), "status": status, "note": note},
+            ensure_ascii=False,
+        )
     return tool_error(failure.format(sid=sid))
 
 # action -> (success status, success note, failure error template)

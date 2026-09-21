@@ -178,6 +178,53 @@ def test_steer_requires_message():
         _unregister_subagent("sid-ctl-steer-3")
 
 
+# ---------------------------------------------------------------------------
+# display_name — presentation identity (#118081); subagent_id stays the routing key
+# ---------------------------------------------------------------------------
+
+
+def test_list_entry_carries_display_name():
+    parent = _StubParent()
+    child = _StubChild(parent)
+    _register("sid-dn-1", child, display_name="Hypatia")
+    try:
+        entry = json.loads(_handle_control_action("list", None, None, parent))["subagents"][0]
+        assert entry["subagent_id"] == "sid-dn-1"
+        assert entry["display_name"] == "Hypatia"
+    finally:
+        _unregister_subagent("sid-dn-1")
+
+
+def test_steer_success_response_carries_display_name():
+    parent = _StubParent()
+    child = _StubChild(parent)
+    _register("sid-dn-2", child, display_name="Turing")
+    try:
+        out = json.loads(
+            _handle_control_action("steer", "sid-dn-2", "tighten scope", parent)
+        )
+        assert out["status"] == "queued"
+        assert out["subagent_id"] == "sid-dn-2"
+        assert out["display_name"] == "Turing"
+    finally:
+        _unregister_subagent("sid-dn-2")
+
+
+def test_display_name_lookup_live_and_recent(monkeypatch):
+    from tools.delegate_tool_registry import get_subagent_display_name
+    parent = _StubParent()
+    child = _StubChild(parent)
+    _register("sid-dn-3", child, display_name="Noether")
+    try:
+        assert get_subagent_display_name("sid-dn-3") == "Noether"
+        assert get_subagent_display_name("sid-unknown") is None
+        assert get_subagent_display_name(None) is None
+    finally:
+        _unregister_subagent("sid-dn-3")
+    # After unregister the bounded recent stub still answers (post-completion replay)
+    assert get_subagent_display_name("sid-dn-3") == "Noether"
+
+
 def test_steer_requires_subagent_id():
     out = _handle_control_action("steer", "", "text", _StubParent())
     assert "requires subagent_id" in out

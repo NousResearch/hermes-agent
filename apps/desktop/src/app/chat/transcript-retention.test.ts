@@ -57,7 +57,6 @@ describe('boundRetainedTranscript', () => {
 
     expect(retention.releasedRows).toBe(40 - keep)
     expect(retention.messages[0].id).toBe(`m${40 - keep}`)
-    expect(retention.retainedPersistedRows).toBe(messages.length - retention.releasedRows)
     expect(retention.messages).toHaveLength(messages.length - retention.releasedRows)
   })
 
@@ -116,9 +115,10 @@ describe('boundRetainedTranscript', () => {
     }
   })
 
-  it('releases nothing when the retained rows carry no durable id', () => {
-    // Offset bookkeeping is measured from persisted rows; without one in the
-    // retained slice there is nothing to re-fetch against.
+  it('releases nothing when a row older than the window cannot be fetched back', () => {
+    // Rows 0-19 were never persisted. The older-page fetch is a row offset from
+    // the newest, so a prefix holding an unpersisted row cannot be re-fetched in
+    // full — the transcript is left whole rather than released in part.
     const messages = transcript(30, index => row(index, { persisted: index >= 20, textUnits: 100 }))
 
     expect(untouched(messages, messages[25].id)).toEqual({ released: false })

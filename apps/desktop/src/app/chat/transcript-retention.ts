@@ -52,28 +52,14 @@ export type TranscriptRetention =
       released: true
       /** Transcript to keep in the store; everything before it was released. */
       messages: ChatMessage[]
-      /** Rows released this pass. */
+      /** Rows released this pass. Every one of them is persisted, so the
+       *  caller can subtract them from the session's older-page offset — the
+       *  offset the backend itself reported, which the release must stay in the
+       *  currency of (the backend pages display history, not raw store rows). */
       releasedRows: number
-      /** Persisted rows still retained, counted from the newest. This is the
-       *  `transcript-tail` offset the next older REST page starts at — the
-       *  backend pages by persisted rows, so it is counted in the same
-       *  currency. */
-      retainedPersistedRows: number
     }
 
 const NOTHING_RELEASED: TranscriptRetention = { released: false }
-
-function persistedRowCount(messages: readonly ChatMessage[]): number {
-  let count = 0
-
-  for (const message of messages) {
-    if (message.rowId !== undefined) {
-      count += 1
-    }
-  }
-
-  return count
-}
 
 /**
  * How much of `messages` the store must keep, given the live window's first
@@ -122,13 +108,6 @@ export function boundRetainedTranscript(
   }
 
   const retained = messages.slice(boundary)
-  const retainedPersistedRows = persistedRowCount(retained)
 
-  // Offset bookkeeping is measured from persisted rows. Without one in the
-  // retained slice there is no anchor to re-fetch against — keep everything.
-  if (retainedPersistedRows === 0) {
-    return NOTHING_RELEASED
-  }
-
-  return { messages: retained, releasedRows: boundary, released: true, retainedPersistedRows }
+  return { messages: retained, releasedRows: boundary, released: true }
 }

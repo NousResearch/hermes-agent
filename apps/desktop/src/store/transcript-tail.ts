@@ -200,9 +200,17 @@ export function recordTranscriptBackfillPage(
  *
  * `boundRetainedTranscript` (app/chat/transcript-retention) drops rows that are
  * older than the live window once they are persisted — but they stay reachable
- * only while the transcript still reports older rows as fetchable. Point the
- * entry at the retained prefix so the next "Show earlier" fetches them back
- * instead of treating the in-memory store as the whole transcript.
+ * only while the transcript still reports older rows as fetchable. Rewind the
+ * entry's offset by the released rows so the next "Show earlier" fetches them
+ * back instead of treating the in-memory store as the whole transcript.
+ *
+ * The offset is decremented RELATIVE to what the backend reported, never
+ * recomputed from the store's own row count: the backend pages display history
+ * (`include_compacted` reads are grouped by display order, and inactive rows are
+ * not counted), so a locally counted row total is not guaranteed to be the same
+ * unit. Subtracting from the backend's own number can only overlap a page that
+ * is already in memory — which the merge dedupes — where an over-counted
+ * absolute offset would skip rows the reader can then never reach.
  *
  * Returns false when the session has no entry: without one there is no route
  * recorded to fetch a page from, so the caller must keep its rows rather than
@@ -210,10 +218,10 @@ export function recordTranscriptBackfillPage(
  */
 export function rewindTranscriptTail(
   storedSessionId: string,
-  retainedRows: number,
+  releasedRows: number,
   profile?: TranscriptProfileScope
 ): boolean {
-  if (!storedSessionId || retainedRows < 0) {
+  if (!storedSessionId || releasedRows <= 0) {
     return false
   }
 
@@ -224,7 +232,7 @@ export function rewindTranscriptTail(
   }
 
   setTranscriptTailEntry(entry[0], {
-    nextOffset: retainedRows,
+    nextOffset: Math.max(0, entry[1].nextOffset - releasedRows),
     possiblyTruncated: true,
     profile: entry[1].profile
   })

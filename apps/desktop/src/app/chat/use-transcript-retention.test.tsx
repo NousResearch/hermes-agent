@@ -111,13 +111,14 @@ describe('useTranscriptRetention — the store releases paged-through history', 
     // The window cuts the transcript; everything older than it plus one page of
     // slack is released, and the released rows stay reachable over REST.
     const released = 60 - state.messages.length
-    // Where the rewind points the next older page: the retained prefix.
-    const rewoundOffset = state.messages.length
+    // Where the rewind points the next older page: the hydrated offset minus the
+    // rows the store gave up.
+    const rewoundOffset = HYDRATED_ROWS - released
 
     expect(released).toBeGreaterThan(1)
     expect($messages.get()).toHaveLength(state.messages.length)
     expect($transcriptTailBySessionId.get().stored).toMatchObject({
-      nextOffset: state.messages.length,
+      nextOffset: rewoundOffset,
       possiblyTruncated: true
     })
 
@@ -193,7 +194,7 @@ describe('useTranscriptRetention — direct', () => {
 
     vi.mocked(sessionTileDelegate).mockReturnValue({ updateSession } as never)
     recordTranscriptTail('stored', {
-      messages: [],
+      messages: Array.from({ length: HYDRATED_ROWS }, (_, index) => ({ id: index, role: 'user', content: 'tail' })),
       pagination: { limit: HYDRATED_ROWS, offset: 0, order: 'latest', returned: HYDRATED_ROWS }
     })
 
@@ -207,7 +208,7 @@ describe('useTranscriptRetention — direct', () => {
     expect(updateSession).toHaveBeenCalledTimes(1)
     expect(state.messages.length).toBeLessThan(60)
     expect($transcriptTailBySessionId.get().stored).toMatchObject({
-      nextOffset: state.messages.length,
+      nextOffset: HYDRATED_ROWS - (60 - state.messages.length),
       possiblyTruncated: true
     })
   })

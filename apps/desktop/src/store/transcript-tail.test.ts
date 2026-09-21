@@ -73,11 +73,13 @@ describe('rewindTranscriptTail', () => {
     $transcriptTailBySessionId.set({})
   })
 
-  it('points the next older page at the retained prefix', () => {
+  it('decrements the recorded offset by the rows the store released', () => {
+    // page(10) records nextOffset 10; releasing 4 of those rows leaves the next
+    // older page starting 4 rows earlier, in the backend's own units.
     recordTranscriptTail('s1', page(10))
 
     expect(rewindTranscriptTail('s1', 4)).toBe(true)
-    expect($transcriptTailBySessionId.get().s1).toMatchObject({ nextOffset: 4, possiblyTruncated: true })
+    expect($transcriptTailBySessionId.get().s1).toMatchObject({ nextOffset: 6, possiblyTruncated: true })
   })
 
   it('keeps a rewind on the same route the tail was hydrated with', () => {
@@ -87,8 +89,22 @@ describe('rewindTranscriptTail', () => {
 
     const entry = $transcriptTailBySessionId.get()[JSON.stringify(['c1', 'work', 's1'])]
 
-    expect(entry).toMatchObject({ nextOffset: 4, possiblyTruncated: true })
+    expect(entry).toMatchObject({ nextOffset: 6, possiblyTruncated: true })
     expect(entry.profile).toEqual({ connectionId: 'c1', profile: 'work' })
+  })
+
+  it('never rewinds past the start of the transcript', () => {
+    recordTranscriptTail('s1', page(3))
+
+    expect(rewindTranscriptTail('s1', 9)).toBe(true)
+    expect($transcriptTailBySessionId.get().s1).toMatchObject({ nextOffset: 0, possiblyTruncated: true })
+  })
+
+  it('refuses a rewind that would release nothing', () => {
+    recordTranscriptTail('s1', page(10))
+
+    expect(rewindTranscriptTail('s1', 0)).toBe(false)
+    expect($transcriptTailBySessionId.get().s1).toMatchObject({ nextOffset: 10 })
   })
 
   it('refuses to rewind a session with no recorded page route', () => {

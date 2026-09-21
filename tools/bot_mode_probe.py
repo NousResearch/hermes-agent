@@ -264,6 +264,24 @@ def _peer_paragraph(root: Path) -> str:
     )
 
 
+def _chat_paragraph() -> str:
+    """How a bot talks in its own chat with the user.
+
+    A Bot Chat is a conversation, not a work log — the section rides every
+    session of the profile, so this says what CHAT should read like without
+    thinning out what a real answer looks like: the register is conversational,
+    and the substance an ask needs still arrives, in the shape the ask calls
+    for."""
+    return (
+        "\n\nIn your own chat with the user, talk like a person, not a status "
+        "page: short replies in plain prose, and a one-liner (\"Done.\", \"On it.\", "
+        "\"Agreed.\") is a real reply. When they ask for work, do it and answer with "
+        "what changed and what is left — the substance the ask needs, in the shape "
+        "the ask calls for (a report or a table when they asked for one), never a "
+        "replay of the process."
+    )
+
+
 def _build_section(home: Path) -> str:
     root = _hermes_root(home)
     me = _profile_name(home)
@@ -301,6 +319,7 @@ def _build_section(home: Path) -> str:
         f"{roster_block}"
         + _remote_paragraph(root)
         + _peer_paragraph(root)
+        + _chat_paragraph()
     )
 
 
@@ -378,7 +397,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["roster"] = []
     # Protocol-text version salt: bumping it refreshes every eternal Bot Chat
     # prompt ONCE so existing bots adopt a new protocol section.
-    surface["protocol_version"] = 2
+    surface["protocol_version"] = 3
     # Peer gateways and the Desktop relay roster are part of the messaging
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)

@@ -60,6 +60,33 @@ class SpillIfOversizedTests(unittest.TestCase):
         small = "x" * 50
         self.assertEqual(hos.spill_if_oversized(small, config=self._cfg()), small)
 
+    def test_line_boundary_slices_never_cut_entries_mid_string(self):
+        """Head/tail previews must contain only WHOLE lines from the input.
+
+        Regression: raw char slices produced dangling fragments (e.g. `It'`,
+        `Verified:`) from recalled-memory prefetches, which the model then read
+        as stray user text.
+        """
+        lines = [f"- Memory entry {i} - some content here" for i in range(300)]
+        lines.append("- DESKTOP CLIP BUG (It'/I' messages): composer detail line")
+        text = "\n".join(lines)
+        cfg = self._cfg(max_chars=1000, preview_head=200, preview_tail=200)
+        out = hos.spill_if_oversized(
+            text, session_id="line-boundary", source="probe", config=cfg
+        )
+        section = None
+        for line in out.split("\n"):
+            if line in ("--- head ---", "--- tail ---"):
+                section = line
+                continue
+            if line.startswith("[") or section is None or not line.strip():
+                continue
+            self.assertIn(
+                line,
+                set(lines),
+                f"{section} leaked a mid-string fragment: {line[:60]!r}",
+            )
+
 
     def test_default_directory_uses_hermes_home(self):
         """When no directory override, spill under HERMES_HOME/hook_outputs."""

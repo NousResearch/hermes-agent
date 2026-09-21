@@ -33,6 +33,17 @@ _UPDATE_FAILED_NOTICE = (
     "host to see the full error, or try /update again later.")
 
 
+def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_id, thread_id) -> tuple:
+    """Notice-dedupe key for one SERVED profile's home channel.
+
+    A secondary uses the ``<profile>:<platform>`` key convention the runtime status already
+    stamps in ``gateway_state.json``; the launch profile keeps the bare platform value so a
+    marker written before this change still matches its delivered targets.
+    """
+    return _notice_target_key(
+        platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
+
+
 def _update_output_tail(output: str, limit: int) -> str:
     """Last ``limit`` chars of an update log, prefixed with an ellipsis when cut."""
     return output if len(output) <= limit else "…" + output[-limit:]
@@ -785,6 +796,37 @@ class GatewayNotificationsMixin:
                 continue
             yield platform, platform_cfg, home, transport
 
+    def _served_home_channel_configs(self):
+        """``(profile, platform, platform_cfg)`` for every SERVED profile's configured home channel.
+
+        ``self.config`` is the launch profile's alone, but one host process multiplexes every
+        profile, so a host-wide notice built from it silently skips the others' channels. The
+        secondary configs are the ones ``_load_secondary_profile_config`` already cached at
+        adapter start; ``profile`` is ``None`` for the launch profile.
+        """
+        for platform, platform_cfg in self.config.platforms.items():
+            yield None, platform, platform_cfg
+        for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items():
+            for platform, platform_cfg in profile_cfg.platforms.items():
+                yield profile, platform, platform_cfg
+
+    def _served_home_channel_transports(self):
+        """``(profile, platform, platform_cfg, home, transport)`` for every served profile's home
+        channel with a live transport — the launch profile's (``profile`` ``None``) first."""
+        from gateway.delivery import resolve_delivery_transport
+        for platform, platform_cfg, home, transport in self._home_channel_transports():
+            yield None, platform, platform_cfg, home, transport
+        for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items():
+            adapters = (getattr(self, "_profile_adapters", None) or {}).get(profile) or {}
+            for platform, platform_cfg in profile_cfg.platforms.items():
+                home = platform_cfg.home_channel
+                if not home or not home.chat_id:
+                    continue
+                transport = resolve_delivery_transport(platform, profile_cfg, adapters)
+                if transport is None:
+                    continue
+                yield profile, platform, platform_cfg, home, transport
+
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
         from gateway.run import _non_conversational_metadata
@@ -856,8 +898,9 @@ class GatewayNotificationsMixin:
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.
                 owed = {
-                    _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
-                    for platform, cfg in self.config.platforms.items()
+                    _served_notice_target_key(
+                        profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+                    for profile, platform, cfg in self._served_home_channel_configs()
                     if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
                 }
                 delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
@@ -872,10 +915,12 @@ class GatewayNotificationsMixin:
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
     ) -> set[tuple[str, str, Optional[str]]]:
-        """Notify configured home channels that the gateway is back online.
+        """Notify EVERY served profile's configured home channels that the gateway is back online.
 
-        Best-effort, once per connected platform home channel. ``skip_targets`` lets startup avoid
-        duplicate messages when a more specific restart notification is queued for the same chat.
+        Best-effort, once per (profile, platform) home channel — one host process serves them all,
+        so a notice restricted to the launch profile leaves every other profile's channel silent.
+        ``skip_targets`` lets startup avoid duplicate messages when a more specific restart
+        notification is queued for the same chat.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
@@ -883,14 +928,14 @@ class GatewayNotificationsMixin:
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"
-        for platform, platform_cfg, home, transport in self._home_channel_transports():
+        for profile, platform, platform_cfg, home, transport in self._served_home_channel_transports():
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
                 )
                 continue
-            target = _notice_target_key(platform.value, home.chat_id, home.thread_id)
+            target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
             if target in skipped or target in delivered:
                 continue
             if await self._send_home_channel_message(

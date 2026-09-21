@@ -1047,6 +1047,12 @@ class GatewayAdapterLifecycleMixin:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
+        # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
+        # every served profile's home channels, and this is the only place it is loaded.
+        configs = getattr(self, "_profile_configs", None)
+        if configs is None:
+            configs = self._profile_configs = {}
+        configs[profile_name] = profile_cfg
         multiplex = self._multiplex_on()
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0

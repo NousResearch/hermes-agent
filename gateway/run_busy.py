@@ -21,7 +21,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Awaitable, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -1288,9 +1288,12 @@ class GatewayBusySessionMixin:
             "• **Cancel** — keep current conversation\n\n"
             f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
         )
-        return await self._request_slash_confirm(
+        confirm_publish = await self._request_slash_confirm(
             event=event, command=command, title=title, message=prompt_message, handler=_on_confirm
         )
+        if asyncio.iscoroutine(confirm_publish):
+            return await confirm_publish  # deferred publish (render outside a held lock)
+        return confirm_publish
 
     _DESTRUCTIVE_OPTOUT_NOTE = {
         True: (
@@ -1337,11 +1340,14 @@ class GatewayBusySessionMixin:
         return result
 
     async def _request_slash_confirm(
-        self, *, event: MessageEvent, command: str, title: str, message: str, handler
-    ) -> Optional[str]:
+        self, *, event: MessageEvent, command: str, title: str, message: str, handler,
+        publish: bool = True,
+    ) -> "Union[Optional[str], 'Awaitable[Optional[str]]']":
         """Ask the user to confirm a slash command; ``handler(choice)`` runs on "once"/"always"/
         "cancel" and its return is sent as a message. Returns None if buttons rendered, else the
-        text-fallback message (which IS the ack)."""
+        text-fallback message (which IS the ack). With ``publish=False`` the registration is made
+        (atomically, superseding) and the RENDER is deferred to the returned awaitable — the
+        caller can release a held lock before rendering."""
         from tools import slash_confirm as _slash_confirm_mod
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -1358,41 +1364,46 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
-        if adapter is not None:
-            try:
-                button_result = await adapter.send_slash_confirm(
-                    chat_id=source.chat_id, title=title, message=message, session_key=session_key,
-                    confirm_id=confirm_id, metadata=metadata,
-                )
-                if button_result and getattr(button_result, "success", False):
-                    return None  # buttons rendered — no redundant text ack
-                # P5(b): distinguish a connector egress DECLINE from a lane
-                # failure. On a decline the connector refused this destination,
-                # so returning `message` as the direct reply would deliver the
-                # very content it refused, as text, to the same chat. Suppress
-                # the fallback and tear down the registration — no card
-                # rendered, so a later reply must not be captured as an answer
-                # to an invisible prompt.
-                #
-                # Classify the STRUCTURED response (see _approval_send_outcome):
-                # a code-only decline has no marker colon in its rendered text,
-                # and an ambiguous result must not be treated as a definite
-                # refusal.
-                from gateway.relay.egress import declined_send
-
-                _confirm_err = getattr(button_result, "error", None)
-                if declined_send(button_result):
-                    logger.warning(
-                        "slash-confirm DECLINED by the connector's egress "
-                        "guard for %s on %s — suppressing the text fallback: %s",
-                        command, source.platform, _confirm_err,
+        async def _publish_buttons() -> Optional[str]:
+            if adapter is not None:
+                try:
+                    button_result = await adapter.send_slash_confirm(
+                        chat_id=source.chat_id, title=title, message=message, session_key=session_key,
+                        confirm_id=confirm_id, metadata=metadata,
                     )
-                    _slash_confirm_mod.clear(session_key)
-                    return None
-            except Exception as exc:
-                logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
-        # Text fallback — the prompt message itself is the direct reply.
-        return message
+                    if button_result and getattr(button_result, "success", False):
+                        return None  # buttons rendered — no redundant text ack
+                    # P5(b): distinguish a connector egress DECLINE from a lane
+                    # failure. On a decline the connector refused this destination,
+                    # so returning `message` as the direct reply would deliver the
+                    # very content it refused, as text, to the same chat. Suppress
+                    # the fallback and tear down the registration — no card
+                    # rendered, so a later reply must not be captured as an answer
+                    # to an invisible prompt.
+                    #
+                    # Classify the STRUCTURED response (see _approval_send_outcome):
+                    # a code-only decline has no marker colon in its rendered text,
+                    # and an ambiguous result must not be treated as a definite
+                    # refusal.
+                    from gateway.relay.egress import declined_send
+
+                    _confirm_err = getattr(button_result, "error", None)
+                    if declined_send(button_result):
+                        logger.warning(
+                            "slash-confirm DECLINED by the connector's egress "
+                            "guard for %s on %s — suppressing the text fallback: %s",
+                            command, source.platform, _confirm_err,
+                        )
+                        _slash_confirm_mod.clear(session_key)
+                        return None
+                except Exception as exc:
+                    logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
+            # Text fallback — the prompt message itself is the direct reply.
+            return message
+
+        if not publish:
+            return _publish_buttons()
+        return await _publish_buttons()
 
     def _read_user_config(self) -> Dict[str, Any]:
         """Raw config.yaml for gate lookups that must see on-disk changes without a restart."""

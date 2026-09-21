@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
@@ -564,24 +564,30 @@ class GatewayModelCommandsMixin:
             f"⚠️ **{warning.title}**\n\n{warning.message}\n\n"
             f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep the current model._"
         )
-        return True, await self._request_slash_confirm(
+        publish = await self._request_slash_confirm(
             event=event, command="model", title=warning.title, message=message, handler=_on_cost_confirm,
+            publish=False,
         )
+        return True, publish
 
     async def _handle_model_command(
         self, event: MessageEvent, *, inline_payload: str = ""
     ) -> Optional[str]:
         """Handle /model command — switch model. Taken under the switch lock BEFORE the first await so
-        concurrent commands commit in issue order (see ``_model_switch_lock``)."""
+        concurrent commands commit in issue order (see ``_model_switch_lock``); the selection-guard
+        confirmation prompt is published outside it (see ``__model_guard_publish__``)."""
         async with self._model_switch_lock():
-            return await self._handle_model_command_locked(event, inline_payload=inline_payload)
+            response = await self._handle_model_command_locked(event, inline_payload=inline_payload)
+        if isinstance(response, tuple) and response[0] == "__model_guard_publish__":
+            guard_reply = await response[1]  # render the guard prompt outside the lock
+            return guard_reply
+        return response
 
     async def _handle_model_command_locked(
         self, event: MessageEvent, *, inline_payload: str = ""
-    ) -> Optional[str]:
+    ) -> "Optional[Union[str, tuple]]":
         from gateway.run import _hermes_home
         from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
-
         profile_home = None
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             profile_home = self._resolve_profile_home_for_source(event.source)
@@ -632,7 +638,14 @@ class GatewayModelCommandsMixin:
             event, ctx, result, inline_payload=inline_payload,
         )
         if guard_fired:
-            return guard_reply
+            # The confirmation has been registered atomically (register happens BEFORE any send in
+            # _request_slash_confirm), so the commit-relevant critical section is over: hand the
+            # deferred publish to the caller so the prompt RENDERS outside the lock and a
+            # superseding /model can register its own confirmation while this one is still
+            # rendering (binding semantics; the late presentation returns to a superseded
+            # confirm_id and is dropped). _on_cost_confirm takes the lock itself around the
+            # actual commit — same contract as the picker callback (#100314).
+            return "__model_guard_publish__", guard_reply
         return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
 
     # -------------------------------------------------- /codex-runtime, /personality

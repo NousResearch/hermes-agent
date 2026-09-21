@@ -141,6 +141,11 @@ def _setup_isolated_home(tmp_path, monkeypatch) -> None:
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(CONFIG_YAML, encoding="utf-8")
 
+    # load_config() follows HERMES_HOME, not gateway._hermes_home: without this the
+    # test home and the config home diverge and resolve_persist_behavior() reads a
+    # different config.yaml than the switch writes (#100314 made that observable).
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)

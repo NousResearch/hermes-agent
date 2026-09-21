@@ -23,6 +23,27 @@ from utils import base_url_host_matches, base_url_hostname, base_url_origin, fil
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
+_ROUTING_KEYS = (
+    "provider", "name", "api", "url", "base_url", "api_key", "key_env",
+    "api_key_env", "key_cmd", "model", "default_model", "api_mode", "transport",
+)
+
+
+def _named_provider_routes(key: str, user_providers: Optional[dict]) -> bool:
+    """Whether a ``providers.<key>`` entry actually declares routing/identity.
+
+    Settings-only tuning blocks (timeouts, context-length, rate-limit caps,
+    capabilities) must not register their key as a routing choice: building
+    ``custom_ids``/``configured`` from every ``user_providers`` key made any
+    ``providers.<vendor>`` tuning block hijack a ``<vendor>/<model>`` default
+    onto the vendor endpoint (#118153).
+    """
+    value = (user_providers or {}).get(key)
+    if not isinstance(value, dict):
+        # Legacy shorthand or malformed entry — assume it declares routing.
+        return True
+    return any(value.get(k) for k in _ROUTING_KEYS)
+
 
 logger = logging.getLogger(__name__)
 
@@ -394,8 +415,12 @@ def resolve_startup_model_route(
     # configured ids come from the caller's config, the same source the ``/`` branch below uses.
     from hermes_cli.models import parse_model_input
     from hermes_cli.providers import custom_provider_slug
+    routing_user_providers = {
+        key: entry for key, entry in (user_providers or {}).items()
+        if isinstance(entry, dict) and _named_provider_routes(key, user_providers)
+    }
     custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
-                  for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
+                  for key, entry in routing_user_providers.items()}
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
                       for entry in (custom_providers or []) if isinstance(entry, dict) and _clean(entry.get("name")))
     qualified_provider, qualified_model = parse_model_input(raw, "", custom_ids=custom_ids)
@@ -417,7 +442,9 @@ def resolve_startup_model_route(
         except Exception:
             pass
 
-    configured = {str(name).strip().lower() for name in (user_providers or {}) if str(name).strip()}
+    configured = {str(name).strip().lower()
+                  for name in routing_user_providers
+                  if str(name).strip()}
     configured.update(
         f"custom:{entry.get('name', '').strip().lower()}"
         for entry in (custom_providers or [])

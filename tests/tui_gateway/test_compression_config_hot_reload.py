@@ -158,6 +158,11 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
     session = {"agent": agent, "session_key": "session-unset"}
     assert compressor.threshold_tokens == 256_000  # min(1M * 0.85, 256K cap)
 
+    # The pin is scoped to the configured default route (#116467); that scoping has its own tests,
+    # this one is about the cap, so keep the 1M window in scope for the bare test runtime.
+    import agent.agent_init as agent_init
+
+    monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 1_000_000)
     _sync_with_cfg(monkeypatch, session, {"model": {"context_length": 1_000_000}, "compression": {}})
 
     assert compressor.threshold_tokens_cap == 256_000
